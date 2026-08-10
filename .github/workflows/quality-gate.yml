@@ -147,7 +147,7 @@ jobs:
           languages: python,javascript-typescript
           queries: security-and-quality
       - name: Analyze
-        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.37.0
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.0
 
   quality-gate:
     name: quality-gate
