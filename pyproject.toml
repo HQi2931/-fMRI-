@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rs-fmri-agent"
+version = "0.1.0"
+description = "Local-first, approval-gated rs-fMRI workflows for MATLAB and DPABI"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Huang Qi" }]
+dependencies = [
+  "alembic>=1.16,<2",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "jsonschema>=4.25,<5",
+  "openpyxl>=3.1,<4",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "python-dotenv>=1.1,<2",
+  "pyyaml>=6.0.2,<7",
+  "sqlalchemy>=2.0.41,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.scripts]
+rsfmri-api = "neuroagent.api.main:main"
+rsfmri-worker = "neuroagent.workflow.worker:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17,<2",
+  "pip-audit>=2.9,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12.7,<1",
+  "types-jsonschema>=4.25,<5",
+  "types-pyyaml>=6.0.12,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["neuroagent"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = [".venv", "web", "runs", "artifacts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+exclude = ["tests", "web"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers --cov=neuroagent --cov-report=term-missing --cov-fail-under=85"
+asyncio_mode = "auto"
+markers = [
+  "integration: integration tests using local mock infrastructure",
+  "matlab_smoke: explicitly approved lightweight MATLAB smoke tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["neuroagent"]
+omit = ["*/__init__.py"]

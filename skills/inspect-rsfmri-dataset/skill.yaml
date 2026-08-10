@@ -1,0 +1,50 @@
+schema_version: "1.0"
+skill_id: "rsfmri.dataset.inspect"
+version: "1.0.0"
+title: "Read-only rs-fMRI dataset inspection"
+status: "reviewed"
+requested_metrics: []
+required_parameters:
+  - "source_root"
+  - "dataset_ref"
+  - "input_manifest_hash"
+input_artifacts:
+  - name: "source"
+    artifact_type: "dataset.source"
+    required_lineage:
+      - "read_only=true"
+output_artifacts:
+  - name: "report"
+    artifact_type: "dataset.inspection_report"
+    required_lineage:
+      - "source_hashes"
+required_capabilities:
+  - "fmri.dataset.inspect"
+workflow_template_ref: "dataset.inspect.v1"
+steps:
+  - step_id: "inspect_dataset"
+    capability: "fmri.dataset.inspect"
+    needs: []
+    consumes:
+      - "dataset.source"
+    produces:
+      - "dataset.inspection_report"
+    parameter_names:
+      - "source_root"
+      - "dataset_ref"
+    qc_gate: true
+qc_requirements:
+  - "source_read_only"
+  - "subject_manifest_explicit"
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "AGENTS.md#6-数据与科研安全"
+known_limitations:
+  - "Inspection does not establish scientific suitability"
+reviewed_by:
+  - "skill_workflow_engineer"
+  - "matlab_dpabi_engineer"

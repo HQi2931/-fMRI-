@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReHo request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tr_seconds", "temporal_filter_band", "temporal_filter_add_mean_back", "cluster_voxels", "mask_artifact_id", "requested_scalings", "smooth_reho", "smooth_reho_fwhm_mm", "global_result_smoothing", "global_result_smoothing_fwhm_mm", "provenance"],
+  "properties": {
+    "tr_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "temporal_filter_band": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["low_hz", "high_hz"], "properties": {"low_hz": {"type": "number", "minimum": 0}, "high_hz": {"type": "number", "exclusiveMinimum": 0}}}
+      ]
+    },
+    "temporal_filter_add_mean_back": {"type": ["boolean", "null"]},
+    "cluster_voxels": {"enum": [7, 19, 27]},
+    "mask_artifact_id": {"type": "string", "minLength": 1},
+    "requested_scalings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["raw", "global_mean", "z_score"]}},
+    "smooth_reho": {"type": "boolean"},
+    "smooth_reho_fwhm_mm": {"$ref": "#/$defs/fwhm"},
+    "global_result_smoothing": {"type": "boolean"},
+    "global_result_smoothing_fwhm_mm": {"$ref": "#/$defs/fwhm"},
+    "provenance": {"type": "array", "minItems": 7, "uniqueItems": true, "items": {"$ref": "#/$defs/provenance"}}
+  },
+  "$defs": {
+    "fwhm": {"oneOf": [{"type": "null"}, {"type": "array", "prefixItems": [{"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}], "items": false}]},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["name", "source", "evidence_ref"], "properties": {"name": {"type": "string", "minLength": 1}, "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset"]}, "evidence_ref": {"type": "string", "minLength": 1}}}
+  }
+}

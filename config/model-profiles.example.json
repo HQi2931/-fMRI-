@@ -1,0 +1,23 @@
+{
+  "usage": "Documentation example only. This file is not auto-loaded; create each profile through the local Web UI or POST /api/v1/model-profiles.",
+  "profiles": [
+    {
+      "id": "deepseek-default",
+      "provider": "openai-compatible",
+      "base_url": "https://api.deepseek.com",
+      "model": "configure-a-current-model",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "priority": 10,
+      "capabilities": ["json_object", "streaming"]
+    },
+    {
+      "id": "compatible-fallback",
+      "provider": "openai-compatible",
+      "base_url": "https://provider.example/v1",
+      "model": "configure-locally",
+      "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+      "priority": 20,
+      "capabilities": ["json_object"]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+schema_version: "1.0"
+skill_id: "rsfmri.metric.alff_falff"
+version: "1.0.0"
+title: "DPABI ALFF and fALFF"
+status: "reviewed"
+requested_metrics: ["alff", "falff"]
+required_parameters: ["alff_falff"]
+input_artifacts:
+  - name: "functional"
+    artifact_type: "functional_timeseries"
+    required_lineage: ["metadata_verified=true", "metadata_evidence_hash", "tr_seconds", "volume_count", "mask", "temporally_filtered=false", "spatially_smoothed=false"]
+output_artifacts:
+  - name: "alff"
+    artifact_type: "metric.alff"
+    required_lineage: ["frequency_band", "mask", "scaling"]
+  - name: "falff"
+    artifact_type: "metric.falff"
+    required_lineage: ["frequency_band", "mask", "scaling"]
+required_capabilities: ["fmri.dpabi.alff_falff", "fmri.qc.metrics"]
+workflow_template_ref: "dpabi.alff_falff.v1"
+steps:
+  - step_id: "calculate_alff_falff"
+    capability: "fmri.dpabi.alff_falff"
+    needs: []
+    consumes: ["timeseries.verified.unfiltered.unsmoothed"]
+    produces: ["metric.alff", "metric.falff"]
+    parameter_names: ["alff_falff"]
+    qc_gate: false
+  - step_id: "metric_qc"
+    capability: "fmri.qc.metrics"
+    needs: ["calculate_alff_falff"]
+    consumes: ["metric.alff", "metric.falff"]
+    produces: ["qc.metric_report"]
+    parameter_names: []
+    qc_gate: true
+qc_requirements: ["alff_falff_metric_qc", "manual_pre_statistics_qc"]
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:3925-4008"
+  - "DPABI_V8.2_240510/DPARSF/Subfunctions/y_alff_falff.m:90-155"
+known_limitations:
+  - "IsCalALFF produces ALFF and fALFF together"
+reviewed_by: ["skill_workflow_engineer", "matlab_dpabi_engineer", "fmri_methodologist"]

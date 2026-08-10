@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DPABI V8.2 preprocessing plan request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "input_manifest_hash",
+    "base_cfg_artifact_id",
+    "request_preprocessing",
+    "preprocessing"
+  ],
+  "properties": {
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "base_cfg_artifact_id": {"type": "string", "minLength": 1},
+    "request_preprocessing": {"const": true},
+    "preprocessing": {"$ref": "#/$defs/preprocessing"}
+  },
+  "$defs": {
+    "preprocessing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tr_seconds",
+        "expected_time_points",
+        "dummy_scans",
+        "slice_timing",
+        "realignment",
+        "nuisance",
+        "normalization",
+        "detrend",
+        "temporal_filter",
+        "scrubbing",
+        "smoothing",
+        "provenance"
+      ],
+      "properties": {
+        "tr_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "expected_time_points": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "null explicitly disables DPABI time-point count checking"
+        },
+        "dummy_scans": {"type": "integer", "minimum": 0},
+        "slice_timing": {"$ref": "#/$defs/slice_timing"},
+        "realignment": {"$ref": "#/$defs/realignment"},
+        "nuisance": {"$ref": "#/$defs/nuisance"},
+        "normalization": {"$ref": "#/$defs/normalization"},
+        "detrend": {"type": "boolean"},
+        "temporal_filter": {"$ref": "#/$defs/temporal_filter"},
+        "scrubbing": {"$ref": "#/$defs/scrubbing"},
+        "smoothing": {"$ref": "#/$defs/smoothing"},
+        "provenance": {
+          "type": "array",
+          "minItems": 11,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/provenance"}
+        }
+      }
+    },
+    "slice_timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "slice_count", "slice_order", "reference_slice"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "slice_count": {"type": ["integer", "null"], "minimum": 1},
+        "slice_order": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}}
+          ]
+        },
+        "reference_slice": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "realignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "options_source"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "options_source": {"enum": ["dpabi_v82_jobmat", null]}
+      }
+    },
+    "motion_censoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fd_type", "fd_threshold_mm", "previous_points", "later_points"],
+      "properties": {
+        "fd_type": {"enum": ["fd_power", "fd_jenkinson"]},
+        "fd_threshold_mm": {"type": "number", "exclusiveMinimum": 0},
+        "previous_points": {"type": "integer", "minimum": 0},
+        "later_points": {"type": "integer", "minimum": 0}
+      }
+    },
+    "tissue_regressor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mask_source", "mask_threshold", "method", "compcor_components"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "mask_source": {"enum": ["spm", "segment", null]},
+        "mask_threshold": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1},
+        "method": {"enum": ["mean", "compcor", null]},
+        "compcor_components": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "global_signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mask_source", "method"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "mask_source": {"enum": ["spm", "auto_mask", null]},
+        "method": {"enum": ["mean", null]}
+      }
+    },
+    "nuisance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "timing",
+        "polynomial_trend",
+        "head_motion_model",
+        "head_motion_scrubbing",
+        "white_matter",
+        "csf",
+        "global_signal",
+        "warp_masks_to_individual_space",
+        "add_mean_back"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "timing": {"enum": ["after_realign", "after_normalize", null]},
+        "polynomial_trend": {"type": ["integer", "null"], "minimum": -1},
+        "head_motion_model": {"enum": [0, 1, 2, 3, 4, null]},
+        "head_motion_scrubbing": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/motion_censoring"}]
+        },
+        "white_matter": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/tissue_regressor"}]
+        },
+        "csf": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/tissue_regressor"}]
+        },
+        "global_signal": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/global_signal"}]
+        },
+        "warp_masks_to_individual_space": {"type": ["boolean", "null"]},
+        "add_mean_back": {"type": ["boolean", "null"]}
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "timing",
+        "bounding_box_mm",
+        "voxel_size_mm",
+        "structural_artifact_id",
+        "affine_regularization"
+      ],
+      "properties": {
+        "mode": {"enum": [0, 1, 2, 3]},
+        "timing": {"enum": ["on_functional_data", "on_results", null]},
+        "bounding_box_mm": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {"type": "number"}
+              }
+            }
+          ]
+        },
+        "voxel_size_mm": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "exclusiveMinimum": 0}}
+          ]
+        },
+        "structural_artifact_id": {"type": ["string", "null"], "minLength": 1},
+        "affine_regularization": {"enum": ["mni", "eastern", null]}
+      }
+    },
+    "temporal_filter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timing", "frequency_band", "add_mean_back"],
+      "properties": {
+        "timing": {"enum": ["disabled", "before_normalize", "after_normalize"]},
+        "frequency_band": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["low_hz", "high_hz"],
+              "properties": {
+                "low_hz": {"type": "number", "minimum": 0},
+                "high_hz": {"type": "number", "exclusiveMinimum": 0}
+              }
+            }
+          ]
+        },
+        "add_mean_back": {"type": ["boolean", "null"]}
+      }
+    },
+    "scrubbing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "timing", "censoring", "method"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "timing": {"enum": ["after_preprocessing", null]},
+        "censoring": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/motion_censoring"}]
+        },
+        "method": {"enum": ["cut", "nearest", "linear", "spline", "pchip", null]}
+      }
+    },
+    "smoothing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timing", "method", "fwhm_mm"],
+      "properties": {
+        "timing": {"enum": ["disabled", "on_functional_data", "on_results"]},
+        "method": {"enum": [1, 2, null]},
+        "fwhm_mm": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "exclusiveMinimum": 0}}
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "evidence_ref"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset"]},
+        "evidence_ref": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

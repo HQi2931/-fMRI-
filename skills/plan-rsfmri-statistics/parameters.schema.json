@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rs-fMRI statistical design",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision_id", "test", "subject_order", "images", "group_order", "condition_order", "covariates", "contrast", "one_sample_baseline", "mask_artifact_id", "tail", "missing_value_policy", "qc_review_revision_id", "qc_review_hash", "correction"],
+  "properties": {
+    "revision_id": {"type": "string", "minLength": 1},
+    "test": {"enum": ["one_sample_t", "independent_two_sample_t", "paired_t", "correlation", "regression"]},
+    "subject_order": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "images": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/image"}},
+    "group_order": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "condition_order": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "covariates": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/covariate"}},
+    "contrast": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+    "one_sample_baseline": {"type": ["number", "null"]},
+    "mask_artifact_id": {"type": "string", "minLength": 1},
+    "tail": {"enum": ["one_sided_positive", "one_sided_negative", "two_sided"]},
+    "missing_value_policy": {"enum": ["error", "exclude_explicitly"]},
+    "qc_review_revision_id": {"type": "string", "minLength": 1},
+    "qc_review_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "correction": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/fdr"},
+        {"$ref": "#/$defs/grf"}
+      ]
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "artifact_id", "group", "condition"],
+      "properties": {
+        "subject_id": {"type": "string", "minLength": 1},
+        "artifact_id": {"type": "string", "minLength": 1},
+        "group": {"type": ["string", "null"], "minLength": 1},
+        "condition": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "covariate_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "value"],
+      "properties": {
+        "subject_id": {"type": "string", "minLength": 1},
+        "value": {"type": "number"}
+      }
+    },
+    "covariate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "values", "centering"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "values": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/covariate_value"}},
+        "centering": {"enum": ["none", "grand_mean", "within_group"]}
+      }
+    },
+    "fdr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "q_threshold", "mask_artifact_id", "statistic_type", "df1", "df2"],
+      "properties": {
+        "method": {"const": "fdr"},
+        "q_threshold": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "mask_artifact_id": {"type": "string", "minLength": 1},
+        "statistic_type": {"const": "T"},
+        "df1": {"type": "number", "exclusiveMinimum": 0},
+        "df2": {"type": "null"}
+      }
+    },
+    "grf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "voxel_p_threshold", "cluster_p_threshold", "two_tailed", "mask_artifact_id", "statistic_type", "df1", "df2", "smoothness_mode", "smoothness_dlh"],
+      "properties": {
+        "method": {"const": "grf"},
+        "voxel_p_threshold": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "cluster_p_threshold": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "two_tailed": {"type": "boolean"},
+        "mask_artifact_id": {"type": "string", "minLength": 1},
+        "statistic_type": {"const": "T"},
+        "df1": {"type": "number", "exclusiveMinimum": 0},
+        "df2": {"type": "null"},
+        "smoothness_mode": {"enum": ["dpabi_header_or_estimate", "provided_dlh"]},
+        "smoothness_dlh": {"type": ["number", "null"], "exclusiveMinimum": 0}
+      }
+    }
+  }
+}

@@ -23,4 +23,3 @@
 - `AgentHandoff`
 - `HandoffPolicy`
 - `AgentCapability`
-

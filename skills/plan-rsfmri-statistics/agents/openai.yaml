@@ -1,0 +1,4 @@
+interface:
+  display_name: "rs-fMRI Statistics Plan"
+  short_description: "Aligned tests, covariates, FDR, and GRF planning"
+  default_prompt: "Use $plan-rsfmri-statistics to validate an explicitly aligned group analysis and correction plan."

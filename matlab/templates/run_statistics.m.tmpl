@@ -1,0 +1,151 @@
+% Generated from a validated StatisticalDesignRevision.
+run('{{BOOTSTRAP_PATH}}');
+run_directory = '{{RUN_DIRECTORY}}';
+request = jsondecode(fileread('{{CONFIG_JSON_PATH}}'));
+output_name = fullfile(run_directory, 'output', 'statistic.nii');
+groups = decode_path_groups(request.dependent_groups);
+other_covariates = decode_covariate_groups(request.covariate_groups);
+
+diary(fullfile(run_directory, 'logs', 'matlab.log'));
+cleanup = onCleanup(@() diary('off'));
+switch request.function
+    case 'y_TTest1_Image'
+        y_TTest1_Image(groups(1), output_name, request.mask_path, [], ...
+            other_covariates(1), request.one_sample_baseline, []);
+    case 'y_TTest2_Image'
+        y_TTest2_Image(groups, output_name, request.mask_path, [], other_covariates, []);
+    case 'y_TTestPaired_Image'
+        y_TTestPaired_Image(groups, output_name, request.mask_path, [], other_covariates, []);
+    case 'y_GroupAnalysis_Image'
+        [dependent_volume, ~, ~, header] = y_ReadAll(groups{1});
+        y_GroupAnalysis_Image(dependent_volume, request.design_matrix, output_name, ...
+            request.mask_path, [], request.contrast, 'T', 0, header);
+    otherwise
+        error('rsfmri:statistics:UnsupportedFunction', 'Unsupported registered function.');
+end
+
+if ~isempty(request.correction)
+    corrected_name = fullfile(run_directory, 'output', 'statistic_corrected.nii');
+    parameters = request.correction.parameters;
+    switch request.correction.function
+        case 'y_FDR_Image'
+            assert(strcmp(request.tail, 'two_sided'), ...
+                'rsfmri:statistics:FDRRequiresTwoSided');
+            y_FDR_Image(output_name, parameters.q_threshold, corrected_name, ...
+                parameters.mask_path, parameters.statistic_type, parameters.df1, ...
+                parameters.df2, [], []);
+        case 'y_GRF_Threshold'
+            correction_input = output_name;
+            restore_sign = false;
+            if strcmp(request.tail, 'one_sided_negative')
+                negative_input = fullfile(run_directory, 'output', ...
+                    'statistic_negative_tail_input.nii');
+                [raw_statistic, ~, raw_header] = y_ReadRPI(output_name);
+                y_Write(-raw_statistic, raw_header, negative_input);
+                correction_input = negative_input;
+                restore_sign = true;
+            end
+            if strcmp(parameters.smoothness_mode, 'provided_dlh')
+                smoothness_dlh = parameters.smoothness_dlh;
+            else
+                smoothness_dlh = [];
+            end
+            [corrected_z, ~, corrected_header] = y_GRF_Threshold( ...
+                correction_input, parameters.voxel_p_threshold, ...
+                parameters.two_tailed, parameters.cluster_p_threshold, ...
+                fullfile(run_directory, 'output', 'dpabi_grf_intermediate.nii'), ...
+                parameters.mask_path, parameters.statistic_type, parameters.df1, ...
+                parameters.df2, [], [], smoothness_dlh);
+            [raw_statistic, ~, raw_header] = y_ReadRPI(output_name);
+            corrected_statistic = raw_statistic .* (corrected_z ~= 0);
+            if restore_sign
+                corrected_z = -corrected_z;
+            end
+            y_Write(corrected_statistic, raw_header, corrected_name);
+            y_Write(corrected_z, corrected_header, ...
+                fullfile(run_directory, 'output', 'statistic_corrected_z.nii'));
+        otherwise
+            error('rsfmri:statistics:UnsupportedCorrection', ...
+                'Unsupported registered correction function.');
+    end
+end
+
+function groups = decode_path_groups(value)
+entries = object_entries(value, 'rsfmri:statistics:InvalidDependentGroups');
+assert(~isempty(entries), 'rsfmri:statistics:InvalidDependentGroups', ...
+    'At least one dependent group is required.');
+groups = cell(numel(entries), 1);
+for group_index = 1:numel(entries)
+    entry = entries{group_index};
+    assert(isstruct(entry) && isscalar(entry) && isfield(entry, 'paths'), ...
+        'rsfmri:statistics:InvalidDependentGroups', ...
+        'Each dependent group must contain a paths object array.');
+    path_entries = object_entries(entry.paths, ...
+        'rsfmri:statistics:InvalidDependentGroups');
+    assert(~isempty(path_entries), 'rsfmri:statistics:InvalidDependentGroups', ...
+        'Each dependent group must contain at least one path.');
+    paths = cell(numel(path_entries), 1);
+    for path_index = 1:numel(path_entries)
+        path_entry = path_entries{path_index};
+        assert(isstruct(path_entry) && isscalar(path_entry) && ...
+            isfield(path_entry, 'value'), ...
+            'rsfmri:statistics:InvalidDependentGroups', ...
+            'Each path entry must contain one value.');
+        path_value = path_entry.value;
+        assert((ischar(path_value) && isrow(path_value)) || ...
+            (isstring(path_value) && isscalar(path_value)), ...
+            'rsfmri:statistics:InvalidDependentGroups', ...
+            'Each dependent path must be one text value.');
+        paths{path_index} = char(path_value);
+    end
+    groups{group_index} = paths;
+end
+end
+
+function covariates = decode_covariate_groups(value)
+entries = object_entries(value, 'rsfmri:statistics:InvalidCovariateGroups');
+covariates = cell(numel(entries), 1);
+for group_index = 1:numel(entries)
+    entry = entries{group_index};
+    assert(isstruct(entry) && isscalar(entry) && isfield(entry, 'rows'), ...
+        'rsfmri:statistics:InvalidCovariateGroups', ...
+        'Each covariate group must contain a rows object array.');
+    row_entries = object_entries(entry.rows, ...
+        'rsfmri:statistics:InvalidCovariateGroups');
+    matrix = zeros(numel(row_entries), 0);
+    width = [];
+    for row_index = 1:numel(row_entries)
+        row_entry = row_entries{row_index};
+        assert(isstruct(row_entry) && isscalar(row_entry) && ...
+            isfield(row_entry, 'values'), ...
+            'rsfmri:statistics:InvalidCovariateGroups', ...
+            'Each covariate row must contain a values array.');
+        values = row_entry.values;
+        assert(isnumeric(values) && isreal(values) && all(isfinite(values), 'all'), ...
+            'rsfmri:statistics:InvalidCovariateGroups', ...
+            'Covariate values must be finite real numbers.');
+        values = reshape(values, 1, []);
+        if isempty(width)
+            width = numel(values);
+            matrix = zeros(numel(row_entries), width);
+        else
+            assert(numel(values) == width, ...
+                'rsfmri:statistics:InvalidCovariateGroups', ...
+                'Covariate rows must have a consistent width.');
+        end
+        matrix(row_index, :) = values;
+    end
+    covariates{group_index} = matrix;
+end
+end
+
+function entries = object_entries(value, error_id)
+if isstruct(value)
+    entries = reshape(num2cell(value), [], 1);
+elseif iscell(value) && ...
+        all(cellfun(@(item) isstruct(item) && isscalar(item), value), 'all')
+    entries = reshape(value, [], 1);
+else
+    error(error_id, 'Expected a JSON object array.');
+end
+end
