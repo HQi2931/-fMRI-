@@ -1,0 +1,4 @@
+interface:
+  display_name: "rs-fMRI Dataset Inspection"
+  short_description: "Read-only input compatibility and manifest checks"
+  default_prompt: "Use $inspect-rsfmri-dataset to review a dataset manifest and produce a read-only compatibility report."

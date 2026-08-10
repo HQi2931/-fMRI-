@@ -1,0 +1,36 @@
+schema_version: "1.0"
+skill_id: "rsfmri.qc.pre_statistics"
+version: "1.0.0"
+title: "Manual pre-statistics QC gate"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["qc_protocol", "input_manifest_hash"]
+input_artifacts:
+  - name: "metrics"
+    artifact_type: "metric.primary_maps"
+    required_lineage: ["subject_id", "producer_step_hash", "grid_signature"]
+output_artifacts:
+  - name: "review"
+    artifact_type: "qc.review_revision"
+    required_lineage: ["input_manifest_hash", "included_subject_order"]
+required_capabilities: ["fmri.qc.pre_statistics"]
+workflow_template_ref: "qc.pre_statistics.v1"
+steps:
+  - step_id: "pre_statistics_qc"
+    capability: "fmri.qc.pre_statistics"
+    needs: []
+    consumes: ["metric.primary_maps"]
+    produces: ["qc.review_revision"]
+    parameter_names: ["qc_protocol", "input_manifest_hash"]
+    qc_gate: true
+qc_requirements: ["manual_approval", "frozen_inclusion_order"]
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "docs/architecture/fmri-skill-layer.md#74-qc-gate"
+known_limitations:
+  - "QC thresholds must come from the study protocol"
+reviewed_by: ["skill_workflow_engineer", "fmri_methodologist"]

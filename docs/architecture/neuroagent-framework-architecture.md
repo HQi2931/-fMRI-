@@ -1,10 +1,12 @@
 # NeuroAgent Framework Architecture
 
-状态：设计草案  
-范围：通用科研 Agent 框架骨架与架构设计  
+> 本文是早期通用框架草案，关于“先完成通用框架、后接入 fMRI”的路线已被当前产品方向部分替代。当前实现以根目录 `AGENTS.md`、[静息态 fMRI Skill 层架构](fmri-skill-layer.md) 和相关 ADR 为准；本文仅作历史背景与通用概念参考。
+
+状态：历史设计草案（部分被替代）
+范围：通用科研 Agent 框架骨架与架构设计
 代码位置：[neuroagent](../../neuroagent/README.md)
 
-本文档描述一个受 Hello-Agents 设计思想启发、但由本项目自主实现的通用科研 Agent 框架。本文不定义任何领域实现，不实现真实模型请求、真实 RAG、真实数据库、真实工具执行或生产级 Agent 循环。
+本文档描述一个受 [Datawhale Hello-Agents](https://datawhalechina.github.io/hello-agents/#/) 设计思想启发、但由本项目自主实现的通用科研 Agent 框架。本文不定义任何领域实现，不实现真实模型请求、真实 RAG、真实数据库、真实工具执行或生产级 Agent 循环。
 
 ## 1. 背景与目标
 
@@ -24,7 +26,7 @@ NeuroAgent 的目标是先建立一个通用科研 Agent 框架，再让具体�
 - 让不同领域插件复用同一套审批、日志、产物、记忆隔离和上下文工程能力。
 - 先用 Mock Model、Mock Tool 和 Mock Executor 完成可测试的最小闭环，再接入真实领域插件。
 
-Hello-Agents 只作为设计参考，主要参考其 Agent 抽象、ReAct/Plan-Execute 思路、工具注册、记忆、检索、上下文工程、工作流、多 Agent、技能和可观测性理念。本项目不会直接把 Hello-Agents 作为业务运行时，也不会复制其存储结构或接口约定；NeuroAgent 将自主定义接口、运行时和存储结构。
+[Hello-Agents](https://datawhalechina.github.io/hello-agents/#/) 只作为设计参考，主要参考其 Agent 抽象、ReAct/Plan-Execute 思路、工具注册、记忆、检索、上下文工程、工作流、多 Agent、技能和可观测性理念。本项目不会直接把 Hello-Agents 作为业务运行时，也不会复制其存储结构或接口约定；NeuroAgent 将自主定义接口、运行时和存储结构。
 
 ## 2. 范围与非目标
 
@@ -221,7 +223,9 @@ Application
 
 不属于本组件：模型调用、工具执行、记忆验证。
 
-### SkillManager
+### SkillManager（历史定义，已被 ADR 0001 替代）
+
+> 本小节的“上下文提示型 Skill”不再是当前运行时 Skill 定义。当前实现不得依据以下接口开发；请使用 [fMRI Skill 层架构](fmri-skill-layer.md) 和 [ADR 0001](../adr/0001-skill-compiles-to-workflow.md) 中的 SkillSpec、Resolver、Validator、Compiler 与 SkillPlan。
 
 解决问题：加载任务相关技能，包括专业知识、行为规范、提示片段、检查清单和约束说明。
 
@@ -544,7 +548,9 @@ ContextEngine 参考 Gather-Select-Structure-Compress 思路。
 - 代码：保留相关函数、接口和调用关系，避免整仓库注入。
 - 历史消息：保留用户目标、已确认决策、未解决问题和关键约束。
 
-## 14. Skills 与插件系统
+## 14. Skills 与插件系统（历史方案）
+
+> 本节关于 Skill 和“先插件化 fMRI”的定义已被 [ADR 0001](../adr/0001-skill-compiles-to-workflow.md) 替代，仅保留为历史背景。当前 fMRI Skill 是内置的声明式科研协议，不是提示词上下文包，通用插件系统也不是其前置条件。
 
 Skill 和 Plugin 必须区分：
 
@@ -804,10 +810,9 @@ AgentHandoff 必须包含：
 - EventBus 选型。
 - 长期采用单包还是 monorepo。
 - 是否使用现有 Web 框架。
-- Hello-Agents 参考到什么程度：概念参考、接口参考或仅架构启发。
+- 已决定：Hello-Agents 仅作概念与架构启发，不作为运行时、接口或存储兼容目标。
 - 框架最终命名是否固定为 NeuroAgent。
 - 插件包命名规范和发布方式。
 - 审批记录的持久化与合规要求。
 - 上下文快照是否保存原文、摘要或加密引用。
 - 领域插件的测试数据如何隔离和脱敏。
-

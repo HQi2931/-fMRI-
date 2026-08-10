@@ -1,0 +1,83 @@
+schema_version: "1.0"
+skill_id: "rsfmri.preprocess.common"
+version: "1.0.0"
+title: "Common DPABI preprocessing checkpoint"
+status: "reviewed"
+requested_metrics: []
+required_parameters:
+  - "preprocessing"
+  - "base_cfg_artifact_id"
+input_artifacts:
+  - name: "source"
+    artifact_type: "functional.source"
+    required_lineage:
+      - "subject_manifest_hash"
+      - "read_only=true"
+output_artifacts:
+  - name: "checkpoint"
+    artifact_type: "timeseries.verified.unfiltered.unsmoothed"
+    required_lineage:
+      - "metadata_verified=true"
+      - "metadata_evidence_hash"
+      - "tr_seconds"
+      - "volume_count"
+      - "grid_signature"
+      - "producer_step_hash"
+  - name: "preprocessed"
+    artifact_type: "timeseries.preprocessed"
+    required_lineage:
+      - "grid_signature"
+      - "producer_step_hash"
+required_capabilities:
+  - "fmri.manifest.verify"
+  - "fmri.dpabi.stage_input"
+  - "fmri.dpabi.preprocess"
+  - "fmri.artifact.verify_metadata"
+workflow_template_ref: "dpabi.preprocess.v1"
+steps:
+  - step_id: "freeze_manifest"
+    capability: "fmri.manifest.verify"
+    needs: []
+    consumes: []
+    produces: ["manifest.frozen"]
+    parameter_names: []
+    qc_gate: false
+  - step_id: "stage_dpabi_input"
+    capability: "fmri.dpabi.stage_input"
+    needs: ["freeze_manifest"]
+    consumes: ["manifest.frozen", "functional.source"]
+    produces: ["functional.staged"]
+    parameter_names: []
+    qc_gate: false
+  - step_id: "preprocess_common"
+    capability: "fmri.dpabi.preprocess"
+    needs: ["stage_dpabi_input"]
+    consumes: ["functional.staged"]
+    produces: ["timeseries.unverified.unfiltered.unsmoothed", "timeseries.preprocessed"]
+    parameter_names: ["preprocessing", "base_cfg_artifact_id"]
+    qc_gate: true
+  - step_id: "verify_preprocessed_metadata"
+    capability: "fmri.artifact.verify_metadata"
+    needs: ["preprocess_common"]
+    consumes: ["timeseries.unverified.unfiltered.unsmoothed"]
+    produces: ["timeseries.verified.unfiltered.unsmoothed"]
+    parameter_names: ["preprocessing", "alff_falff", "reho"]
+    qc_gate: true
+qc_requirements:
+  - "input_manifest_frozen"
+  - "source_read_only"
+  - "executor_header_metadata_verified"
+  - "manual_plan_approval"
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:1-192"
+known_limitations:
+  - "Study-specific preprocessing parameters remain mandatory"
+reviewed_by:
+  - "skill_workflow_engineer"
+  - "matlab_dpabi_engineer"
+  - "fmri_methodologist"

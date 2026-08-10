@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only dataset inspection request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_root", "dataset_ref", "input_manifest_hash"],
+  "properties": {
+    "source_root": {"type": "string", "minLength": 1},
+    "dataset_ref": {"type": "string", "minLength": 1},
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

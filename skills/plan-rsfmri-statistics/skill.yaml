@@ -1,0 +1,40 @@
+schema_version: "1.0"
+skill_id: "rsfmri.statistics.ttest"
+version: "1.0.0"
+title: "DPABI group-level t tests"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["statistical_design", "correction"]
+input_artifacts:
+  - name: "metrics"
+    artifact_type: "metric.qc_approved_maps"
+    required_lineage: ["qc_review_hash", "subject_order", "grid_signature"]
+output_artifacts:
+  - name: "statistics"
+    artifact_type: "statistics.uncorrected_map"
+    required_lineage: ["design_hash", "contrast"]
+required_capabilities: ["fmri.dpabi.statistics.ttest"]
+workflow_template_ref: "rsfmri.statistics.ttest.v1"
+steps:
+  - step_id: "ttest"
+    capability: "fmri.dpabi.statistics.ttest"
+    needs: []
+    consumes: ["metric.qc_approved_maps"]
+    produces: ["statistics.uncorrected_map"]
+    parameter_names: ["statistical_design", "correction"]
+    qc_gate: true
+qc_requirements: ["approved_qc_revision", "frozen_subject_order"]
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest1_Image.m:1"
+  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest2_Image.m:1"
+  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTestPaired_Image.m:1"
+  - "DPABI_V8.2_240510/StatisticalAnalysis/y_FDR_Image.m:1"
+  - "DPABI_V8.2_240510/StatisticalAnalysis/y_GRF_Threshold.m:1"
+known_limitations:
+  - "Thresholds, tails and covariates require study-level approval"
+reviewed_by: ["skill_workflow_engineer", "matlab_dpabi_engineer", "fmri_methodologist"]

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pre-statistics QC review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["input_manifest_hash", "subject_order", "metric_artifact_ids", "checks"],
+  "properties": {
+    "input_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "subject_order": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "metric_artifact_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "passed", "evidence_artifact_ids", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["info", "warning", "blocking"]},
+          "passed": {"type": "boolean"},
+          "evidence_artifact_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "message": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+schema_version: "1.0"
+skill_id: "rsfmri.metric.reho"
+version: "1.0.0"
+title: "DPABI ReHo"
+status: "reviewed"
+requested_metrics: ["reho"]
+required_parameters: ["reho"]
+input_artifacts:
+  - name: "functional"
+    artifact_type: "functional_timeseries"
+    required_lineage: ["metadata_verified=true", "metadata_evidence_hash", "tr_seconds", "volume_count", "mask", "spatially_smoothed=false", "temporally_filtered=false"]
+output_artifacts:
+  - name: "reho"
+    artifact_type: "metric.reho"
+    required_lineage: ["cluster_voxels", "mask", "scaling", "smoothing"]
+required_capabilities: ["fmri.dpabi.prepare_reho", "fmri.dpabi.reho", "fmri.qc.metrics"]
+workflow_template_ref: "dpabi.reho.v1"
+steps:
+  - step_id: "prepare_reho_timeseries"
+    capability: "fmri.dpabi.prepare_reho"
+    needs: []
+    consumes: ["timeseries.verified.unfiltered.unsmoothed"]
+    produces: ["timeseries.reho_ready.verified.unsmoothed"]
+    parameter_names: ["reho.temporal_filter_band", "reho.temporal_filter_add_mean_back"]
+    qc_gate: false
+  - step_id: "calculate_reho"
+    capability: "fmri.dpabi.reho"
+    needs: ["prepare_reho_timeseries"]
+    consumes: ["timeseries.reho_ready.verified.unsmoothed"]
+    produces: ["metric.reho"]
+    parameter_names: ["reho"]
+    qc_gate: false
+  - step_id: "metric_qc"
+    capability: "fmri.qc.metrics"
+    needs: ["calculate_reho"]
+    consumes: ["metric.reho"]
+    produces: ["qc.metric_report"]
+    parameter_names: []
+    qc_gate: true
+qc_requirements: ["reho_metric_qc", "manual_pre_statistics_qc"]
+compatibility:
+  matlab: "R2023b"
+  spm: "SPM12"
+  dpabi: "V8.2_240510"
+  adapter: "1.0.0"
+evidence_refs:
+  - "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:4056-4095"
+  - "DPABI_V8.2_240510/DPARSF/Subfunctions/y_reho.m:69-95"
+known_limitations:
+  - "Physical neighborhood comparability still requires grid QC"
+reviewed_by: ["skill_workflow_engineer", "matlab_dpabi_engineer", "fmri_methodologist"]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ALFF and fALFF Plan"
+  short_description: "ALFF/fALFF ordering, parameters, outputs, and QC"
+  default_prompt: "Use $plan-alff-falff to validate an ALFF/fALFF request and compile a reviewable metric plan."

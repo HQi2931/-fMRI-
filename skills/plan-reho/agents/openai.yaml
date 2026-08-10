@@ -1,0 +1,4 @@
+interface:
+  display_name: "ReHo Plan"
+  short_description: "ReHo ordering, neighborhood, smoothing, and QC"
+  default_prompt: "Use $plan-reho to validate a ReHo request and compile a reviewable metric plan."

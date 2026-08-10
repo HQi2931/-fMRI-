@@ -1,0 +1,4 @@
+interface:
+  display_name: "rs-fMRI QC Review"
+  short_description: "Metric lineage and pre-statistics QC review"
+  default_prompt: "Use $review-rsfmri-qc to review QC evidence without changing subject inclusion decisions."

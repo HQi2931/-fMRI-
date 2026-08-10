@@ -1,2 +1,1 @@
-"""Workflow state and approval boundaries for NeuroAgent."""
-
+"""Approval-gated workflow state and worker coordination."""

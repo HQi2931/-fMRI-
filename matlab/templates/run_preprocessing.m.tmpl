@@ -1,0 +1,50 @@
+% Generated from a validated JobSpec. Values are read from run-local files.
+run('{{BOOTSTRAP_PATH}}');
+run_directory = '{{RUN_DIRECTORY}}';
+base_cfg_path = '{{BASE_CFG_PATH}}';
+staging_directory = '{{STAGING_DIRECTORY}}';
+subject_list_path = '{{SUBJECT_LIST_PATH}}';
+config_json_path = '{{CONFIG_JSON_PATH}}';
+
+loaded = load(base_cfg_path);
+assert(isfield(loaded, 'Cfg'), 'rsfmri:config:CfgMissing');
+request = jsondecode(fileread(config_json_path));
+Cfg = select_base_cfg(loaded.Cfg, request.base_cfg_allowed_fields);
+Cfg = merge_struct(Cfg, request.overrides);
+Cfg.DataProcessDir = staging_directory;
+cfg_mat_path = fullfile(run_directory, 'config', 'DPARSFACfg.mat');
+save(cfg_mat_path, 'Cfg');
+
+diary(fullfile(run_directory, 'logs', 'matlab.log'));
+cleanup = onCleanup(@() diary('off'));
+[Error, EffectiveCfg] = DPARSFA_run(cfg_mat_path, staging_directory, subject_list_path, 0);
+save(fullfile(run_directory, 'config', 'EffectiveCfg.mat'), 'EffectiveCfg');
+if ~isempty(Error)
+    error('rsfmri:dpabi:DPARSFAFailed', 'DPARSFA_run returned an error result.');
+end
+
+function selected = select_base_cfg(source, allowed_fields)
+selected = struct();
+if ischar(allowed_fields) || isstring(allowed_fields)
+    allowed_fields = cellstr(allowed_fields);
+end
+for index = 1:numel(allowed_fields)
+    name = allowed_fields{index};
+    assert(strcmp(name, 'Realign'), 'rsfmri:config:UnsupportedBaseCfgField');
+    assert(isfield(source, name), 'rsfmri:config:AllowedBaseCfgFieldMissing');
+    selected.(name) = source.(name);
+end
+end
+
+function target = merge_struct(target, overrides)
+fields = fieldnames(overrides);
+for index = 1:numel(fields)
+    name = fields{index};
+    value = overrides.(name);
+    if isstruct(value) && isfield(target, name) && isstruct(target.(name))
+        target.(name) = merge_struct(target.(name), value);
+    else
+        target.(name) = value;
+    end
+end
+end

@@ -1,0 +1,4 @@
+interface:
+  display_name: "DPABI Preprocessing Plan"
+  short_description: "Validated DPABI V8.2 preprocessing plan"
+  default_prompt: "Use $plan-dpabi-preprocessing to turn an approved study protocol into a validated DPABI V8.2 preprocessing plan."

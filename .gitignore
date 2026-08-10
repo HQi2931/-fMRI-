@@ -1,0 +1,99 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+/config/*.local.*
+/secrets/
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Node / Vite
+node_modules/
+.pnpm-store/
+.vite/
+coverage/
+npm-debug.log*
+/web/test-results/
+/web/playwright-report/
+
+# Runtime state
+/*.db
+/*.sqlite
+/*.sqlite3
+*.db-wal
+*.db-shm
+*.runtime-users/
+*.restore.lock
+/logs/
+/tmp/
+/.tmp/
+/work/
+/runs/
+/outputs/
+/artifacts/
+/qc/
+/reports/generated/
+/backups/
+
+# Data roots
+/data/
+/datasets/
+/raw/
+/sourcedata/
+/derivatives/
+/bids/
+
+# Neuroimaging and scientific binary data
+*.nii
+*.nii.gz
+*.dcm
+*.ima
+*.img
+*.hdr
+*.gii
+*.mnc
+*.mgz
+*.mgh
+*.mat
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# Potentially identifiable tables
+participants.*
+demographics*.csv
+demographics*.tsv
+demographics*.xlsx
+subject_manifest*.*
+
+# Approved synthetic/documentation exceptions
+!tests/fixtures/synthetic/**
+!docs/examples/**
+
+# MATLAB generated files
+*.asv
+*.m~
+slprj/
+codegen/
+*.mex*
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

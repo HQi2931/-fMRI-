@@ -6,7 +6,7 @@
 
 ## 模块边界
 
-插件不能直接修改框架核心，不能绕过 ToolRegistry、PolicyEngine、WorkflowEngine 或 ApprovalGate，也不能把领域概念写入核心模块。
+插件不能直接修改框架核心，不能绕过 SkillRegistry、SkillValidator、ToolRegistry、PolicyEngine、WorkflowEngine 或 ApprovalGate，也不能把领域概念写入核心模块。
 
 ## 依赖关系
 
@@ -14,7 +14,7 @@
 
 ## 当前阶段
 
-仅建立 registry 和 loader 的目录边界，未创建任何领域插件实现。
+仅建立 registry 和 loader 的目录边界，未创建任何领域插件实现。首期 fMRI Skill 作为模块化单体的内置 contribution 提供，通用插件机制不是其前置条件。
 
 ## 后续核心接口
 
@@ -23,4 +23,3 @@
 - `PluginLoader`
 - `PluginContribution`
 - `PluginPolicy`
-

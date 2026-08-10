@@ -6,11 +6,11 @@
 
 ## 模块边界
 
-本模块不负责真实工具执行、持久化、检索、记忆写入、审批执行或领域业务。Agent 可以提出动作意图，但不能直接修改工作流状态或写入产物。
+本模块不负责真实工具执行、Skill 编译、持久化、检索、记忆写入、审批执行或领域业务。Agent 可以提出 SkillRequest 和动作意图，但不能直接修改 SkillPlan、工作流状态或产物。
 
 ## 依赖关系
 
-`core` 依赖通用接口和数据模型；运行时会调用 `context` 构建上下文，调用 `tools` 解析工具请求，调用 `workflow` 申请状态变更，并通过 `observability` 记录事件。
+`core` 依赖通用接口和数据模型；运行时会调用 `context` 构建上下文，通过应用服务调用 `skills` 解析科研能力，调用 `workflow` 申请状态变更，并通过 `observability` 记录事件。真实执行仍由 Workflow、Tool 和 Execution 完成。
 
 ## 当前阶段
 
@@ -26,4 +26,3 @@
 - `ReasoningStrategy`
 - `AgentRequest`
 - `AgentResponse`
-

@@ -25,4 +25,3 @@
 - `Chunker`
 - `SearchBackend`
 - `Reranker`
-
