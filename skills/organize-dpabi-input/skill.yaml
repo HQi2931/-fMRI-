@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.dataset.organize_dpabi_input"
+version: "1.0.0"
+title: "DPABI input organization"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["source_root", "subject_manifest"]
+input_artifacts: [{name: "source", artifact_type: "dataset.source", required_lineage: ["read_only=true"]}]
+output_artifacts: [{name: "preview", artifact_type: "dataset.organization_preview", required_lineage: ["source_hashes"]}]
+required_capabilities: ["fmri.dataset.organize_preview"]
+workflow_template_ref: "dataset.organize.dpabi.v1"
+steps: [{step_id: "preview", capability: "fmri.dataset.organize_preview", needs: [], consumes: ["dataset.source"], produces: ["dataset.organization_preview"], parameter_names: ["source_root", "subject_manifest"], qc_gate: true}]
+qc_requirements: ["source_unchanged", "target_collision_free"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["AGENTS.md#6"]
+known_limitations: ["Preview does not perform copies"]
+reviewed_by: ["backend_service_engineer", "matlab_dpabi_engineer"]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "rs-fMRI methodology assistant"
+  short_description: "Answer scoped questions with local evidence"
+  default_prompt: "Use $answer-rsfmri-methodology for evidence-backed rs-fMRI parameter explanations."

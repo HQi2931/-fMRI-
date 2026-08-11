@@ -15,6 +15,19 @@ from neuroagent.agent.models import (
     ModelProfile,
     RoutingDecision,
 )
+from neuroagent.analysis.models import (
+    AtlasPoint,
+    ClusterLocalization,
+    ClusterRecord,
+    FailureDiagnosis,
+    MlDesignRecommendation,
+    MlTemplate,
+    RoiExtractionRequest,
+    RoiSignalRecord,
+    RsFmriAnswer,
+    TableInspection,
+)
+from neuroagent.analysis.organization import OrganizationPreview
 from neuroagent.domain.fmri.metrics import AlffFalffParameters, MetricKind, RehoParameters
 from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
 from neuroagent.domain.fmri.qc import QcCheck, QcReviewRevision
@@ -357,6 +370,12 @@ class RunView(StrictModel):
     attempt: int
     cancel_requested: bool
     error: str | None = None
+    stage: str = "queued"
+    stage_progress: float | None = Field(default=None, ge=0, le=1)
+    heartbeat: datetime | None = None
+    log_cursor: int = Field(default=0, ge=0)
+    eta_seconds: int | None = Field(default=None, ge=0)
+    diagnosis_available: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -526,3 +545,91 @@ class AgentTaskView(StrictModel):
     state: str
     result: GatewayResult
     created_at: datetime
+
+
+class RunDiagnosisRequest(StrictModel):
+    """A bounded log excerpt supplied by the UI for deterministic diagnosis."""
+
+    log_text: str = Field(min_length=1, max_length=200_000)
+
+
+class RunDiagnosisView(StrictModel):
+    run_id: str | None = None
+    diagnosis: FailureDiagnosis
+
+
+class MlTableInspectRequest(StrictModel):
+    project_id: str
+    source_path: str
+    max_rows: int = Field(default=100_000, ge=1, le=100_000)
+
+
+class MlTableInspectView(StrictModel):
+    project_id: str
+    source_path_name: str
+    inspection: TableInspection
+
+
+class MlTemplateCreateRequest(StrictModel):
+    design: MlDesignRecommendation
+    source_filename: str = Field(
+        default="features.csv",
+        pattern=r"^[A-Za-z0-9_.-]+\.(csv|tsv|xlsx)$",
+    )
+
+
+class MlTemplateView(StrictModel):
+    template: MlTemplate
+    approval_required: bool = True
+
+
+class RoiTableCreateRequest(StrictModel):
+    design: RoiExtractionRequest
+    records: tuple[RoiSignalRecord, ...] = Field(min_length=1, max_length=1_000_000)
+
+
+class RoiTableView(StrictModel):
+    valid: bool
+    issues: tuple[str, ...]
+    long_rows: tuple[dict[str, Any], ...] = ()
+    wide_rows: tuple[dict[str, Any], ...] = ()
+
+
+class ClusterLocalizationRequest(StrictModel):
+    clusters: tuple[ClusterRecord, ...] = Field(min_length=1, max_length=100_000)
+    atlas_points: tuple[AtlasPoint, ...] = ()
+    max_distance_mm: float = Field(default=8, gt=0, le=100)
+
+
+class ClusterLocalizationView(StrictModel):
+    results: tuple[ClusterLocalization, ...]
+    atlas_supplied: bool
+
+
+class RsFmriQuestionRequest(StrictModel):
+    question: str = Field(min_length=2, max_length=4_000)
+    allow_remote_search: bool = False
+
+
+class RsFmriAnswerView(StrictModel):
+    answer: RsFmriAnswer
+    remote_search_used: bool = False
+
+
+class OrganizationSubjectInput(StrictModel):
+    functional: tuple[str, ...] = ()
+    anatomical: tuple[str, ...] = ()
+    inventory: tuple[str, ...] = ()
+
+
+class OrganizationPreviewRequest(StrictModel):
+    project_id: str
+    source_path: str
+    target_stage: str = Field(pattern=r"^(FunRaw|FunImg)$")
+    subjects: dict[str, OrganizationSubjectInput] = Field(min_length=1)
+
+
+class OrganizationPreviewView(StrictModel):
+    project_id: str
+    source_path_name: str
+    preview: OrganizationPreview

@@ -19,6 +19,13 @@ export type QcReview = Schemas["QcReviewView"];
 export type ModelProfile = Schemas["ModelProfileView"];
 export type AgentTask = Schemas["AgentTaskView"];
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
+export type RunDiagnosis = Schemas["RunDiagnosisView"];
+export type MlTableInspection = Schemas["MlTableInspectView"];
+export type MlTemplate = Schemas["MlTemplateView"];
+export type RoiTable = Schemas["RoiTableView"];
+export type ClusterLocalization = Schemas["ClusterLocalizationView"];
+export type RsFmriAnswer = Schemas["RsFmriAnswerView"];
+export type OrganizationPreview = Schemas["OrganizationPreviewView"];
 export type SkillPlanResolveBody = Schemas["SkillPlanResolveRequest"];
 export type PreprocessingInput = NonNullable<SkillPlanResolveBody["request"]["preprocessing"]>;
 
@@ -250,6 +257,8 @@ export const api = {
     post<Run>(`/runs/${runId}/cancel`, body, signal),
   retryRun: (runId: string, body: Schemas["RunAction"], signal?: AbortSignal) =>
     post<Run>(`/runs/${runId}/retry`, body, signal),
+  diagnoseRun: (runId: string, body: Schemas["RunDiagnosisRequest"], signal?: AbortSignal) =>
+    post<RunDiagnosis>(`/runs/${runId}/diagnosis`, body, signal),
   artifacts: (runId: string, signal?: AbortSignal) =>
     request<Artifact[]>(`/runs/${runId}/artifacts`, { signal }),
   createQcReview: (body: Schemas["QcReviewCreate"], signal?: AbortSignal) =>
@@ -283,6 +292,18 @@ export const api = {
     post<Schemas["ProviderTestView"]>("/providers/test", body, signal),
   createAgentTask: (body: Schemas["AgentTaskCreate"], signal?: AbortSignal) =>
     post<AgentTask>("/agent/tasks", body, signal),
+  inspectMlTable: (body: Schemas["MlTableInspectRequest"], signal?: AbortSignal) =>
+    post<MlTableInspection>("/ml/datasets/inspect", body, signal),
+  createMlTemplate: (body: Schemas["MlTemplateCreateRequest"], signal?: AbortSignal) =>
+    post<MlTemplate>("/ml/templates", body, signal),
+  validateRoiTable: (body: Schemas["RoiTableCreateRequest"], signal?: AbortSignal) =>
+    post<RoiTable>("/roi/extractions/validate", body, signal),
+  localizeClusters: (body: Schemas["ClusterLocalizationRequest"], signal?: AbortSignal) =>
+    post<ClusterLocalization>("/cluster-localizations", body, signal),
+  answerRsFmriQuestion: (body: Schemas["RsFmriQuestionRequest"], signal?: AbortSignal) =>
+    post<RsFmriAnswer>("/agent/rsfmri/questions", body, signal),
+  organizationPreview: (body: Schemas["OrganizationPreviewRequest"], signal?: AbortSignal) =>
+    post<OrganizationPreview>("/organization/previews", body, signal),
 };
 
 export function describeError(error: unknown): string {

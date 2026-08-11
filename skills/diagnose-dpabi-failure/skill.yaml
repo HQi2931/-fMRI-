@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.execution.diagnose_dpabi_failure"
+version: "1.0.0"
+title: "DPABI failure diagnosis"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["run_id", "log_excerpt"]
+input_artifacts: [{name: "run_log", artifact_type: "run.log", required_lineage: ["run_id", "attempt"]}]
+output_artifacts: [{name: "diagnosis", artifact_type: "run.failure_diagnosis", required_lineage: ["evidence", "confidence"]}]
+required_capabilities: ["fmri.execution.diagnose"]
+workflow_template_ref: "diagnose.dpabi.failure.v1"
+steps: [{step_id: "classify", capability: "fmri.execution.diagnose", needs: [], consumes: ["run.log"], produces: ["run.failure_diagnosis"], parameter_names: ["run_id", "log_excerpt"], qc_gate: false}]
+qc_requirements: ["bounded_log", "no_secret_context"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["docs/operations/long-running-jobs.md"]
+known_limitations: ["Unknown errors still require human review"]
+reviewed_by: ["backend_service_engineer", "matlab_dpabi_engineer"]

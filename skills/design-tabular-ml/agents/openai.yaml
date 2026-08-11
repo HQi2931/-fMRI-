@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design tabular ML"
+  short_description: "Create an auditable subject-level ML plan"
+  default_prompt: "Use $design-tabular-ml to propose a classical model design for confirmed features."

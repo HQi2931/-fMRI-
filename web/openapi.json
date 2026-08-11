@@ -423,6 +423,36 @@
         "title": "ArtifactView",
         "type": "object"
       },
+      "AtlasPoint": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "x": {
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "title": "Y",
+            "type": "number"
+          },
+          "z": {
+            "title": "Z",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "z",
+          "label"
+        ],
+        "title": "AtlasPoint",
+        "type": "object"
+      },
       "Centering": {
         "enum": [
           "none",
@@ -431,6 +461,158 @@
         ],
         "title": "Centering",
         "type": "string"
+      },
+      "ClusterLocalization": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Label"
+          },
+          "cluster": {
+            "$ref": "#/components/schemas/ClusterRecord"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "distance_mm": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Mm"
+          }
+        },
+        "required": [
+          "cluster",
+          "confidence"
+        ],
+        "title": "ClusterLocalization",
+        "type": "object"
+      },
+      "ClusterLocalizationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_points": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AtlasPoint"
+            },
+            "title": "Atlas Points",
+            "type": "array"
+          },
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/ClusterRecord"
+            },
+            "maxItems": 100000,
+            "minItems": 1,
+            "title": "Clusters",
+            "type": "array"
+          },
+          "max_distance_mm": {
+            "default": 8,
+            "exclusiveMinimum": 0.0,
+            "maximum": 100.0,
+            "title": "Max Distance Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "clusters"
+        ],
+        "title": "ClusterLocalizationRequest",
+        "type": "object"
+      },
+      "ClusterLocalizationView": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_supplied": {
+            "title": "Atlas Supplied",
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ClusterLocalization"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results",
+          "atlas_supplied"
+        ],
+        "title": "ClusterLocalizationView",
+        "type": "object"
+      },
+      "ClusterRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_id": {
+            "minLength": 1,
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "peak_x": {
+            "title": "Peak X",
+            "type": "number"
+          },
+          "peak_y": {
+            "title": "Peak Y",
+            "type": "number"
+          },
+          "peak_z": {
+            "title": "Peak Z",
+            "type": "number"
+          },
+          "statistic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistic"
+          },
+          "voxel_count": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voxel Count"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "peak_x",
+          "peak_y",
+          "peak_z"
+        ],
+        "title": "ClusterRecord",
+        "type": "object"
       },
       "CorrectionCapabilityView": {
         "additionalProperties": false,
@@ -1023,6 +1205,115 @@
         "title": "ErrorResponse",
         "type": "object"
       },
+      "EvidenceChunk": {
+        "additionalProperties": false,
+        "properties": {
+          "excerpt": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "score": {
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "title",
+          "excerpt",
+          "score"
+        ],
+        "title": "EvidenceChunk",
+        "type": "object"
+      },
+      "FailureCode": {
+        "enum": [
+          "input_missing",
+          "input_format",
+          "nifti_header",
+          "dpabi_configuration",
+          "software_environment",
+          "resource",
+          "path_policy",
+          "timeout",
+          "cancelled",
+          "unknown"
+        ],
+        "title": "FailureCode",
+        "type": "string"
+      },
+      "FailureDiagnosis": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/FailureCode"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "requires_new_plan": {
+            "title": "Requires New Plan",
+            "type": "boolean"
+          },
+          "severity": {
+            "pattern": "^(info|warning|error|blocking)$",
+            "title": "Severity",
+            "type": "string"
+          },
+          "source": {
+            "default": "deterministic_log_classifier",
+            "title": "Source",
+            "type": "string"
+          },
+          "suggestions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "summary": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "summary",
+          "confidence",
+          "requires_new_plan"
+        ],
+        "title": "FailureDiagnosis",
+        "type": "object"
+      },
       "FdType": {
         "enum": [
           "fd_power",
@@ -1394,6 +1685,203 @@
         ],
         "title": "MissingValuePolicy",
         "type": "string"
+      },
+      "MlDesignRecommendation": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_columns": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Feature Columns",
+            "type": "array"
+          },
+          "group_column": {
+            "minLength": 1,
+            "title": "Group Column",
+            "type": "string"
+          },
+          "metrics": {
+            "default": [
+              "roc_auc",
+              "average_precision",
+              "balanced_accuracy"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/MlModelName"
+            },
+            "minItems": 1,
+            "title": "Models",
+            "type": "array"
+          },
+          "requires_approval": {
+            "default": true,
+            "title": "Requires Approval",
+            "type": "boolean"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "target_column": {
+            "minLength": 1,
+            "title": "Target Column",
+            "type": "string"
+          },
+          "validation_strategy": {
+            "default": "subject_grouped_stratified_cross_validation",
+            "title": "Validation Strategy",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "target_column",
+          "group_column",
+          "feature_columns",
+          "models",
+          "seed"
+        ],
+        "title": "MlDesignRecommendation",
+        "type": "object"
+      },
+      "MlModelName": {
+        "enum": [
+          "logistic_regression",
+          "svm",
+          "random_forest",
+          "gradient_boosting"
+        ],
+        "title": "MlModelName",
+        "type": "string"
+      },
+      "MlTableInspectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "max_rows": {
+            "default": 100000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_path"
+        ],
+        "title": "MlTableInspectRequest",
+        "type": "object"
+      },
+      "MlTableInspectView": {
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "$ref": "#/components/schemas/TableInspection"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_path_name": {
+            "title": "Source Path Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_path_name",
+          "inspection"
+        ],
+        "title": "MlTableInspectView",
+        "type": "object"
+      },
+      "MlTemplate": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "design_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "filename": {
+            "pattern": "^[A-Za-z0-9_.-]+\\.py$",
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "content",
+          "design_hash"
+        ],
+        "title": "MlTemplate",
+        "type": "object"
+      },
+      "MlTemplateCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "design": {
+            "$ref": "#/components/schemas/MlDesignRecommendation"
+          },
+          "source_filename": {
+            "default": "features.csv",
+            "pattern": "^[A-Za-z0-9_.-]+\\.(csv|tsv|xlsx)$",
+            "title": "Source Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "design"
+        ],
+        "title": "MlTemplateCreateRequest",
+        "type": "object"
+      },
+      "MlTemplateView": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_required": {
+            "default": true,
+            "title": "Approval Required",
+            "type": "boolean"
+          },
+          "template": {
+            "$ref": "#/components/schemas/MlTemplate"
+          }
+        },
+        "required": [
+          "template"
+        ],
+        "title": "MlTemplateView",
+        "type": "object"
       },
       "MockOutcome": {
         "enum": [
@@ -1793,6 +2281,172 @@
         ],
         "title": "NuisanceTiming",
         "type": "string"
+      },
+      "OrganizationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "pattern": "^(functional|anatomical|inventory)$",
+            "title": "Role",
+            "type": "string"
+          },
+          "source_relative_path": {
+            "minLength": 1,
+            "title": "Source Relative Path",
+            "type": "string"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "target_relative_path": {
+            "minLength": 1,
+            "title": "Target Relative Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "source_relative_path",
+          "target_relative_path",
+          "role"
+        ],
+        "title": "OrganizationItem",
+        "type": "object"
+      },
+      "OrganizationPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Issues",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "source_name": {
+            "minLength": 1,
+            "title": "Source Name",
+            "type": "string"
+          },
+          "target_stage": {
+            "pattern": "^(FunRaw|FunImg)$",
+            "title": "Target Stage",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_name",
+          "target_stage",
+          "items"
+        ],
+        "title": "OrganizationPreview",
+        "type": "object"
+      },
+      "OrganizationPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "subjects": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OrganizationSubjectInput"
+            },
+            "minProperties": 1,
+            "title": "Subjects",
+            "type": "object"
+          },
+          "target_stage": {
+            "pattern": "^(FunRaw|FunImg)$",
+            "title": "Target Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_path",
+          "target_stage",
+          "subjects"
+        ],
+        "title": "OrganizationPreviewRequest",
+        "type": "object"
+      },
+      "OrganizationPreviewView": {
+        "additionalProperties": false,
+        "properties": {
+          "preview": {
+            "$ref": "#/components/schemas/OrganizationPreview"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_path_name": {
+            "title": "Source Path Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_path_name",
+          "preview"
+        ],
+        "title": "OrganizationPreviewView",
+        "type": "object"
+      },
+      "OrganizationSubjectInput": {
+        "additionalProperties": false,
+        "properties": {
+          "anatomical": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Anatomical",
+            "type": "array"
+          },
+          "functional": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Functional",
+            "type": "array"
+          },
+          "inventory": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Inventory",
+            "type": "array"
+          }
+        },
+        "title": "OrganizationSubjectInput",
+        "type": "object"
       },
       "ParameterProvenance": {
         "additionalProperties": false,
@@ -2697,6 +3351,216 @@
         "title": "ResolvedToolRef",
         "type": "object"
       },
+      "RoiExtractionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_artifact_id": {
+            "minLength": 1,
+            "title": "Atlas Artifact Id",
+            "type": "string"
+          },
+          "band_high_hz": {
+            "exclusiveMinimum": 0.0,
+            "title": "Band High Hz",
+            "type": "number"
+          },
+          "band_low_hz": {
+            "minimum": 0.0,
+            "title": "Band Low Hz",
+            "type": "number"
+          },
+          "cut_number": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Cut Number",
+            "type": "integer"
+          },
+          "detrend": {
+            "title": "Detrend",
+            "type": "boolean"
+          },
+          "input_artifact_id": {
+            "minLength": 1,
+            "title": "Input Artifact Id",
+            "type": "string"
+          },
+          "mask_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Artifact Id"
+          },
+          "multiple_labels": {
+            "title": "Multiple Labels",
+            "type": "boolean"
+          },
+          "scrubbing_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scrubbing Method"
+          },
+          "scrubbing_timing": {
+            "pattern": "^(disabled|before_filtering|after_filtering)$",
+            "title": "Scrubbing Timing",
+            "type": "string"
+          },
+          "selected_roi_indices": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Selected Roi Indices",
+            "type": "array"
+          },
+          "tr_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Tr Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "input_artifact_id",
+          "atlas_artifact_id",
+          "tr_seconds",
+          "band_low_hz",
+          "band_high_hz",
+          "multiple_labels",
+          "detrend",
+          "scrubbing_timing"
+        ],
+        "title": "RoiExtractionRequest",
+        "type": "object"
+      },
+      "RoiSignalRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_id": {
+            "minLength": 1,
+            "title": "Atlas Id",
+            "type": "string"
+          },
+          "metric": {
+            "minLength": 1,
+            "title": "Metric",
+            "type": "string"
+          },
+          "roi_index": {
+            "exclusiveMinimum": 0.0,
+            "title": "Roi Index",
+            "type": "integer"
+          },
+          "roi_label": {
+            "minLength": 1,
+            "title": "Roi Label",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "subject_id",
+          "metric",
+          "atlas_id",
+          "roi_index",
+          "roi_label",
+          "value"
+        ],
+        "title": "RoiSignalRecord",
+        "type": "object"
+      },
+      "RoiTableCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "design": {
+            "$ref": "#/components/schemas/RoiExtractionRequest"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/RoiSignalRecord"
+            },
+            "maxItems": 1000000,
+            "minItems": 1,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "design",
+          "records"
+        ],
+        "title": "RoiTableCreateRequest",
+        "type": "object"
+      },
+      "RoiTableView": {
+        "additionalProperties": false,
+        "properties": {
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "long_rows": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Long Rows",
+            "type": "array"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          },
+          "wide_rows": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Wide Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "valid",
+          "issues"
+        ],
+        "title": "RoiTableView",
+        "type": "object"
+      },
       "RoutingDecision": {
         "properties": {
           "candidate_profile_ids": {
@@ -2734,6 +3598,83 @@
           "reason"
         ],
         "title": "RoutingDecision",
+        "type": "object"
+      },
+      "RsFmriAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "minLength": 1,
+            "title": "Answer",
+            "type": "string"
+          },
+          "disclaimer": {
+            "default": "研究用途信息, 不构成临床诊断或个体医疗建议。",
+            "title": "Disclaimer",
+            "type": "string"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvidenceChunk"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "in_scope": {
+            "title": "In Scope",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "in_scope",
+          "answer"
+        ],
+        "title": "RsFmriAnswer",
+        "type": "object"
+      },
+      "RsFmriAnswerView": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/RsFmriAnswer"
+          },
+          "remote_search_used": {
+            "default": false,
+            "title": "Remote Search Used",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "title": "RsFmriAnswerView",
+        "type": "object"
+      },
+      "RsFmriQuestionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_remote_search": {
+            "default": false,
+            "title": "Allow Remote Search",
+            "type": "boolean"
+          },
+          "question": {
+            "maxLength": 4000,
+            "minLength": 2,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "RsFmriQuestionRequest",
         "type": "object"
       },
       "RunAction": {
@@ -2801,6 +3742,47 @@
         "title": "RunCreate",
         "type": "object"
       },
+      "RunDiagnosisRequest": {
+        "additionalProperties": false,
+        "description": "A bounded log excerpt supplied by the UI for deterministic diagnosis.",
+        "properties": {
+          "log_text": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Log Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "log_text"
+        ],
+        "title": "RunDiagnosisRequest",
+        "type": "object"
+      },
+      "RunDiagnosisView": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosis": {
+            "$ref": "#/components/schemas/FailureDiagnosis"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "diagnosis"
+        ],
+        "title": "RunDiagnosisView",
+        "type": "object"
+      },
       "RunView": {
         "additionalProperties": false,
         "properties": {
@@ -2817,6 +3799,11 @@
             "title": "Created At",
             "type": "string"
           },
+          "diagnosis_available": {
+            "default": false,
+            "title": "Diagnosis Available",
+            "type": "boolean"
+          },
           "error": {
             "anyOf": [
               {
@@ -2827,6 +3814,36 @@
               }
             ],
             "title": "Error"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "heartbeat": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat"
+          },
+          "log_cursor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Log Cursor",
+            "type": "integer"
           },
           "plan_revision_id": {
             "title": "Plan Revision Id",
@@ -2839,6 +3856,24 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "stage": {
+            "default": "queued",
+            "title": "Stage",
+            "type": "string"
+          },
+          "stage_progress": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Progress"
           },
           "state": {
             "$ref": "#/components/schemas/WorkflowState"
@@ -4126,6 +5161,134 @@
         "title": "SubjectManifestEntry",
         "type": "object"
       },
+      "TableColumnProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "kind": {
+            "pattern": "^(numeric|categorical|text|empty)$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing_count": {
+            "minimum": 0.0,
+            "title": "Missing Count",
+            "type": "integer"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "unique_count": {
+            "minimum": 0.0,
+            "title": "Unique Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "missing_count",
+          "unique_count"
+        ],
+        "title": "TableColumnProfile",
+        "type": "object"
+      },
+      "TableInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Issues",
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/TableColumnProfile"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "content_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "duplicate_rows": {
+            "minimum": 0.0,
+            "title": "Duplicate Rows",
+            "type": "integer"
+          },
+          "filename": {
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "format": {
+            "pattern": "^(csv|tsv|xlsx)$",
+            "title": "Format",
+            "type": "string"
+          },
+          "leakage_candidates": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Leakage Candidates",
+            "type": "array"
+          },
+          "row_count": {
+            "minimum": 0.0,
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "subject_candidates": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Subject Candidates",
+            "type": "array"
+          },
+          "target_candidates": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Target Candidates",
+            "type": "array"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "filename",
+          "format",
+          "row_count",
+          "columns",
+          "duplicate_rows",
+          "content_hash"
+        ],
+        "title": "TableInspection",
+        "type": "object"
+      },
       "Tail": {
         "enum": [
           "one_sided_positive",
@@ -4329,6 +5492,110 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/agent/rsfmri/questions": {
+      "post": {
+        "operationId": "answer_rsfmri_question_api_v1_agent_rsfmri_questions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RsFmriQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsFmriAnswerView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Answer Rsfmri Question",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/agent/tasks": {
       "post": {
         "operationId": "create_agent_task_api_v1_agent_tasks_post",
@@ -4614,6 +5881,110 @@
         "summary": "Get Artifact",
         "tags": [
           "artifacts"
+        ]
+      }
+    },
+    "/api/v1/cluster-localizations": {
+      "post": {
+        "operationId": "localize_clusters_api_v1_cluster_localizations_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClusterLocalizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterLocalizationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Localize Clusters",
+        "tags": [
+          "localization"
         ]
       }
     },
@@ -5479,6 +6850,214 @@
         ]
       }
     },
+    "/api/v1/ml/datasets/inspect": {
+      "post": {
+        "operationId": "inspect_ml_table_api_v1_ml_datasets_inspect_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MlTableInspectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MlTableInspectView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Inspect Ml Table",
+        "tags": [
+          "machine-learning"
+        ]
+      }
+    },
+    "/api/v1/ml/templates": {
+      "post": {
+        "operationId": "create_ml_template_api_v1_ml_templates_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MlTemplateCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MlTemplateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Create Ml Template",
+        "tags": [
+          "machine-learning"
+        ]
+      }
+    },
     "/api/v1/model-profiles": {
       "get": {
         "operationId": "list_model_profiles_api_v1_model_profiles_get",
@@ -5755,6 +7334,110 @@
         "summary": "Get Model Profile",
         "tags": [
           "agent"
+        ]
+      }
+    },
+    "/api/v1/organization/previews": {
+      "post": {
+        "operationId": "organization_preview_api_v1_organization_previews_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationPreviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Organization Preview",
+        "tags": [
+          "datasets"
         ]
       }
     },
@@ -6875,6 +8558,110 @@
         ]
       }
     },
+    "/api/v1/roi/extractions/validate": {
+      "post": {
+        "operationId": "validate_roi_table_api_v1_roi_extractions_validate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoiTableCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoiTableView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Validate Roi Table",
+        "tags": [
+          "roi"
+        ]
+      }
+    },
     "/api/v1/runs": {
       "get": {
         "operationId": "list_runs_api_v1_runs_get",
@@ -7392,6 +9179,119 @@
           }
         },
         "summary": "Cancel Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/diagnosis": {
+      "post": {
+        "operationId": "diagnose_run_api_v1_runs__run_id__diagnosis_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunDiagnosisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDiagnosisView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Diagnose Run",
         "tags": [
           "runs"
         ]

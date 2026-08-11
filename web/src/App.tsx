@@ -1,6 +1,7 @@
 import { Layout } from "./components/Layout";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { AgentPage } from "./pages/AgentPage";
+import { AnalysisPage } from "./pages/AnalysisPage";
 import { Dashboard } from "./pages/Dashboard";
 import { DataPage } from "./pages/DataPage";
 import { PlanPage } from "./pages/PlanPage";
@@ -21,6 +22,7 @@ export default function App() {
     "/qc": <QcPage />,
     "/statistics": <StatisticsPage />,
     "/agent": <AgentPage />,
+    "/analysis": <AnalysisPage />,
     "/settings": <SettingsPage />,
   };
   return (

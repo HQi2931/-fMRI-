@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, describeError, type Artifact, type Run, type RuntimeEvent } from "../api/client";
+import {
+  api,
+  describeError,
+  type Artifact,
+  type Run,
+  type RunDiagnosis,
+  type RuntimeEvent,
+} from "../api/client";
 import { EmptyState, Feedback, PageHeader, ProgressBar } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
@@ -31,10 +38,27 @@ export function RunsPage() {
   const [operationReason, setOperationReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [logExcerpt, setLogExcerpt] = useState("");
+  const [diagnosis, setDiagnosis] = useState<RunDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
   const [pollGeneration, setPollGeneration] = useState(0);
 
   const selected = useMemo(() => runs.find((run) => run.run_id === selectedId) ?? null, [runs, selectedId]);
+  const latestStage = useMemo(() => {
+    const stageEvent = [...events]
+      .reverse()
+      .find((event) => event.event_type === "RunStageStarted" || event.event_type === "RunStageFinished");
+    const payload = stageEvent?.payload ?? {};
+    return {
+      name: typeof payload.stage === "string" ? payload.stage : selected?.stage ?? selected?.state ?? "queued",
+      progress:
+        typeof payload.stage_progress === "number"
+          ? Math.round(payload.stage_progress * 100)
+          : selected?.stage_progress !== null && selected?.stage_progress !== undefined
+            ? Math.round(selected.stage_progress * 100)
+            : progressFor(selected?.state ?? "queued"),
+    };
+  }, [events, selected]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const items = await api.runs(workspace.projectId, signal);
@@ -146,6 +170,20 @@ export function RunsPage() {
     }
   }
 
+  async function diagnose(): Promise<void> {
+    if (!selected || !logExcerpt.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      setDiagnosis(await api.diagnoseRun(selected.run_id, { log_text: logExcerpt.trim() }));
+      setMessage("已基于本地确定性规则生成诊断建议，不会自动修改方案或重跑任务。");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -171,8 +209,8 @@ export function RunsPage() {
           {!selected ? <EmptyState title="尚无运行" detail="只有状态为 approved 且哈希未失效的计划可以创建任务。" /> : (
             <>
               <div className="panel-heading"><div><span className="eyebrow">{selected.run_id}</span><h2>Workflow run</h2></div><StatusPill tone={stateTone(selected.state)}>{selected.state}</StatusPill></div>
-              <ProgressBar value={progressFor(selected.state)} />
-              <div className="run-meta"><span>尝试次数：{selected.attempt}</span><span>版本：{selected.version}</span><span>{new Date(selected.updated_at).toLocaleString()}</span></div>
+              <ProgressBar value={latestStage.progress} />
+              <div className="run-meta"><span>阶段: {latestStage.name}</span><span>尝试次数: {selected.attempt}</span><span>{new Date(selected.updated_at).toLocaleString()}</span></div>
               <div className="event-log" aria-label="运行事件" aria-live="polite">
                 {events.length ? events.map((event) => <p key={event.event_id}><time>{new Date(event.created_at).toLocaleTimeString()}</time><span>{event.event_type} · {JSON.stringify(event.payload)}</span></p>) : <p><time>—</time><span>暂无事件</span></p>}
               </div>
@@ -181,6 +219,7 @@ export function RunsPage() {
                 <button className="button button-secondary" type="button" disabled={busy || selected.state !== "failed_retryable" || !operationReason.trim()} onClick={() => act("retry")}>重试</button>
                 <button className="button button-danger" type="button" disabled={busy || !["queued", "running", "cancelling"].includes(selected.state) || !operationReason.trim()} onClick={() => act("cancel")}>请求取消</button>
               </div>
+              {["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(selected.state) && <div className="composer"><label>错误日志片段<textarea value={logExcerpt} onChange={(event) => setLogExcerpt(event.target.value)} placeholder="粘贴不含身份信息的本次错误日志片段" /></label><button className="button button-secondary" type="button" disabled={busy || !logExcerpt.trim()} onClick={diagnose}>检查失败原因</button>{diagnosis && <div className="assistant-message"><div><strong>{diagnosis.diagnosis.code}</strong><p>{diagnosis.diagnosis.summary}</p><ul className="compact-list">{diagnosis.diagnosis.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul></div></div>}</div>}
             </>
           )}
         </section>

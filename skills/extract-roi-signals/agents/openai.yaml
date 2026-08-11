@@ -1,0 +1,4 @@
+interface:
+  display_name: "ROI signal extraction"
+  short_description: "Validate DPABI ROI parameters and export subject-aligned tables"
+  default_prompt: "Use $extract-roi-signals to design a reviewable ROI extraction plan."

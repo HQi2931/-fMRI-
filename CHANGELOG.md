@@ -6,6 +6,9 @@
 
 ### Added
 
+- 扩展 Phase 10–17 的确定性基础：长任务阶段事件、DPABI/MATLAB 失败诊断、ROI 长宽表导出、CSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配、DPABI 整理预览和本地 rs-fMRI 证据问答。
+- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills。
+
 - 本地 FastAPI、SQLite Worker、React/TypeScript 前端与 MATLAB/DPABI 静态适配的 MVP 候选基线。
 - 仓库安全策略、依赖锁定、Windows 质量门禁、GitHub Actions 和阶段自动发布脚本。
 - 多 Provider ModelGateway、自动能力路由、结构化模型输出和数据外发去标识化策略。

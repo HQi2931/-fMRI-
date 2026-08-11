@@ -7,6 +7,7 @@ import math
 import random
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
@@ -24,12 +25,21 @@ from neuroagent.agent.providers import ModelProvider, ProviderError
 from neuroagent.agent.redaction import OutboundContextPolicy, OutboundPolicyError
 from neuroagent.agent.router import ModelRouter, ModelRoutingError
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.analysis.clusters import localize_clusters
+from neuroagent.analysis.diagnostics import diagnose_dpabi_log
+from neuroagent.analysis.organization import build_dpabi_preview
+from neuroagent.analysis.rag import answer_rsfmri_question, search_evidence
+from neuroagent.analysis.roi import build_roi_tables, validate_roi_request
+from neuroagent.analysis.tables import inspect_table
+from neuroagent.analysis.templates import generate_ml_template
 from neuroagent.application.contracts import (
     AgentTaskCreate,
     AgentTaskView,
     ApprovalCreate,
     ApprovalView,
     ArtifactView,
+    ClusterLocalizationRequest,
+    ClusterLocalizationView,
     CorrectionCapabilityView,
     DatasetCreate,
     DatasetKind,
@@ -42,8 +52,14 @@ from neuroagent.application.contracts import (
     HealthView,
     ManifestRevisionView,
     ManifestScanRequest,
+    MlTableInspectRequest,
+    MlTableInspectView,
+    MlTemplateCreateRequest,
+    MlTemplateView,
     ModelProfileInput,
     ModelProfileView,
+    OrganizationPreviewRequest,
+    OrganizationPreviewView,
     PlanRevisionCreate,
     PlanRevisionView,
     PlanValidationRequest,
@@ -54,8 +70,14 @@ from neuroagent.application.contracts import (
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
+    RoiTableCreateRequest,
+    RoiTableView,
+    RsFmriAnswerView,
+    RsFmriQuestionRequest,
     RunAction,
     RunCreate,
+    RunDiagnosisRequest,
+    RunDiagnosisView,
     RuntimeEventView,
     RunView,
     SkillPlanIntent,
@@ -1841,6 +1863,109 @@ class NeuroAgentService:
 
     def get_run(self, run_id: str) -> RunView:
         return self.repository.get_run(run_id)
+
+    def diagnose_run(self, run_id: str, request: RunDiagnosisRequest) -> RunDiagnosisView:
+        """Classify a bounded log excerpt without invoking a model or executor."""
+
+        run = self.repository.get_run(run_id)
+        diagnosis = diagnose_dpabi_log(request.log_text)
+        return RunDiagnosisView(run_id=run.run_id, diagnosis=diagnosis)
+
+    def inspect_ml_table(self, request: MlTableInspectRequest) -> MlTableInspectView:
+        project = self.repository.get_project(request.project_id)
+        source = self.path_policy.validate_read_path(
+            request.source_path,
+            project_roots=project.source_roots,
+            expect_directory=False,
+        )
+        try:
+            inspection = inspect_table(source, max_rows=request.max_rows)
+        except (OSError, ValueError) as exc:
+            raise InputValidationError(
+                "ml_table_inspection_failed",
+                "上传的表格无法检查, 请确认格式、编码和文件完整性。",
+                reason=str(exc),
+            ) from exc
+        return MlTableInspectView(
+            project_id=request.project_id,
+            source_path_name=source.name,
+            inspection=inspection,
+        )
+
+    def create_ml_template(self, request: MlTemplateCreateRequest) -> MlTemplateView:
+        try:
+            template = generate_ml_template(request.design, source_filename=request.source_filename)
+        except (OSError, ValueError) as exc:
+            raise InputValidationError(
+                "ml_template_generation_failed",
+                "机器学习模板生成失败, 请检查设计字段。",
+                reason=str(exc),
+            ) from exc
+        return MlTemplateView(template=template)
+
+    def validate_roi_table(self, request: RoiTableCreateRequest) -> RoiTableView:
+        issues = validate_roi_request(request.design)
+        if issues:
+            return RoiTableView(valid=False, issues=issues)
+        try:
+            long_rows, wide_rows = build_roi_tables(request.records)
+        except ValueError as exc:
+            return RoiTableView(valid=False, issues=(str(exc),))
+        return RoiTableView(valid=True, issues=(), long_rows=long_rows, wide_rows=wide_rows)
+
+    def localize_clusters(self, request: ClusterLocalizationRequest) -> ClusterLocalizationView:
+        results = localize_clusters(
+            request.clusters,
+            request.atlas_points,
+            max_distance_mm=request.max_distance_mm,
+        )
+        return ClusterLocalizationView(results=results, atlas_supplied=bool(request.atlas_points))
+
+    def answer_rsfmri_question(self, request: RsFmriQuestionRequest) -> RsFmriAnswerView:
+        # Remote retrieval is intentionally disabled until an explicit provider
+        # and outbound-context policy are configured. Local evidence is bounded
+        # to project documentation and declarative skills.
+        roots = (
+            Path(__file__).resolve().parents[2] / "docs",
+            Path(__file__).resolve().parents[2] / "skills",
+            Path(__file__).resolve().parents[2] / "neuroagent",
+        )
+        evidence = search_evidence(roots, request.question)
+        answer = answer_rsfmri_question(request.question, evidence)
+        return RsFmriAnswerView(answer=answer, remote_search_used=False)
+
+    def organization_preview(self, request: OrganizationPreviewRequest) -> OrganizationPreviewView:
+        project = self.repository.get_project(request.project_id)
+        source = self.path_policy.validate_read_path(
+            request.source_path,
+            project_roots=project.source_roots,
+            expect_directory=True,
+        )
+        subjects = {
+            subject_id: {
+                "functional": tuple(item.functional),
+                "anatomical": tuple(item.anatomical),
+                "inventory": tuple(item.inventory),
+            }
+            for subject_id, item in request.subjects.items()
+        }
+        try:
+            preview = build_dpabi_preview(
+                source,
+                target_stage=request.target_stage,
+                subjects=subjects,
+            )
+        except (OSError, ValueError) as exc:
+            raise InputValidationError(
+                "organization_preview_failed",
+                "数据整理预览失败, 请检查相对路径和 DPABI 目标目录。",
+                reason=str(exc),
+            ) from exc
+        return OrganizationPreviewView(
+            project_id=request.project_id,
+            source_path_name=source.name,
+            preview=preview,
+        )
 
     def list_runs(
         self,

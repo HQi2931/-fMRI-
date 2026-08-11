@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["run_id","log_excerpt"],"properties":{"run_id":{"type":"string","minLength":1},"log_excerpt":{"type":"string","minLength":1,"maxLength":200000}}}

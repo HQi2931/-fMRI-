@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.agent.methodology_qa"
+version: "1.0.0"
+title: "rs-fMRI methodology assistant"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["question"]
+input_artifacts: [{name: "knowledge", artifact_type: "knowledge.source", required_lineage: ["source", "version"]}]
+output_artifacts: [{name: "answer", artifact_type: "agent.rsfmri_answer", required_lineage: ["evidence_chunks"]}]
+required_capabilities: ["agent.rsfmri.methodology"]
+workflow_template_ref: "agent.rsfmri.methodology.v1"
+steps: [{step_id: "retrieve_and_answer", capability: "agent.rsfmri.methodology", needs: [], consumes: ["knowledge.source"], produces: ["agent.rsfmri_answer"], parameter_names: ["question"], qc_gate: false}]
+qc_requirements: ["scope_checked", "evidence_cited", "prompt_injection_checked"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["docs/domain/roi-ml-localization.md", "AGENTS.md#9"]
+known_limitations: ["Remote search is disabled in the current local MVP"]
+reviewed_by: ["fmri_methodologist", "documentation_maintainer"]

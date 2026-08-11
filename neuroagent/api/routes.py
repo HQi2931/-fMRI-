@@ -15,6 +15,8 @@ from neuroagent.application.contracts import (
     ApprovalCreate,
     ApprovalView,
     ArtifactView,
+    ClusterLocalizationRequest,
+    ClusterLocalizationView,
     CorrectionCapabilityView,
     DatasetCreate,
     DatasetSplitCreate,
@@ -26,8 +28,14 @@ from neuroagent.application.contracts import (
     HealthView,
     ManifestRevisionView,
     ManifestScanRequest,
+    MlTableInspectRequest,
+    MlTableInspectView,
+    MlTemplateCreateRequest,
+    MlTemplateView,
     ModelProfileInput,
     ModelProfileView,
+    OrganizationPreviewRequest,
+    OrganizationPreviewView,
     PlanRevisionView,
     ProjectCreate,
     ProjectView,
@@ -36,8 +44,14 @@ from neuroagent.application.contracts import (
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
+    RoiTableCreateRequest,
+    RoiTableView,
+    RsFmriAnswerView,
+    RsFmriQuestionRequest,
     RunAction,
     RunCreate,
+    RunDiagnosisRequest,
+    RunDiagnosisView,
     RuntimeEventView,
     RunView,
     SkillPlanResolveRequest,
@@ -329,6 +343,64 @@ def list_runs(
 @router.get("/runs/{run_id}", response_model=RunView, tags=["runs"])
 def get_run(run_id: str, request: Request) -> RunView:
     return service_from(request).get_run(run_id)
+
+
+@router.post("/runs/{run_id}/diagnosis", response_model=RunDiagnosisView, tags=["runs"])
+def diagnose_run(
+    run_id: str, body: RunDiagnosisRequest, request: Request, idempotency_key: IdempotencyKey
+) -> RunDiagnosisView:
+    del idempotency_key
+    return service_from(request).diagnose_run(run_id, body)
+
+
+@router.post("/ml/datasets/inspect", response_model=MlTableInspectView, tags=["machine-learning"])
+def inspect_ml_table(
+    body: MlTableInspectRequest, request: Request, idempotency_key: IdempotencyKey
+) -> MlTableInspectView:
+    del idempotency_key
+    return service_from(request).inspect_ml_table(body)
+
+
+@router.post("/ml/templates", response_model=MlTemplateView, tags=["machine-learning"])
+def create_ml_template(
+    body: MlTemplateCreateRequest, request: Request, idempotency_key: IdempotencyKey
+) -> MlTemplateView:
+    del idempotency_key
+    return service_from(request).create_ml_template(body)
+
+
+@router.post("/roi/extractions/validate", response_model=RoiTableView, tags=["roi"])
+def validate_roi_table(
+    body: RoiTableCreateRequest, request: Request, idempotency_key: IdempotencyKey
+) -> RoiTableView:
+    del idempotency_key
+    return service_from(request).validate_roi_table(body)
+
+
+@router.post(
+    "/cluster-localizations", response_model=ClusterLocalizationView, tags=["localization"]
+)
+def localize_clusters(
+    body: ClusterLocalizationRequest, request: Request, idempotency_key: IdempotencyKey
+) -> ClusterLocalizationView:
+    del idempotency_key
+    return service_from(request).localize_clusters(body)
+
+
+@router.post("/agent/rsfmri/questions", response_model=RsFmriAnswerView, tags=["agent"])
+def answer_rsfmri_question(
+    body: RsFmriQuestionRequest, request: Request, idempotency_key: IdempotencyKey
+) -> RsFmriAnswerView:
+    del idempotency_key
+    return service_from(request).answer_rsfmri_question(body)
+
+
+@router.post("/organization/previews", response_model=OrganizationPreviewView, tags=["datasets"])
+def organization_preview(
+    body: OrganizationPreviewRequest, request: Request, idempotency_key: IdempotencyKey
+) -> OrganizationPreviewView:
+    del idempotency_key
+    return service_from(request).organization_preview(body)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunView, tags=["runs"])

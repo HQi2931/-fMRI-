@@ -91,6 +91,18 @@ class SQLiteWorker:
         job_id = str(claimed["job_id"])
         run_id = str(claimed["run_id"])
         run = self._repository.get_run(run_id)
+        self._repository.append_event(
+            project_id=run.project_id,
+            run_id=run_id,
+            event_type="RunStageStarted",
+            severity="info",
+            payload={
+                "stage": "staging",
+                "stage_progress": 0.0,
+                "attempt": int(claimed.get("attempt", 1)),
+                "log_cursor": 0,
+            },
+        )
 
         if self._repository.is_cancel_requested(run_id):
             if not self._repository.finalize_job_cancel(
@@ -127,6 +139,17 @@ class SQLiteWorker:
             daemon=True,
         )
         heartbeat_thread.start()
+        self._repository.append_event(
+            project_id=run.project_id,
+            run_id=run_id,
+            event_type="RunStageStarted",
+            severity="info",
+            payload={
+                "stage": "running",
+                "stage_progress": None,
+                "attempt": int(claimed.get("attempt", 1)),
+            },
+        )
         result = None
         execution_error: str | None = None
         try:
@@ -154,6 +177,13 @@ class SQLiteWorker:
         run = self._repository.get_run(run_id)
 
         if result is None:
+            self._repository.append_event(
+                project_id=run.project_id,
+                run_id=run_id,
+                event_type="RunStageFinished",
+                severity="error",
+                payload={"stage": "running", "stage_progress": 1.0, "status": "failed"},
+            )
             finalized = self._repository.finalize_job_failure(
                 job_id,
                 self.worker_id,
@@ -166,6 +196,13 @@ class SQLiteWorker:
             return True
 
         if result.status == "cancelled":
+            self._repository.append_event(
+                project_id=run.project_id,
+                run_id=run_id,
+                event_type="RunStageFinished",
+                severity="warning",
+                payload={"stage": "running", "stage_progress": 1.0, "status": "cancelled"},
+            )
             if not self._repository.finalize_job_cancel(
                 job_id,
                 self.worker_id,
@@ -176,6 +213,13 @@ class SQLiteWorker:
             return True
 
         if result.status == "succeeded":
+            self._repository.append_event(
+                project_id=run.project_id,
+                run_id=run_id,
+                event_type="RunStageFinished",
+                severity="info",
+                payload={"stage": "running", "stage_progress": 1.0, "status": "succeeded"},
+            )
             try:
                 finalized = self._repository.finalize_job_success(
                     job_id,
@@ -200,6 +244,13 @@ class SQLiteWorker:
             return True
 
         error = result.error or "executor failed"
+        self._repository.append_event(
+            project_id=run.project_id,
+            run_id=run_id,
+            event_type="RunStageFinished",
+            severity="error",
+            payload={"stage": "running", "stage_progress": 1.0, "status": result.status},
+        )
         if result.status == "timed_out":
             target = WorkflowState.TIMED_OUT
         elif result.status == "failed_retryable":

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Demographics template"
+  short_description: "Create a blank subject-aligned information table"
+  default_prompt: "Use $prepare-demographics-template to identify fields users must fill in."

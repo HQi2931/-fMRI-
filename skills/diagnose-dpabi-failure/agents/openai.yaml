@@ -1,0 +1,4 @@
+interface:
+  display_name: "DPABI failure diagnosis"
+  short_description: "Explain a failed run with evidence and safe next steps"
+  default_prompt: "Use $diagnose-dpabi-failure to classify a bounded DPABI log and propose an approved remediation."

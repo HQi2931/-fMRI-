@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.demographics.prepare_template"
+version: "1.0.0"
+title: "Demographics template"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["manifest_revision_id", "fields"]
+input_artifacts: [{name: "manifest", artifact_type: "subject_manifest", required_lineage: ["content_hash"]}]
+output_artifacts: [{name: "template", artifact_type: "table.demographics_template", required_lineage: ["subject_order"]}]
+required_capabilities: ["fmri.demographics.template"]
+workflow_template_ref: "demographics.template.v1"
+steps: [{step_id: "template", capability: "fmri.demographics.template", needs: [], consumes: ["subject_manifest"], produces: ["table.demographics_template"], parameter_names: ["fields"], qc_gate: true}]
+qc_requirements: ["subject_alignment", "no_inference"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["AGENTS.md#6"]
+known_limitations: ["Template generation does not populate demographics"]
+reviewed_by: ["fmri_methodologist", "documentation_maintainer"]

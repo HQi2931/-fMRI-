@@ -10,6 +10,7 @@ const navigation = [
   ["/qc", "质量控制", "✓"],
   ["/statistics", "统计", "∑"],
   ["/agent", "智能助手", "✦"],
+  ["/analysis", "扩展分析", "◌"],
   ["/settings", "环境", "⚙"],
 ] as const;
 

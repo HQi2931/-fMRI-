@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect ML table"
+  short_description: "Check quality and leakage before modeling"
+  default_prompt: "Use $inspect-ml-table to review an uploaded ROI or demographics table."

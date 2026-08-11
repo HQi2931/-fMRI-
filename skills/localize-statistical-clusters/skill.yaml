@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.statistics.localize_clusters"
+version: "1.0.0"
+title: "Statistical cluster localization"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["cluster_table_artifact_id", "atlas_artifact_id"]
+input_artifacts: [{name: "clusters", artifact_type: "statistics.cluster_table", required_lineage: ["content_hash"]}, {name: "atlas", artifact_type: "roi_atlas", required_lineage: ["grid", "labels"]}]
+output_artifacts: [{name: "report", artifact_type: "statistics.localization_report", required_lineage: ["clusters_hash", "atlas_hash"]}]
+required_capabilities: ["statistics.localize_clusters"]
+workflow_template_ref: "statistics.localize_clusters.v1"
+steps: [{step_id: "localize", capability: "statistics.localize_clusters", needs: [], consumes: ["statistics.cluster_table", "roi_atlas"], produces: ["statistics.localization_report"], parameter_names: [], qc_gate: true}]
+qc_requirements: ["coordinate_space_checked", "atlas_grid_checked"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["docs/domain/roi-ml-localization.md"]
+known_limitations: ["MVP coordinate matcher does not infer labels from an absent atlas"]
+reviewed_by: ["fmri_methodologist"]

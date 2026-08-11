@@ -1,0 +1,4 @@
+interface:
+  display_name: "Localize clusters"
+  short_description: "Match DPABI peaks to a supplied atlas"
+  default_prompt: "Use $localize-statistical-clusters to produce a coordinate-based cluster report."

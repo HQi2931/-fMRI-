@@ -66,11 +66,25 @@
 | `GET` | `/runs/{run_id}` | 读取运行 |
 | `POST` | `/runs/{run_id}/cancel` | 提交显式取消原因 |
 | `POST` | `/runs/{run_id}/retry` | 在已批准重试预算内重试 |
+| `POST` | `/runs/{run_id}/diagnosis` | 对受限日志片段执行本地确定性失败分类，不自动修复或重跑 |
 | `GET` | `/runs/{run_id}/events` | SSE 事件；支持 `after_event_id`、`Last-Event-ID` 和 `once=true` |
 | `GET` | `/runs/{run_id}/artifacts` | 列出运行的 Artifact 元数据 |
 | `GET` | `/artifacts/{artifact_id}` | 读取单个 Artifact 元数据 |
 
 公共 `/runs` 当前只创建通用 Mock 作业，不会启动 MATLAB，也不会生成 ALFF/fALFF、ReHo 等真实指标图。
+
+## 扩展分析预览
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/ml/datasets/inspect` | 在项目允许根内只读检查 CSV/TSV/XLSX |
+| `POST` | `/ml/templates` | 生成待用户批准的固定 Python 机器学习模板 |
+| `POST` | `/roi/extractions/validate` | 校验 ROI 提取参数与结构化长宽表合同 |
+| `POST` | `/organization/previews` | 构建不修改源文件的 DPABI 整理复制预览 |
+| `POST` | `/cluster-localizations` | 用用户提供的 atlas 坐标标签匹配 cluster 峰值 |
+| `POST` | `/agent/rsfmri/questions` | 使用本地证据回答限定范围的 rs-fMRI 问题 |
+
+这些接口不接受自由 MATLAB/Python/Shell 文本。真实 ROI 执行、文件复制、ML 训练、NIfTI atlas 采样和联网检索仍需后续的审批工作流与受控 Tool。
 
 ## QC 和统计设计
 

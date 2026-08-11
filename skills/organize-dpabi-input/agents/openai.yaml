@@ -1,0 +1,4 @@
+interface:
+  display_name: "Organize DPABI inputs"
+  short_description: "Preview safe copy and naming operations"
+  default_prompt: "Use $organize-dpabi-input to prepare a read-only DPABI staging preview."

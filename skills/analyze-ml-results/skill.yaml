@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.ml.analyze_results"
+version: "1.0.0"
+title: "Analyze ML results"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["ml_run_id"]
+input_artifacts: [{name: "metrics", artifact_type: "ml.metrics", required_lineage: ["design_hash"]}]
+output_artifacts: [{name: "report", artifact_type: "ml.analysis_report", required_lineage: ["metrics_hash"]}]
+required_capabilities: ["ml.analyze.results"]
+workflow_template_ref: "ml.analyze.results.v1"
+steps: [{step_id: "report", capability: "ml.analyze.results", needs: [], consumes: ["ml.metrics"], produces: ["ml.analysis_report"], parameter_names: ["ml_run_id"], qc_gate: true}]
+qc_requirements: ["metric_provenance", "split_provenance"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["docs/domain/roi-ml-localization.md"]
+known_limitations: ["Figures are descriptive and not clinical evidence"]
+reviewed_by: ["fmri_methodologist"]

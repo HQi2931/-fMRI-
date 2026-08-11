@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run classical ML"
+  short_description: "Execute only an approved, reproducible table model"
+  default_prompt: "Use $run-tabular-ml only after the user approves the ML design."

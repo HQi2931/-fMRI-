@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze ML results"
+  short_description: "Create reproducible scientific figures from metrics"
+  default_prompt: "Use $analyze-ml-results to review approved model outputs and figures."

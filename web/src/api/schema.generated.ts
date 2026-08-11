@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/agent/rsfmri/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer Rsfmri Question */
+        post: operations["answer_rsfmri_question_api_v1_agent_rsfmri_questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent/tasks": {
         parameters: {
             query?: never;
@@ -49,6 +66,23 @@ export interface paths {
         get: operations["get_artifact_api_v1_artifacts__artifact_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster-localizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Localize Clusters */
+        post: operations["localize_clusters_api_v1_cluster_localizations_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -208,6 +242,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ml/datasets/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Inspect Ml Table */
+        post: operations["inspect_ml_table_api_v1_ml_datasets_inspect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ml/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Ml Template */
+        post: operations["create_ml_template_api_v1_ml_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/model-profiles": {
         parameters: {
             query?: never;
@@ -237,6 +305,23 @@ export interface paths {
         get: operations["get_model_profile_api_v1_model_profiles__profile_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/organization/previews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Organization Preview */
+        post: operations["organization_preview_api_v1_organization_previews_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -414,6 +499,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/roi/extractions/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate Roi Table */
+        post: operations["validate_roi_table_api_v1_roi_extractions_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs": {
         parameters: {
             query?: never;
@@ -477,6 +579,23 @@ export interface paths {
         put?: never;
         /** Cancel Run */
         post: operations["cancel_run_api_v1_runs__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/diagnosis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Diagnose Run */
+        post: operations["diagnose_run_api_v1_runs__run_id__diagnosis_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -815,11 +934,69 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /** AtlasPoint */
+        AtlasPoint: {
+            /** Label */
+            label: string;
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /** Z */
+            z: number;
+        };
         /**
          * Centering
          * @enum {string}
          */
         Centering: "none" | "grand_mean" | "within_group";
+        /** ClusterLocalization */
+        ClusterLocalization: {
+            /** Atlas Label */
+            atlas_label?: string | null;
+            cluster: components["schemas"]["ClusterRecord"];
+            /** Confidence */
+            confidence: number;
+            /** Distance Mm */
+            distance_mm?: number | null;
+        };
+        /** ClusterLocalizationRequest */
+        ClusterLocalizationRequest: {
+            /**
+             * Atlas Points
+             * @default []
+             */
+            atlas_points: components["schemas"]["AtlasPoint"][];
+            /** Clusters */
+            clusters: components["schemas"]["ClusterRecord"][];
+            /**
+             * Max Distance Mm
+             * @default 8
+             */
+            max_distance_mm: number;
+        };
+        /** ClusterLocalizationView */
+        ClusterLocalizationView: {
+            /** Atlas Supplied */
+            atlas_supplied: boolean;
+            /** Results */
+            results: components["schemas"]["ClusterLocalization"][];
+        };
+        /** ClusterRecord */
+        ClusterRecord: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Peak X */
+            peak_x: number;
+            /** Peak Y */
+            peak_y: number;
+            /** Peak Z */
+            peak_z: number;
+            /** Statistic */
+            statistic?: number | null;
+            /** Voxel Count */
+            voxel_count?: number | null;
+        };
         /** CorrectionCapabilityView */
         CorrectionCapabilityView: {
             /** Description */
@@ -1029,6 +1206,49 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
         };
+        /** EvidenceChunk */
+        EvidenceChunk: {
+            /** Excerpt */
+            excerpt: string;
+            /** Score */
+            score: number;
+            /** Source */
+            source: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * FailureCode
+         * @enum {string}
+         */
+        FailureCode: "input_missing" | "input_format" | "nifti_header" | "dpabi_configuration" | "software_environment" | "resource" | "path_policy" | "timeout" | "cancelled" | "unknown";
+        /** FailureDiagnosis */
+        FailureDiagnosis: {
+            code: components["schemas"]["FailureCode"];
+            /** Confidence */
+            confidence: number;
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: string[];
+            /** Requires New Plan */
+            requires_new_plan: boolean;
+            /** Severity */
+            severity: string;
+            /**
+             * Source
+             * @default deterministic_log_classifier
+             */
+            source: string;
+            /**
+             * Suggestions
+             * @default []
+             */
+            suggestions: string[];
+            /** Summary */
+            summary: string;
+        };
         /**
          * FdType
          * @enum {string}
@@ -1170,6 +1390,95 @@ export interface components {
          * @enum {string}
          */
         MissingValuePolicy: "error" | "exclude_explicitly";
+        /** MlDesignRecommendation */
+        MlDesignRecommendation: {
+            /** Feature Columns */
+            feature_columns: string[];
+            /** Group Column */
+            group_column: string;
+            /**
+             * Metrics
+             * @default [
+             *       "roc_auc",
+             *       "average_precision",
+             *       "balanced_accuracy"
+             *     ]
+             */
+            metrics: string[];
+            /** Models */
+            models: components["schemas"]["MlModelName"][];
+            /**
+             * Requires Approval
+             * @default true
+             */
+            requires_approval: boolean;
+            /** Seed */
+            seed: number;
+            /** Target Column */
+            target_column: string;
+            /**
+             * Validation Strategy
+             * @default subject_grouped_stratified_cross_validation
+             */
+            validation_strategy: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /**
+         * MlModelName
+         * @enum {string}
+         */
+        MlModelName: "logistic_regression" | "svm" | "random_forest" | "gradient_boosting";
+        /** MlTableInspectRequest */
+        MlTableInspectRequest: {
+            /**
+             * Max Rows
+             * @default 100000
+             */
+            max_rows: number;
+            /** Project Id */
+            project_id: string;
+            /** Source Path */
+            source_path: string;
+        };
+        /** MlTableInspectView */
+        MlTableInspectView: {
+            inspection: components["schemas"]["TableInspection"];
+            /** Project Id */
+            project_id: string;
+            /** Source Path Name */
+            source_path_name: string;
+        };
+        /** MlTemplate */
+        MlTemplate: {
+            /** Content */
+            content: string;
+            /** Design Hash */
+            design_hash: string;
+            /** Filename */
+            filename: string;
+        };
+        /** MlTemplateCreateRequest */
+        MlTemplateCreateRequest: {
+            design: components["schemas"]["MlDesignRecommendation"];
+            /**
+             * Source Filename
+             * @default features.csv
+             */
+            source_filename: string;
+        };
+        /** MlTemplateView */
+        MlTemplateView: {
+            /**
+             * Approval Required
+             * @default true
+             */
+            approval_required: boolean;
+            template: components["schemas"]["MlTemplate"];
+        };
         /**
          * MockOutcome
          * @enum {string}
@@ -1288,6 +1597,75 @@ export interface components {
          * @enum {string}
          */
         NuisanceTiming: "after_realign" | "after_normalize";
+        /** OrganizationItem */
+        OrganizationItem: {
+            /** Role */
+            role: string;
+            /** Source Relative Path */
+            source_relative_path: string;
+            /** Subject Id */
+            subject_id: string;
+            /** Target Relative Path */
+            target_relative_path: string;
+        };
+        /** OrganizationPreview */
+        OrganizationPreview: {
+            /**
+             * Blocking Issues
+             * @default []
+             */
+            blocking_issues: string[];
+            /** Items */
+            items: components["schemas"]["OrganizationItem"][];
+            /** Source Name */
+            source_name: string;
+            /** Target Stage */
+            target_stage: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /** OrganizationPreviewRequest */
+        OrganizationPreviewRequest: {
+            /** Project Id */
+            project_id: string;
+            /** Source Path */
+            source_path: string;
+            /** Subjects */
+            subjects: {
+                [key: string]: components["schemas"]["OrganizationSubjectInput"];
+            };
+            /** Target Stage */
+            target_stage: string;
+        };
+        /** OrganizationPreviewView */
+        OrganizationPreviewView: {
+            preview: components["schemas"]["OrganizationPreview"];
+            /** Project Id */
+            project_id: string;
+            /** Source Path Name */
+            source_path_name: string;
+        };
+        /** OrganizationSubjectInput */
+        OrganizationSubjectInput: {
+            /**
+             * Anatomical
+             * @default []
+             */
+            anatomical: string[];
+            /**
+             * Functional
+             * @default []
+             */
+            functional: string[];
+            /**
+             * Inventory
+             * @default []
+             */
+            inventory: string[];
+        };
         /** ParameterProvenance */
         ParameterProvenance: {
             /** Evidence Ref */
@@ -1590,6 +1968,83 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** RoiExtractionRequest */
+        RoiExtractionRequest: {
+            /** Atlas Artifact Id */
+            atlas_artifact_id: string;
+            /** Band High Hz */
+            band_high_hz: number;
+            /** Band Low Hz */
+            band_low_hz: number;
+            /**
+             * Cut Number
+             * @default 10
+             */
+            cut_number: number;
+            /** Detrend */
+            detrend: boolean;
+            /** Input Artifact Id */
+            input_artifact_id: string;
+            /** Mask Artifact Id */
+            mask_artifact_id?: string | null;
+            /** Multiple Labels */
+            multiple_labels: boolean;
+            /** Scrubbing Method */
+            scrubbing_method?: string | null;
+            /** Scrubbing Timing */
+            scrubbing_timing: string;
+            /**
+             * Selected Roi Indices
+             * @default []
+             */
+            selected_roi_indices: number[];
+            /** Tr Seconds */
+            tr_seconds: number;
+        };
+        /** RoiSignalRecord */
+        RoiSignalRecord: {
+            /** Atlas Id */
+            atlas_id: string;
+            /** Metric */
+            metric: string;
+            /** Roi Index */
+            roi_index: number;
+            /** Roi Label */
+            roi_label: string;
+            /** Session Id */
+            session_id?: string | null;
+            /** Subject Id */
+            subject_id: string;
+            /** Value */
+            value: number;
+        };
+        /** RoiTableCreateRequest */
+        RoiTableCreateRequest: {
+            design: components["schemas"]["RoiExtractionRequest"];
+            /** Records */
+            records: components["schemas"]["RoiSignalRecord"][];
+        };
+        /** RoiTableView */
+        RoiTableView: {
+            /** Issues */
+            issues: string[];
+            /**
+             * Long Rows
+             * @default []
+             */
+            long_rows: {
+                [key: string]: unknown;
+            }[];
+            /** Valid */
+            valid: boolean;
+            /**
+             * Wide Rows
+             * @default []
+             */
+            wide_rows: {
+                [key: string]: unknown;
+            }[];
+        };
         /** RoutingDecision */
         RoutingDecision: {
             /** Candidate Profile Ids */
@@ -1601,6 +2056,47 @@ export interface components {
             /** Selected Profile Id */
             selected_profile_id: string;
             task_type: components["schemas"]["TaskType"];
+        };
+        /** RsFmriAnswer */
+        RsFmriAnswer: {
+            /** Answer */
+            answer: string;
+            /**
+             * Disclaimer
+             * @default 研究用途信息, 不构成临床诊断或个体医疗建议。
+             */
+            disclaimer: string;
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: components["schemas"]["EvidenceChunk"][];
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at?: string;
+            /** In Scope */
+            in_scope: boolean;
+        };
+        /** RsFmriAnswerView */
+        RsFmriAnswerView: {
+            answer: components["schemas"]["RsFmriAnswer"];
+            /**
+             * Remote Search Used
+             * @default false
+             */
+            remote_search_used: boolean;
+        };
+        /** RsFmriQuestionRequest */
+        RsFmriQuestionRequest: {
+            /**
+             * Allow Remote Search
+             * @default false
+             */
+            allow_remote_search: boolean;
+            /** Question */
+            question: string;
         };
         /** RunAction */
         RunAction: {
@@ -1630,6 +2126,20 @@ export interface components {
             /** Project Id */
             project_id: string;
         };
+        /**
+         * RunDiagnosisRequest
+         * @description A bounded log excerpt supplied by the UI for deterministic diagnosis.
+         */
+        RunDiagnosisRequest: {
+            /** Log Text */
+            log_text: string;
+        };
+        /** RunDiagnosisView */
+        RunDiagnosisView: {
+            diagnosis: components["schemas"]["FailureDiagnosis"];
+            /** Run Id */
+            run_id?: string | null;
+        };
         /** RunView */
         RunView: {
             /** Attempt */
@@ -1641,14 +2151,35 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Diagnosis Available
+             * @default false
+             */
+            diagnosis_available: boolean;
             /** Error */
             error?: string | null;
+            /** Eta Seconds */
+            eta_seconds?: number | null;
+            /** Heartbeat */
+            heartbeat?: string | null;
+            /**
+             * Log Cursor
+             * @default 0
+             */
+            log_cursor: number;
             /** Plan Revision Id */
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
             /** Run Id */
             run_id: string;
+            /**
+             * Stage
+             * @default queued
+             */
+            stage: string;
+            /** Stage Progress */
+            stage_progress?: number | null;
             state: components["schemas"]["WorkflowState"];
             /**
              * Updated At
@@ -2058,6 +2589,62 @@ export interface components {
             /** Subject Id */
             subject_id: string;
         };
+        /** TableColumnProfile */
+        TableColumnProfile: {
+            /**
+             * Examples
+             * @default []
+             */
+            examples: string[];
+            /** Kind */
+            kind: string;
+            /** Missing Count */
+            missing_count: number;
+            /** Name */
+            name: string;
+            /** Unique Count */
+            unique_count: number;
+        };
+        /** TableInspection */
+        TableInspection: {
+            /**
+             * Blocking Issues
+             * @default []
+             */
+            blocking_issues: string[];
+            /** Columns */
+            columns: components["schemas"]["TableColumnProfile"][];
+            /** Content Hash */
+            content_hash: string;
+            /** Duplicate Rows */
+            duplicate_rows: number;
+            /** Filename */
+            filename: string;
+            /** Format */
+            format: string;
+            /**
+             * Leakage Candidates
+             * @default []
+             */
+            leakage_candidates: string[];
+            /** Row Count */
+            row_count: number;
+            /**
+             * Subject Candidates
+             * @default []
+             */
+            subject_candidates: string[];
+            /**
+             * Target Candidates
+             * @default []
+             */
+            target_candidates: string[];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
         /**
          * Tail
          * @enum {string}
@@ -2126,6 +2713,86 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    answer_rsfmri_question_api_v1_agent_rsfmri_questions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RsFmriQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsFmriAnswerView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_agent_task_api_v1_agent_tasks_post: {
         parameters: {
             query?: never;
@@ -2300,6 +2967,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtifactView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    localize_clusters_api_v1_cluster_localizations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClusterLocalizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterLocalizationView"];
                 };
             };
             /** @description Bad Request */
@@ -3054,6 +3801,166 @@ export interface operations {
             };
         };
     };
+    inspect_ml_table_api_v1_ml_datasets_inspect_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MlTableInspectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MlTableInspectView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_ml_template_api_v1_ml_templates_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MlTemplateCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MlTemplateView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_model_profiles_api_v1_model_profiles_get: {
         parameters: {
             query?: never;
@@ -3226,6 +4133,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelProfileView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    organization_preview_api_v1_organization_previews_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrganizationPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationPreviewView"];
                 };
             };
             /** @description Bad Request */
@@ -4150,6 +5137,86 @@ export interface operations {
             };
         };
     };
+    validate_roi_table_api_v1_roi_extractions_validate_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoiTableCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoiTableView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_runs_api_v1_runs_get: {
         parameters: {
             query?: {
@@ -4483,6 +5550,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    diagnose_run_api_v1_runs__run_id__diagnosis_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunDiagnosisRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunDiagnosisView"];
                 };
             };
             /** @description Bad Request */

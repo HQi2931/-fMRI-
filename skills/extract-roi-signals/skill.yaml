@@ -1,0 +1,17 @@
+schema_version: "1.0"
+skill_id: "rsfmri.roi.extract_signals"
+version: "1.0.0"
+title: "DPABI ROI signal extraction"
+status: "reviewed"
+requested_metrics: []
+required_parameters: ["input_artifact_id", "atlas_artifact_id", "tr_seconds", "frequency_band"]
+input_artifacts: [{name: "functional", artifact_type: "functional_timeseries", required_lineage: ["grid", "tr_seconds"]}, {name: "atlas", artifact_type: "roi_atlas", required_lineage: ["grid", "labels"]}]
+output_artifacts: [{name: "roi_long", artifact_type: "table.roi_long", required_lineage: ["input_manifest_hash", "atlas_hash"]}, {name: "roi_wide", artifact_type: "table.roi_wide", required_lineage: ["subject_order"]}]
+required_capabilities: ["fmri.dpabi.roi_signal", "table.export"]
+workflow_template_ref: "dpabi.roi.extract.v1"
+steps: [{step_id: "extract", capability: "fmri.dpabi.roi_signal", needs: [], consumes: ["functional_timeseries", "roi_atlas"], produces: ["table.roi_long"], parameter_names: ["tr_seconds", "frequency_band"], qc_gate: false}, {step_id: "export", capability: "table.export", needs: ["extract"], consumes: ["table.roi_long"], produces: ["table.roi_wide"], parameter_names: [], qc_gate: true}]
+qc_requirements: ["atlas_grid_match", "subject_alignment"]
+compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
+evidence_refs: ["DPABI_V8.2_240510/DPARSF/Subfunctions/y_ExtractROISignal.m"]
+known_limitations: ["The current MVP validates and exports supplied records; real MATLAB execution remains opt-in"]
+reviewed_by: ["matlab_dpabi_engineer", "fmri_methodologist"]
