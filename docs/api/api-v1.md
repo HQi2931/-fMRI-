@@ -99,8 +99,10 @@
 | `POST` | `/statistical-designs/{plan_revision_id}/approve` | 批准统计设计哈希 |
 | `GET` | `/corrections` | 列出 FDR/GRF 校正能力和 schema |
 | `POST` | `/statistics/runs` | 从已批准设计创建统计 Mock 运行 |
+| `GET` | `/statistics/results?project_id=...&run_id=...` | 按项目（可选运行）列出已登记的统计结果摘要 |
+| `GET` | `/statistics/results/{result_id}` | 读取冻结结果清单与 Markdown/JSON 复现报告 |
 
-`/statistics/runs` 当前只排队 `statistics_mock`。它不调用 DPABI 统计函数，不产生统计图、效应量、簇表或可复现报告。
+`/statistics/runs` 当前只排队 `statistics_mock`。它不调用 DPABI 统计函数，不产生统计图、效应量、簇表或可复现报告。统计运行完成后，明确标记为合成的复现报告可经 `/statistics/results` 查询；真实执行器产物登记仍待接入。
 
 ## Provider 和 Agent
 

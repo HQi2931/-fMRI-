@@ -22,6 +22,7 @@
 - Playwright Mock E2E 覆盖前端运行—QC—统计提交交互及服务端校验失败路径。
 - 纯合成后端 E2E 覆盖只读 BIDS 扫描、ALFF Skill、审批、Mock Worker、测试夹具 Artifact、人工 QC、单样本 t + FDR、统计 Mock 和确定性报告；所有结果均标记为不可用于科学推断。
 - 新增 `StatisticalResultManifest`、显式簇记录、真实/合成证据完整性规则，以及不依赖 Agent 的确定性 Markdown/JSON 复现报告生成器。
+- 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；合成演示结束时登记明确标记的合成复现报告。
 
 ### Changed
 

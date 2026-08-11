@@ -755,6 +755,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/statistics/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Statistical Results */
+        get: operations["list_statistical_results_api_v1_statistics_results_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/results/{result_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Statistical Result */
+        get: operations["get_statistical_result_api_v1_statistics_results__result_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statistics/runs": {
         parameters: {
             query?: never;
@@ -2539,6 +2573,80 @@ export interface components {
          * @enum {string}
          */
         StatisticalMapType: "T" | "F" | "Z" | "R";
+        /**
+         * StatisticalResultDetailView
+         * @description Full registered result including the frozen manifest and both report renderings.
+         */
+        StatisticalResultDetailView: {
+            /** Artifact Count */
+            artifact_count: number;
+            /** Bundle Hash */
+            bundle_hash: string;
+            /** Cluster Count */
+            cluster_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Design Revision Id */
+            design_revision_id: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Mode */
+            mode: string;
+            /** Non Scientific */
+            non_scientific: boolean;
+            /** Non Scientific Reason */
+            non_scientific_reason: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Report Json */
+            report_json: string;
+            /** Report Markdown */
+            report_markdown: string;
+            /** Result Id */
+            result_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * StatisticalResultView
+         * @description Immutable summary of one registered statistical reproducibility report.
+         */
+        StatisticalResultView: {
+            /** Artifact Count */
+            artifact_count: number;
+            /** Bundle Hash */
+            bundle_hash: string;
+            /** Cluster Count */
+            cluster_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Design Revision Id */
+            design_revision_id: string;
+            /** Mode */
+            mode: string;
+            /** Non Scientific */
+            non_scientific: boolean;
+            /** Non Scientific Reason */
+            non_scientific_reason: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Result Id */
+            result_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Version */
+            version: number;
+        };
         /**
          * StatisticalTest
          * @enum {string}
@@ -6345,6 +6453,159 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatisticalDesignView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_statistical_results_api_v1_statistics_results_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                run_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticalResultView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_statistical_result_api_v1_statistics_results__result_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                result_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticalResultDetailView"];
                 };
             };
             /** @description Bad Request */

@@ -11,6 +11,7 @@ async function installBaseApi(page: Page) {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/health")) return json(route, { status: "ok", database: "ok" });
     if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles")) return json(route, []);
+    if (path.endsWith("/statistics/results")) return json(route, []);
     if (path.endsWith("/environment/probe")) return json(route, { ready: false, environment_hash: "e".repeat(64), components: [] });
     return json(route, { error: { code: "not_found", message: "missing", details: {}, trace_id: null } }, 404);
   });
@@ -73,6 +74,7 @@ test("continues an approved plan through Mock execution, QC, and statistics", as
     if (path.endsWith("/plan-revisions/stat-plan/approve")) { statisticalState = "approved"; statisticalVersion = 3; return json(route, { approval_id: "approval1", plan_revision_id: "stat-plan", plan_hash: "9".repeat(64), actor: "statistics-reviewer", decision: "approved", reason: "reviewed design", created_at: now }, 201); }
     if (path.endsWith("/plan-revisions/stat-plan")) return json(route, plan());
     if (path.endsWith("/statistics/runs")) return json(route, { run_id: "stat-run", project_id: "p1", plan_revision_id: "stat-plan", state: "queued", version: 1, attempt: 0, cancel_requested: false, error: null, created_at: now, updated_at: now }, 202);
+    if (path.endsWith("/statistics/results")) return json(route, []);
     return json(route, { error: { code: "not_found", message: `unhandled ${path}`, details: {}, trace_id: null } }, 404);
   });
 

@@ -59,6 +59,8 @@ from neuroagent.application.contracts import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalDesignView,
+    StatisticalResultDetailView,
+    StatisticalResultView,
     StatisticsRunCreate,
     WorkflowState,
 )
@@ -319,6 +321,28 @@ def create_statistics_run(
     idempotency_key: IdempotencyKey,
 ) -> RunView:
     return service_from(request).create_statistics_run(body, idempotency_key)
+
+
+@router.get(
+    "/statistics/results",
+    response_model=list[StatisticalResultView],
+    tags=["statistics"],
+)
+def list_statistical_results(
+    request: Request,
+    project_id: str = Query(...),
+    run_id: str | None = Query(default=None),
+) -> list[StatisticalResultView]:
+    return service_from(request).list_statistical_results(project_id=project_id, run_id=run_id)
+
+
+@router.get(
+    "/statistics/results/{result_id}",
+    response_model=StatisticalResultDetailView,
+    tags=["statistics"],
+)
+def get_statistical_result(result_id: str, request: Request) -> StatisticalResultDetailView:
+    return service_from(request).get_statistical_result(result_id)
 
 
 @router.post(

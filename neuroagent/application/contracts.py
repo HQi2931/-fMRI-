@@ -497,6 +497,31 @@ class StatisticsRunCreate(StrictModel):
     max_attempts: int = Field(default=1, ge=1, le=5)
 
 
+class StatisticalResultView(StrictModel):
+    """Immutable summary of one registered statistical reproducibility report."""
+
+    result_id: str
+    project_id: str
+    run_id: str
+    design_revision_id: str
+    mode: str
+    non_scientific: bool
+    non_scientific_reason: str | None
+    bundle_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    artifact_count: int = Field(ge=1)
+    cluster_count: int = Field(ge=0)
+    version: int = Field(ge=1)
+    created_at: datetime
+
+
+class StatisticalResultDetailView(StatisticalResultView):
+    """Full registered result including the frozen manifest and both report renderings."""
+
+    manifest: dict[str, Any]
+    report_markdown: str
+    report_json: str
+
+
 class ModelProfileInput(ModelProfile):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

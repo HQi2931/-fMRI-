@@ -19,6 +19,8 @@ export type QcReview = Schemas["QcReviewView"];
 export type ModelProfile = Schemas["ModelProfileView"];
 export type AgentTask = Schemas["AgentTaskView"];
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
+export type StatisticalResult = Schemas["StatisticalResultView"];
+export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
 export type RunDiagnosis = Schemas["RunDiagnosisView"];
 export type MlTableInspection = Schemas["MlTableInspectView"];
 export type MlTemplate = Schemas["MlTemplateView"];
@@ -285,6 +287,10 @@ export const api = {
     request<StatisticalDesign>(`/statistical-designs/${revisionId}`, { signal }),
   createStatisticsRun: (body: Schemas["StatisticsRunCreate"], signal?: AbortSignal) =>
     post<Run>("/statistics/runs", body, signal),
+  statisticalResults: (projectId: string, signal?: AbortSignal) =>
+    request<StatisticalResult[]>(`/statistics/results?project_id=${encodeURIComponent(projectId)}`, { signal }),
+  statisticalResult: (resultId: string, signal?: AbortSignal) =>
+    request<StatisticalResultDetail>(`/statistics/results/${resultId}`, { signal }),
   profiles: (signal?: AbortSignal) => request<ModelProfile[]>("/model-profiles", { signal }),
   createProfile: (body: Schemas["ModelProfileInput"], signal?: AbortSignal) =>
     post<ModelProfile>("/model-profiles", body, signal),

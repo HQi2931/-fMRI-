@@ -86,6 +86,8 @@ from neuroagent.application.contracts import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalDesignView,
+    StatisticalResultDetailView,
+    StatisticalResultView,
     StatisticsRunCreate,
     ValidationIssue,
     WorkflowState,
@@ -100,12 +102,15 @@ from neuroagent.application.ports import (
     PathPolicyPort,
     RepositoryPort,
 )
+from neuroagent.application.reporting import build_statistical_reproducibility_report
 from neuroagent.application.settings import Settings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
 from neuroagent.domain.fmri.qc import assert_statistics_ready
+from neuroagent.domain.fmri.results import StatisticalResultManifest
 from neuroagent.domain.fmri.skillpacks.builtin import build_builtin_registry
 from neuroagent.domain.fmri.statistics import (
+    CorrectionSpec,
     FdrCorrection,
     GrfCorrection,
     StatisticalDesignRevision,
@@ -2052,6 +2057,70 @@ class NeuroAgentService:
             prepare=prepare,
             finalize=finalize,
         )
+
+    def register_statistical_result(
+        self,
+        *,
+        run_id: str,
+        manifest: StatisticalResultManifest,
+        design: StatisticalDesignRevision,
+        correction: CorrectionSpec | None,
+        qc_review_hash: str,
+        environment_hash: str,
+        plan_hash: str,
+        actor: str,
+    ) -> StatisticalResultView:
+        """Validate frozen evidence and persist the deterministic reproducibility report.
+
+        Registration is a local use case: the report builder fail-closes on hash
+        mismatches and incomplete manifests before any row is written.
+        """
+
+        run = self.repository.get_run(run_id)
+        plan = self.repository.get_plan(run.plan_revision_id)
+        if plan.plan_hash != plan_hash:
+            raise ConflictError(
+                "statistical_result_plan_hash_mismatch",
+                "结果登记引用的方案哈希与运行所属已批准统计设计不一致。",
+                expected=plan.plan_hash,
+                received=plan_hash,
+            )
+        if manifest.run_id != run_id:
+            raise ConflictError(
+                "statistical_result_run_mismatch",
+                "结果清单中的 run_id 与登记目标运行不一致。",
+                expected=manifest.run_id,
+                received=run_id,
+            )
+        report = build_statistical_reproducibility_report(
+            manifest=manifest,
+            design=design,
+            correction=correction,
+            qc_review_hash=qc_review_hash,
+            environment_hash=environment_hash,
+            plan_hash=plan_hash,
+        )
+        return self.repository.create_statistical_result(
+            project_id=run.project_id,
+            run_id=run_id,
+            design_revision_id=manifest.design_revision_id,
+            mode=manifest.mode.value,
+            non_scientific=manifest.non_scientific,
+            non_scientific_reason=manifest.non_scientific_reason,
+            bundle_hash=report.bundle_hash,
+            manifest=manifest.model_dump(mode="json"),
+            report_markdown=report.markdown,
+            report_json=report.json_text,
+            actor=actor,
+        )
+
+    def list_statistical_results(
+        self, *, project_id: str, run_id: str | None = None
+    ) -> list[StatisticalResultView]:
+        return self.repository.list_statistical_results(project_id=project_id, run_id=run_id)
+
+    def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView:
+        return self.repository.get_statistical_result(result_id)
 
     def cancel_run(self, run_id: str, request: RunAction, idempotency_key: str) -> RunView:
         def action() -> RunView:

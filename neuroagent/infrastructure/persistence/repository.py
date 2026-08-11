@@ -39,6 +39,8 @@ from neuroagent.application.contracts import (
     QcReviewView,
     RuntimeEventView,
     RunView,
+    StatisticalResultDetailView,
+    StatisticalResultView,
     SubjectManifestEntry,
     ValidationIssue,
     WorkflowState,
@@ -65,6 +67,7 @@ from neuroagent.infrastructure.persistence.models import (
     QcApprovalRow,
     QcReviewRow,
     RuntimeEventRow,
+    StatisticalResultRow,
     WorkflowRunRow,
 )
 from neuroagent.observability.events import redact_event_payload
@@ -322,6 +325,36 @@ class SqliteRepository:
             size_bytes=row.size_bytes,
             provenance=_load(row.provenance_json, {}),
             created_at=_as_utc(row.created_at),
+        )
+
+    @staticmethod
+    def _statistical_result_view(row: StatisticalResultRow) -> StatisticalResultView:
+        manifest = _load(row.manifest_json, {})
+        artifacts = manifest.get("artifacts", [])
+        clusters = manifest.get("clusters", [])
+        return StatisticalResultView(
+            result_id=row.result_id,
+            project_id=row.project_id,
+            run_id=row.run_id,
+            design_revision_id=row.design_revision_id,
+            mode=row.mode,
+            non_scientific=row.non_scientific,
+            non_scientific_reason=row.non_scientific_reason,
+            bundle_hash=row.bundle_hash,
+            artifact_count=len(artifacts),
+            cluster_count=len(clusters),
+            version=row.version,
+            created_at=_as_utc(row.created_at),
+        )
+
+    @staticmethod
+    def _statistical_result_detail(row: StatisticalResultRow) -> StatisticalResultDetailView:
+        summary = SqliteRepository._statistical_result_view(row)
+        return StatisticalResultDetailView(
+            **summary.model_dump(),
+            manifest=_load(row.manifest_json, {}),
+            report_markdown=row.report_markdown,
+            report_json=row.report_json,
         )
 
     # -- idempotency ---------------------------------------------------------
@@ -1962,6 +1995,112 @@ class SqliteRepository:
                         "Artifact 不属于冻结的 QC 运行。",
                         artifact_id=artifact_id,
                     )
+
+    def create_statistical_result(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        design_revision_id: str,
+        mode: str,
+        non_scientific: bool,
+        non_scientific_reason: str | None,
+        bundle_hash: str,
+        manifest: dict[str, Any],
+        report_markdown: str,
+        report_json: str,
+        actor: str,
+    ) -> StatisticalResultView:
+        """Persist one frozen statistical report; identical re-registration is idempotent."""
+
+        now = datetime.now(UTC)
+        result_id = str(manifest.get("result_id") or "")
+        if not result_id:
+            raise InputValidationError("statistical_result_id_missing", "结果清单缺少 result_id。")
+        with self._write_session() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run", run_id)
+            if run.project_id != project_id:
+                raise ConflictError(
+                    "cross_project_run",
+                    "统计结果所属运行不属于指定项目。",
+                    expected=run.project_id,
+                    received=project_id,
+                )
+            existing = session.get(StatisticalResultRow, result_id)
+            if existing is not None:
+                if existing.bundle_hash != bundle_hash:
+                    raise ConflictError(
+                        "statistical_result_conflict",
+                        "相同 result_id 已登记不同内容的统计结果。",
+                        result_id=result_id,
+                    )
+                return self._statistical_result_view(existing)
+            row = StatisticalResultRow(
+                result_id=result_id,
+                project_id=project_id,
+                run_id=run_id,
+                design_revision_id=design_revision_id,
+                mode=mode,
+                non_scientific=non_scientific,
+                non_scientific_reason=non_scientific_reason,
+                bundle_hash=bundle_hash,
+                manifest_json=canonical_json(manifest),
+                report_markdown=report_markdown,
+                report_json=report_json,
+                version=1,
+                created_at=now,
+            )
+            session.add(row)
+            session.flush()
+            session.add(
+                RuntimeEventRow(
+                    trace_id=current_trace_id(),
+                    project_id=project_id,
+                    run_id=run_id,
+                    event_type="StatisticalResultRegistered",
+                    severity="info",
+                    payload_json=canonical_json(
+                        redact_event_payload(
+                            {
+                                "actor": actor,
+                                "result_id": result_id,
+                                "design_revision_id": design_revision_id,
+                                "mode": mode,
+                                "bundle_hash": bundle_hash,
+                                "synthetic": non_scientific,
+                            }
+                        )
+                    ),
+                )
+            )
+            return self._statistical_result_view(row)
+
+    def list_statistical_results(
+        self, *, project_id: str, run_id: str | None = None
+    ) -> list[StatisticalResultView]:
+        with self.database.session_factory() as session:
+            if session.get(ProjectRow, project_id) is None:
+                raise NotFoundError("project", project_id)
+            query = select(StatisticalResultRow).where(
+                StatisticalResultRow.project_id == project_id
+            )
+            if run_id is not None:
+                query = query.where(StatisticalResultRow.run_id == run_id)
+            rows = session.scalars(
+                query.order_by(
+                    StatisticalResultRow.created_at.desc(), StatisticalResultRow.result_id
+                )
+            ).all()
+            return [self._statistical_result_view(row) for row in rows]
+
+    def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView:
+        with self.database.session_factory() as session:
+            row = session.get(StatisticalResultRow, result_id)
+            if row is None:
+                raise NotFoundError("statistical_result", result_id)
+            return self._statistical_result_detail(row)
 
     def append_event(
         self,

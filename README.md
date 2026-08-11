@@ -16,8 +16,8 @@
 
 - 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、通用 Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
 - 已实现但仅做静态/模拟验证：DPABI V8.2 `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消和预期产物完整性检查。
-- 已实现但尚未接入真实执行：统计结果完整性合同与确定性 Markdown/JSON 复现报告；真实模式会对设计矩阵、contrast、未校正图、校正图、effect map、簇表、日志和版本证据失败关闭。
-- 未接线：公共 Worker 的真实 MATLAB/DPABI 执行，以及由真实统计执行器生成并登记上述结果产物；结果查询 UI/API 仍待后续阶段接入。
+- 已实现但尚未接入真实执行：统计结果完整性合同与确定性 Markdown/JSON 复现报告；真实模式会对设计矩阵、contrast、未校正图、校正图、effect map、簇表、日志和版本证据失败关闭。统计结果登记、只读查询 API 与前端报告展示已接通，当前仅登记明确标记的合成结果。
+- 未接线：公共 Worker 的真实 MATLAB/DPABI 执行，以及由真实统计执行器生成并登记上述结果产物。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配和 rs-fMRI 本地证据问答。它们不启动 MATLAB、训练模型或联网检索。
 - 尚需本机授权验证：真实 MATLAB 小型 smoke 与至少一个真实模型 Provider 调用。公共运行页面当前只创建 Mock 任务，不会意外启动 MATLAB。
 

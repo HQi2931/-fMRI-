@@ -29,6 +29,8 @@ from neuroagent.application.contracts import (
     QcReviewView,
     RuntimeEventView,
     RunView,
+    StatisticalResultDetailView,
+    StatisticalResultView,
     ValidationIssue,
     WorkflowState,
 )
@@ -252,6 +254,28 @@ class RepositoryPort(Protocol):
     def assert_artifacts_belong_to_run(
         self, artifact_ids: tuple[str, ...], run_id: str
     ) -> None: ...
+
+    def create_statistical_result(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        design_revision_id: str,
+        mode: str,
+        non_scientific: bool,
+        non_scientific_reason: str | None,
+        bundle_hash: str,
+        manifest: dict[str, Any],
+        report_markdown: str,
+        report_json: str,
+        actor: str,
+    ) -> StatisticalResultView: ...
+
+    def list_statistical_results(
+        self, *, project_id: str, run_id: str | None = None
+    ) -> list[StatisticalResultView]: ...
+
+    def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView: ...
 
     def append_event(
         self,

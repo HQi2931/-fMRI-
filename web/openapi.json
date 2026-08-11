@@ -5022,6 +5022,186 @@
         "title": "StatisticalMapType",
         "type": "string"
       },
+      "StatisticalResultDetailView": {
+        "additionalProperties": false,
+        "description": "Full registered result including the frozen manifest and both report renderings.",
+        "properties": {
+          "artifact_count": {
+            "minimum": 1.0,
+            "title": "Artifact Count",
+            "type": "integer"
+          },
+          "bundle_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Hash",
+            "type": "string"
+          },
+          "cluster_count": {
+            "minimum": 0.0,
+            "title": "Cluster Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "design_revision_id": {
+            "title": "Design Revision Id",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "non_scientific": {
+            "title": "Non Scientific",
+            "type": "boolean"
+          },
+          "non_scientific_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Non Scientific Reason"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "report_json": {
+            "title": "Report Json",
+            "type": "string"
+          },
+          "report_markdown": {
+            "title": "Report Markdown",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result_id",
+          "project_id",
+          "run_id",
+          "design_revision_id",
+          "mode",
+          "non_scientific",
+          "non_scientific_reason",
+          "bundle_hash",
+          "artifact_count",
+          "cluster_count",
+          "version",
+          "created_at",
+          "manifest",
+          "report_markdown",
+          "report_json"
+        ],
+        "title": "StatisticalResultDetailView",
+        "type": "object"
+      },
+      "StatisticalResultView": {
+        "additionalProperties": false,
+        "description": "Immutable summary of one registered statistical reproducibility report.",
+        "properties": {
+          "artifact_count": {
+            "minimum": 1.0,
+            "title": "Artifact Count",
+            "type": "integer"
+          },
+          "bundle_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Hash",
+            "type": "string"
+          },
+          "cluster_count": {
+            "minimum": 0.0,
+            "title": "Cluster Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "design_revision_id": {
+            "title": "Design Revision Id",
+            "type": "string"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "non_scientific": {
+            "title": "Non Scientific",
+            "type": "boolean"
+          },
+          "non_scientific_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Non Scientific Reason"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result_id",
+          "project_id",
+          "run_id",
+          "design_revision_id",
+          "mode",
+          "non_scientific",
+          "non_scientific_reason",
+          "bundle_hash",
+          "artifact_count",
+          "cluster_count",
+          "version",
+          "created_at"
+        ],
+        "title": "StatisticalResultView",
+        "type": "object"
+      },
       "StatisticalTest": {
         "enum": [
           "one_sample_t",
@@ -10235,6 +10415,210 @@
           }
         },
         "summary": "Validate Statistical Design",
+        "tags": [
+          "statistics"
+        ]
+      }
+    },
+    "/api/v1/statistics/results": {
+      "get": {
+        "operationId": "list_statistical_results_api_v1_statistics_results_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StatisticalResultView"
+                  },
+                  "title": "Response List Statistical Results Api V1 Statistics Results Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Statistical Results",
+        "tags": [
+          "statistics"
+        ]
+      }
+    },
+    "/api/v1/statistics/results/{result_id}": {
+      "get": {
+        "operationId": "get_statistical_result_api_v1_statistics_results__result_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticalResultDetailView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Statistical Result",
         "tags": [
           "statistics"
         ]

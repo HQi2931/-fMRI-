@@ -76,6 +76,11 @@ def test_full_synthetic_pipeline_is_auditable_and_non_scientific(tmp_path: Path)
     assert report["scientific_use"] == "prohibited"
     assert len(report["bundle_hash"]) == 64
     assert report["formats"] == ["json", "markdown"]
+    registered_result = summary["statistical_result"]
+    assert registered_result["result_id"] == "synthetic-non-scientific-statistical-result"
+    assert registered_result["mode"] == "synthetic_non_scientific"
+    assert registered_result["non_scientific"] is True
+    assert registered_result["bundle_hash"] == report["bundle_hash"]
     report_root = (
         tmp_path / "demo" / "work" / "project" / "reports" / summary["runs"]["statistics"]["run_id"]
     )

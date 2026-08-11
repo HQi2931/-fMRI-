@@ -732,6 +732,16 @@ def run_demo(root: Path) -> dict[str, Any]:
                 for format_name, report_path, payload in report_payloads
             ),
         )
+        registered_result = service.register_statistical_result(
+            run_id=statistics_run.run_id,
+            manifest=result_manifest,
+            design=design,
+            correction=correction,
+            qc_review_hash=qc_review.review.content_hash,
+            environment_hash=statistical_plan.environment_hash,
+            plan_hash=statistical_plan.plan_hash,
+            actor="synthetic-demo",
+        )
 
         source_after = _source_snapshot(source_files)
         input_artifacts = service.list_artifacts(input_run.run_id)
@@ -810,6 +820,13 @@ def run_demo(root: Path) -> dict[str, Any]:
                 "bundle_hash": report.bundle_hash,
                 "formats": ["json", "markdown"],
                 "evidence": "placeholder contracts only; no statistical values",
+            },
+            "statistical_result": {
+                "result_id": registered_result.result_id,
+                "run_id": registered_result.run_id,
+                "mode": registered_result.mode,
+                "bundle_hash": registered_result.bundle_hash,
+                "non_scientific": registered_result.non_scientific,
             },
         }
     finally:

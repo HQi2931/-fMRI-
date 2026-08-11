@@ -33,6 +33,7 @@ def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> No
         "agent_tasks",
         "qc_review_revisions",
         "qc_approval_records",
+        "statistical_results",
     }.issubset(tables)
 
 

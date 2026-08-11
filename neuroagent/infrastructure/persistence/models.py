@@ -172,6 +172,28 @@ class ArtifactRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class StatisticalResultRow(Base):
+    __tablename__ = "statistical_results"
+    result_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("workflow_runs.run_id", ondelete="RESTRICT"),
+        index=True,
+        nullable=False,
+    )
+    design_revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    non_scientific: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    non_scientific_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    report_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class RuntimeEventRow(Base):
     __tablename__ = "runtime_events"
     event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

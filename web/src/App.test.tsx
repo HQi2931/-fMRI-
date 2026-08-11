@@ -19,6 +19,7 @@ function defaultApi(input: RequestInfo | URL): Promise<Response> {
   const path = pathOf(input);
   if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
   if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles")) return json([]);
+  if (path.endsWith("/statistics/results")) return json([]);
   if (path.endsWith("/environment/probe")) return json({ ready: false, environment_hash: "e".repeat(64), components: [] });
   return json({ error: { code: "not_found", message: "missing", details: {}, trace_id: null } }, 404);
 }

@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, describeError, type Artifact, type QcReview, type StatisticalDesign } from "../api/client";
+import {
+  api,
+  describeError,
+  type Artifact,
+  type QcReview,
+  type StatisticalDesign,
+  type StatisticalResult,
+  type StatisticalResultDetail,
+} from "../api/client";
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
@@ -74,6 +82,10 @@ export function StatisticsPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<StatisticalResult[]>([]);
+  const [selectedResultId, setSelectedResultId] = useState("");
+  const [resultDetail, setResultDetail] = useState<StatisticalResultDetail | null>(null);
+  const [resultRefresh, setResultRefresh] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -130,6 +142,37 @@ export function StatisticsPage() {
     });
     return () => controller.abort();
   }, [workspace.qcReviewId, workspace.runId, workspace.statisticalDesignId]);
+
+  useEffect(() => {
+    if (!workspace.projectId) return;
+    const controller = new AbortController();
+    api
+      .statisticalResults(workspace.projectId, controller.signal)
+      .then(setResults)
+      .catch((caught) => {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+          setError(describeError(caught));
+        }
+      });
+    return () => controller.abort();
+  }, [resultRefresh, workspace.projectId]);
+
+  useEffect(() => {
+    if (!selectedResultId) {
+      setResultDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    api
+      .statisticalResult(selectedResultId, controller.signal)
+      .then(setResultDetail)
+      .catch((caught) => {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+          setError(describeError(caught));
+        }
+      });
+    return () => controller.abort();
+  }, [selectedResultId]);
 
   const parsedRows = useMemo(() => lines(imageRows), [imageRows]);
   const subjects = qc?.review.included_subject_ids ?? [];
@@ -331,6 +374,64 @@ export function StatisticsPage() {
           </aside>
         </div>
       )}
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">已登记统计结果</span>
+            <h2>{results.length} 项</h2>
+          </div>
+          <button className="button button-secondary" type="button" onClick={() => setResultRefresh((current) => current + 1)}>
+            刷新
+          </button>
+        </div>
+        {results.length === 0 ? (
+          <EmptyState
+            title="尚无统计结果"
+            detail="统计运行完成并登记确定性复现报告后，会在这里出现可查询的冻结报告。"
+          />
+        ) : (
+          <div className="two-column wide-left">
+            <aside className="panel">
+              <span className="eyebrow">结果列表</span>
+              <div className="selection-list">
+                {results.map((result) => (
+                  <button
+                    type="button"
+                    key={result.result_id}
+                    className={result.result_id === selectedResultId ? "selected" : ""}
+                    onClick={() => setSelectedResultId(result.result_id)}
+                  >
+                    <span>{result.result_id.slice(0, 24)}…</span>
+                    <small>{result.mode}</small>
+                  </button>
+                ))}
+              </div>
+            </aside>
+            <div className="panel">
+              {!resultDetail ? (
+                <EmptyState title="选择一项结果" detail="点击左侧结果查看冻结的复现报告与已登记产物。" />
+              ) : (
+                <>
+                  {resultDetail.non_scientific && (
+                    <div className="assistant-message">
+                      <strong>合成 / 非科研结果</strong>
+                      <p>{resultDetail.non_scientific_reason}</p>
+                    </div>
+                  )}
+                  <dl className="detail-list">
+                    <div><dt>结果 ID</dt><dd>{resultDetail.result_id}</dd></div>
+                    <div><dt>运行</dt><dd>{resultDetail.run_id}</dd></div>
+                    <div><dt>设计 revision</dt><dd>{resultDetail.design_revision_id}</dd></div>
+                    <div><dt>产物 / 簇</dt><dd>{resultDetail.artifact_count} / {resultDetail.cluster_count}</dd></div>
+                    <div><dt>报告哈希</dt><dd className="hash-value">{resultDetail.bundle_hash}</dd></div>
+                  </dl>
+                  <pre className="report-pre">{resultDetail.report_markdown}</pre>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
     </>
   );
 }
