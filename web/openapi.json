@@ -426,6 +426,12 @@
       "AtlasPoint": {
         "additionalProperties": false,
         "properties": {
+          "coordinate_space": {
+            "default": "MNI",
+            "minLength": 1,
+            "title": "Coordinate Space",
+            "type": "string"
+          },
           "label": {
             "minLength": 1,
             "title": "Label",
@@ -496,6 +502,11 @@
               }
             ],
             "title": "Distance Mm"
+          },
+          "limitation": {
+            "default": "coordinate matching is geometric nearest-neighbour in millimetres; no NIfTI grid sampling or spatial realignment is performed",
+            "title": "Limitation",
+            "type": "string"
           }
         },
         "required": [
@@ -567,6 +578,12 @@
           "cluster_id": {
             "minLength": 1,
             "title": "Cluster Id",
+            "type": "string"
+          },
+          "coordinate_space": {
+            "default": "MNI",
+            "minLength": 1,
+            "title": "Coordinate Space",
             "type": "string"
           },
           "peak_x": {

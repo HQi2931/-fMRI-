@@ -213,3 +213,31 @@ def test_rsfmri_rag_ignores_prompt_injection_documents(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert search_evidence((tmp_path,), "DPABI ALFF TR") == ()
+
+
+def test_dpabi_diagnosis_does_not_misfire_on_bare_tr() -> None:
+    assert diagnose_dpabi_log("successful run TR = 2.0").code is not FailureCode.NIFTI_HEADER
+    assert diagnose_dpabi_log("matrix load ok").code is not FailureCode.NIFTI_HEADER
+    assert diagnose_dpabi_log("contrast computation").code is not FailureCode.NIFTI_HEADER
+
+
+def test_cluster_matching_respects_coordinate_space() -> None:
+    mn_cluster = ClusterRecord(
+        cluster_id="c", peak_x=10, peak_y=20, peak_z=30, coordinate_space="MNI"
+    )
+    tal_atlas = AtlasPoint(x=10, y=20, z=30, label="Frontal", coordinate_space="TAL")
+    result = localize_clusters((mn_cluster,), (tal_atlas,))
+    assert result[0].atlas_label is None
+    assert result[0].confidence == 0
+
+
+def test_organization_preview_rejects_traversal_subject_id(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "bold.nii.gz").write_bytes(b"synthetic")
+    preview = build_dpabi_preview(
+        source,
+        target_stage="FunRaw",
+        subjects={"../escape": {"functional": ("bold.nii.gz",), "anatomical": ()}},
+    )
+    assert "organization_subject_id_invalid" in preview.blocking_issues

@@ -18,13 +18,15 @@ _SCOPE_TERMS = {
     "falff",
     "reho",
     "bold",
-    "tr",
-    "slice",
     "scrubbing",
     "voxel",
     "静息态",
     "功能磁共振",
 }
+# Short ASCII tokens must match on word boundaries so "spm" does not match
+# "spm package manager" and "bold" does not match "bold text". Longer tokens
+# and CJK terms are specific enough to match as substrings.
+_SHORT_ASCII_TERMS = frozenset({"spm", "bold"})
 _PROMPT_INJECTION = re.compile(
     r"ignore (previous|all) instructions|system prompt|execute (a )?command|"
     r"run (a )?shell|忽略.*指令|执行.*命令",
@@ -38,7 +40,13 @@ def _tokens(value: str) -> set[str]:
 
 def is_rsfmri_question(question: str) -> bool:
     lowered = question.lower()
-    return any(term in lowered for term in _SCOPE_TERMS)
+    for term in _SCOPE_TERMS:
+        if term in _SHORT_ASCII_TERMS:
+            if re.search(rf"\b{re.escape(term)}\b", lowered):
+                return True
+        elif term in lowered:
+            return True
+    return False
 
 
 def search_evidence(

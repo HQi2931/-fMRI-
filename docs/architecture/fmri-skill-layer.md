@@ -1,6 +1,6 @@
 # 静息态 fMRI Skill 层架构
 
-- 状态：Skill Registry、Resolver、Validator、Compiler、9 个运行时 Skill 与 6 个磁盘参数 schema 已实现；公共 Worker 尚未分派 SkillPlan DAG/Tool，真实 MATLAB Worker 仍未接线
+- 状态：Skill Registry、Resolver、Validator、Compiler、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包，未注册运行时）；公共 Worker 尚未分派 SkillPlan DAG/Tool，真实 MATLAB Worker 仍未接线
 - 决策日期：2026-08-06
 - 关联 ADR：[0001：Skill 编译为受控 Workflow](../adr/0001-skill-compiles-to-workflow.md)
 - 实施计划：[0001：fMRI Skill 层 MVP](../plans/0001-skill-layer-mvp.md)

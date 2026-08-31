@@ -7,7 +7,7 @@
 ### Added
 
 - 扩展 Phase 10–17 的确定性基础：长任务阶段事件、DPABI/MATLAB 失败诊断、ROI 长宽表导出、CSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配、DPABI 整理预览和本地 rs-fMRI 证据问答。
-- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills。
+- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills（这 10 个为契约/预览包，未注册运行时，真实执行待 v0.2.0）。
 
 - 本地 FastAPI、SQLite Worker、React/TypeScript 前端与 MATLAB/DPABI 静态适配的 MVP 候选基线。
 - 仓库安全策略、依赖锁定、Windows 质量门禁、GitHub Actions 和阶段自动发布脚本。
@@ -22,7 +22,7 @@
 - Playwright Mock E2E 覆盖前端运行—QC—统计提交交互及服务端校验失败路径。
 - 纯合成后端 E2E 覆盖只读 BIDS 扫描、ALFF Skill、审批、Mock Worker、测试夹具 Artifact、人工 QC、单样本 t + FDR、统计 Mock 和确定性报告；所有结果均标记为不可用于科学推断。
 - 新增 `StatisticalResultManifest`、显式簇记录、真实/合成证据完整性规则，以及不依赖 Agent 的确定性 Markdown/JSON 复现报告生成器。
-- 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；合成演示结束时登记明确标记的合成复现报告。
+- 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；当前仅登记明确标记的合成结果，真实执行器产物登记待 v0.2.0。
 
 ### Changed
 

@@ -7,8 +7,10 @@ import hashlib
 import re
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 from openpyxl import load_workbook  # type: ignore[import-untyped]
+from openpyxl.utils.exceptions import InvalidFileException  # type: ignore[import-untyped]
 
 from neuroagent.analysis.models import TableColumnProfile, TableInspection
 
@@ -30,7 +32,10 @@ def _normalize_cell(value: Any) -> str:
 def _read_rows(path: Path, max_rows: int) -> tuple[list[str], list[list[str]], list[str]]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
-        workbook = load_workbook(path, read_only=True, data_only=False)
+        try:
+            workbook = load_workbook(path, read_only=True, data_only=False)
+        except (BadZipFile, InvalidFileException) as exc:
+            raise ValueError(f"corrupted or invalid XLSX file: {exc}") from exc
         sheet = workbook.active
         values = []
         formula_cells: list[str] = []

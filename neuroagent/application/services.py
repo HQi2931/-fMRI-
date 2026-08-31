@@ -2085,6 +2085,15 @@ class NeuroAgentService:
                 expected=plan.plan_hash,
                 received=plan_hash,
             )
+        if plan.plan.get("kind") == "statistical_design":
+            frozen_design = StatisticalDesignRevision.model_validate(plan.plan.get("design"))
+            if content_hash(frozen_design.model_dump(mode="json")) != content_hash(
+                design.model_dump(mode="json")
+            ):
+                raise ConflictError(
+                    "statistical_result_design_mismatch",
+                    "结果登记引用的统计设计与运行所属已批准计划不一致。",
+                )
         if manifest.run_id != run_id:
             raise ConflictError(
                 "statistical_result_run_mismatch",

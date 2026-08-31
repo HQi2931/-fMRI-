@@ -40,6 +40,9 @@ def build_dpabi_preview(
     blockers: list[str] = []
     seen_targets: set[str] = set()
     for subject_id in sorted(subjects):
+        if subject_id in {"", ".", ".."} or "/" in subject_id or "\\" in subject_id:
+            blockers.append("organization_subject_id_invalid")
+            continue
         payload = subjects[subject_id]
         for role, paths in (
             ("functional", payload.get("functional", ())),

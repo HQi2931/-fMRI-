@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import textwrap
+from typing import Any
 
 from neuroagent.analysis.models import MlDesignRecommendation, MlTemplate
-from neuroagent.application.hashing import content_hash
+
+
+def _content_hash(value: Any) -> str:
+    """Deterministic hash kept local to avoid importing the application layer."""
+    canonical = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def generate_ml_template(design: MlDesignRecommendation, *, source_filename: str) -> MlTemplate:
@@ -84,5 +94,5 @@ def generate_ml_template(design: MlDesignRecommendation, *, source_filename: str
     return MlTemplate(
         filename="rsfmri_ml_template.py",
         content=content,
-        design_hash=content_hash(design.model_dump(mode="json")),
+        design_hash=_content_hash(design.model_dump(mode="json")),
     )

@@ -126,6 +126,7 @@ class AtlasPoint(AnalysisModel):
     y: float
     z: float
     label: str = Field(min_length=1)
+    coordinate_space: str = Field(default="MNI", min_length=1)
 
 
 class ClusterRecord(AnalysisModel):
@@ -135,6 +136,7 @@ class ClusterRecord(AnalysisModel):
     peak_z: float
     voxel_count: int | None = Field(default=None, ge=1)
     statistic: float | None = None
+    coordinate_space: str = Field(default="MNI", min_length=1)
 
 
 class ClusterLocalization(AnalysisModel):
@@ -142,6 +144,10 @@ class ClusterLocalization(AnalysisModel):
     atlas_label: str | None = None
     distance_mm: float | None = Field(default=None, ge=0)
     confidence: float = Field(ge=0, le=1)
+    limitation: str = (
+        "coordinate matching is geometric nearest-neighbour in millimetres; "
+        "no NIfTI grid sampling or spatial realignment is performed"
+    )
 
 
 class EvidenceChunk(AnalysisModel):

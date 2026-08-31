@@ -150,9 +150,12 @@ export function AnalysisPage() {
               peak_z: 0,
               voxel_count: 10,
               statistic: 3.1,
+              coordinate_space: "MNI",
             },
           ],
-          atlas_points: [{ x: 0, y: 0, z: 0, label: "User atlas example" }],
+          atlas_points: [
+            { x: 0, y: 0, z: 0, label: "User atlas example", coordinate_space: "MNI" },
+          ],
           max_distance_mm: 8,
         }),
       );

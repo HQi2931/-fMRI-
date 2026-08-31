@@ -17,8 +17,9 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     (
         FailureCode.NIFTI_HEADER,
         (
-            r"(dimension|voxel size|TR|header|orientation|mask).*(mismatch|inconsistent|error)"
-            r"|头信息|维度不一致|TR"
+            r"(dimension|voxel size|header|orientation|mask|masking).*(mismatch|inconsistent|error)"
+            r"|\bTR\b.*(mismatch|inconsistent|error)"
+            r"|头信息.*(不一致|错误)|维度不一致"
         ),
         ("NIfTI 头信息、网格、掩膜或 TR 可能不一致",),
         ("检查输入与 mask 的网格和空间方向", "在方案中明确 TR 与有效时间点"),
@@ -32,15 +33,16 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     (
         FailureCode.SOFTWARE_ENVIRONMENT,
         (
-            r"(undefined function|function .* undefined|spm|dpabi|matlab).*(not found|undefined|"
-            r"cannot find)|undefined function|函数.*未找到"
+            r"(undefined function|function .* undefined|\bspm\b|\bdpabi\b|\bmatlab\b)"
+            r".*(not found|undefined|cannot find)|undefined function|函数.*未找到"
         ),
         ("MATLAB, SPM12 或 DPABI 入口不可见",),
         ("重新运行环境探测", "核对 MATLAB, SPM12 和 DPABI V8.2 路径"),
     ),
     (
         FailureCode.RESOURCE,
-        r"(out of memory|memory|disk space|no space|内存不足|磁盘空间不足)",
+        r"(out of memory|insufficient memory|memory error|disk (full|space)|no space|"
+        r"内存不足|磁盘空间不足)",
         ("运行资源不足",),
         ("检查工作盘剩余空间", "降低并发或分块参数; 修改资源参数需重新审批"),
     ),
@@ -63,6 +65,7 @@ def _safe_line(line: str) -> str:
     value = line.strip()
     value = re.sub(r"(?i)([A-Z]:\\|/)(?:[^\s\\/]+[\\/])*[^\s]+", "<path>", value)
     value = re.sub(r"(?i)(subject|sub|participant)[-_ ]?[A-Za-z0-9]+", r"\1<id>", value)
+    value = re.sub(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "<email>", value)
     return value[:500]
 
 
@@ -83,7 +86,7 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
                 summary=evidence[0],
                 evidence=(matching or tuple(lines[-max_evidence:]))[-max_evidence:],
                 suggestions=suggestions,
-                confidence=0.9,
+                confidence=0.6,
                 requires_new_plan=code not in {FailureCode.INPUT_MISSING, FailureCode.PATH_POLICY},
             )
     if "cancel" in lower or "取消" in text:

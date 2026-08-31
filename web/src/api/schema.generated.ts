@@ -970,6 +970,11 @@ export interface components {
         };
         /** AtlasPoint */
         AtlasPoint: {
+            /**
+             * Coordinate Space
+             * @default MNI
+             */
+            coordinate_space: string;
             /** Label */
             label: string;
             /** X */
@@ -993,6 +998,11 @@ export interface components {
             confidence: number;
             /** Distance Mm */
             distance_mm?: number | null;
+            /**
+             * Limitation
+             * @default coordinate matching is geometric nearest-neighbour in millimetres; no NIfTI grid sampling or spatial realignment is performed
+             */
+            limitation: string;
         };
         /** ClusterLocalizationRequest */
         ClusterLocalizationRequest: {
@@ -1020,6 +1030,11 @@ export interface components {
         ClusterRecord: {
             /** Cluster Id */
             cluster_id: string;
+            /**
+             * Coordinate Space
+             * @default MNI
+             */
+            coordinate_space: string;
             /** Peak X */
             peak_x: number;
             /** Peak Y */

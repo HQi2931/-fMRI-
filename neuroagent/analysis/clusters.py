@@ -62,8 +62,14 @@ def localize_clusters(
         return tuple(ClusterLocalization(cluster=item, confidence=0) for item in clusters)
     output: list[ClusterLocalization] = []
     for cluster in clusters:
+        compatible = tuple(
+            point for point in points if point.coordinate_space == cluster.coordinate_space
+        )
+        if not compatible:
+            output.append(ClusterLocalization(cluster=cluster, atlas_label=None, confidence=0))
+            continue
         nearest = min(
-            points,
+            compatible,
             key=lambda point: math.dist(
                 (cluster.peak_x, cluster.peak_y, cluster.peak_z),
                 (point.x, point.y, point.z),
