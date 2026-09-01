@@ -23,6 +23,9 @@
 - 纯合成后端 E2E 覆盖只读 BIDS 扫描、ALFF Skill、审批、Mock Worker、测试夹具 Artifact、人工 QC、单样本 t + FDR、统计 Mock 和确定性报告；所有结果均标记为不可用于科学推断。
 - 新增 `StatisticalResultManifest`、显式簇记录、真实/合成证据完整性规则，以及不依赖 Agent 的确定性 Markdown/JSON 复现报告生成器。
 - 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；当前仅登记明确标记的合成结果，真实执行器产物登记待 v0.2.0。
+- 模型配置管理增强：新增 `DELETE /model-profiles/{profile_id}`；设置页支持多 Provider/多模型列表管理（完整字段、服务商预设、能力多选与删除），Agent 页模型下拉直接显示模型名与配置 ID。
+- 模型名自动获取：新增 `POST /providers/models`，设置页在填写 base_url 与密钥环境变量名后可一键拉取该 Provider 的可用模型并从下拉选择，同时保留手动输入兜底。
+- 服务商预设与前端填 Key：设置页内置 DSH（pi-ai）OpenAI 兼容服务商预设（DeepSeek、智谱、Kimi、Qwen、OpenAI、xAI、Groq、OpenRouter 等）；可直接在前端填写 API Key，拉取模型后保存时后端将 Key 写入本地 `.env`（不进入数据库、日志或审计事件），Profile 仍只记录密钥环境变量名。
 
 ### Changed
 

@@ -85,6 +85,38 @@ class OpenAICompatibleProvider:
             if owns_client:
                 await client.aclose()
 
+    async def list_models(self, base_url: str, api_key: str) -> list[str]:
+        """List model ids exposed by an OpenAI-compatible provider."""
+        owns_client = self._client is None
+        client = self._client or httpx.AsyncClient(timeout=30.0)
+        try:
+            response = await client.get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            if response.status_code == 429 or response.status_code >= 500:
+                raise RetryableProviderError(
+                    f"provider temporarily unavailable ({response.status_code})"
+                )
+            if response.status_code >= 400:
+                raise ProviderError(f"provider rejected model list ({response.status_code})")
+            body = response.json()
+            items = body.get("data")
+            if not isinstance(items, list):
+                raise ProviderError("provider model list shape is invalid")
+            return [
+                str(item["id"])
+                for item in items
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise RetryableProviderError("provider transport failed") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError("provider model list shape is invalid") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+
 
 class MockProvider:
     """Deterministic test provider with an explicit response queue."""

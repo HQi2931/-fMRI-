@@ -2183,6 +2183,13 @@ class SqliteRepository:
             ).all()
             return [self._model_profile(row) for row in rows]
 
+    def delete_model_profile(self, profile_id: str) -> None:
+        with self._write_session() as session:
+            row = session.get(ModelProfileRow, profile_id)
+            if row is None:
+                raise NotFoundError("model_profile", profile_id)
+            session.delete(row)
+
     def create_agent_task(
         self,
         *,

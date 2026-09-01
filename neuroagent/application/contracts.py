@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -545,6 +546,69 @@ class ModelProfileView(StrictModel):
     profile: ModelProfileInput
     version: int
     created_at: datetime
+
+
+class ModelProfileCreate(StrictModel):
+    model_config = ConfigDict(frozen=True)
+
+    profile: ModelProfileInput
+    api_key: str | None = None
+
+
+class ModelListRequest(StrictModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str
+    api_key: str | None = None
+    api_key_env: str | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        parsed = urlsplit(normalized)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("base_url contains an invalid port") from exc
+        if port == 0:
+            raise ValueError("base_url contains an invalid port")
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "base_url must be an HTTP(S) URL without credentials, query, or fragment"
+            )
+        if parsed.scheme == "https":
+            return normalized
+        hostname = parsed.hostname
+        if hostname == "localhost":
+            return normalized
+        try:
+            is_loopback = "%" not in hostname and ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = False
+        if is_loopback:
+            return normalized
+        raise ValueError("base_url must use HTTPS or an exact HTTP loopback host")
+
+    @field_validator("api_key_env")
+    @classmethod
+    def restrict_secret_environment_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.endswith("_API_KEY"):
+            raise ValueError("api_key_env must end with _API_KEY")
+        return value
+
+
+class ModelListView(StrictModel):
+    models: list[str]
 
 
 class ProviderTestRequest(StrictModel):

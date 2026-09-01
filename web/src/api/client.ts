@@ -292,8 +292,12 @@ export const api = {
   statisticalResult: (resultId: string, signal?: AbortSignal) =>
     request<StatisticalResultDetail>(`/statistics/results/${resultId}`, { signal }),
   profiles: (signal?: AbortSignal) => request<ModelProfile[]>("/model-profiles", { signal }),
-  createProfile: (body: Schemas["ModelProfileInput"], signal?: AbortSignal) =>
+  createProfile: (body: Schemas["ModelProfileCreate"], signal?: AbortSignal) =>
     post<ModelProfile>("/model-profiles", body, signal),
+  deleteProfile: (profileId: string, signal?: AbortSignal) =>
+    request<void>(`/model-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE", signal }),
+  listProviderModels: (body: Schemas["ModelListRequest"], signal?: AbortSignal) =>
+    post<Schemas["ModelListView"]>("/providers/models", body, signal),
   testProvider: (body: Schemas["ProviderTestRequest"], signal?: AbortSignal) =>
     post<Schemas["ProviderTestView"]>("/providers/test", body, signal),
   createAgentTask: (body: Schemas["AgentTaskCreate"], signal?: AbortSignal) =>

@@ -108,9 +108,11 @@
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/model-profiles` | 创建只引用本地密钥环境变量名的 Profile |
+| `POST` | `/model-profiles` | 创建只引用本地密钥环境变量名的 Profile（可携带 `api_key` 写入本地 `.env`） |
 | `GET` | `/model-profiles` | 列出 Profile |
 | `GET` | `/model-profiles/{profile_id}` | 读取 Profile |
+| `DELETE` | `/model-profiles/{profile_id}` | 删除 Profile（不可变模型配置的显式移除） |
+| `POST` | `/providers/models` | 列出某个 OpenAI 兼容 Provider 的可用模型（传 base_url + api_key 或密钥环境变量名） |
 | `POST` | `/providers/test` | 发起一次脱敏的轻量连通性/schema smoke |
 | `POST` | `/agent/tasks` | 执行结构化 Agent 任务 |
 | `GET` | `/agent/tasks/{task_id}` | 读取 Agent 任务和路由决定 |

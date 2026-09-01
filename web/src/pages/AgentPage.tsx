@@ -72,7 +72,7 @@ export function AgentPage() {
           <div className="panel-heading"><div><span className="eyebrow">模型路由</span><h2>能力优先</h2></div><StatusPill tone="good">安全边界</StatusPill></div>
           <div className="parameter-list">
             <label>任务类型<select value={taskType} onChange={(event) => setTaskType(event.target.value as typeof taskType)}><option value="plan_explainer">方案解释</option><option value="log_summarizer">日志总结</option><option value="report_writer">报告草稿</option></select></label>
-            <label>Provider<select value={preferred} onChange={(event) => setPreferred(event.target.value)}><option value="">自动路由</option>{profiles.map((item) => <option key={item.profile.id} value={item.profile.id}>{item.profile.id}</option>)}</select></label>
+            <label>模型<select value={preferred} onChange={(event) => setPreferred(event.target.value)}><option value="">自动路由</option>{profiles.map((item) => <option key={item.profile.id} value={item.profile.id}>{item.profile.model} · {item.profile.id}</option>)}</select></label>
           </div>
           <dl className="detail-list">
             <div><dt>必需能力</dt><dd>JSON object</dd></div>

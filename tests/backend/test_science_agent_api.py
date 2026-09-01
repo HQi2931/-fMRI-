@@ -25,6 +25,7 @@ from neuroagent.application.contracts import (
     DatasetProfile,
     ManifestRevisionView,
     ManifestScanRequest,
+    ModelProfileCreate,
     ModelProfileInput,
     ProviderTestRequest,
     QcReviewApprove,
@@ -1567,7 +1568,7 @@ def test_agent_api_redacts_falls_back_and_never_returns_secrets(
         for index, profile in enumerate(profiles):
             response = client.post(
                 "/api/v1/model-profiles",
-                json=profile,
+                json={"profile": profile},
                 headers={"Idempotency-Key": f"model-profile-{index}"},
             )
             assert response.status_code == 201
@@ -1575,23 +1576,25 @@ def test_agent_api_redacts_falls_back_and_never_returns_secrets(
 
         rejected_secret = client.post(
             "/api/v1/model-profiles",
-            json={**profiles[0], "id": "unsafe-profile", "api_key": "must-not-be-accepted"},
+            json={"profile": {**profiles[0], "id": "unsafe-profile", "api_key": "must-not-be-accepted"}},
             headers={"Idempotency-Key": "unsafe-model-profile"},
         )
         assert rejected_secret.status_code == 422
         assert "must-not-be-accepted" not in rejected_secret.text
         unsafe_environment = client.post(
             "/api/v1/model-profiles",
-            json={**profiles[0], "id": "unsafe-environment", "api_key_env": "PATH"},
+            json={"profile": {**profiles[0], "id": "unsafe-environment", "api_key_env": "PATH"}},
             headers={"Idempotency-Key": "unsafe-environment-profile"},
         )
         assert unsafe_environment.status_code == 422
         credential_url = client.post(
             "/api/v1/model-profiles",
             json={
-                **profiles[0],
-                "id": "unsafe-base-url",
-                "base_url": "https://user:password@provider.example/v1",
+                "profile": {
+                    **profiles[0],
+                    "id": "unsafe-base-url",
+                    "base_url": "https://user:password@provider.example/v1",
+                }
             },
             headers={"Idempotency-Key": "unsafe-base-url-profile"},
         )
@@ -1717,7 +1720,9 @@ async def test_agent_task_rechecks_project_revision_after_provider_wait(
         capabilities=frozenset({ModelCapability.JSON_OBJECT}),
         timeout_seconds=10,
     )
-    agent_service.create_model_profile(profile, "agent-revision-profile")
+    agent_service.create_model_profile(
+        ModelProfileCreate(profile=profile), "agent-revision-profile"
+    )
     monkeypatch.setenv("BLOCKING_PROVIDER_API_KEY", "test-secret-value")
     pending = asyncio.create_task(
         agent_service.create_agent_task(
@@ -1793,7 +1798,9 @@ async def test_slow_provider_request_renews_idempotency_lease(
         capabilities=frozenset({ModelCapability.JSON_OBJECT}),
         timeout_seconds=10,
     )
-    agent_service.create_model_profile(profile, "slow-provider-profile")
+    agent_service.create_model_profile(
+        ModelProfileCreate(profile=profile), "slow-provider-profile"
+    )
     monkeypatch.setenv("SLOW_PROVIDER_API_KEY", "test-secret-value")
     request = ProviderTestRequest(profile_id=profile.id, expected_profile_version=1)
     pending = asyncio.create_task(agent_service.test_provider(request, "slow-provider-test"))
@@ -2065,3 +2072,37 @@ def test_production_static_app_preserves_api_namespace(
         missing_api = client.get("/api/v1/does-not-exist")
         assert missing_api.status_code == 404
         assert missing_api.json()["error"]["code"] == "not_found"
+
+
+def test_delete_model_profile(
+    service: NeuroAgentService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DELETABLE_PROVIDER_API_KEY", "delete-secret-value")
+    with TestClient(create_app(service=service)) as client:
+        created = client.post(
+            "/api/v1/model-profiles",
+            json={
+                "profile": {
+                    "id": "deletable-profile",
+                    "provider": "openai-compatible",
+                    "base_url": "https://provider.example/v1",
+                    "model": "model-to-delete",
+                    "api_key_env": "DELETABLE_PROVIDER_API_KEY",
+                    "priority": 10,
+                    "capabilities": ["json_object"],
+                    "timeout_seconds": 45,
+                }
+            },
+            headers={"Idempotency-Key": "create-deletable-profile"},
+        )
+        assert created.status_code == 201
+
+        deleted = client.delete("/api/v1/model-profiles/deletable-profile")
+        assert deleted.status_code == 204
+
+        listed = client.get("/api/v1/model-profiles").json()
+        assert all(item["profile"]["id"] != "deletable-profile" for item in listed)
+
+        missing = client.delete("/api/v1/model-profiles/deletable-profile")
+        assert missing.status_code == 404

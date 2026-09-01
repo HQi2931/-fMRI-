@@ -305,7 +305,8 @@ export interface paths {
         get: operations["get_model_profile_api_v1_model_profiles__profile_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Model Profile */
+        delete: operations["delete_model_profile_api_v1_model_profiles__profile_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -425,6 +426,23 @@ export interface paths {
         put?: never;
         /** Create Dataset */
         post: operations["create_dataset_api_v1_projects__project_id__datasets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List Provider Models */
+        post: operations["list_provider_models_api_v1_providers_models_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1538,6 +1556,26 @@ export interface components {
          * @enum {string}
          */
         ModelCapability: "json_object" | "streaming" | "reasoning";
+        /** ModelListRequest */
+        ModelListRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Api Key Env */
+            api_key_env?: string | null;
+            /** Base Url */
+            base_url: string;
+        };
+        /** ModelListView */
+        ModelListView: {
+            /** Models */
+            models: string[];
+        };
+        /** ModelProfileCreate */
+        ModelProfileCreate: {
+            /** Api Key */
+            api_key?: string | null;
+            profile: components["schemas"]["ModelProfileInput"];
+        };
         /** ModelProfileInput */
         ModelProfileInput: {
             /** Api Key Env */
@@ -4169,7 +4207,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ModelProfileInput"];
+                "application/json": components["schemas"]["ModelProfileCreate"];
             };
         };
         responses: {
@@ -4257,6 +4295,80 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ModelProfileView"];
                 };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_model_profile_api_v1_model_profiles__profile_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Bad Request */
             400: {
@@ -4884,6 +4996,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_provider_models_api_v1_providers_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelListRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelListView"];
                 };
             };
             /** @description Bad Request */

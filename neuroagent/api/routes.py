@@ -32,7 +32,9 @@ from neuroagent.application.contracts import (
     MlTableInspectView,
     MlTemplateCreateRequest,
     MlTemplateView,
-    ModelProfileInput,
+    ModelListRequest,
+    ModelListView,
+    ModelProfileCreate,
     ModelProfileView,
     OrganizationPreviewRequest,
     OrganizationPreviewView,
@@ -537,7 +539,7 @@ async def stream_run_events(
     tags=["agent"],
 )
 def create_model_profile(
-    body: ModelProfileInput,
+    body: ModelProfileCreate,
     request: Request,
     idempotency_key: IdempotencyKey,
 ) -> ModelProfileView:
@@ -552,6 +554,23 @@ def list_model_profiles(request: Request) -> list[ModelProfileView]:
 @router.get("/model-profiles/{profile_id}", response_model=ModelProfileView, tags=["agent"])
 def get_model_profile(profile_id: str, request: Request) -> ModelProfileView:
     return service_from(request).get_model_profile(profile_id)
+
+
+@router.delete(
+    "/model-profiles/{profile_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["agent"],
+)
+def delete_model_profile(profile_id: str, request: Request) -> None:
+    service_from(request).delete_model_profile(profile_id)
+
+
+@router.post("/providers/models", response_model=ModelListView, tags=["agent"])
+async def list_provider_models(
+    body: ModelListRequest,
+    request: Request,
+) -> ModelListView:
+    return await service_from(request).list_provider_models(body)
 
 
 @router.post("/providers/test", response_model=ProviderTestView, tags=["agent"])

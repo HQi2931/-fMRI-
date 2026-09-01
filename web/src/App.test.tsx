@@ -611,7 +611,7 @@ describe("App", () => {
     });
 
     await user.selectOptions(screen.getByLabelText("任务类型"), "log_summarizer");
-    await user.selectOptions(screen.getByLabelText("Provider"), "provider1");
+    await user.selectOptions(screen.getByLabelText("模型"), "provider1");
     await user.click(send);
     await user.selectOptions(screen.getByLabelText("任务类型"), "report_writer");
     await user.click(send);
@@ -638,13 +638,19 @@ describe("App", () => {
     });
     const user = userEvent.setup();
     renderAt("/settings");
-    await user.type(screen.getByLabelText("模型名称"), "configured-model");
-    await user.click(screen.getByRole("button", { name: "保存非敏感配置" }));
-    expect(await screen.findByText(/模型配置元数据已保存/)).toBeInTheDocument();
-    const profileButton = await screen.findByRole("button", { name: /deepseek-default/ });
-    await user.click(profileButton);
+    await user.type(screen.getByLabelText("配置 ID"), "deepseek-default");
+    await user.type(screen.getByLabelText("API 基址"), "https://api.deepseek.com");
+    await user.type(screen.getByLabelText("密钥环境变量名"), "DEEPSEEK_API_KEY");
+    await user.type(screen.getByLabelText("模型名称（手动输入）"), "configured-model");
+    await user.click(screen.getByRole("button", { name: "保存模型配置" }));
+    expect(await screen.findByText(/模型配置已保存/)).toBeInTheDocument();
+    const testButton = await screen.findByRole("button", { name: "测试" });
+    await user.click(testButton);
     expect(await screen.findByText(/轻量测试成功/)).toBeInTheDocument();
     const saved = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/model-profiles") && init?.method === "POST");
+    const savedBody = JSON.parse(String(saved?.[1]?.body));
+    expect(savedBody.profile.id).toBe("deepseek-default");
+    expect(savedBody.api_key).toBeNull();
     expect(String(saved?.[1]?.body)).not.toContain("replace-locally");
   });
 

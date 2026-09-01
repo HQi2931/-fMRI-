@@ -21,7 +21,7 @@ from neuroagent.agent.models import (
     SafeAgentSummary,
     TaskType,
 )
-from neuroagent.agent.providers import ModelProvider, ProviderError
+from neuroagent.agent.providers import ModelProvider, OpenAICompatibleProvider, ProviderError
 from neuroagent.agent.redaction import OutboundContextPolicy, OutboundPolicyError
 from neuroagent.agent.router import ModelRouter, ModelRoutingError
 from neuroagent.agent.secrets import SecretResolver
@@ -56,6 +56,9 @@ from neuroagent.application.contracts import (
     MlTableInspectView,
     MlTemplateCreateRequest,
     MlTemplateView,
+    ModelListRequest,
+    ModelListView,
+    ModelProfileCreate,
     ModelProfileInput,
     ModelProfileView,
     OrganizationPreviewRequest,
@@ -104,6 +107,7 @@ from neuroagent.application.ports import (
 )
 from neuroagent.application.reporting import build_statistical_reproducibility_report
 from neuroagent.application.settings import Settings
+from neuroagent.infrastructure.secrets import write_env_secret
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
 from neuroagent.domain.fmri.qc import assert_statistics_ready
@@ -2276,19 +2280,25 @@ class NeuroAgentService:
 
     # -- model routing and Agent tasks -------------------------------------
     def create_model_profile(
-        self, profile: ModelProfileInput, idempotency_key: str
+        self, request: ModelProfileCreate, idempotency_key: str
     ) -> ModelProfileView:
         def action() -> ModelProfileView:
-            result = self.repository.create_model_profile(profile)
+            if request.api_key:
+                write_env_secret(
+                    self.settings.secrets_file,
+                    request.profile.api_key_env,
+                    request.api_key,
+                )
+            result = self.repository.create_model_profile(request.profile)
             self.repository.append_event(
                 project_id=None,
                 run_id=None,
                 event_type="ModelProfileCreated",
                 severity="info",
                 payload={
-                    "profile_id": profile.id,
-                    "provider": profile.provider,
-                    "api_key_env": profile.api_key_env,
+                    "profile_id": request.profile.id,
+                    "provider": request.profile.provider,
+                    "api_key_env": request.profile.api_key_env,
                 },
             )
             return result
@@ -2296,7 +2306,7 @@ class NeuroAgentService:
         return self._idempotent(
             scope="model-profiles:create",
             key=idempotency_key,
-            request=profile,
+            request=request,
             response_type=ModelProfileView,
             action=action,
         )
@@ -2306,6 +2316,42 @@ class NeuroAgentService:
 
     def get_model_profile(self, profile_id: str) -> ModelProfileView:
         return self.repository.get_model_profile(profile_id)
+
+    def delete_model_profile(self, profile_id: str) -> None:
+        self.repository.delete_model_profile(profile_id)
+        self.repository.append_event(
+            project_id=None,
+            run_id=None,
+            event_type="ModelProfileDeleted",
+            severity="info",
+            payload={"profile_id": profile_id},
+        )
+
+    async def list_provider_models(self, request: ModelListRequest) -> ModelListView:
+        api_key = (request.api_key or "").strip() or None
+        if api_key is None and request.api_key_env:
+            api_key = self.secret_resolver.resolve(request.api_key_env)
+        if not api_key:
+            raise InputValidationError(
+                "model_api_key_missing",
+                "未提供 API Key 或密钥环境变量; 请在前端填写 API Key，或在本地 .env 配置对应变量。",
+            )
+        provider = self.providers.get("openai-compatible")
+        if not isinstance(provider, OpenAICompatibleProvider):
+            raise ApplicationError(
+                "model_list_unavailable",
+                "当前没有可用的 OpenAI-compatible 模型适配器。",
+                status_code=503,
+            )
+        try:
+            models = await provider.list_models(request.base_url, api_key)
+        except ProviderError as exc:
+            raise ApplicationError(
+                "model_list_unavailable",
+                "无法获取模型列表或返回内容无效。",
+                status_code=503,
+            ) from exc
+        return ModelListView(models=models)
 
     def _model_gateway(self) -> ModelGateway:
         if self.settings.redaction_salt is None:

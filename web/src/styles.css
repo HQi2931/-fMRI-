@@ -208,6 +208,21 @@ td { padding: 13px 12px; border-bottom: 1px solid #edf0f3; color: #4c5669; }
 .empty-state strong { margin-top: 12px; }.empty-state p { max-width: 430px; margin: 6px 0 0; }
 .sr-only { position: absolute; overflow: hidden; width: 1px; height: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
+.preset-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.preset-row .button { min-height: 34px; padding: 0 12px; }
+.model-field { display: grid; gap: 8px; }
+.model-pick-row { display: flex; gap: 8px; }
+.model-pick-row select { flex: 1; }
+.model-pick-row .button { flex: 0 0 auto; min-height: 41px; }
+.capability-field { display: flex; gap: 16px; flex-wrap: wrap; margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; }
+.capability-field legend { padding: 0 6px; color: var(--muted); font-size: 11px; font-weight: 800; }
+.profile-list { display: grid; gap: 12px; }
+.profile-card { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.profile-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.profile-card-head strong { font-size: 13px; overflow-wrap: anywhere; }
+.profile-card .muted { margin: 8px 0 0; font-size: 11px; overflow-wrap: anywhere; }
+.profile-card .button-row { margin-top: 12px; }
+
 @media (max-width: 1050px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .workflow-map { grid-template-columns: 1fr; }
