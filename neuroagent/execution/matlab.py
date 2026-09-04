@@ -152,8 +152,11 @@ class MatlabTemplateRenderer:
         generated.append("provenance.json")
         command = (
             str(environment.matlab_executable.resolve()),
+            "-nodisplay",
+            "-nosplash",
+            "-nodesktop",
             "-batch",
-            f"run('{_matlab_quote(entry_path)}')",
+            f"run('{_matlab_quote(entry_path)}');",
         )
         return RenderedJob(
             run_directory=run_directory,
@@ -212,6 +215,8 @@ class MatlabTemplateRenderer:
             "residual_df": call.residual_df,
             "revision_id": call.revision_id,
             "design_hash": call.design_hash,
+            "test": _statistics_test_name(call.function.value),
+            "group_counts": [len(group) for group in call.dependent_artifact_groups],
         }
         if payload.correction is not None:
             parameters = dict(payload.correction.parameters)
@@ -225,6 +230,14 @@ class MatlabTemplateRenderer:
         else:
             request["correction"] = None
         return request
+
+
+def _statistics_test_name(function: str) -> str:
+    return {
+        "y_TTest1_Image": "one_sample_t",
+        "y_TTest2_Image": "independent_two_sample_t",
+        "y_TTestPaired_Image": "paired_t",
+    }.get(function, "unsupported")
 
 
 class ControlledMatlabExecutor:

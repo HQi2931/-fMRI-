@@ -58,6 +58,38 @@ def test_environment_probe_never_starts_matlab(service: NeuroAgentService) -> No
         assert str(service.settings.matlab_executable) not in response.text
 
 
+def test_environment_config_accepts_user_selected_local_paths(
+    service: NeuroAgentService, tmp_path: Path
+) -> None:
+    matlab = tmp_path / "MATLAB" / "bin" / "matlab.exe"
+    spm = tmp_path / "MATLAB" / "toolbox" / "spm"
+    dpabi = tmp_path / "MATLAB" / "toolbox" / "DPABI-custom"
+    matlab.parent.mkdir(parents=True)
+    spm.mkdir(parents=True)
+    dpabi.mkdir(parents=True)
+    matlab.write_bytes(b"local matlab executable placeholder")
+
+    with TestClient(create_app(service=service)) as client:
+        response = client.put(
+            "/api/v1/environment/config",
+            json={
+                "matlab_executable": str(matlab),
+                "spm_dir": str(spm),
+                "dpabi_dir": str(dpabi),
+                "matlab_version": "R-local",
+                "spm_version": "SPM-local",
+                "dpabi_version": "DPABI-local",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["configured"] is True
+        assert response.json()["dpabi_version"] == "DPABI-local"
+
+        restored = client.get("/api/v1/environment/config")
+        assert restored.status_code == 200
+        assert restored.json()["matlab_executable"] == str(matlab.resolve())
+
+
 def test_unexpected_error_uses_safe_envelope(
     service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -48,9 +48,10 @@ class Settings(BaseSettings):
     matlab_executable: Path | None = None
     spm_dir: Path | None = None
     dpabi_dir: Path | None = None
-    matlab_version: str = "R2023b"
-    spm_version: str = "SPM12"
-    dpabi_version: str = "V8.2_240510"
+    # Version labels are user-supplied evidence, not compatibility promises.
+    matlab_version: str = "unspecified"
+    spm_version: str = "unspecified"
+    dpabi_version: str = "unspecified"
     adapter_version: str = "1.0.0"
     dataset_scan_max_files: int = Field(default=100_000, ge=1)
     worker_lease_seconds: int = Field(default=30, ge=1)
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     serve_frontend: bool = False
     frontend_dist: Path = _PROJECT_ROOT / "web" / "dist"
+    enable_real_execution: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:

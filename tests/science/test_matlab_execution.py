@@ -78,7 +78,14 @@ def test_renderer_uses_fixed_template_and_quotes_space_paths(tmp_path: Path) -> 
     assert "DPARSFA_run(cfg_mat_path, staging_directory, subject_list_path, 0)" in script
     assert "jsondecode" in script
     assert rendered.command[0].endswith("matlab.exe")
-    assert "work root" in rendered.command[2]
+    assert rendered.command[1:5] == (
+        "-nodisplay",
+        "-nosplash",
+        "-nodesktop",
+        "-batch",
+    )
+    assert "work root" in rendered.command[5]
+    assert rendered.command[5].endswith("');")
     assert rendered.generated_files == (
         "scripts/bootstrap.m",
         "config/preprocessing.json",

@@ -21,6 +21,7 @@ function defaultApi(input: RequestInfo | URL): Promise<Response> {
   if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles")) return json([]);
   if (path.endsWith("/statistics/results")) return json([]);
   if (path.endsWith("/environment/probe")) return json({ ready: false, environment_hash: "e".repeat(64), components: [] });
+  if (path.endsWith("/environment/config")) return json({ matlab_executable: null, spm_dir: null, dpabi_dir: null, matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false });
   return json({ error: { code: "not_found", message: "missing", details: {}, trace_id: null } }, 404);
 }
 
@@ -58,6 +59,39 @@ describe("App", () => {
     renderAt("/");
     expect(await screen.findByText("离线预览")).toBeInTheDocument();
     expect(screen.getByText("尚未开始")).toBeInTheDocument();
+  });
+
+  it("prompts for the local MATLAB stack and saves user-selected paths", async () => {
+    let config = {
+      matlab_executable: null,
+      spm_dir: null,
+      dpabi_dir: null,
+      matlab_version: "unspecified",
+      spm_version: "unspecified",
+      dpabi_version: "unspecified",
+      configured: false,
+    };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/environment/config") && init?.method === "PUT") {
+        config = { ...JSON.parse(String(init.body)), configured: true };
+        return json(config);
+      }
+      if (path.endsWith("/environment/config")) return json(config);
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/");
+    await user.click(await screen.findByRole("link", { name: "去选择路径" }));
+    expect(screen.getByRole("heading", { name: "选择本机 MATLAB / SPM / DPABI" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("MATLAB 可执行文件"), "C:\\MATLAB\\bin\\matlab.exe");
+    await user.type(screen.getByLabelText("SPM 目录"), "C:\\MATLAB\\toolbox\\spm");
+    await user.type(screen.getByLabelText("DPABI 目录"), "C:\\MATLAB\\toolbox\\DPABI");
+    await user.type(screen.getByLabelText("MATLAB 版本标签"), "R-local");
+    await user.click(screen.getByRole("button", { name: "保存并重新探测" }));
+    expect(await screen.findByText(/本机 MATLAB\/SPM\/DPABI 路径已保存/)).toBeInTheDocument();
+    const saveCall = vi.mocked(fetch).mock.calls.find(([url, request]) => pathOf(url).endsWith("/environment/config") && request?.method === "PUT");
+    expect(JSON.parse(String(saveCall?.[1]?.body)).dpabi_dir).toBe("C:\\MATLAB\\toolbox\\DPABI");
   });
 
   it("renders persisted late-stage progress and navigates without a page reload", async () => {
@@ -435,6 +469,31 @@ describe("App", () => {
     expect(JSON.parse(String(cancelCall?.[1]?.body))).toMatchObject({ expected_version: 1, reason: "发现输入清单需要复核" });
   });
 
+  it("requires explicit confirmation before queuing a MATLAB run", async () => {
+    setWorkspace({ projectId: "p1", planRevisionId: "plan1", planHash: "b".repeat(64), planState: "approved" });
+    const run = { run_id: "matlab-run", project_id: "p1", plan_revision_id: "plan1", state: "queued", version: 1, attempt: 0, cancel_requested: false, error: null, created_at: now, updated_at: now };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
+      if (path.endsWith("/runs") && init?.method === "POST") return json(run, 202);
+      if (path.endsWith("/runs")) return json([]);
+      if (path.endsWith("/runs/matlab-run")) return json(run);
+      if (path.endsWith("/runs/matlab-run/events")) return json([]);
+      if (path.endsWith("/runs/matlab-run/artifacts")) return json([]);
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/runs");
+    await user.selectOptions(await screen.findByLabelText("执行后端"), "matlab");
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await user.click(screen.getByRole("button", { name: "确认并创建 MATLAB 运行" }));
+    expect(vi.mocked(fetch).mock.calls.some(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "确认并创建 MATLAB 运行" }));
+    expect(await screen.findByText(/真实 MATLAB 任务已进入隔离队列/)).toBeInTheDocument();
+    const createCall = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST");
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ execution_backend: "matlab", real_execution_confirmed: true });
+  });
+
   it("requeues a persisted retryable run through the versioned action", async () => {
     setWorkspace({ projectId: "p1", runId: "run-retry", runVersion: 3, runState: "failed_retryable" });
     let current = { run_id: "run-retry", project_id: "p1", plan_revision_id: "plan1", state: "failed_retryable", version: 3, attempt: 1, cancel_requested: false, error: "temporary", created_at: now, updated_at: now };
@@ -728,14 +787,18 @@ describe("App", () => {
     await user.type(screen.getByLabelText("统计设计审批理由"), "reviewed design and correction");
     await user.click(approveButton);
     expect(await screen.findByText(/统计设计已批准/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("执行后端"), "matlab");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(screen.getByRole("button", { name: "提交统计运行" }));
-    expect(await screen.findByText(/统计任务已进入本机队列/)).toBeInTheDocument();
+    expect(await screen.findByText(/真实 MATLAB 统计任务已进入隔离队列/)).toBeInTheDocument();
     const createCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/statistical-designs"));
     const createPayload = JSON.parse(String(createCall?.[1]?.body));
     expect(createPayload).not.toHaveProperty("environment_hash");
     expect(createPayload.design.covariates[0]).toMatchObject({ name: "age", centering: "grand_mean", values: [{ subject_id: "sub-1", value: 23 }, { subject_id: "sub-2", value: 30 }, { subject_id: "sub-3", value: 35 }] });
     const approvalCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/plan-revisions/stat-plan/approve"));
     expect(JSON.parse(String(approvalCall?.[1]?.body))).toMatchObject({ actor: "statistics-reviewer", reason: "reviewed design and correction", decision: "approved" });
+    const statisticsRunCall = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/statistics/runs") && init?.method === "POST");
+    expect(JSON.parse(String(statisticsRunCall?.[1]?.body))).toMatchObject({ execution_backend: "matlab", real_execution_confirmed: true });
   });
 
   it("builds an explicitly ordered independent test with GRF and within-group covariate", async () => {

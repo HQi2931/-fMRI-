@@ -4,10 +4,19 @@
 
 ## Unreleased
 
+### v0.1.0 release work
+
+- 新增 `ExecutionBackend` 控制面：Mock 默认；MATLAB 必须逐次确认、配置开关和环境探测同时通过。
+- 新增批准计划专用 `WorkflowFactory`/`ToolRuntime`，统一 Mock 与受控执行的 DAG 拓扑、Tool/Skill 锁、Artifact lineage 和步骤事件校验。
+- Worker 已注册 `matlab_preprocessing`/`matlab_statistics` 路由；统计模板覆盖三类 t 检验、FDR/GRF、效应量、26 邻接簇表和结构化版本证据。
+- 恢复脚本改用内置 .NET SHA-256，兼容无 Profile 的 Windows PowerShell 5.1/7。
+- ADR 0006 取代原 0004 的延期策略；真实 MATLAB/Provider smoke、远程 CI 和正式 tag 仍需授权门通过。
+- 环境配置改为前端首次使用时由用户选择 MATLAB 可执行文件、SPM 目录和 DPABI 目录；版本标签仅作本机证据，不再硬编码为通用兼容条件。
+
 ### Added
 
 - 扩展 Phase 10–17 的确定性基础：长任务阶段事件、DPABI/MATLAB 失败诊断、ROI 长宽表导出、CSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配、DPABI 整理预览和本地 rs-fMRI 证据问答。
-- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills（这 10 个为契约/预览包，未注册运行时，真实执行待 v0.2.0）。
+- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills（部分仍为契约/预览包，不属于 v0.1 真实执行范围）。
 
 - 本地 FastAPI、SQLite Worker、React/TypeScript 前端与 MATLAB/DPABI 静态适配的 MVP 候选基线。
 - 仓库安全策略、依赖锁定、Windows 质量门禁、GitHub Actions 和阶段自动发布脚本。
@@ -22,7 +31,7 @@
 - Playwright Mock E2E 覆盖前端运行—QC—统计提交交互及服务端校验失败路径。
 - 纯合成后端 E2E 覆盖只读 BIDS 扫描、ALFF Skill、审批、Mock Worker、测试夹具 Artifact、人工 QC、单样本 t + FDR、统计 Mock 和确定性报告；所有结果均标记为不可用于科学推断。
 - 新增 `StatisticalResultManifest`、显式簇记录、真实/合成证据完整性规则，以及不依赖 Agent 的确定性 Markdown/JSON 复现报告生成器。
-- 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；当前仅登记明确标记的合成结果，真实执行器产物登记待 v0.2.0。
+- 统计结果登记与只读查询闭环：`/statistics/results` 查询 API、前端报告展示；真实结果必须通过完整证据合同，合成结果继续显式标记为不可用于科学推断。
 - 模型配置管理增强：新增 `DELETE /model-profiles/{profile_id}`；设置页支持多 Provider/多模型列表管理（完整字段、服务商预设、能力多选与删除），Agent 页模型下拉直接显示模型名与配置 ID。
 - 模型名自动获取：新增 `POST /providers/models`，设置页在填写 base_url 与密钥环境变量名后可一键拉取该 Provider 的可用模型并从下拉选择，同时保留手动输入兜底。
 - 服务商预设与前端填 Key：设置页内置 DSH（pi-ai）OpenAI 兼容服务商预设（DeepSeek、智谱、Kimi、Qwen、OpenAI、xAI、Groq、OpenRouter 等）；可直接在前端填写 API Key，拉取模型后保存时后端将 Key 写入本地 `.env`（不进入数据库、日志或审计事件），Profile 仍只记录密钥环境变量名。
@@ -36,7 +45,7 @@
 - 将 Artifact metadata 改为失败关闭：verified lineage 必须绑定执行端证据哈希、实际 TR 和实际保留 volume 数；指标按有效频率分辨率校验并拒绝 TR 不一致。
 - ALFF/fALFF/ReHo 统一强制 typed 脑掩膜；预处理—指标 DAG 新增头信息验证门，CUT scrubbing 后的 ReHo 改为两阶段 verified Artifact 选择。
 - MATLAB JobSpec 的输入 Artifact 强制只读，基础 Cfg 只允许显式白名单科学字段。
-- 公共运行入口保持 Mock-only；真实 MATLAB 与真实 Provider smoke 被明确列为需要本机凭据或单独作业授权的验证项。
+- 公共运行入口默认 Mock；真实 MATLAB 与真实 Provider smoke 受本机配置、环境和单独作业授权门控制。
 - 环境锁现已绑定 DPABI V8.2 的 ALFF/ReHo、统计检验、FDR/GRF 和统计影像 I/O
   入口内容；任一必需入口缺失时环境探测失败关闭。
 - SQLite 写接口的幂等键使用带所有者和过期时间的持久租约；数据库恢复使用跨手工/脚本启动方式的运行标记与原子恢复锁，阻断活动 API/Worker 和启动—恢复竞态。
@@ -56,6 +65,6 @@
 
 ### Known limitations
 
-- 公共 Worker 尚未接入真实 MATLAB/DPABI Executor。
-- 统计运行当前只排队通用 Mock 任务；真实效应量、显著簇表、实际结果发现/登记和结果查询未接线。复现报告合同已实现，但真实证据不完整时会失败关闭。
+- 真实 MATLAB/DPABI Executor 已接入 Worker；实际科学能力仍需在目标机器和 DPABI 版本上完成授权 smoke。
+- 真实统计产物的效应量、校正图、簇表、版本证据和确定性报告已接入失败关闭登记；真实 Provider、MATLAB smoke 和正式发布仍未完成。
 - `v0.1.0` 未发布，首次推送、GitHub Actions、真实 Provider smoke 和真实 MATLAB smoke 仍未完成。

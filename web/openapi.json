@@ -1107,6 +1107,130 @@
         "title": "EnvironmentComponent",
         "type": "object"
       },
+      "EnvironmentConfigUpdate": {
+        "additionalProperties": false,
+        "description": "User-selected local scientific software locations.\n\nThese values are local runtime configuration, not scientific parameters.\nThe server validates the selected filesystem entries before persisting them;\nversion labels are descriptive evidence and are never treated as exact\ncompatibility claims.",
+        "properties": {
+          "dpabi_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dpabi Dir"
+          },
+          "dpabi_version": {
+            "default": "unspecified",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Dpabi Version",
+            "type": "string"
+          },
+          "matlab_executable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matlab Executable"
+          },
+          "matlab_version": {
+            "default": "unspecified",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Matlab Version",
+            "type": "string"
+          },
+          "spm_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spm Dir"
+          },
+          "spm_version": {
+            "default": "unspecified",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Spm Version",
+            "type": "string"
+          }
+        },
+        "title": "EnvironmentConfigUpdate",
+        "type": "object"
+      },
+      "EnvironmentConfigView": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "dpabi_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dpabi Dir"
+          },
+          "dpabi_version": {
+            "title": "Dpabi Version",
+            "type": "string"
+          },
+          "matlab_executable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matlab Executable"
+          },
+          "matlab_version": {
+            "title": "Matlab Version",
+            "type": "string"
+          },
+          "spm_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spm Dir"
+          },
+          "spm_version": {
+            "title": "Spm Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "matlab_version",
+          "spm_version",
+          "dpabi_version",
+          "configured"
+        ],
+        "title": "EnvironmentConfigView",
+        "type": "object"
+      },
       "EnvironmentProbeView": {
         "additionalProperties": false,
         "properties": {
@@ -1255,6 +1379,15 @@
         ],
         "title": "EvidenceChunk",
         "type": "object"
+      },
+      "ExecutionBackend": {
+        "description": "Execution control-plane choice for a queued run.",
+        "enum": [
+          "mock",
+          "matlab"
+        ],
+        "title": "ExecutionBackend",
+        "type": "string"
       },
       "FailureCode": {
         "enum": [
@@ -3796,6 +3929,10 @@
       "RunCreate": {
         "additionalProperties": false,
         "properties": {
+          "execution_backend": {
+            "$ref": "#/components/schemas/ExecutionBackend",
+            "default": "mock"
+          },
           "expected_plan_hash": {
             "pattern": "^[a-f0-9]{64}$",
             "title": "Expected Plan Hash",
@@ -3826,6 +3963,11 @@
           "project_id": {
             "title": "Project Id",
             "type": "string"
+          },
+          "real_execution_confirmed": {
+            "default": false,
+            "title": "Real Execution Confirmed",
+            "type": "boolean"
           }
         },
         "required": [
@@ -5310,6 +5452,10 @@
       "StatisticsRunCreate": {
         "additionalProperties": false,
         "properties": {
+          "execution_backend": {
+            "$ref": "#/components/schemas/ExecutionBackend",
+            "default": "mock"
+          },
           "expected_plan_hash": {
             "pattern": "^[a-f0-9]{64}$",
             "title": "Expected Plan Hash",
@@ -5325,6 +5471,11 @@
           "project_id": {
             "title": "Project Id",
             "type": "string"
+          },
+          "real_execution_confirmed": {
+            "default": false,
+            "title": "Real Execution Confirmed",
+            "type": "boolean"
           },
           "statistical_design_revision_id": {
             "title": "Statistical Design Revision Id",
@@ -6867,6 +7018,176 @@
         "summary": "Get Demographics",
         "tags": [
           "datasets"
+        ]
+      }
+    },
+    "/api/v1/environment/config": {
+      "get": {
+        "operationId": "environment_config_api_v1_environment_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Environment Config",
+        "tags": [
+          "system"
+        ]
+      },
+      "put": {
+        "operationId": "update_environment_config_api_v1_environment_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Update Environment Config",
+        "tags": [
+          "system"
         ]
       }
     },

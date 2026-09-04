@@ -35,6 +35,7 @@ export function RunsPage() {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [outcome, setOutcome] = useState<"succeed" | "fail_retryable" | "fail_terminal" | "timeout">("succeed");
+  const [executionBackend, setExecutionBackend] = useState<"mock" | "matlab">("mock");
   const [operationReason, setOperationReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -131,6 +132,16 @@ export function RunsPage() {
     setBusy(true);
     setError("");
     try {
+      const confirmed = executionBackend === "matlab"
+        ? window.confirm(
+          `确认启动真实 MATLAB/DPABI 运行？\n\n` +
+          `写入：项目配置的隔离工作目录\n` +
+          `软件：MATLAB R2023b / SPM12 / DPABI V8.2_240510\n` +
+          `计划哈希：${workspace.planHash}\n` +
+          `仅用于科研流程，不用于临床判断。`,
+        )
+        : false;
+      if (executionBackend === "matlab" && !confirmed) return;
       const created = await api.createRun({
         project_id: workspace.projectId,
         plan_revision_id: workspace.planRevisionId,
@@ -138,11 +149,15 @@ export function RunsPage() {
         max_attempts: 2,
         mock_outcome: outcome,
         mock_delay_ms: 50,
+        execution_backend: executionBackend,
+        real_execution_confirmed: confirmed,
       });
       updateWorkspace({ runId: created.run_id, runVersion: created.version, runState: created.state });
       setSelectedId(created.run_id);
       await refresh();
-      setMessage("任务已进入本机 SQLite 队列；独立 Worker 会原子领取。当前按钮只创建 Mock 安全闭环。 ");
+      setMessage(executionBackend === "mock"
+        ? "任务已进入本机 SQLite 队列；独立 Worker 会原子领取。"
+        : "真实 MATLAB 任务已进入隔离队列，完成后仍需检查证据与 QC。 ");
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -194,15 +209,21 @@ export function RunsPage() {
       />
       <Feedback message={error || message} error={Boolean(error)} />
       <section className="panel form-panel">
+        <label>执行后端
+          <select value={executionBackend} onChange={(event) => setExecutionBackend(event.target.value as typeof executionBackend)}>
+            <option value="mock">Mock（CI / 安全默认）</option>
+            <option value="matlab">MATLAB / DPABI（需逐次确认）</option>
+          </select>
+        </label>
         <label className="field-grow">Mock 验证结果
-          <select value={outcome} onChange={(event) => setOutcome(event.target.value as typeof outcome)}>
+          <select value={outcome} onChange={(event) => setOutcome(event.target.value as typeof outcome)} disabled={executionBackend === "matlab"}>
             <option value="succeed">成功后进入人工 QC</option>
             <option value="fail_retryable">可重试失败</option>
             <option value="fail_terminal">终止失败</option>
             <option value="timeout">超时</option>
           </select>
         </label>
-        <button className="button button-primary" type="button" disabled={busy || workspace.planState !== "approved"} onClick={createRun}>创建已审批计划的 Mock 运行</button>
+        <button className="button button-primary" type="button" disabled={busy || workspace.planState !== "approved"} onClick={createRun}>{executionBackend === "mock" ? "创建已审批计划的 Mock 运行" : "确认并创建 MATLAB 运行"}</button>
       </section>
       <div className="two-column wide-left">
         <section className="panel run-card">

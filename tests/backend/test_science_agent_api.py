@@ -1576,7 +1576,13 @@ def test_agent_api_redacts_falls_back_and_never_returns_secrets(
 
         rejected_secret = client.post(
             "/api/v1/model-profiles",
-            json={"profile": {**profiles[0], "id": "unsafe-profile", "api_key": "must-not-be-accepted"}},
+            json={
+                "profile": {
+                    **profiles[0],
+                    "id": "unsafe-profile",
+                    "api_key": "must-not-be-accepted",
+                }
+            },
             headers={"Idempotency-Key": "unsafe-model-profile"},
         )
         assert rejected_secret.status_code == 422
@@ -1798,9 +1804,7 @@ async def test_slow_provider_request_renews_idempotency_lease(
         capabilities=frozenset({ModelCapability.JSON_OBJECT}),
         timeout_seconds=10,
     )
-    agent_service.create_model_profile(
-        ModelProfileCreate(profile=profile), "slow-provider-profile"
-    )
+    agent_service.create_model_profile(ModelProfileCreate(profile=profile), "slow-provider-profile")
     monkeypatch.setenv("SLOW_PROVIDER_API_KEY", "test-secret-value")
     request = ProviderTestRequest(profile_id=profile.id, expected_profile_version=1)
     pending = asyncio.create_task(agent_service.test_provider(request, "slow-provider-test"))

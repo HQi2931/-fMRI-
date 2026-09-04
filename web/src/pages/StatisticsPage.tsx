@@ -75,6 +75,7 @@ export function StatisticsPage() {
   const [clusterThreshold, setClusterThreshold] = useState("");
   const [grfSmoothnessMode, setGrfSmoothnessMode] = useState<GrfSmoothnessMode | "">("");
   const [grfSmoothnessDlh, setGrfSmoothnessDlh] = useState("");
+  const [executionBackend, setExecutionBackend] = useState<"mock" | "matlab">("mock");
   const [design, setDesign] = useState<StatisticalDesign | null>(null);
   const designIdRef = useRef<string | null>(null);
   const [approvalActor, setApprovalActor] = useState("");
@@ -319,14 +320,28 @@ export function StatisticsPage() {
     setBusy(true);
     setError("");
     try {
+      const confirmed = executionBackend === "matlab"
+        ? window.confirm(
+          `确认启动真实 MATLAB/DPABI 统计？\n\n` +
+          `写入：项目配置的隔离工作目录\n` +
+          `软件：MATLAB R2023b / SPM12 / DPABI V8.2_240510\n` +
+          `计划哈希：${design.plan_revision.plan_hash}\n` +
+          `仅用于科研流程，不用于临床判断。`,
+        )
+        : false;
+      if (executionBackend === "matlab" && !confirmed) return;
       const run = await api.createStatisticsRun({
         project_id: workspace.projectId,
         statistical_design_revision_id: design.plan_revision.plan_revision_id,
         expected_plan_hash: design.plan_revision.plan_hash,
         max_attempts: 1,
+        execution_backend: executionBackend,
+        real_execution_confirmed: confirmed,
       });
       updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
-      setMessage("统计任务已进入本机队列。当前 MVP 使用受控执行契约；真实 MATLAB 仍需单独授权。 ");
+      setMessage(executionBackend === "mock"
+        ? "统计任务已进入本机队列。"
+        : "真实 MATLAB 统计任务已进入隔离队列，完成后将登记完整证据。 ");
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -357,6 +372,7 @@ export function StatisticsPage() {
             <label className="mapping-field">协变量（{test === "paired_t" ? "DPABI V8.2 配对检验暂不支持" : "可留空；每行“名称 | none/grand_mean/within_group | 受试者=数值,…”，顺序会按 QC 冻结清单重排"}）<textarea value={covariateRows} onChange={(event) => setCovariateRows(event.target.value)} disabled={Boolean(design) || test === "paired_t"} /></label>
             <p className="muted">t 检验使用 DPABI 适配器支持的首列 canonical contrast；方向由组/条件顺序与尾部共同明确。</p>
             <div className="form-grid">
+              <label>执行后端<select value={executionBackend} onChange={(event) => setExecutionBackend(event.target.value as typeof executionBackend)}><option value="mock">Mock（CI / 安全默认）</option><option value="matlab">MATLAB / DPABI（需逐次确认）</option></select></label>
               <label>统计设计审批人<input value={approvalActor} onChange={(event) => setApprovalActor(event.target.value)} disabled={!design || design.plan_revision.state !== "awaiting_approval"} /></label>
               <label>统计设计审批理由<textarea value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} disabled={!design || design.plan_revision.state !== "awaiting_approval"} placeholder="说明已核对的受试者顺序、设计方向、尾部、mask 与校正阈值" /></label>
             </div>

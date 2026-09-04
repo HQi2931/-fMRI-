@@ -114,11 +114,17 @@ class SkillValidator:
                 issues.append(
                     SkillValidationIssue(
                         code=code,
-                        severity=IssueSeverity.BLOCKING,
+                        severity=IssueSeverity.WARNING,
                         message=(
-                            f"Skill {spec.skill_id}@{spec.version} targets {required}, not {actual}"
+                            f"Skill {spec.skill_id}@{spec.version} was authored against {field}="
+                            f"{required}; configured environment reports {actual}. "
+                            "Continue only after entry-point probing and dry-run review."
                         ),
                         path=f"environment.{field}",
+                        remediation=(
+                            "Verify the selected local software directory and review the "
+                            "generated dry-run."
+                        ),
                     )
                 )
         requested = set(request.requested_metrics)

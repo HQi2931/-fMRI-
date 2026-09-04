@@ -12,7 +12,7 @@ import threading
 import uuid
 from typing import Any, Protocol
 
-from neuroagent.application.contracts import RunView, WorkflowState
+from neuroagent.application.contracts import PlanRevisionView, RunView, WorkflowState
 from neuroagent.application.ports import ClaimedJob, JobExecutor
 
 
@@ -55,6 +55,8 @@ class WorkerRepository(Protocol):
     ) -> bool: ...
 
     def get_run(self, run_id: str) -> RunView: ...
+
+    def get_plan(self, plan_revision_id: str) -> PlanRevisionView: ...
 
     def append_event(
         self,
@@ -117,6 +119,14 @@ class SQLiteWorker:
         payload = claimed.get("payload")
         if not isinstance(payload, dict):
             payload = {}
+        plan = self._repository.get_plan(run.plan_revision_id)
+        payload = {
+            **payload,
+            "job_id": job_id,
+            "run_id": run_id,
+            "plan_hash": str(payload.get("plan_hash", plan.plan_hash)),
+            "input_manifest_hash": str(payload.get("input_manifest_hash", plan.manifest_hash)),
+        }
         lease_lost = threading.Event()
         heartbeat_stop = threading.Event()
         heartbeat_interval = max(0.05, self._lease_seconds / 3)

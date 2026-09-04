@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from neuroagent.application.contracts import EnvironmentConfigUpdate
 from neuroagent.application.settings import Settings
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 
@@ -34,10 +35,13 @@ def _fake_stack(root: Path, marker: str) -> Settings:
         entry = dpabi.joinpath(*relative_path.split("/"))
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.write_text(f"{relative_path}-{marker}", encoding="utf-8")
+    work_root = root / "work"
+    work_root.mkdir(parents=True, exist_ok=True)
     return Settings(
         matlab_executable=matlab,
         spm_dir=spm,
         dpabi_dir=dpabi,
+        allowed_work_root=work_root,
     )
 
 
@@ -108,19 +112,56 @@ def test_missing_required_dpabi_entry_point_fails_closed_without_exposing_paths(
 
 
 def test_unconfigured_scientific_stack_fails_closed() -> None:
-    settings = Settings(matlab_executable=None, spm_dir=None, dpabi_dir=None)
+    settings = Settings(
+        matlab_executable=None,
+        spm_dir=None,
+        dpabi_dir=None,
+        allowed_work_root=Path("work") / "test-unconfigured-environment",
+    )
 
     lock = SettingsEnvironmentLockProvider(settings).current()
     unavailable = {component.name for component in lock.probe.components if not component.available}
 
     assert lock.probe.ready is False
     assert {
-        "MATLAB R2023b",
-        "SPM12",
-        "DPABI V8.2_240510",
+        f"MATLAB {settings.matlab_version}",
+        f"SPM {settings.spm_version}",
+        f"DPABI {settings.dpabi_version}",
         "DPARSFA_run",
         "DPABI ALFF/ReHo entry points",
         "DPABI statistical test entry points",
         "DPABI FDR/GRF entry points",
         "DPABI statistical image I/O entry points",
     }.issubset(unavailable)
+
+
+def test_user_selected_environment_is_persisted_and_versions_are_advisory(
+    tmp_path: Path,
+) -> None:
+    settings = _fake_stack(tmp_path / "selected", "configured")
+    provider = SettingsEnvironmentLockProvider(settings)
+
+    selected = provider.update_configuration(
+        EnvironmentConfigUpdate(
+            matlab_executable=str(settings.matlab_executable),
+            spm_dir=str(settings.spm_dir),
+            dpabi_dir=str(settings.dpabi_dir),
+            matlab_version="R2025a-local",
+            spm_version="SPM-custom",
+            dpabi_version="DPABI-local-build",
+        )
+    )
+
+    assert selected.configured is True
+    assert selected.matlab_version == "R2025a-local"
+    assert provider.current().probe.ready is True
+    component_names = {component.name for component in provider.current().probe.components}
+    assert "MATLAB R2025a-local" in component_names
+    assert "SPM SPM-custom" in component_names
+    assert "DPABI DPABI-local-build" in component_names
+
+    reloaded = SettingsEnvironmentLockProvider(settings)
+    assert reloaded.configuration_view() == selected
+    assert (
+        reloaded.current().snapshot.environment_hash == provider.current().snapshot.environment_hash
+    )
