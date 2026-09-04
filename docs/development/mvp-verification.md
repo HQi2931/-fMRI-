@@ -21,23 +21,24 @@
 ## 当前可验证的本地闭环
 
 - 项目、数据集、只读扫描、manifest、人口学对齐和数据集划分。
-- Skill 解析/校验/编译、计划审批、Mock 排队、事件与 Artifact 元数据登记。
+- Skill 解析/校验/编译、批准计划 `WorkflowFactory`/`ToolRuntime` DAG 排队、步骤事件与 Artifact 元数据登记。
 - 在测试中注册类型化指标 Artifact 后的 QC revision、人工审批和统计设计校验。
 - 真实 SQLite、应用服务和 Mock Worker 组成的纯合成后端闭环：BIDS 扫描、ALFF Skill、审批、人工 QC、单样本 t + FDR、统计 Mock 与确定性 Markdown/JSON 报告。
 - 前端对上述流程的 Mock API 交互。
 
 `scripts/synthetic-demo.py` 会完成上述合成闭环，但 typed 指标和统计结果角色由内部测试 seam 注入为醒目标记的 `synthetic_non_scientific` 占位 Artifact。它不会运行影像算法、产生统计数值或证明真实科研结果。
 
-这里的 Mock 闭环验证的是批准计划可创建作业，以及队列、状态、事件和通用 Artifact 收口协议。虽然编译结果包含经过校验的 DAG、能力绑定和 Tool 锁，公共 Worker 当前不会遍历 DAG 或调用类型化 Tool；相关 Tool 能力只在编译和独立测试中验证。
+这里的 Mock 闭环验证的是批准计划可创建作业，以及队列、状态、事件、DAG 步骤和通用 Artifact 收口协议。Mock 与 MATLAB 共享冻结计划和 ToolRuntime；MATLAB 还需环境和逐次确认门。
 
 ## 已知实现限制
 
-1. 公共 Web/API 的 `/runs` 和 `/statistics/runs` 只创建通用 Mock 作业。
-2. 公共 Worker 直接调用注入的 `MockJobExecutor`，尚未按已批准 `SkillPlan` 的 DAG 分派类型化 Tool。
-3. `ControlledMatlabExecutor`、固定模板和 DPABI V8.2 投影已实现，但未接入公共 Worker，也未完成真实小数据 smoke。
-4. 统计运行不会生成未校正统计图、校正结果、效应量或簇表。确定性报告生成器已实现，但真实模式要求这些证据全部登记，否则失败关闭。
+1. 公共 Web/API 默认创建 Mock 作业；首次使用时用户在环境页面选择 MATLAB/SPM/DPABI 路径。可显式选择 MATLAB，但必须满足配置开关、入口探测就绪和逐次确认。
+2. 公共 Worker 通过 executor registry 和 `ToolRuntime` 分派；未注册类型、锁漂移、谱系失配或缺失输出均失败关闭。
+3. `ControlledMatlabExecutor`、固定模板和受控 DPABI 入口投影已接入公共路由；用户选择的版本标签仅作证据，真实小数据 smoke 仍是发布前授权门。
+4. 真实 MATLAB 统计运行会按冻结设计生成未校正统计图、可选校正图、效应量图、簇表、日志和软件版本证据，并由应用层组装确定性报告；任一角色缺失、哈希漂移或设计不一致都会失败关闭。真实算法闭环仍需发布前 MATLAB smoke 证明。
 5. Artifact API 只提供元数据，不提供文件下载。
 6. Playwright 端到端测试使用 Mock API，不是真实 FastAPI—Worker—MATLAB 端到端运行。
+7. `matlab_preprocessing` 当前保留为显式失败关闭路由；从冻结 SkillPlan/manifest 生成 DPARSFA 输入与 typed preprocessing JobSpec 仍是正式发布前缺口，不会被 Mock 结果冒充完成。
 
 ## 人工或外部验证项
 
@@ -46,7 +47,7 @@
 1. GitHub CLI 登录、首次推送、分支保护与 Actions 状态，需要仓库维护者完成一次 `gh auth login`。
 2. 真实模型 Provider smoke，需要本机 `.env` 中存在有效 Key，并由用户显式触发可能产生费用的调用。
 3. MATLAB/DPABI smoke，需要用户明确批准一个小型合成或脱敏数据作业。常规测试不启动 MATLAB。
-4. 真实统计产物和报告闭环，需要先完成 Executor/队列接线、实际产物发现与注册；报告合同本身已实现。
+4. 真实统计产物和报告闭环已完成 Executor/队列接线、实际产物发现与原子注册；仍需用户授权的 MATLAB smoke 记录 DPABI 实际版本和合成数据证据。
 
 ## 非目标
 

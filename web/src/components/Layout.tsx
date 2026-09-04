@@ -20,7 +20,7 @@ function connectionLabel(state: ConnectionState) {
   return ["正在连接", "neutral"] as const;
 }
 
-export function Layout({ children, connection }: { children: React.ReactNode; connection: ConnectionState }) {
+export function Layout({ children, connection, dpabiLabel = "DPABI 未配置" }: { children: React.ReactNode; connection: ConnectionState; dpabiLabel?: string }) {
   const [label, tone] = connectionLabel(connection);
   return (
     <div className="app-shell">
@@ -52,7 +52,7 @@ export function Layout({ children, connection }: { children: React.ReactNode; co
             <strong>静息态功能连接研究</strong>
           </div>
           <div className="topbar-actions">
-            <StatusPill tone="info">DPABI V8.2</StatusPill>
+            <StatusPill tone="info">{dpabiLabel}</StatusPill>
             <button className="avatar" type="button" aria-label="本地用户">HQ</button>
           </div>
         </header>

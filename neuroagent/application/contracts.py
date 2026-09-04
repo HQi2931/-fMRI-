@@ -300,13 +300,28 @@ class MockOutcome(StrEnum):
     TIMEOUT = "timeout"
 
 
+class ExecutionBackend(StrEnum):
+    """Execution control-plane choice for a queued run."""
+
+    MOCK = "mock"
+    MATLAB = "matlab"
+
+
 class RunCreate(StrictModel):
     project_id: str
     plan_revision_id: str
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     max_attempts: int = Field(default=1, ge=1, le=5)
+    execution_backend: ExecutionBackend = ExecutionBackend.MOCK
+    real_execution_confirmed: bool = False
     mock_outcome: MockOutcome = MockOutcome.SUCCEED
     mock_delay_ms: int = Field(default=0, ge=0, le=10_000)
+
+    @model_validator(mode="after")
+    def require_real_execution_confirmation(self) -> RunCreate:
+        if self.execution_backend is ExecutionBackend.MATLAB and not self.real_execution_confirmed:
+            raise ValueError("real MATLAB execution requires explicit confirmation")
+        return self
 
 
 class RunAction(StrictModel):
@@ -416,6 +431,33 @@ class EnvironmentProbeView(StrictModel):
     components: list[EnvironmentComponent]
 
 
+class EnvironmentConfigUpdate(StrictModel):
+    """User-selected local scientific software locations.
+
+    These values are local runtime configuration, not scientific parameters.
+    The server validates the selected filesystem entries before persisting them;
+    version labels are descriptive evidence and are never treated as exact
+    compatibility claims.
+    """
+
+    matlab_executable: str | None = None
+    spm_dir: str | None = None
+    dpabi_dir: str | None = None
+    matlab_version: str = Field(default="unspecified", min_length=1, max_length=120)
+    spm_version: str = Field(default="unspecified", min_length=1, max_length=120)
+    dpabi_version: str = Field(default="unspecified", min_length=1, max_length=120)
+
+
+class EnvironmentConfigView(StrictModel):
+    matlab_executable: str | None = None
+    spm_dir: str | None = None
+    dpabi_dir: str | None = None
+    matlab_version: str
+    spm_version: str
+    dpabi_version: str
+    configured: bool
+
+
 class HealthView(StrictModel):
     status: str = "ok"
     database: str = "ok"
@@ -496,6 +538,14 @@ class StatisticsRunCreate(StrictModel):
     statistical_design_revision_id: str
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     max_attempts: int = Field(default=1, ge=1, le=5)
+    execution_backend: ExecutionBackend = ExecutionBackend.MOCK
+    real_execution_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_real_execution_confirmation(self) -> StatisticsRunCreate:
+        if self.execution_backend is ExecutionBackend.MATLAB and not self.real_execution_confirmed:
+            raise ValueError("real MATLAB execution requires explicit confirmation")
+        return self
 
 
 class StatisticalResultView(StrictModel):

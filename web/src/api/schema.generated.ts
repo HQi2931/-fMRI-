@@ -191,6 +191,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/environment/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Environment Config */
+        get: operations["environment_config_api_v1_environment_config_get"];
+        /** Update Environment Config */
+        put: operations["update_environment_config_api_v1_environment_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/environment/probe": {
         parameters: {
             query?: never;
@@ -1234,6 +1252,55 @@ export interface components {
             /** Name */
             name: string;
         };
+        /**
+         * EnvironmentConfigUpdate
+         * @description User-selected local scientific software locations.
+         *
+         *     These values are local runtime configuration, not scientific parameters.
+         *     The server validates the selected filesystem entries before persisting them;
+         *     version labels are descriptive evidence and are never treated as exact
+         *     compatibility claims.
+         */
+        EnvironmentConfigUpdate: {
+            /** Dpabi Dir */
+            dpabi_dir?: string | null;
+            /**
+             * Dpabi Version
+             * @default unspecified
+             */
+            dpabi_version: string;
+            /** Matlab Executable */
+            matlab_executable?: string | null;
+            /**
+             * Matlab Version
+             * @default unspecified
+             */
+            matlab_version: string;
+            /** Spm Dir */
+            spm_dir?: string | null;
+            /**
+             * Spm Version
+             * @default unspecified
+             */
+            spm_version: string;
+        };
+        /** EnvironmentConfigView */
+        EnvironmentConfigView: {
+            /** Configured */
+            configured: boolean;
+            /** Dpabi Dir */
+            dpabi_dir?: string | null;
+            /** Dpabi Version */
+            dpabi_version: string;
+            /** Matlab Executable */
+            matlab_executable?: string | null;
+            /** Matlab Version */
+            matlab_version: string;
+            /** Spm Dir */
+            spm_dir?: string | null;
+            /** Spm Version */
+            spm_version: string;
+        };
         /** EnvironmentProbeView */
         EnvironmentProbeView: {
             /** Components */
@@ -1284,6 +1351,12 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * ExecutionBackend
+         * @description Execution control-plane choice for a queued run.
+         * @enum {string}
+         */
+        ExecutionBackend: "mock" | "matlab";
         /**
          * FailureCode
          * @enum {string}
@@ -2194,6 +2267,8 @@ export interface components {
         };
         /** RunCreate */
         RunCreate: {
+            /** @default mock */
+            execution_backend: components["schemas"]["ExecutionBackend"];
             /** Expected Plan Hash */
             expected_plan_hash: string;
             /**
@@ -2212,6 +2287,11 @@ export interface components {
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
         };
         /**
          * RunDiagnosisRequest
@@ -2707,6 +2787,8 @@ export interface components {
         StatisticalTest: "one_sample_t" | "independent_two_sample_t" | "paired_t" | "correlation" | "regression";
         /** StatisticsRunCreate */
         StatisticsRunCreate: {
+            /** @default mock */
+            execution_backend: components["schemas"]["ExecutionBackend"];
             /** Expected Plan Hash */
             expected_plan_hash: string;
             /**
@@ -2716,6 +2798,11 @@ export interface components {
             max_attempts: number;
             /** Project Id */
             project_id: string;
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
             /** Statistical Design Revision Id */
             statistical_design_revision_id: string;
         };
@@ -3680,6 +3767,158 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DemographicsRevisionView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    environment_config_api_v1_environment_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentConfigView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_environment_config_api_v1_environment_config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentConfigView"];
                 };
             };
             /** @description Bad Request */

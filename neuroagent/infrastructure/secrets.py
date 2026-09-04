@@ -41,6 +41,13 @@ def write_env_secret(dotenv_path: Path, name: str, value: str) -> None:
     path.write_text("\n".join(output) + "\n", encoding="utf-8")
 
 
+class LocalDotenvSecretWriter:
+    """Infrastructure adapter for writing secrets to a local dotenv file."""
+
+    def write(self, secrets_file: Path, name: str, value: str) -> None:
+        write_env_secret(secrets_file, name, value)
+
+
 class LocalDotenvSecretResolver:
     """Read one requested API key without exporting or retaining dotenv contents."""
 

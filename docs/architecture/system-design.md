@@ -1,13 +1,13 @@
 # rs-fMRI Agent 系统设计
 
-状态：MVP 候选架构；公共运行路径当前为 Mock-only
+状态：v0.1.0 候选架构；公共运行路径默认 Mock，真实 MATLAB 受授权门保护
 版本：0.1
 
 ## 目标
 
 目标系统在本机完成静息态 fMRI 数据检查、方案编译、人工审批、MATLAB/DPABI 执行、QC 和组统计。Agent 用于解释和补全结构化请求，所有科学规则、状态变更和外部执行由确定性组件控制。
 
-当前候选基线已经完成元数据、Skill、审批、SQLite 队列、Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 API 与 Worker 尚未接入真实 MATLAB/DPABI 或真实统计执行，不会生成真实效应量或显著簇表。
+当前候选基线已经完成元数据、Skill、审批、SQLite 队列、统一 ToolRuntime Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 Worker 已提供受控 MATLAB/DPABI 路由；真实执行仍必须通过配置、环境和逐次确认三重门，并以 smoke 证据作为发布验收。
 
 ## 运行拓扑
 
@@ -20,13 +20,13 @@ React Web (localhost)
         -> SQLite Workflow Queue
   <- REST + SSE
 
-Worker (current public run path)
+Worker (public run path)
   -> atomic job claim
-  -> injected MockJobExecutor
+  -> executor registry (workflow_mock | matlab_preprocessing | matlab_statistics)
   -> run state + persisted events
   -> mock.result Artifact metadata
 
-Target scientific execution path (not wired to the public Worker)
+Controlled scientific execution path
   -> approved SkillPlan DAG
   -> ToolRegistry / Policy / ToolRuntime
   -> controlled MatlabExecutor
@@ -38,9 +38,11 @@ Synthetic verification seam (test-only; not a public Worker/API path)
   -> StatisticalResultManifest + deterministic Markdown/JSON report
 ```
 
-SQLite 保存元数据、计划、审批、运行和事件。受控执行目标是在文件系统保存配置、日志和衍生产物，并在数据库中只保存 Artifact 引用、校验和与谱系；当前 Mock 路径只登记 `mock.result` 元数据，不生成科学影像。API 进程不启动 MATLAB，Worker 不接受自由 Shell/MATLAB 文本。
+SQLite 保存元数据、计划、审批、运行和事件。受控执行在隔离运行目录保存配置、日志和衍生产物，并在数据库中只保存 Artifact 引用、校验和与谱系；Mock 路径只登记合成协议产物，不生成科学影像。API 进程不启动 MATLAB，Worker 不接受自由 Shell/MATLAB 文本。
 
-当前 Web/API 只创建 Mock 作业，用于安全地验证审批、排队、运行状态、事件续传和通用 Artifact 登记闭环。Skill 编译器会解析并锁定工具能力，但公共 Worker 尚不遍历 `SkillPlan` DAG，也不通过 `ToolRegistry` 或 `ToolRuntime` 分派步骤。受控 MATLAB 执行器接受类型化 `MatlabJobSpec`，默认拒绝真实执行；在 DAG/Tool 运行时接线、真实小数据 smoke 和单独运行授权完成前，不把它隐式接入公共 Worker。
+Web/API 默认创建 Mock 作业，也可在不可跳过确认后选择 MATLAB。Worker 对 SkillPlan 使用 `WorkflowFactory`/`ToolRuntime` 遍历冻结 DAG，逐节点验证 Tool/Skill 锁、输入谱系和输出合同；MATLAB 路由由服务端从批准统计设计编译类型化 `MatlabJobSpec`，默认关闭真实执行。
+
+本机科学软件环境由用户在 Web 首次配置页选择。配置文件保存在工作根目录下的本地运行配置文件中，环境锁只绑定用户标签、受控入口指纹和哈希；版本标签不构成通用兼容承诺，实际入口不匹配时仍失败关闭。
 
 ## 分层和依赖方向
 
@@ -48,7 +50,7 @@ SQLite 保存元数据、计划、审批、运行和事件。受控执行目标�
 - Application：用例、事务、幂等键、revision、审批边界和确定性复现报告编排。
 - Domain：数据、Artifact、Skill、QC、统计结果和状态机规则；不依赖 Web、数据库或 subprocess。
 - Skills：加载、解析、校验和编译声明式协议；输出不可变 SkillPlan。
-- Workflow/Tools：Workflow 状态机已经接入公共 Mock 闭环；Tool 合同、Registry 和能力锁用于编译与独立验证，运行时 DAG/Tool 分派仍待接线。
+- Workflow/Tools：Workflow 状态机与 `ToolRuntime` 已接入 Mock 闭环；Tool 合同、Registry、能力锁和步骤级事件共同形成执行边界。
 - Execution/Infrastructure：SQLite、文件、模型 Provider 和 MATLAB 适配器。
 - Agent：只生成结构化建议；不能直接推进 PlanRevision 或 WorkflowInstance。
 
@@ -67,9 +69,9 @@ queued -> running -> qc_review -> succeeded
    +-------> cancelled
 ```
 
-重试创建新的 attempt 并复用不可变计划，不覆盖历史事件或产物记录。图中是需要人工 QC 的常规/指标 Mock 路径；`statistics_mock` 是协议占位路径，按 `queued -> running -> succeeded` 完成，不产生科学统计结果。
+重试创建新的 attempt 并复用不可变计划，不覆盖历史事件或产物记录。常规/指标 Mock 路径需要人工 QC；真实统计在完整证据登记后才进入 `succeeded`。
 
-当前通用 Mock 作业可以进入 `qc_review`，但 `mock.result` 不是可用于科学 QC 或统计的指标图。统计运行端点同样创建 `statistics_mock` 作业；它验证运行协议，不执行 t 检验、FDR 或 GRF。纯合成演示只能通过内部测试 seam 注入醒目标记的占位结果，再验证完整性合同和报告生成器；该 seam 不是公共 API。
+当前通用 Mock 作业可以进入 `qc_review`，但 `mock.result` 不是可用于科学 QC 或统计的指标图。统计运行默认创建 `statistics_mock`；选择 MATLAB 时使用三类 t 检验及可选 FDR/GRF 模板，并要求完整设计矩阵、contrast、图、效应量、簇表、日志和版本证据，否则失败关闭。纯合成演示仍醒目标记为 `synthetic_non_scientific`。
 
 ## 数据安全
 
@@ -81,4 +83,4 @@ queued -> running -> qc_review -> succeeded
 
 ## 部署
 
-MVP 为 Windows 本机单用户应用，监听 `127.0.0.1`。开发时 Web 和 API 分离；构建后由 FastAPI 提供 `web/dist`。不引入容器、云队列、Redis 或多用户权限系统。真实科研执行接线、实际统计产物发现/登记和结果查询仍是后续实现/发布决定，不应从确定性报告合同推断为真实结果已可用。
+MVP 为 Windows 本机单用户应用，监听 `127.0.0.1`。开发时 Web 和 API 分离；构建后由 FastAPI 提供 `web/dist`。不引入容器、云队列、Redis 或多用户权限系统。真实统计执行接线、产物发现/登记和结果查询已纳入候选实现，但必须以目标机 MATLAB smoke 证据和用户授权作为发布依据。

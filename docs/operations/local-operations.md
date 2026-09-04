@@ -1,6 +1,6 @@
 # 本地运行、诊断与恢复
 
-本手册适用于 Windows 单机候选基线。公共 Worker 当前是 Mock-only；本手册中的启动命令不会自动启动 MATLAB/DPABI。
+本手册适用于 Windows 单机候选基线。公共 Worker 默认使用 Mock；真实 MATLAB/DPABI 只有在前端选择本机环境、环境探测通过并完成逐次确认后才会启动。
 
 ## 首次准备
 
@@ -16,9 +16,10 @@ if (-not (Test-Path -LiteralPath '.env')) {
 然后只在未跟踪的 `.env` 中配置：
 
 - 项目允许的只读数据根目录和独立工作根目录。
-- MATLAB、SPM12 和 DPABI V8.2 的本机绝对路径。
 - 随机的 `RSFMRI_REDACTION_SALT`。
 - 如需外部 Provider，配置对应的 `*_API_KEY`。
+
+MATLAB 可执行文件、SPM 目录和 DPABI 目录在前端首次打开后的“环境”页面填写。版本只填写本机识别到的描述性标签，不要把示例版本当成兼容承诺。保存后 API 会检查文件/目录，Worker 会在每次真实作业前重新探测入口。
 
 不要把 `.env`、密钥、真实数据路径或诊断输出粘贴到 Issue、PR 或 Agent 上下文。
 
@@ -82,7 +83,7 @@ npm run dev
 
 1. 查看 `logs/api.err.log` 和 `logs/worker.err.log`，分享前先移除路径、受试者信息和密钥。
 2. 调用 `/api/v1/health` 确认数据库可读。
-3. 调用 `/api/v1/environment/probe` 检查环境锁。只有 MATLAB、SPM12、
+3. 调用 `/api/v1/environment/probe` 检查环境锁。只有用户选定的 MATLAB、SPM、
    `DPARSFA_run`、ALFF/ReHo、统计检验、FDR/GRF、统计影像 I/O 入口和仓库内
    受控适配器都存在时才会报告 `ready=true`；锁只返回无路径的内容指纹和缺失入口名。
 4. 检查 `tmp/local/*.json` 中的 PID 是否仍对应原进程。
@@ -151,4 +152,4 @@ API 和 Worker 无论由 `start-local.ps1` 还是 `uv run` 手工启动，都会
 4. 输出只写入独立 staging/run 目录，不覆盖原始数据。
 5. 单独记录 smoke 的数据来源、授权、版本、退出码和产物检查。
 
-当前公共队列没有接线真实 Executor，因此本手册不提供可绕过运行授权的启动命令。
+真实 Executor 已接入公共队列，但本手册不提供绕过环境探测或逐次确认的启动命令。

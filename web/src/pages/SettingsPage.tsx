@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, describeError, type EnvironmentProbe, type ModelProfile } from "../api/client";
+import { api, describeError, type EnvironmentConfig, type EnvironmentProbe, type ModelProfile } from "../api/client";
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 
@@ -38,6 +38,13 @@ const PROVIDER_PRESETS = [
 
 export function SettingsPage() {
   const [environment, setEnvironment] = useState<EnvironmentProbe | null>(null);
+  const [environmentConfig, setEnvironmentConfig] = useState<EnvironmentConfig | null>(null);
+  const [matlabExecutable, setMatlabExecutable] = useState("");
+  const [spmDir, setSpmDir] = useState("");
+  const [dpabiDir, setDpabiDir] = useState("");
+  const [matlabVersion, setMatlabVersion] = useState("unspecified");
+  const [spmVersion, setSpmVersion] = useState("unspecified");
+  const [dpabiVersion, setDpabiVersion] = useState("unspecified");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [profileId, setProfileId] = useState("");
   const [presetLabel, setPresetLabel] = useState("");
@@ -57,8 +64,19 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    const [probe, configured] = await Promise.all([api.environment(signal), api.profiles(signal)]);
+    const [probe, localConfig, configured] = await Promise.all([
+      api.environment(signal),
+      api.environmentConfig(signal),
+      api.profiles(signal),
+    ]);
     setEnvironment(probe);
+    setEnvironmentConfig(localConfig);
+    setMatlabExecutable(localConfig.matlab_executable ?? "");
+    setSpmDir(localConfig.spm_dir ?? "");
+    setDpabiDir(localConfig.dpabi_dir ?? "");
+    setMatlabVersion(localConfig.matlab_version);
+    setSpmVersion(localConfig.spm_version);
+    setDpabiVersion(localConfig.dpabi_version);
     setProfiles(configured);
   }, []);
 
@@ -69,6 +87,29 @@ export function SettingsPage() {
     });
     return () => controller.abort();
   }, [refresh]);
+
+  async function saveEnvironmentConfig(): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await api.updateEnvironmentConfig({
+        matlab_executable: matlabExecutable.trim() || null,
+        spm_dir: spmDir.trim() || null,
+        dpabi_dir: dpabiDir.trim() || null,
+        matlab_version: matlabVersion.trim() || "unspecified",
+        spm_version: spmVersion.trim() || "unspecified",
+        dpabi_version: dpabiVersion.trim() || "unspecified",
+      });
+      setEnvironmentConfig(saved);
+      await refresh();
+      setMessage("本机 MATLAB/SPM/DPABI 路径已保存，并已重新探测。版本文本仅作为本机证据标签，不作硬编码兼容承诺。");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function applyPreset(label: string): void {
     setPresetLabel(label);
@@ -188,6 +229,28 @@ export function SettingsPage() {
         action={<button className="button button-secondary" type="button" disabled={busy} onClick={() => refresh().catch((caught) => setError(describeError(caught)))}>重新探测</button>}
       />
       <Feedback message={error || message} error={Boolean(error)} />
+      <section className="panel environment-setup-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">首次配置</span>
+            <h2>选择本机 MATLAB / SPM / DPABI</h2>
+            <p>路径由用户在前端填写，后端只验证当前机器上的文件、目录和受控入口函数。不会要求所有用户都使用同一版本。</p>
+          </div>
+          <StatusPill tone={environmentConfig?.configured ? "good" : "warn"}>
+            {environmentConfig?.configured ? "已配置" : "待配置"}
+          </StatusPill>
+        </div>
+        <div className="form-grid">
+          <label>MATLAB 可执行文件<input aria-label="MATLAB 可执行文件" value={matlabExecutable} onChange={(event) => setMatlabExecutable(event.target.value)} placeholder="如 D:\\Matlab\\bin\\matlab.exe" /></label>
+          <label>SPM 目录<input aria-label="SPM 目录" value={spmDir} onChange={(event) => setSpmDir(event.target.value)} placeholder="如 D:\\Matlab\\toolbox\\spm" /></label>
+          <label>DPABI 目录<input aria-label="DPABI 目录" value={dpabiDir} onChange={(event) => setDpabiDir(event.target.value)} placeholder="如 D:\\Matlab\\toolbox\\DPABI" /></label>
+          <label>MATLAB 版本标签<input aria-label="MATLAB 版本标签" value={matlabVersion} onChange={(event) => setMatlabVersion(event.target.value)} placeholder="如 R2024b" /></label>
+          <label>SPM 版本标签<input aria-label="SPM 版本标签" value={spmVersion} onChange={(event) => setSpmVersion(event.target.value)} placeholder="如 SPM12 / SPM25" /></label>
+          <label>DPABI 版本标签<input aria-label="DPABI 版本标签" value={dpabiVersion} onChange={(event) => setDpabiVersion(event.target.value)} placeholder="如 V9.0_250415" /></label>
+        </div>
+        <p className="muted">路径必须由运行 API/Worker 的本机可访问；保存后会写入工作目录中的本地配置文件，不进入 Git、数据库事件或科学结果。</p>
+        <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !matlabExecutable.trim() || !spmDir.trim() || !dpabiDir.trim()} onClick={saveEnvironmentConfig}>保存并重新探测</button></div>
+      </section>
       <section className="panel environment-list">
         {environment?.components.map((component) => (
           <div key={component.name}>

@@ -103,6 +103,12 @@ class DemographicsReaderPort(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class SecretWriterPort(Protocol):
+    """Write one validated secret through a controlled local adapter."""
+
+    def write(self, secrets_file: Path, name: str, value: str) -> None: ...
+
+
 class RepositoryPort(Protocol):
     """Typed persistence operations required by application use cases and the worker."""
 
@@ -214,6 +220,8 @@ class RepositoryPort(Protocol):
         self, plan_revision_id: str, request: ApprovalCreate
     ) -> tuple[ApprovalView, PlanRevisionView]: ...
 
+    def get_approved_plan_approval(self, plan_revision_id: str) -> ApprovalView: ...
+
     def create_run(
         self,
         *,
@@ -300,6 +308,8 @@ class RepositoryPort(Protocol):
     def get_model_profile(self, profile_id: str) -> ModelProfileView: ...
 
     def list_model_profiles(self) -> list[ModelProfileView]: ...
+
+    def delete_model_profile(self, profile_id: str) -> None: ...
 
     def create_agent_task(
         self,

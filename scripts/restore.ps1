@@ -70,6 +70,21 @@ function Resolve-ConfiguredDatabasePath {
     return [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $nativePath))
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $digest = $algorithm.ComputeHash($stream)
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+    return ([System.BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
+}
+
 function Test-RecordedServiceIsRunning {
     param(
         [Parameter(Mandatory)][string]$StatePath,
@@ -218,7 +233,7 @@ if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
     throw 'Backup database or manifest is missing.'
 }
 $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
-$actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+$actualHash = Get-Sha256Hex -Path $source
 if ($actualHash -ne $manifest.sha256.ToLowerInvariant()) {
     throw 'Backup checksum validation failed.'
 }

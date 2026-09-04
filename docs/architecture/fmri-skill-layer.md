@@ -1,6 +1,6 @@
 # 静息态 fMRI Skill 层架构
 
-- 状态：Skill Registry、Resolver、Validator、Compiler、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包，未注册运行时）；公共 Worker 尚未分派 SkillPlan DAG/Tool，真实 MATLAB Worker 仍未接线
+- 状态：Skill Registry、Resolver、Validator、Compiler、`WorkflowFactory`/`ToolRuntime`、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包）；公共 Worker 默认 Mock，并提供受控 MATLAB 路由
 - 决策日期：2026-08-06
 - 关联 ADR：[0001：Skill 编译为受控 Workflow](../adr/0001-skill-compiles-to-workflow.md)
 - 实施计划：[0001：fMRI Skill 层 MVP](../plans/0001-skill-layer-mvp.md)
@@ -64,7 +64,7 @@ flowchart LR
     ART --> ENG
 ```
 
-图中从请求到编译、计划 revision 和人工审批的控制面已经接入应用服务。审批后的 DAG→Tool→MATLAB 部分仍是目标执行路径：当前公共 Worker 直接调用注入的 `MockJobExecutor`，不会遍历 `SkillPlan` DAG，也不会经 `ToolRegistry`/`ToolRuntime` 分派步骤。Tool 能力绑定和锁目前用于编译、失效检查及独立测试，不能据此声称科学执行链已经接通。
+图中从请求到编译、计划 revision 和人工审批的控制面已经接入应用服务。审批后的 DAG→Tool→Executor 路径由 `WorkflowFactory` 冻结并由 `ToolRuntime` 遍历；Mock 和 MATLAB 适配器都必须通过同一份冻结步骤合同。真实执行还受环境探测、配置开关和逐次确认保护。
 
 运行时状态只有一个真源：`WorkflowInstance`。可以保存 Skill 与运行的关联记录，但不得建立第二套可变的 `SkillRun` 状态机。
 
@@ -156,7 +156,7 @@ plan_hash
 9. 目标路径由 `WorkflowEngine` 按 DAG 请求 Tool 执行，再由 ToolRuntime 与 Executor 完成确定性调用并注册事件和 Artifact。
 10. 目标路径中的 QC gate 决定进入人工审核、继续、失败或恢复；Agent 只能解释，不能越过 gate。
 
-当前实现已经覆盖步骤 1–7 和 Workflow 状态协议；公共 Mock 作业由 Worker 直接交给 `MockJobExecutor`，不等同于步骤 8–10 的 DAG/Tool 执行实现。
+当前实现已经覆盖步骤 1–10 的控制面与 Mock DAG 执行；MATLAB/DPABI 真实 smoke 用于证明步骤级证据、实际文件和统计闭环，不由 Mock 结果替代。
 
 建议接口：
 

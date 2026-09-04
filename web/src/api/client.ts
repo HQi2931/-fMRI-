@@ -4,6 +4,7 @@ type Schemas = components["schemas"];
 
 export type Health = Schemas["HealthView"];
 export type EnvironmentProbe = Schemas["EnvironmentProbeView"];
+export type EnvironmentConfig = Schemas["EnvironmentConfigView"];
 export type Project = Schemas["ProjectView"];
 export type Dataset = Schemas["DatasetView"];
 export type Manifest = Schemas["ManifestRevisionView"];
@@ -217,6 +218,11 @@ function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> 
 export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   environment: (signal?: AbortSignal) => request<EnvironmentProbe>("/environment/probe", { signal }),
+  environmentConfig: (signal?: AbortSignal) => request<EnvironmentConfig>("/environment/config", { signal }),
+  updateEnvironmentConfig: (
+    body: Schemas["EnvironmentConfigUpdate"],
+    signal?: AbortSignal,
+  ) => request<EnvironmentConfig>("/environment/config", { method: "PUT", body: JSON.stringify(body), signal }),
   projects: (signal?: AbortSignal) => request<Project[]>("/projects", { signal }),
   project: (projectId: string, signal?: AbortSignal) =>
     request<Project>(`/projects/${projectId}`, { signal }),

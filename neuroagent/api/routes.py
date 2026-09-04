@@ -24,6 +24,8 @@ from neuroagent.application.contracts import (
     DatasetView,
     DemographicsImportRequest,
     DemographicsRevisionView,
+    EnvironmentConfigUpdate,
+    EnvironmentConfigView,
     EnvironmentProbeView,
     HealthView,
     ManifestRevisionView,
@@ -86,6 +88,18 @@ def health(request: Request) -> HealthView:
 @router.get("/environment/probe", response_model=EnvironmentProbeView, tags=["system"])
 def environment_probe(request: Request) -> EnvironmentProbeView:
     return service_from(request).environment_probe()
+
+
+@router.get("/environment/config", response_model=EnvironmentConfigView, tags=["system"])
+def environment_config(request: Request) -> EnvironmentConfigView:
+    return service_from(request).environment_config()
+
+
+@router.put("/environment/config", response_model=EnvironmentConfigView, tags=["system"])
+def update_environment_config(
+    body: EnvironmentConfigUpdate, request: Request
+) -> EnvironmentConfigView:
+    return service_from(request).update_environment_config(body)
 
 
 @router.post(
