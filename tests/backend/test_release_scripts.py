@@ -407,6 +407,14 @@ def test_phase_close_checks_each_post_push_github_operation() -> None:
         assert f"Invoke-NativeChecked '{description}'" in script
 
 
+def test_configure_github_uses_rest_fields_supported_by_current_gh() -> None:
+    script = (REPOSITORY_ROOT / "scripts" / "configure-github.ps1").read_text(encoding="utf-8")
+
+    assert "gh api 'repos/HQi2931/-fMRI-'" in script
+    assert "$repository.allow_auto_merge" in script
+    assert "--json defaultBranchRef,autoMergeAllowed" not in script
+
+
 @pytest.mark.skipif(os.name != "nt", reason="release automation targets Windows PowerShell")
 def test_reviewed_tree_verifier_rejects_a_changed_candidate(tmp_path: Path) -> None:
     verifier = REPOSITORY_ROOT / "scripts" / "verify-reviewed-tree.ps1"

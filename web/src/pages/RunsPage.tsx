@@ -136,7 +136,7 @@ export function RunsPage() {
         ? window.confirm(
           `确认启动真实 MATLAB/DPABI 运行？\n\n` +
           `写入：项目配置的隔离工作目录\n` +
-          `软件：MATLAB R2023b / SPM12 / DPABI V8.2_240510\n` +
+          `软件：当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境\n` +
           `计划哈希：${workspace.planHash}\n` +
           `仅用于科研流程，不用于临床判断。`,
         )

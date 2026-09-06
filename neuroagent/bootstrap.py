@@ -98,6 +98,7 @@ def build_worker(
                 service.repository,
                 service.settings,
                 environment_provider=service.environment_provider,
+                workflow_factory=WorkflowFactory(service.skill_registry, service.tool_registry),
             ),
         )
     return SQLiteWorker(

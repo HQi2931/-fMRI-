@@ -6,21 +6,220 @@ staging_directory = '{{STAGING_DIRECTORY}}';
 subject_list_path = '{{SUBJECT_LIST_PATH}}';
 config_json_path = '{{CONFIG_JSON_PATH}}';
 
-loaded = load(base_cfg_path);
-assert(isfield(loaded, 'Cfg'), 'rsfmri:config:CfgMissing');
 request = jsondecode(fileread(config_json_path));
+if request.builtin_base_cfg
+    % DPARSFA loads its own Realign.mat job; no arbitrary base parameters inherit.
+    Cfg = struct('Realign', struct('options_source', 'DPARSF/Jobmats/Realign.mat'));
+    save(base_cfg_path, 'Cfg');
+end
+loaded = load(base_cfg_path);
+assert(isfield(loaded, 'Cfg'), 'rsfmri:config:CfgMissing', 'Base configuration has no Cfg.');
 Cfg = select_base_cfg(loaded.Cfg, request.base_cfg_allowed_fields);
 Cfg = merge_struct(Cfg, request.overrides);
 Cfg.DataProcessDir = staging_directory;
+Cfg.ParallelWorkersNumber = 0;
+if isfield(Cfg, 'MaskFile') && ~strcmp(Cfg.MaskFile, 'Default')
+    Cfg.MaskFile = fullfile(staging_directory, Cfg.MaskFile);
+end
+Cfg.SubjectID = cellstr(Cfg.SubjectID);
+for index = 1:numel(Cfg.SubjectID)
+    folder = fullfile(staging_directory, Cfg.StartingDirName, Cfg.SubjectID{index});
+    zipped = dir(fullfile(folder, '*.nii.gz'));
+    for file_index = 1:numel(zipped)
+        gunzip(fullfile(folder, zipped(file_index).name), folder);
+    end
+    source_headers = read_series(folder);
+    check_temporal(source_headers, Cfg.TR, Cfg.TimePoints);
+end
 cfg_mat_path = fullfile(run_directory, 'config', 'DPARSFACfg.mat');
 save(cfg_mat_path, 'Cfg');
 
 diary(fullfile(run_directory, 'logs', 'matlab.log'));
 cleanup = onCleanup(@() diary('off'));
+% Split at the actual unfiltered checkpoint so metrics never trust scheduled counts.
+metric_cfg = Cfg;
+has_metrics = Cfg.IsCalALFF || Cfg.IsCalReHo;
+if has_metrics
+    Cfg.IsCalALFF = 0;
+    Cfg.IsCalReHo = 0;
+    if Cfg.IsFilter && strcmp(Cfg.Filter.Timing, 'AfterNormalize')
+        Cfg.IsFilter = 0;
+    end
+    Cfg.IsScrubbing = 0;
+    Cfg.IsSmooth = 0;
+end
+checkpoint_stage = timeseries_stage(Cfg);
+save(cfg_mat_path, 'Cfg');
 [Error, EffectiveCfg] = DPARSFA_run(cfg_mat_path, staging_directory, subject_list_path, 0);
 save(fullfile(run_directory, 'config', 'EffectiveCfg.mat'), 'EffectiveCfg');
 if ~isempty(Error)
     error('rsfmri:dpabi:DPARSFAFailed', 'DPARSFA_run returned an error result.');
+end
+checkpoints = struct([]);
+for index = 1:numel(Cfg.SubjectID)
+    subject = Cfg.SubjectID{index};
+    headers = read_series(fullfile(staging_directory, checkpoint_stage, subject));
+    expected = Cfg.TimePoints;
+    if expected > 0, expected = expected - Cfg.RemoveFirstTimePoints; end
+    if Cfg.IsScrubbing, expected = 0; end
+    check_temporal(headers, Cfg.TR, expected);
+    if has_metrics
+        check_mask_grid(headers(1), metric_cfg.MaskFile);
+        if metric_cfg.IsCalALFF
+            check_band(metric_cfg.CalALFF.AHighPass_LowCutoff, ...
+                metric_cfg.CalALFF.ALowPass_HighCutoff, Cfg.TR, numel(headers));
+        end
+        if metric_cfg.IsFilter
+            check_band(metric_cfg.Filter.AHighPass_LowCutoff, ...
+                metric_cfg.Filter.ALowPass_HighCutoff, Cfg.TR, numel(headers));
+        end
+    end
+    destination = fullfile(run_directory, 'output', subject, 'timeseries.nii');
+    if ~isfolder(fileparts(destination)), mkdir(fileparts(destination)); end
+    spm_file_merge(headers, destination, 0, Cfg.TR);
+    checkpoints(index).subject_id = subject;
+    checkpoints(index).metadata = header_evidence(spm_vol(destination));
+end
+if has_metrics
+    metric_cfg.StartingDirName = checkpoint_stage;
+    metric_cfg.RemoveFirstTimePoints = 0;
+    metric_cfg.TimePoints = 0;
+    disabled = {'IsSliceTiming', 'IsRealign', 'IsCovremove', 'IsDetrend', ...
+        'IsNormalize', 'IsNeedT1CoregisterToFun', 'IsSegment', 'IsDARTEL', ...
+        'IsWarpMasksIntoIndividualSpace', 'IsAutoMask'};
+    for index = 1:numel(disabled), metric_cfg.(disabled{index}) = 0; end
+    metric_cfg_path = fullfile(run_directory, 'config', 'MetricsCfg.mat');
+    Cfg = metric_cfg;
+    save(metric_cfg_path, 'Cfg');
+    [Error, MetricEffectiveCfg] = DPARSFA_run(metric_cfg_path, ...
+        staging_directory, subject_list_path, 0);
+    assert(isempty(Error), 'rsfmri:dpabi:MetricFailed', 'DPARSFA metric phase failed.');
+    save(fullfile(run_directory, 'config', 'MetricEffectiveCfg.mat'), 'MetricEffectiveCfg');
+end
+records = struct([]);
+for index = 1:numel(request.outputs)
+    output = request.outputs(index);
+    destination = fullfile(run_directory, output.relative_path);
+    checkpoint = checkpoints(strcmp({checkpoints.subject_id}, output.subject_id));
+    temporal = checkpoint.metadata;
+    if ~strcmp(output.metric, 'timeseries')
+        switch output.metric
+            case 'alff', name = 'ALFFMap';
+            case 'falff', name = 'fALFFMap';
+            case 'reho', name = 'ReHoMap';
+        end
+        switch output.scaling
+            case 'raw', scaling_prefix = '';
+            case 'global_mean', scaling_prefix = 'm';
+            case 'z_score', scaling_prefix = 'z';
+            otherwise, error('rsfmri:output:UnknownScaling', 'Unknown scaling.');
+        end
+        prefix = '';
+        if metric_cfg.IsSmooth || ...
+                (strcmp(output.metric, 'reho') && metric_cfg.CalReHo.SmoothReHo)
+            prefix = 's';
+        end
+        filename = [prefix, scaling_prefix, name, '_', output.subject_id, '.nii'];
+        matches = dir(fullfile(staging_directory, ...
+            MetricEffectiveCfg.StartingDirName, '**', filename));
+        assert(numel(matches) == 1, 'rsfmri:output:MissingOrAmbiguousMetric', ...
+            'Expected exactly one declared metric output: %s.', filename);
+        copyfile(fullfile(matches.folder, matches.name), destination);
+        if strcmp(output.metric, 'reho')
+            ready = read_series(fullfile(staging_directory, ...
+                timeseries_stage(metric_cfg), output.subject_id));
+            temporal = header_evidence(ready);
+        end
+    end
+    headers = spm_vol(destination);
+    for volume = 1:numel(headers)
+        values = spm_read_vols(headers(volume));
+        assert(all(isfinite(values), 'all'), 'rsfmri:output:NonfiniteImage', ...
+            'Output contains nonfinite voxel values.');
+    end
+    if has_metrics, check_mask_grid(headers(1), metric_cfg.MaskFile); end
+    records(index).relative_path = output.relative_path;
+    records(index).subject_id = output.subject_id;
+    records(index).metric = output.metric;
+    records(index).metadata = header_evidence(headers);
+    records(index).tr_seconds = temporal.tr_seconds;
+    records(index).volume_count = temporal.volume_count;
+end
+evidence = struct('outputs', records, 'checkpoints', checkpoints, ...
+    'matlab', version, 'matlab_release', version('-release'), 'spm', spm('Ver'), ...
+    'dparsfa_nargin', nargin('DPARSFA_run'), 'result_mode', 'real', ...
+    'mask_grid_comparison', 'DPABI y_ReadRPI, axis flips only, no resampling');
+fid = fopen(fullfile(run_directory, 'output', 'preprocessing-evidence.json'), 'w');
+assert(fid ~= -1, 'rsfmri:output:EvidenceFile', 'Cannot open output evidence file.');
+closer = onCleanup(@() fclose(fid));
+fprintf(fid, '%s\n', jsonencode(evidence));
+clear closer;
+
+function stage = timeseries_stage(cfg)
+stage = cfg.StartingDirName;
+if cfg.IsSliceTiming, stage = [stage, 'A']; end
+if cfg.IsRealign, stage = [stage, 'R']; end
+if cfg.IsCovremove && strcmp(cfg.Covremove.Timing, 'AfterRealign'), stage = [stage, 'C']; end
+if cfg.IsFilter && strcmp(cfg.Filter.Timing, 'BeforeNormalize'), stage = [stage, 'F']; end
+if cfg.IsNormalize && strcmp(cfg.Normalize.Timing, 'OnFunctionalData'), stage = [stage, 'W']; end
+if cfg.IsSmooth && strcmp(cfg.Smooth.Timing, 'OnFunctionalData'), stage = [stage, 'S']; end
+if cfg.IsDetrend, stage = [stage, 'D']; end
+if cfg.IsCovremove && strcmp(cfg.Covremove.Timing, 'AfterNormalize'), stage = [stage, 'C']; end
+if cfg.IsFilter && strcmp(cfg.Filter.Timing, 'AfterNormalize'), stage = [stage, 'F']; end
+if cfg.IsScrubbing, stage = [stage, 'B']; end
+end
+
+function headers = read_series(folder)
+files = dir(fullfile(folder, '*.nii'));
+assert(numel(files) == 1, 'rsfmri:input:ExpectedOne4DNifti', ...
+    'Expected exactly one 4D NIfTI per subject and stage.');
+headers = spm_vol(fullfile(files.folder, files.name));
+assert(numel(headers) > 1, 'rsfmri:input:NotTimeseries', 'Input is not a 4D time series.');
+end
+
+function evidence = header_evidence(headers)
+first = headers(1);
+affine = first.mat;
+tr = [];
+if numel(headers) > 1
+    tr = double(first.private.timing.tspace);
+    assert(isfinite(tr) && tr > 0, 'rsfmri:metadata:MissingTR', 'NIfTI has no positive TR.');
+end
+evidence = struct('dimensions', double(first.dim), 'affine', affine, ...
+    'voxel_size_mm', sqrt(sum(affine(1:3, 1:3).^2, 1)), ...
+    'tr_seconds', tr, 'volume_count', numel(headers));
+end
+
+function check_temporal(headers, expected_tr, expected_count)
+meta = header_evidence(headers);
+assert(abs(meta.tr_seconds - expected_tr) < 1e-5, 'rsfmri:metadata:TRMismatch', ...
+    'Actual NIfTI TR differs from the approved value.');
+assert(expected_count == 0 || numel(headers) == expected_count, ...
+    'rsfmri:metadata:CountMismatch', 'Actual volume count differs from the approved value.');
+for index = 2:numel(headers), check_grid(headers(1), headers(index)); end
+end
+
+function check_grid(image, mask)
+assert(isscalar(mask) && isequal(image.dim, mask.dim) && ...
+    max(abs(image.mat - mask.mat), [], 'all') < 1e-5, 'rsfmri:metadata:GridMismatch', ...
+    'Image and mask dimensions or physical voxel grids differ.');
+end
+
+function check_mask_grid(image, mask_path)
+assert(isscalar(spm_vol(mask_path)), 'rsfmri:metadata:MaskNot3D', 'Mask must be 3D.');
+% DPABI reads both arrays in RPI. Compare those exact grids, never resample.
+[~, ~, image_rpi] = y_ReadRPI(image.fname, image.n(1));
+[mask_values, ~, mask_rpi] = y_ReadRPI(mask_path);
+assert(all(isfinite(mask_values), 'all') && any(mask_values ~= 0, 'all'), ...
+    'rsfmri:metadata:InvalidMask', 'Mask must be finite and nonempty.');
+check_grid(image_rpi, mask_rpi);
+end
+
+function check_band(low, high, tr, count)
+resolution = 1 / (tr * count);
+assert(high <= 1 / (2 * tr) && high >= resolution && ...
+    (low == 0 || low >= resolution), 'rsfmri:metadata:FrequencyResolution', ...
+    'Approved frequency band is incompatible with actual TR and volume count.');
 end
 
 function selected = select_base_cfg(source, allowed_fields)
@@ -30,8 +229,10 @@ if ischar(allowed_fields) || isstring(allowed_fields)
 end
 for index = 1:numel(allowed_fields)
     name = allowed_fields{index};
-    assert(strcmp(name, 'Realign'), 'rsfmri:config:UnsupportedBaseCfgField');
-    assert(isfield(source, name), 'rsfmri:config:AllowedBaseCfgFieldMissing');
+    assert(strcmp(name, 'Realign'), 'rsfmri:config:UnsupportedBaseCfgField', ...
+        'Base configuration field is not allowlisted.');
+    assert(isfield(source, name), 'rsfmri:config:AllowedBaseCfgFieldMissing', ...
+        'Base configuration is missing an allowlisted field.');
     selected.(name) = source.(name);
 end
 end

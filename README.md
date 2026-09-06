@@ -16,9 +16,10 @@
 
 - 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
 - 已实现：用户选择本机 MATLAB/SPM/DPABI 路径、入口探测、受控 DPABI `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消、预期产物完整性检查，以及真实统计结果的证据登记与确定性 Markdown/JSON 复现报告。
-- 已接线但需本机授权/环境验证：公共 Worker 的受控 MATLAB/DPABI 统计适配、三类真实 t 检验、FDR/GRF、效应量、26 邻接簇表和结果证据登记；不能用未完成 smoke 的状态替代真实验证。
+- 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径均已完成小型合成 smoke；会触发 DPARSFA 交互提示的 T1 分割/DARTEL 在 headless 路径明确拒绝。
+- 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配和 rs-fMRI 本地证据问答。它们不启动 MATLAB、训练模型或联网检索。
-- 尚需本机授权验证：仓库外确定性合成数据的真实 MATLAB 小型 smoke 与至少一个真实模型 Provider 调用。运行页默认 Mock，MATLAB 选项需要不可跳过的逐次确认。
+- 已完成一个真实 Provider 轻量 smoke（无受试者信息）。运行页默认 Mock，MATLAB 选项仍需要不可跳过的逐次确认；这些小型验证不代表所有本机配置、数据形态或 DPABI 功能均已兼容。
 
 `v0.1.0` 尚未发布。当前是待审候选基线，详细范围和未完成项见 [MVP 范围](docs/product/mvp-scope.md)。
 

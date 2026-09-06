@@ -85,6 +85,8 @@ class MatlabTemplateRenderer:
                     {
                         "overrides": job.payload.metric_projection.cfg,
                         "base_cfg_allowed_fields": job.payload.base_cfg_allowed_fields,
+                        "builtin_base_cfg": job.payload.base_cfg_artifact_id.startswith("builtin:"),
+                        "outputs": [item.model_dump(mode="json") for item in job.payload.outputs],
                     },
                     ensure_ascii=False,
                     sort_keys=True,

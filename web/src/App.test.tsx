@@ -490,6 +490,10 @@ describe("App", () => {
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST")).toBe(false);
     await user.click(screen.getByRole("button", { name: "确认并创建 MATLAB 运行" }));
     expect(await screen.findByText(/真实 MATLAB 任务已进入隔离队列/)).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining("当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境"),
+    );
+    expect(window.confirm).not.toHaveBeenLastCalledWith(expect.stringContaining("R2023b"));
     const createCall = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST");
     expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ execution_backend: "matlab", real_execution_confirmed: true });
   });
@@ -791,6 +795,10 @@ describe("App", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(screen.getByRole("button", { name: "提交统计运行" }));
     expect(await screen.findByText(/真实 MATLAB 统计任务已进入隔离队列/)).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining("当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境"),
+    );
+    expect(window.confirm).not.toHaveBeenLastCalledWith(expect.stringContaining("R2023b"));
     const createCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/statistical-designs"));
     const createPayload = JSON.parse(String(createCall?.[1]?.body));
     expect(createPayload).not.toHaveProperty("environment_hash");

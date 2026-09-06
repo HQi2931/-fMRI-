@@ -65,12 +65,25 @@ class VerifiedArtifact(FrozenExecutionModel):
         return normalized.as_posix()
 
 
+class PreprocessingOutput(FrozenExecutionModel):
+    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    metric: str = Field(pattern=r"^(timeseries|alff|falff|reho)$")
+    scaling: str | None = None
+    relative_path: str
+
+    @field_validator("relative_path")
+    @classmethod
+    def safe_path(cls, value: str) -> str:
+        return ArtifactPathBinding.safe_relative_path(value)
+
+
 class PreprocessingJobPayload(FrozenExecutionModel):
     base_cfg_artifact_id: str = Field(min_length=1)
     staging_relative_path: str = Field(min_length=1)
     metric_projection: DpabiCfgProjection
     subject_ids: tuple[str, ...]
     base_cfg_allowed_fields: tuple[str, ...]
+    outputs: tuple[PreprocessingOutput, ...] = ()
 
     @field_validator("staging_relative_path")
     @classmethod

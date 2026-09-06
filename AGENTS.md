@@ -6,7 +6,7 @@
 
 本项目面向静息态 fMRI 科研工作流，核心目标分为两部分：
 
-1. 基于 MATLAB、SPM12 和 DPABI/DPARSF 的影像数据检查、整理与预处理。
+1. 基于用户本机 MATLAB、SPM 和 DPABI/DPARSF 的影像数据检查、整理与预处理。
 2. 对预处理产物进行组水平统计分析，包括 t 检验、协变量处理和多重比较校正。
 
 辅助能力包括人口学信息整理、受试者清单管理、数据集划分、质量控制、运行监控、产物管理和可复现报告。
@@ -16,9 +16,10 @@
 ## 2. 当前状态
 
 - v0.1.0 候选基线已实现 FastAPI/SQLite/Worker、React 前端、数据清单、Skill 编译与审批、Mock 执行、QC、统计设计和多 Provider Agent 的本地闭环；只有最终审查、CI、外部 smoke 与发布条件全部满足后才能标记 v0.1.0。
-- 公共运行接口当前默认且明确使用 Mock Executor。受控 MATLAB 模板、DPABI V8.2 参数投影、超时/取消和产物完整性检查已实现并通过静态/模拟测试，但尚未在本仓库自动启用真实 MATLAB 作业。
+- 公共运行接口默认且明确使用 Mock Executor；显式选择 MATLAB 时还需本机配置、入口探测、执行开关和逐次确认。受控预处理与统计已经接入公共 Worker，包含固定模板、稳定 DPABI 参数投影、超时/取消、独立 attempt 工作目录和实际产物完整性检查。
 - 纯合成后端 E2E 与确定性统计复现报告合同已实现；其中 typed 指标和统计结果角色是醒目标记的测试占位，不得冒充真实科研产物。
 - 真实 Provider 轻量调用取决于本机 API Key；CI 只使用 Mock Provider。真实 MATLAB smoke、真实 Provider smoke 和任何真实数据处理都必须单独授权并记录验证结果。
+- 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及最终发布门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于已发布。
 - `docs/architecture/neuroagent-framework-architecture.md` 是已标记为部分被替代的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
 - `memory`、`retrieval`、`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖，不要优先实现。
@@ -26,18 +27,19 @@
 
 ## 3. 已确认的本机科研软件环境
 
-当前开发机已确认目标软件为 MATLAB R2023b、SPM12 和 DPABI V8.2_240510。实际绝对路径只允许写入未跟踪的本地 `.env`；仓库文档、代码和 `.env.example` 不记录机器私有路径。
+用户首次进入时选择本机 MATLAB 可执行文件、SPM、DPABI 和工作目录。2026-09-04 的真实统计 smoke 观察到 MATLAB R2024b、SPM25 25.01.02 和 DPABI V9.0_250415；这些是验证证据，不是所有用户必须完全匹配的安装版本。实际绝对路径只存于未跟踪的本地 `.env` 或用户本机环境配置文件；仓库文档、代码和 `.env.example` 不记录机器私有路径。
 
 规则：
 
-- 以本机 DPABI V8.2_240510 的真实接口为实现基线，不混用 DPABI V9 的字段或行为。
-- DPABI 安装路径包含空格，PowerShell、Python 和 MATLAB 调用必须正确引用完整路径。
-- 不修改 MATLAB、SPM12 或 DPABI 安装目录中的任何文件。
+- 保留已有稳定 DPABI 参数映射；有疑问时以用户实际安装源码的函数签名和字段行为为证据，不依据版本标签猜测兼容性，也不把 V8.2 写成必须安装的版本。
+- 后端校验路径存在性、目录边界、可执行文件与必需入口，并记录入口指纹；版本号只作证据，不要求与硬编码常量完全匹配。具体科学能力仍须满足字段、输入、谱系和产物合同。
+- 安装路径可能包含空格，PowerShell、Python 和 MATLAB 调用必须正确引用完整路径。
+- 不修改 MATLAB、SPM 或 DPABI 安装目录中的任何文件。
 - 影像工作目录和输出目录优先使用不含空格、中文和特殊字符的路径。
 - 自动化前先验证 `matlab.exe`、`spm.m`、`dpabi.m` 和目标 DPABI 函数是否可见。
 - 不在日常测试中启动真实长时间预处理；真实 MATLAB 集成运行必须由用户明确授权，并使用小型、脱敏或合成数据。
 
-已确认的 DPABI V8.2 入口包括：
+当前稳定参数映射使用的 DPABI 入口包括：
 
 - `DPARSFA_run(CfgOrMat, WorkingDir, SubjectListFile, IsAllowGUI)`
 - `DPARSF_run(CfgBasic)`
@@ -65,7 +67,7 @@ Web Frontend
 → Workflow / Job Service
 → Registered Tools
 → MATLAB Executor
-→ MATLAB + SPM12 + DPABI V8.2
+→ 用户本机 MATLAB + SPM + DPABI
 ```
 
 同时使用：
@@ -187,7 +189,7 @@ runs/{run_id}/
 
 - 首期支持单样本 t 检验、两独立样本 t 检验、配对 t 检验、相关和带协变量回归。
 - 设计必须显式记录受试者顺序、分组编码、协变量列、缺失值处理、中心化方法、对比向量、掩膜和尾部设置。
-- 多重比较校正与统计检验分开建模，支持的具体方法必须与 DPABI V8.2 接口一致。
+- 多重比较校正与统计检验分开建模，支持的具体方法必须与实际安装的 DPABI 接口及已核验的稳定参数映射一致。
 - 输出至少包含设计矩阵、对比、未校正统计图、校正结果、效应量、显著簇表、软件版本和日志。
 - 不自动选择最“显著”的方法，不进行未记录的多重尝试。方法变化必须创建新版本的 StatisticalDesign 和 Run。
 - 科学默认值、阈值和排除规则不得仅凭模型常识写入；需要来源、项目方案或用户确认。
@@ -261,7 +263,7 @@ origin = https://github.com/HQi2931/-fMRI-.git
 ## 14. 遇到不确定情况时
 
 - 科学方法不明确：停止猜测，列出需要用户或领域专家确认的参数。
-- DPABI 接口不明确：只读检查本机 V8.2 源码和模板，不按其他版本推断。
+- DPABI 接口不明确：只读检查用户实际安装的源码和模板，不依据其他版本标签推断行为。
 - 数据格式不明确：先生成检查报告，不自动转换或移动原始数据。
 - 架构选择影响较大：写 ADR，列出背景、决定、后果和替代方案。
 - 任务可能覆盖、删除或长时间占用 MATLAB：先获得明确批准。
@@ -275,7 +277,7 @@ origin = https://github.com/HQi2931/-fMRI-.git
 - `system_architect`：跨模块架构、ADR 和数据流。
 - `backend_service_engineer`：API、服务、领域模型、工作流和持久化。
 - `skill_workflow_engineer`：SkillSpec、解析、校验、编译和 Workflow 映射。
-- `matlab_dpabi_engineer`：MATLAB、SPM12、DPABI V8.2 和执行器。
+- `matlab_dpabi_engineer`：用户本机 MATLAB、SPM、DPABI 参数映射和执行器。
 - `fmri_methodologist`：预处理、QC 和统计方法学只读审核。
 - `frontend_ux_engineer`：非技术前端、长作业交互和结果展示。
 - `qa_reviewer`：正确性、安全、测试和回归只读审核。
