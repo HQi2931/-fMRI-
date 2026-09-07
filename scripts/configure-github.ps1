@@ -57,17 +57,19 @@ if ($PSCmdlet.ShouldProcess('HQi2931/-fMRI-', 'configure merge settings and main
         gh api --method PUT 'repos/HQi2931/-fMRI-/branches/main/protection' --input $tempPath
     } | Out-Null
 
+    # The REST field names are stable across gh CLI releases; GraphQL field
+    # availability differs (notably autoMergeAllowed in newer gh builds).
     $repositoryJson = Invoke-NativeChecked 'Verify repository merge settings' {
-        gh repo view HQi2931/-fMRI- --json defaultBranchRef,autoMergeAllowed,deleteBranchOnMerge,mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed
+        gh api 'repos/HQi2931/-fMRI-'
     }
     $repository = ($repositoryJson | Out-String) | ConvertFrom-Json
     if (
-        $repository.defaultBranchRef.name -ne 'main' -or
-        -not $repository.autoMergeAllowed -or
-        -not $repository.deleteBranchOnMerge -or
-        $repository.mergeCommitAllowed -or
-        $repository.rebaseMergeAllowed -or
-        -not $repository.squashMergeAllowed
+        $repository.default_branch -ne 'main' -or
+        -not $repository.allow_auto_merge -or
+        -not $repository.delete_branch_on_merge -or
+        $repository.allow_merge_commit -or
+        $repository.allow_rebase_merge -or
+        -not $repository.allow_squash_merge
     ) {
         throw 'Repository merge settings verification failed.'
     }

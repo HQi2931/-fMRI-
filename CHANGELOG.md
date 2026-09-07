@@ -7,11 +7,15 @@
 ### v0.1.0 release work
 
 - 新增 `ExecutionBackend` 控制面：Mock 默认；MATLAB 必须逐次确认、配置开关和环境探测同时通过。
-- 新增批准计划专用 `WorkflowFactory`/`ToolRuntime`，统一 Mock 与受控执行的 DAG 拓扑、Tool/Skill 锁、Artifact lineage 和步骤事件校验。
+- 新增批准计划专用 `WorkflowFactory`/`ToolRuntime`：Mock 逐节点执行 DAG；MATLAB 适配器校验冻结计划并编译受控分段作业，不逐节点经过 `ToolRuntime`。
 - Worker 已注册 `matlab_preprocessing`/`matlab_statistics` 路由；统计模板覆盖三类 t 检验、FDR/GRF、效应量、26 邻接簇表和结构化版本证据。
 - 恢复脚本改用内置 .NET SHA-256，兼容无 Profile 的 Windows PowerShell 5.1/7。
-- ADR 0006 取代原 0004 的延期策略；真实 MATLAB/Provider smoke、远程 CI 和正式 tag 仍需授权门通过。
+- ADR 0006 取代原 0004 的延期策略；真实统计、小型预处理、组合指标和 Provider smoke 已完成，最终发布状态以 GitHub Release 与对应 tag 为准。
 - 环境配置改为前端首次使用时由用户选择 MATLAB 可执行文件、SPM 目录和 DPABI 目录；版本标签仅作本机证据，不再硬编码为通用兼容条件。
+- 补齐冻结 SkillPlan/manifest 到真实预处理的公共路径；每次执行使用独立 attempt/staging，校验源文件哈希，并从实际 NIfTI 登记元数据与谱系。
+- 修正带协变量的独立组效应量：根据冻结设计矩阵的对比方差计算调整后标准化组差；保存效应定义与比例，正负效应分别提取 26 邻接簇，未校正簇明确标为描述性结果。
+- 统计软件版本证据改为运行时观察值。当前安装的 7/6/6/9/12 参数签名与模板一致，撤回此前“统计参数过多”的阻断结论。
+- 指标影像与掩膜统一经 DPABI `y_ReadRPI` 轴翻转规范化后严格比较物理网格，不进行重采样或放宽掩膜匹配。
 
 ### Added
 
@@ -46,8 +50,8 @@
 - ALFF/fALFF/ReHo 统一强制 typed 脑掩膜；预处理—指标 DAG 新增头信息验证门，CUT scrubbing 后的 ReHo 改为两阶段 verified Artifact 选择。
 - MATLAB JobSpec 的输入 Artifact 强制只读，基础 Cfg 只允许显式白名单科学字段。
 - 公共运行入口默认 Mock；真实 MATLAB 与真实 Provider smoke 受本机配置、环境和单独作业授权门控制。
-- 环境锁现已绑定 DPABI V8.2 的 ALFF/ReHo、统计检验、FDR/GRF 和统计影像 I/O
-  入口内容；任一必需入口缺失时环境探测失败关闭。
+- 环境锁现已绑定稳定参数映射所需的 ALFF/ReHo、统计检验、FDR/GRF 和统计影像 I/O
+  入口内容；任一必需入口缺失时环境探测失败关闭，版本标签不作为精确匹配门槛。
 - SQLite 写接口的幂等键使用带所有者和过期时间的持久租约；数据库恢复使用跨手工/脚本启动方式的运行标记与原子恢复锁，阻断活动 API/Worker 和启动—恢复竞态。
 - 受控 MATLAB 执行将 stdout/stderr 持续写入按 Job 和 attempt 隔离的日志目录，保留重试历史并限制内联日志大小，避免大输出管道阻塞和内存无限增长。
 - 受控 MATLAB 执行对进程树终止和日志收尾使用有界等待并失败关闭；统计 JSON 以显式对象边界传递组、路径和协变量行，避免 MATLAB `jsondecode` 折叠矩形数组。
@@ -65,6 +69,7 @@
 
 ### Known limitations
 
-- 真实 MATLAB/DPABI Executor 已接入 Worker；实际科学能力仍需在目标机器和 DPABI 版本上完成授权 smoke。
-- 真实统计产物的效应量、校正图、簇表、版本证据和确定性报告已接入失败关闭登记；真实 Provider、MATLAB smoke 和正式发布仍未完成。
-- `v0.1.0` 未发布，首次推送、GitHub Actions、真实 Provider smoke 和真实 MATLAB smoke 仍未完成。
+- 真实 MATLAB/DPABI Executor 已接入 Worker；已完成的合成 smoke 仅覆盖验证记录中的本机环境和输入范围，不替代新环境的验证。
+- 预处理限单会话 4D 输入，metric-only 限单主体；需要不同阶段掩膜的 OnResults normalization 与组合指标方案暂时拒绝。
+- GitHub CLI 已登录；`main` 已启用严格 `agent-review`/`quality-gate`、管理员约束、线性历史、会话解决及禁止强推/删除，仓库只允许自动 squash 合并。
+- 组合指标 smoke 使用仓库外合成 4D 数据通过公共 Worker，生成并登记 120-volume 时序及 ALFF、fALFF、ReHo 图；单会话 4D、metric-only 单主体和阶段掩膜仍是已知范围边界。

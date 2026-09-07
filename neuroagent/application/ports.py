@@ -172,6 +172,8 @@ class RepositoryPort(Protocol):
 
     def get_manifest(self, manifest_id: str) -> ManifestRevisionView: ...
 
+    def get_manifest_content(self, manifest_id: str) -> dict[str, Any]: ...
+
     def create_demographics(
         self,
         dataset_id: str,

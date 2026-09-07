@@ -72,35 +72,73 @@ end
 
 % Persist typed design/contrast evidence and derive the pre-registered effect map.
 [raw_statistic, ~, raw_header] = y_ReadRPI(output_name);
-write_json(fullfile(run_directory, 'output', 'design_matrix.json'), ...
-    struct('test', request.test, 'matrix', request.design_matrix, ...
-    'residual_df', request.residual_df, 'design_hash', request.design_hash));
-write_json(fullfile(run_directory, 'output', 'contrast.json'), ...
-    struct('contrast', request.contrast, 'tail', request.tail));
-group_counts = double(request.group_counts);
+design_matrix = double(request.design_matrix);
+contrast = reshape(double(request.contrast), [], 1);
+assert(rank(design_matrix) == size(design_matrix, 2), ...
+    'rsfmri:statistics:RankDeficientDesign');
+[~, design_r] = qr(design_matrix, 0);
+contrast_standard_error = norm(design_r' \ contrast);
 switch request.test
-    case {'one_sample_t', 'paired_t'}
-        effect_scale = 1 / sqrt(group_counts(1));
+    case 'one_sample_t'
+        effect_scale = contrast_standard_error;
+        effect_definition = 'baseline-centered mean / residual standard deviation';
+    case 'paired_t'
+        effect_scale = sqrt(2) * contrast_standard_error;
+        effect_definition = 'paired mean difference / difference standard deviation (Cohen dz)';
     case 'independent_two_sample_t'
         residual_df = double(request.residual_df);
         correction_factor = 1 - 3 / (4 * residual_df - 1);
-        effect_scale = correction_factor * sqrt(1 / group_counts(1) + ...
-            1 / group_counts(2));
+        % The registered +1/-1 group regressor has beta equal to half
+        % the adjusted group difference. Covariates alter its variance.
+        effect_scale = correction_factor * 2 * contrast_standard_error;
+        effect_definition = 'adjusted group difference / residual standard deviation (Hedges g)';
     otherwise
         error('rsfmri:statistics:UnsupportedEffectDefinition', ...
             'Only the three registered t-test effect definitions are supported.');
 end
-y_Write(raw_statistic .* effect_scale, raw_header, ...
+write_json(fullfile(run_directory, 'output', 'design_matrix.json'), ...
+    struct('test', request.test, 'matrix', request.design_matrix, ...
+    'residual_df', request.residual_df, 'design_hash', request.design_hash, ...
+    'one_sample_baseline', request.one_sample_baseline, ...
+    'effect_definition', effect_definition, 'effect_scale_from_t', effect_scale));
+write_json(fullfile(run_directory, 'output', 'contrast.json'), ...
+    struct('contrast', request.contrast, 'tail', request.tail));
+effect_header = raw_header;
+effect_header.descrip = effect_definition;
+y_Write(raw_statistic .* effect_scale, effect_header, ...
     fullfile(run_directory, 'output', 'effect.nii'));
 source_for_clusters = output_name;
+cluster_inference = 'descriptive_unthresholded';
 if ~isempty(request.correction) && isfile(fullfile(run_directory, 'output', ...
         'statistic_corrected.nii'))
     source_for_clusters = fullfile(run_directory, 'output', 'statistic_corrected.nii');
+    cluster_inference = request.correction.function;
 end
-write_clusters(source_for_clusters, fullfile(run_directory, 'output', 'clusters.tsv'));
+write_clusters(source_for_clusters, fullfile(run_directory, 'output', 'clusters.tsv'), ...
+    cluster_inference, request.tail);
 write_json(fullfile(run_directory, 'output', 'software-version.json'), ...
-    struct('matlab', 'R2023b', 'spm', 'SPM12', 'dpabi', 'V8.2_240510', ...
-    'adapter', '1.0.0', 'result_mode', 'real'));
+    runtime_software_evidence(request));
+
+function evidence = runtime_software_evidence(request)
+[spm_version, spm_revision] = spm('Ver');
+dpabi_source = fileread(which('dpabi'));
+release = regexp(dpabi_source, ...
+    '(?m)^\s*Release\s*=\s*''([^'']+)''', 'tokens', 'once');
+if isempty(release)
+    dpabi_version = 'unreported';
+else
+    dpabi_version = release{1};
+end
+entry_points = struct('function', request.function, 'nargin', nargin(request.function));
+if ~isempty(request.correction)
+    entry_points(2) = struct('function', request.correction.function, ...
+        'nargin', nargin(request.correction.function));
+end
+evidence = struct('matlab', ['R', version('-release')], ...
+    'matlab_version', version, 'spm', spm_version, 'spm_revision', spm_revision, ...
+    'dpabi', dpabi_version, 'dpabi_version_source', 'runtime dpabi.m Release assignment', ...
+    'entry_points', entry_points, 'adapter', '1.0.0', 'result_mode', 'real');
+end
 
 function groups = decode_path_groups(value)
 entries = object_entries(value, 'rsfmri:statistics:InvalidDependentGroups');
@@ -191,28 +229,37 @@ cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, '%s\n', jsonencode(value));
 end
 
-function write_clusters(source_path, output_path)
+function write_clusters(source_path, output_path, inference, tail)
 [values, ~, header] = y_ReadRPI(source_path);
 finite_values = isfinite(values);
-active = finite_values & values ~= 0;
-components = bwconncomp(active, 26);
 fid = fopen(output_path, 'w');
 assert(fid >= 0, 'rsfmri:statistics:ClusterTableWriteFailed', ...
     'Could not create the cluster table.');
 cleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'cluster_id\textent_voxels\tpeak_statistic\tx_mm\ty_mm\tz_mm\n');
-for cluster_index = 1:components.NumObjects
-    indices = components.PixelIdxList{cluster_index};
-    [~, local_peak] = max(abs(values(indices)));
-    peak_index = indices(local_peak);
-    [x, y, z] = ind2sub(size(values), peak_index);
-    if isfield(header, 'mat')
-        coordinate = header.mat * [x; y; z; 1];
-    else
-        coordinate = [x; y; z; 1];
+fprintf(fid, ['cluster_id\textent_voxels\tpeak_statistic\tx_mm\ty_mm\tz_mm', ...
+    '\tinference\tdirection\n']);
+cluster_number = 0;
+for direction = [1, -1]
+    if (strcmp(tail, 'one_sided_positive') && direction < 0) || ...
+            (strcmp(tail, 'one_sided_negative') && direction > 0)
+        continue;
     end
-    fprintf(fid, 'cluster-%04d\t%d\t%.17g\t%.17g\t%.17g\t%.17g\n', ...
-        cluster_index, numel(indices), values(peak_index), ...
-        coordinate(1), coordinate(2), coordinate(3));
+    % Opposite-sign effects must not merge into a single two-sided cluster.
+    components = bwconncomp(finite_values & (direction .* values > 0), 26);
+    for cluster_index = 1:components.NumObjects
+        cluster_number = cluster_number + 1;
+        indices = components.PixelIdxList{cluster_index};
+        [~, local_peak] = max(abs(values(indices)));
+        peak_index = indices(local_peak);
+        [x, y, z] = ind2sub(size(values), peak_index);
+        if isfield(header, 'mat')
+            coordinate = header.mat * [x; y; z; 1];
+        else
+            coordinate = [x; y; z; 1];
+        end
+        fprintf(fid, 'cluster-%04d\t%d\t%.17g\t%.17g\t%.17g\t%.17g\t%s\t%d\n', ...
+            cluster_number, numel(indices), values(peak_index), ...
+            coordinate(1), coordinate(2), coordinate(3), inference, direction);
+    end
 end
 end

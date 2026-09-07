@@ -16,7 +16,10 @@ concurrency:
 jobs:
   repository-safety:
     name: repository-safety
-    runs-on: windows-latest
+    # Gitleaks publishes tar.gz for Linux and zip for Windows; use Linux for
+    # the cross-platform repository scan until the upstream action fixes its
+    # Windows archive URL.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -25,7 +28,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Gitleaks history scan
-        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Repository safety
