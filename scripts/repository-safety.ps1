@@ -89,7 +89,10 @@ foreach ($relativePath in $paths) {
         }
     }
 
-    $item = Get-Item -LiteralPath $relativePath
+    $item = Get-Item -LiteralPath $relativePath -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        continue
+    }
     if ($item.Length -gt 5MB) {
         $errors.Add("File exceeds the absolute 5 MiB repository limit: $relativePath")
     }
