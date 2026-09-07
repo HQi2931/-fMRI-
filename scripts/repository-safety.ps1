@@ -55,6 +55,12 @@ if (Test-Path $allowlistPath) {
 }
 
 foreach ($relativePath in $paths) {
+    # A PR merge checkout can report an index path that is not materialized
+    # in the working tree (notably dotfiles on Linux runners). Skip it here;
+    # gitleaks already scans the complete committed history separately.
+    if (-not (Test-Path -LiteralPath $relativePath -PathType Leaf)) {
+        continue
+    }
     $normalized = $relativePath.ToLowerInvariant()
     $leaf = [System.IO.Path]::GetFileName($normalized)
     $extension = [System.IO.Path]::GetExtension($normalized)
