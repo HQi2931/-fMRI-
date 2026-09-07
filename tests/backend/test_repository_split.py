@@ -54,9 +54,19 @@ def test_repository_split_preserves_baseline_methods_exactly() -> None:
             cwd=ROOT,
             capture_output=True,
             text=True,
-            check=True,
-        ).stdout.strip()
-        baseline_ref = merge_base
+        )
+        if merge_base.returncode == 0:
+            baseline_ref = merge_base.stdout.strip()
+        else:
+            # The Python quality job intentionally uses a shallow checkout;
+            # its first parent is the nearest available reviewed baseline.
+            baseline_ref = subprocess.run(
+                ["git", "rev-parse", "HEAD^"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
     completed = subprocess.run(
         ["git", "show", f"{baseline_ref}:neuroagent/infrastructure/persistence/repository.py"],
         cwd=ROOT,
