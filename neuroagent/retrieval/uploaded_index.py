@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -40,7 +41,7 @@ class UploadedLiteratureIndex:
             raise ApplicationError(
                 "rag_key_missing", "未配置文献检索的 DashScope API Key。", status_code=503
             )
-        import chromadb
+        chromadb = import_module("chromadb")
 
         from neuroagent.retrieval.fmrianalysis.dashscope_embeddings import DashScopeEmbeddings
 

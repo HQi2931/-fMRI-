@@ -690,11 +690,17 @@ describe("App", () => {
   it("separates RAG chat from the rs-fMRI work mode", async () => {
     const profile = { profile: { id: "search-model", provider: "openai-compatible", base_url: "https://example.test", model: "fmri-chat", api_key_env: "SEARCH_API_KEY", priority: 10, capabilities: ["web_search"], timeout_seconds: 45 }, version: 1, created_at: now };
     const paper = { paper_id: "paper1", title: "方法论文", page_count: 3, index_status: "not_indexed", index_error: null };
+    let indexAttempts = 0;
     let savedConversation: unknown = null;
     vi.mocked(fetch).mockImplementation((input, init) => {
       const path = pathOf(input);
       if (path.endsWith("/literature/papers") && init?.method === "POST") return json({ paper, sections: [], chunks: [], warnings: [] }, 201);
-      if (path.endsWith("/literature/papers/paper1/index")) return json({ paper: { ...paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] });
+      if (path.endsWith("/literature/papers/paper1/index")) {
+        indexAttempts += 1;
+        return indexAttempts === 1
+          ? json({ error: { code: "literature_index_failed", message: "索引服务暂时不可用" } }, 503)
+          : json({ paper: { ...paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] });
+      }
       if (path.endsWith("/conversations") && init?.method !== "POST" && savedConversation) return json([savedConversation]);
       const rag = {
         answer: {
@@ -724,6 +730,8 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
     await user.upload(screen.getByLabelText("上传 PDF"), new File(["%PDF synthetic fixture"], "methods.pdf", { type: "application/pdf" }));
     await user.click(await screen.findByRole("button", { name: "加入知识库" }));
+    expect(await screen.findByRole("button", { name: "重试加入知识库" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试加入知识库" }));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "检索 方法论文" })).toBeEnabled());
     await user.click(screen.getByRole("checkbox", { name: "检索 方法论文" }));
     await user.selectOptions(await screen.findByLabelText("模型"), "search-model:fmri-chat");
