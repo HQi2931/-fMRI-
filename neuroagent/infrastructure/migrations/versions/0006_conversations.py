@@ -31,9 +31,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["project_id"], ["projects.project_id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(
-            ["active_run_id"], ["workflow_runs.run_id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["active_run_id"], ["workflow_runs.run_id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_conversations_mode", "conversations", ["mode"])
     op.create_table(
@@ -84,9 +82,7 @@ def upgrade() -> None:
         "conversation_tool_calls",
         ["user_message_id"],
     )
-    op.create_index(
-        "ix_conversation_tool_calls_status", "conversation_tool_calls", ["status"]
-    )
+    op.create_index("ix_conversation_tool_calls_status", "conversation_tool_calls", ["status"])
 
 
 def downgrade() -> None:
@@ -98,9 +94,7 @@ def downgrade() -> None:
         "ix_conversation_tool_calls_conversation_id", table_name="conversation_tool_calls"
     )
     op.drop_table("conversation_tool_calls")
-    op.drop_index(
-        "ix_conversation_messages_conversation_id", table_name="conversation_messages"
-    )
+    op.drop_index("ix_conversation_messages_conversation_id", table_name="conversation_messages")
     op.drop_table("conversation_messages")
     op.drop_index("ix_conversations_mode", table_name="conversations")
     op.drop_table("conversations")

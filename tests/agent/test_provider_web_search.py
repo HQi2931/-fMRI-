@@ -50,9 +50,7 @@ async def test_openai_compatible_web_search_sends_option_and_reads_citations() -
                 base_url="https://example.org/v1",
                 model="search-model",
                 api_key_env="SEARCH_API_KEY",
-                capabilities=frozenset(
-                    {ModelCapability.JSON_OBJECT, ModelCapability.WEB_SEARCH}
-                ),
+                capabilities=frozenset({ModelCapability.JSON_OBJECT, ModelCapability.WEB_SEARCH}),
             ),
             "secret",
             [{"role": "user", "content": "ALFF 是什么?"}],

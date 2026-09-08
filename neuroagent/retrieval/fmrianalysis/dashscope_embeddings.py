@@ -19,12 +19,11 @@ from langchain_core.embeddings import Embeddings
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 DASHSCOPE_EMBED_URL = (
-    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
-    "text-embedding/text-embedding"
+    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 )
-MAX_BATCH_SIZE = 10       # DashScope v4 limit per call (v2 allows 25)
+MAX_BATCH_SIZE = 10  # DashScope v4 limit per call (v2 allows 25)
 MAX_RETRIES = 3
-RETRY_DELAY = 1.0         # seconds
+RETRY_DELAY = 1.0  # seconds
 
 
 class DashScopeEmbeddings(Embeddings):
@@ -113,12 +112,14 @@ class DashScopeEmbeddings(Embeddings):
             except requests.exceptions.HTTPError as exc:
                 last_error = exc
                 if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_DELAY * (2 ** attempt)
+                    wait = RETRY_DELAY * (2**attempt)
                     time.sleep(wait)
             except Exception as exc:
                 last_error = exc
                 if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_DELAY * (2 ** attempt)
+                    wait = RETRY_DELAY * (2**attempt)
                     time.sleep(wait)
 
-        raise RuntimeError(f"DashScope embeddings failed after {MAX_RETRIES} attempts") from last_error
+        raise RuntimeError(
+            f"DashScope embeddings failed after {MAX_RETRIES} attempts"
+        ) from last_error

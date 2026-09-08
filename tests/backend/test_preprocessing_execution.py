@@ -142,9 +142,7 @@ def _prepare(root: Path, *, real: bool = False, in_place: bool = False):
             expected_plan_hash=plan.plan_hash,
             execution_backend=ExecutionBackend.MATLAB,
             workspace_mode=(
-                ExecutionWorkspaceMode.IN_PLACE
-                if in_place
-                else ExecutionWorkspaceMode.ISOLATED
+                ExecutionWorkspaceMode.IN_PLACE if in_place else ExecutionWorkspaceMode.ISOLATED
             ),
             real_execution_confirmed=True,
         ),
@@ -223,9 +221,7 @@ def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, mon
         service.close()
 
 
-def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(
-    tmp_path, monkeypatch
-):
+def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path, monkeypatch):
     service, run, source = _prepare(tmp_path, in_place=True)
     before = source.read_bytes()
 

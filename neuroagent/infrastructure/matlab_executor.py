@@ -166,9 +166,7 @@ class MatlabJobExecutor:
                     )
                     if compilation.staging_plan is None:
                         raise ValueError("in-place execution requires frozen source inputs")
-                    self._verify_in_place_inputs(
-                        compilation.staging_plan, preprocessing_workspace
-                    )
+                    self._verify_in_place_inputs(compilation.staging_plan, preprocessing_workspace)
                     stages = {
                         item.functional_files[0].replace("\\", "/").split("/", 1)[0]
                         for item in manifest.subjects
@@ -292,9 +290,7 @@ class MatlabJobExecutor:
                 raise ValueError("frozen in-place input hash changed")
 
     @staticmethod
-    def _stage_in_place_mask(
-        spec: MatlabJobSpec, run_directory: Path, workspace: Path
-    ) -> None:
+    def _stage_in_place_mask(spec: MatlabJobSpec, run_directory: Path, workspace: Path) -> None:
         if not isinstance(spec.payload, PreprocessingJobPayload):
             return
         mask_file = spec.payload.metric_projection.cfg.get("MaskFile")

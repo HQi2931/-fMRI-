@@ -170,9 +170,7 @@ class MockProvider:
     ) -> ProviderResponse:
         del api_key
         self.requests.append((profile, messages))
-        self.request_options.append(
-            {"web_search": web_search, "json_object": json_object}
-        )
+        self.request_options.append({"web_search": web_search, "json_object": json_object})
         if not self._responses:
             raise ProviderError("mock response queue is empty")
         response = self._responses.pop(0)

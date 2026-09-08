@@ -440,7 +440,8 @@ class DatasetInspector:
             "subjects": [entry.model_dump(mode="json") for entry in subjects],
             "input_stage": selected_dpabi_stage,
             "output_directories": sorted(
-                name for name in top_directories
+                name
+                for name in top_directories
                 if name.lower() in {"results", "output", "outputs", "qc", "derivatives"}
             ),
             "invalid_nifti_files": sorted(invalid_nifti_files),

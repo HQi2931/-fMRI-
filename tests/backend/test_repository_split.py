@@ -91,9 +91,9 @@ def test_repository_split_preserves_baseline_methods_exactly() -> None:
         intentional_boundary_changes = {
             "create_model_profile",
             "create_run",
-        "_register_artifacts_in_session",
-        "finalize_job_success",
-    }
+            "_register_artifacts_in_session",
+            "finalize_job_success",
+        }
     assert set(baseline).issubset(found)
     unchanged = set(baseline) - intentional_boundary_changes
     assert {name: found[name] for name in unchanged} == {name: baseline[name] for name in unchanged}

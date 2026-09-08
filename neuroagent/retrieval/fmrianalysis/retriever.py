@@ -22,12 +22,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from langchain_chroma import Chroma
 
 
-
 _log = None
+
 
 def _logger() -> logging.Logger:
     global _log
@@ -35,12 +36,13 @@ def _logger() -> logging.Logger:
         _log = logging.getLogger(__name__)
     return _log
 
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 DEFAULT_DB_DIR = "docs/chroma_literature"
 DEFAULT_COLLECTION = "fmri_literature_v1"
 DEFAULT_TOP_K = 5
-SIMILARITY_THRESHOLD = 0.0    # text-embedding-v4 produces low cosine scores (0.0–0.3);
-                               # we rely on ranking + rerank rather than hard cutoff
+SIMILARITY_THRESHOLD = 0.0  # text-embedding-v4 produces low cosine scores (0.0–0.3);
+# we rely on ranking + rerank rather than hard cutoff
 # NOTE: SIMILARITY_THRESHOLD_STRICT removed — SIMILARITY_THRESHOLD=0.0 + min_results
 # mechanism already provides adequate quality control. See MIN_CANDIDATES below.
 
@@ -53,8 +55,7 @@ _DECISION_TYPE_QUERIES: dict[str, str] = {
         "fMRI group analysis cluster forming threshold recommendation"
     ),
     "smoothing": (
-        "fMRI group analysis smoothing kernel FWHM selection spatial "
-        "resolution MNI recommendation"
+        "fMRI group analysis smoothing kernel FWHM selection spatial resolution MNI recommendation"
     ),
     "covariate": (
         "fMRI group analysis covariate selection age sex head motion "
@@ -65,15 +66,14 @@ _DECISION_TYPE_QUERIES: dict[str, str] = {
         "displacement exclusion criteria tSNR DVARS"
     ),
     "mediation": (
-        "mediation analysis Baron Kenny bootstrap indirect effect "
-        "brain behavior association fMRI"
+        "mediation analysis Baron Kenny bootstrap indirect effect brain behavior association fMRI"
     ),
     "classification": (
         "fMRI classification cross validation feature selection "
         "double dipping circular analysis small sample"
     ),
 }
-MIN_CANDIDATES = 5                  # floor: always keep at least this many from vector stage
+MIN_CANDIDATES = 5  # floor: always keep at least this many from vector stage
 
 # ── Query Expansion — CN→EN term mapping for cross-language retrieval ────────
 # text-embedding-v4 is multilingual but Chinese query → English documents can
@@ -106,15 +106,38 @@ CN_EN_TERM_MAP: dict[str, list[str]] = {
     "过拟合": ["overfitting", "regularization", "small sample size", "curse of dimensionality"],
     "特征选择": ["feature selection", "recursive feature elimination", "LASSO", "elastic net"],
     # Network / connectivity
-    "功能连接": ["functional connectivity", "FC", "seed-based", "resting-state network", "correlation matrix"],
+    "功能连接": [
+        "functional connectivity",
+        "FC",
+        "seed-based",
+        "resting-state network",
+        "correlation matrix",
+    ],
     "网络": ["brain network", "connectome", "graph theory", "network topology"],
-    "图论": ["graph theory", "small-world", "network topology", "modularity", "global efficiency", "clustering coefficient"],
-    "动态": ["dynamic functional connectivity", "sliding window", "time-varying", "temporal variability"],
+    "图论": [
+        "graph theory",
+        "small-world",
+        "network topology",
+        "modularity",
+        "global efficiency",
+        "clustering coefficient",
+    ],
+    "动态": [
+        "dynamic functional connectivity",
+        "sliding window",
+        "time-varying",
+        "temporal variability",
+    ],
     "种子点": ["seed region", "ROI definition", "seed-based FC", "region of interest"],
     # Preprocessing
     "预处理": ["preprocessing", "pipeline", "nuisance regression", "normalization"],
     "alff": ["amplitude of low frequency fluctuation", "ALFF", "fALFF", "fractional ALFF"],
-    "reho": ["regional homogeneity", "ReHo", "Kendall coefficient concordance", "local synchronization"],
+    "reho": [
+        "regional homogeneity",
+        "ReHo",
+        "Kendall coefficient concordance",
+        "local synchronization",
+    ],
     # Analysis
     "样本量": ["sample size", "statistical power", "effect size", "Cohen d"],
     "效应量": ["effect size", "Cohen d", "Hedges g", "Cohen f2"],
@@ -131,7 +154,7 @@ CN_EN_TERM_MAP: dict[str, list[str]] = {
 
 def _detect_chinese(text: str) -> bool:
     """Check if text contains Chinese characters."""
-    return bool(re.search(r'[一-鿿]', text))
+    return bool(re.search(r"[一-鿿]", text))
 
 
 def _generate_query_variants(query: str) -> list[str]:
@@ -152,8 +175,8 @@ def _generate_query_variants(query: str) -> list[str]:
     # of mixing Chinese characters with English document embeddings.
     if _detect_chinese(query):
         # Extract English words already in the query
-        en_words = re.findall(r'[a-zA-Z]+(?:\s+[a-zA-Z]+){0,5}', query)
-        existing_en = ' '.join(en_words).strip()
+        en_words = re.findall(r"[a-zA-Z]+(?:\s+[a-zA-Z]+){0,5}", query)
+        existing_en = " ".join(en_words).strip()
 
         # Collect domain-specific English terms from CN keywords
         domain_terms: list[str] = []
@@ -167,9 +190,9 @@ def _generate_query_variants(query: str) -> list[str]:
         if existing_en:
             en_parts.append(existing_en)
         if domain_terms:
-            en_parts.append(' '.join(dict.fromkeys(domain_terms)))
+            en_parts.append(" ".join(dict.fromkeys(domain_terms)))
         if en_parts:
-            en_variant = ' '.join(en_parts)
+            en_variant = " ".join(en_parts)
             if en_variant != query and len(en_variant) > 10:
                 variants.append(en_variant)
 
@@ -179,14 +202,15 @@ def _generate_query_variants(query: str) -> list[str]:
     if _detect_chinese(query):
         # Remove standalone numbers only, not fMRI notation (p<0.001, 6mm, etc.)
         broad = re.sub(
-            r'(?<![a-zA-Z<>=/])\b\d+(?:\.\d+)?\b(?!\s*(?:mm|hz|s|ms|%|[a-zA-Z]))',
-            '', query,
+            r"(?<![a-zA-Z<>=/])\b\d+(?:\.\d+)?\b(?!\s*(?:mm|hz|s|ms|%|[a-zA-Z]))",
+            "",
+            query,
         )
-        broad = re.sub(r'\s{2,}', ' ', broad).strip()
+        broad = re.sub(r"\s{2,}", " ", broad).strip()
         # Only keep if it meaningfully changes the query
         if broad != query and len(broad) > 20:
             # Don't add if the result has fragments like lone ".2" or trailing "vs"
-            if not re.search(r'(?<!\d)\.\d+', broad):
+            if not re.search(r"(?<!\d)\.\d+", broad):
                 variants.append(broad)
 
     # Remove duplicates while preserving order (non-Chinese queries often
@@ -247,7 +271,6 @@ def _reciprocal_rank_fusion(
     return fused[:top_n]
 
 
-
 class LiteratureRetriever:
     """Retrieve relevant literature passages from the ChromaDB index.
 
@@ -285,6 +308,7 @@ class LiteratureRetriever:
         from langchain_chroma import Chroma
         from chromadb.config import Settings
         from neuroagent.retrieval.fmrianalysis.dashscope_embeddings import DashScopeEmbeddings
+
         self._embeddings = DashScopeEmbeddings(api_key=self._api_key)
         self._vectorstore = Chroma(
             collection_name=self._collection_name,
@@ -334,24 +358,28 @@ class LiteratureRetriever:
 
         n_candidates = top_k * 4 if use_rerank else top_k * 2
         results = self._vectorstore.similarity_search_with_score(
-            query, k=n_candidates, filter=search_filter,
+            query,
+            k=n_candidates,
+            filter=search_filter,
         )
 
         # Collect ALL vector results with scores (before threshold filtering)
         all_vector_results = []
         for doc, score in results:
             similarity = 1.0 - float(score)
-            all_vector_results.append({
-                **doc.metadata,
-                "chunk_id": doc.metadata.get("chunk_id") or doc.id,
-                "content": doc.page_content.strip(),
-                "source": doc.metadata.get("source", ""),
-                "category": doc.metadata.get("category", ""),
-                "title": doc.metadata.get("title", ""),
-                "h1": doc.metadata.get("h1", ""),
-                "h2": doc.metadata.get("h2", ""),
-                "vector_score": round(similarity, 4),
-            })
+            all_vector_results.append(
+                {
+                    **doc.metadata,
+                    "chunk_id": doc.metadata.get("chunk_id") or doc.id,
+                    "content": doc.page_content.strip(),
+                    "source": doc.metadata.get("source", ""),
+                    "category": doc.metadata.get("category", ""),
+                    "title": doc.metadata.get("title", ""),
+                    "h1": doc.metadata.get("h1", ""),
+                    "h2": doc.metadata.get("h2", ""),
+                    "vector_score": round(similarity, 4),
+                }
+            )
 
         # ── Threshold filter with min_results safeguard ──
         threshold = self._similarity_threshold
@@ -376,13 +404,19 @@ class LiteratureRetriever:
         if use_rerank and len(candidates) > 1:
             try:
                 from neuroagent.retrieval.fmrianalysis.reranker import DashScopeReranker
+
                 reranker = DashScopeReranker(api_key=self._api_key)
                 candidates = reranker.rerank_with_texts(
-                    query, candidates, text_key="content", top_n=top_k,
+                    query,
+                    candidates,
+                    text_key="content",
+                    top_n=top_k,
                 )
             except Exception as exc:
                 # Graceful degradation: fall back to vector-only ordering
-                _logger().warning("Rerank unavailable (%s), using vector scores", type(exc).__name__)
+                _logger().warning(
+                    "Rerank unavailable (%s), using vector scores", type(exc).__name__
+                )
                 candidates = candidates[:top_k]
         else:
             candidates = candidates[:top_k]
@@ -525,7 +559,7 @@ class LiteratureRetriever:
             try:
                 passages = self.retrieve(
                     variant,
-                    top_k=top_k * 2,       # more candidates per variant for fusion
+                    top_k=top_k * 2,  # more candidates per variant for fusion
                     include_scores=False,
                     use_rerank=True,
                     min_results=top_k,
@@ -559,15 +593,17 @@ class LiteratureRetriever:
             content = p["content"]
             if len(content) > 800:
                 content = content[:800] + "..."
-            compact.append({
-                **p,
-                "content": content,
-                "source": p.get("source", ""),
-                "category": p.get("category", ""),
-                "title": p.get("title", ""),
-                "h1": p.get("h1", ""),
-                "h2": p.get("h2", ""),
-            })
+            compact.append(
+                {
+                    **p,
+                    "content": content,
+                    "source": p.get("source", ""),
+                    "category": p.get("category", ""),
+                    "title": p.get("title", ""),
+                    "h1": p.get("h1", ""),
+                    "h2": p.get("h2", ""),
+                }
+            )
 
         return {
             "status": "ok",

@@ -59,10 +59,10 @@ def test_chunker_is_section_aware_and_preserves_page_traceability() -> None:
     assert all(item.paper_id == "paper-1" for item in chunks)
     assert all(item.metadata.source_section_id for item in chunks)
     assert all(item.page_start <= item.page_end for item in chunks)
-    assert not any(
-        "ALFF" in item.text and item.section == "Methods" for item in chunks
-    )
-    method_pages = {(item.page_start, item.page_end) for item in chunks if item.section == "Methods"}
+    assert not any("ALFF" in item.text and item.section == "Methods" for item in chunks)
+    method_pages = {
+        (item.page_start, item.page_end) for item in chunks if item.section == "Methods"
+    }
     assert method_pages.issubset({(5, 5), (5, 6), (6, 6)})
 
 
@@ -72,9 +72,7 @@ def test_chunker_uses_token_window_only_for_oversized_sentence() -> None:
         "Discussion",
         (ParagraphSpan(text=" ".join(f"word{i}" for i in range(25)), page_start=9, page_end=9),),
     )
-    chunks = ScientificChunker(target_tokens=10, overlap_tokens=2).chunk(
-        "paper-1", (oversized,)
-    )
+    chunks = ScientificChunker(target_tokens=10, overlap_tokens=2).chunk("paper-1", (oversized,))
     assert len(chunks) == 3
     assert all(item.page_start == item.page_end == 9 for item in chunks)
     assert max(item.token_count for item in chunks) <= 10

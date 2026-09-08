@@ -26,6 +26,7 @@ import requests
 
 _log = None
 
+
 def _logger() -> logging.Logger:
     global _log
     if _log is None:
@@ -34,12 +35,9 @@ def _logger() -> logging.Logger:
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-RERANK_URL = (
-    "https://dashscope.aliyuncs.com/api/v1/services/rerank/"
-    "text-rerank/text-rerank"
-)
+RERANK_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 RERANK_MODEL = "qwen3-rerank"
-MAX_DOCS_PER_CALL = 50       # DashScope rerank limit
+MAX_DOCS_PER_CALL = 50  # DashScope rerank limit
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0
 
@@ -123,14 +121,14 @@ class DashScopeReranker:
 
             except requests.exceptions.HTTPError as exc:
                 if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_DELAY * (2 ** attempt)
+                    wait = RETRY_DELAY * (2**attempt)
                     _logger().warning("Rerank HTTP retry type=%s", type(exc).__name__)
                     time.sleep(wait)
                     continue
                 raise
             except Exception as exc:
                 if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_DELAY * (2 ** attempt)
+                    wait = RETRY_DELAY * (2**attempt)
                     _logger().warning("Rerank retry type=%s", type(exc).__name__)
                     time.sleep(wait)
                     continue

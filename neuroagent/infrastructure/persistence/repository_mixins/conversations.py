@@ -70,16 +70,12 @@ class ConversationMixin(RepositoryBaseMixin):
                 raise NotFoundError("conversation", conversation_id)
             return self._conversation_view(session, row)
 
-    def list_conversations(
-        self, *, mode: ConversationMode | None = None
-    ) -> list[ConversationView]:
+    def list_conversations(self, *, mode: ConversationMode | None = None) -> list[ConversationView]:
         with self.database.session_factory() as session:
             statement = select(ConversationRow)
             if mode is not None:
                 statement = statement.where(ConversationRow.mode == mode.value)
-            rows = session.scalars(
-                statement.order_by(ConversationRow.updated_at.desc())
-            ).all()
+            rows = session.scalars(statement.order_by(ConversationRow.updated_at.desc())).all()
             return [self._conversation_view(session, row) for row in rows]
 
     def append_conversation_exchange(
