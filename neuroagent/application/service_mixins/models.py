@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from neuroagent.agent.gateway import ModelGateway, ModelGatewayError
+from neuroagent.agent.gateway import ChatGatewayResult, ModelGateway, ModelGatewayError
 from neuroagent.agent.models import (
     AgentSummaryPurpose,
     AgentTaskRequest,
@@ -155,6 +155,40 @@ class ModelAgentMixin(BaseServiceMixin):
                     "模型提出的 SkillRequest 未通过严格结构和科研参数校验。",
                 ) from exc
         return result
+
+    async def _generate_rsfmri_chat(
+        self,
+        *,
+        question: str,
+        evidence: list[dict[str, object]],
+        preferred_profile_id: str | None,
+        model: str | None,
+        allow_web_search: bool,
+    ) -> ChatGatewayResult:
+        try:
+            return await self._model_gateway().generate_chat(
+                question=question,
+                evidence=evidence,
+                preferred_profile_id=preferred_profile_id,
+                model=model,
+                allow_web_search=allow_web_search,
+            )
+        except OutboundPolicyError as exc:
+            raise InputValidationError(
+                "outbound_context_rejected",
+                "问题或检索证据无法确认已安全脱敏, 外部模型调用已阻断。",
+            ) from exc
+        except ModelRoutingError as exc:
+            raise InputValidationError(
+                "model_route_unavailable",
+                "没有满足 Chat 能力要求的模型配置。",
+            ) from exc
+        except (ModelGatewayError, ProviderError) as exc:
+            raise ApplicationError(
+                "chat_model_unavailable",
+                "Chat 模型不可用; 请检查模型配置、API Key, 以及联网搜索能力选项。",
+                status_code=503,
+            ) from exc
 
     async def test_provider(
         self, request: ProviderTestRequest, idempotency_key: str

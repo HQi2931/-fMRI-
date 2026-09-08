@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import replace
@@ -124,6 +126,7 @@ class MatlabJobExecutor:
                 dpabi_version=configuration.dpabi_version,
             )
             compilation = None
+            preprocessing_workspace: Path | None = None
             if executor_type == "matlab_preprocessing":
                 compilation = self._compile_preprocessing(payload)
                 spec = compilation.spec
@@ -147,15 +150,65 @@ class MatlabJobExecutor:
             spec = spec.model_copy(update={"run_id": attempt.name})
             if compilation is not None:
                 compilation = replace(compilation, spec=spec)
+                if payload.get("workspace_mode") == "in_place":
+                    frozen = self._repository.get_plan(run.plan_revision_id)
+                    plan = SkillPlan.model_validate(frozen.plan["skill_plan"])
+                    dataset = self._repository.get_dataset(plan.dataset_ref)
+                    manifest = self._repository.get_manifest(
+                        str(frozen.plan["dataset_manifest_id"])
+                    )
+                    if manifest.profile.kind.value != "dpabi_ready":
+                        raise ValueError("in-place execution requires a DPABI-ready workspace")
+                    preprocessing_workspace = path_policy.validate_read_path(
+                        dataset.source_path,
+                        project_roots=project.source_roots,
+                        expect_directory=True,
+                    )
+                    if compilation.staging_plan is None:
+                        raise ValueError("in-place execution requires frozen source inputs")
+                    self._verify_in_place_inputs(
+                        compilation.staging_plan, preprocessing_workspace
+                    )
+                    stages = {
+                        item.functional_files[0].replace("\\", "/").split("/", 1)[0]
+                        for item in manifest.subjects
+                    }
+                    if len(stages) != 1:
+                        raise ValueError("in-place DPABI inputs must use one functional stage")
+                    compiled_payload = compilation.spec.payload
+                    if not isinstance(compiled_payload, PreprocessingJobPayload):
+                        raise ValueError("preprocessing compilation payload is invalid")
+                    cfg = dict(compiled_payload.metric_projection.cfg)
+                    cfg["StartingDirName"] = next(iter(stages))
+                    mask_file = cfg.get("MaskFile")
+                    if isinstance(mask_file, str) and mask_file != "Default":
+                        cfg["MaskFile"] = (
+                            PurePosixPath(".neuroagent") / attempt.name / mask_file
+                        ).as_posix()
+                    projection = compiled_payload.metric_projection.model_copy(
+                        update={"cfg": cfg, "cfg_hash": stable_hash(cfg)}
+                    )
+                    in_place_payload = compiled_payload.model_copy(
+                        update={"metric_projection": projection}
+                    )
+                    spec = compilation.spec.model_copy(update={"payload": in_place_payload})
+                    compilation = replace(compilation, spec=spec)
             executor = ControlledMatlabExecutor(
                 self._renderer,
                 environment,
                 attempts,
                 allow_real_execution=self._settings.enable_real_execution,
+                preprocessing_workspace=preprocessing_workspace,
             )
             rendered = executor.dry_run(spec).rendered
             self._stage_inputs(run_id, rendered.run_directory, spec)
-            if compilation is not None and compilation.staging_plan is not None:
+            if preprocessing_workspace is not None:
+                self._stage_in_place_mask(spec, rendered.run_directory, preprocessing_workspace)
+            if (
+                compilation is not None
+                and compilation.staging_plan is not None
+                and preprocessing_workspace is None
+            ):
                 frozen = self._repository.get_plan(run.plan_revision_id)
                 plan = SkillPlan.model_validate(frozen.plan["skill_plan"])
                 dataset = self._repository.get_dataset(plan.dataset_ref)
@@ -221,6 +274,46 @@ class MatlabJobExecutor:
             },
             artifacts=artifacts,
         )
+
+    @staticmethod
+    def _verify_in_place_inputs(plan: StagingCopyPlan, workspace: Path) -> None:
+        root = workspace.resolve(strict=True)
+        for operation in plan.operations:
+            source = (root / operation.source_relative_path).resolve(strict=True)
+            if not _within(source, root) or not source.is_file() or source.is_symlink():
+                raise ValueError("frozen in-place input is unavailable or unsafe")
+            if source.stat().st_size != operation.size_bytes:
+                raise ValueError("frozen in-place input size changed")
+            digest = hashlib.sha256()
+            with source.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest() != operation.sha256:
+                raise ValueError("frozen in-place input hash changed")
+
+    @staticmethod
+    def _stage_in_place_mask(
+        spec: MatlabJobSpec, run_directory: Path, workspace: Path
+    ) -> None:
+        if not isinstance(spec.payload, PreprocessingJobPayload):
+            return
+        mask_file = spec.payload.metric_projection.cfg.get("MaskFile")
+        if not isinstance(mask_file, str) or mask_file == "Default":
+            return
+        bindings = [
+            binding
+            for binding in spec.artifact_bindings
+            if binding.relative_path.startswith("staging/mask/")
+        ]
+        if len(bindings) != 1:
+            raise ValueError("in-place metric execution requires one frozen mask")
+        source = (run_directory / bindings[0].relative_path).resolve(strict=True)
+        root = workspace.resolve(strict=True)
+        destination = (root / mask_file).resolve()
+        if not _within(destination, root):
+            raise ValueError("in-place mask path escaped workspace")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
 
     def _stage_inputs(self, run_id: str, target_root: Path, spec: MatlabJobSpec) -> None:
         run = self._repository.get_run(run_id)

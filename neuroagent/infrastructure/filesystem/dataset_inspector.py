@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
+import struct
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -54,6 +56,22 @@ def _is_dicom(path: Path) -> bool:
             stream.seek(128)
             return stream.read(4) == b"DICM"
     except OSError:
+        return False
+
+
+def _nifti_header_is_readable(path: Path) -> bool:
+    """Check the fixed NIfTI header marker without loading image data."""
+
+    try:
+        opener = gzip.open if path.name.lower().endswith(".nii.gz") else Path.open
+        with opener(path, "rb") as stream:
+            marker = stream.read(4)
+        if len(marker) != 4:
+            return False
+        little = struct.unpack("<I", marker)[0]
+        big = struct.unpack(">I", marker)[0]
+        return little in {348, 540} or big in {348, 540}
+    except (OSError, EOFError):
         return False
 
 
@@ -266,10 +284,13 @@ class DatasetInspector:
         # unchanged.  Paths stay relative and source files are opened read-only.
         file_hashes: dict[str, str] = {}
         file_sizes: dict[str, int] = {}
+        invalid_nifti_files: list[str] = []
         for path in all_files:
             relative = self._path_policy.relative_source_path(path, source_path)
             file_hashes[relative] = sha256_file(path)
             file_sizes[relative] = path.stat().st_size
+            if path in nifti and not _nifti_header_is_readable(path):
+                invalid_nifti_files.append(relative)
         for path in nifti + dicom:
             relative = self._path_policy.relative_source_path(path, source_path)
             if kind is DatasetKind.DPABI_READY:
@@ -417,6 +438,12 @@ class DatasetInspector:
         return {
             "profile": profile.model_dump(mode="json"),
             "subjects": [entry.model_dump(mode="json") for entry in subjects],
+            "input_stage": selected_dpabi_stage,
+            "output_directories": sorted(
+                name for name in top_directories
+                if name.lower() in {"results", "output", "outputs", "qc", "derivatives"}
+            ),
+            "invalid_nifti_files": sorted(invalid_nifti_files),
             "file_hashes": dict(sorted(file_hashes.items())),
             "file_sizes": dict(sorted(file_sizes.items())),
         }

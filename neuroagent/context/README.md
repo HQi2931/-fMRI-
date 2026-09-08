@@ -14,7 +14,9 @@
 
 ## 当前阶段
 
-仅建立 gatherers、selectors、structure、compressors 和 snapshots 的目录边界，未实现上下文构建器。
+`interfaces.py` 已定义 `ContextMessage`、`PinnedContext`、`ContextPacket` 和 `ContextManager`。
+Phase 1 的最小构建器只组装调用方提供的 recent messages、retrieval evidence 和 pinned context；
+尚未实现 token budget、摘要、压缩或 pinned context 自动提取。
 
 ## 后续核心接口
 

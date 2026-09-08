@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Header, Query, Request, status
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from neuroagent.application.contracts import (
@@ -17,6 +17,11 @@ from neuroagent.application.contracts import (
     ArtifactView,
     ClusterLocalizationRequest,
     ClusterLocalizationView,
+    ConversationCreate,
+    ConversationMode,
+    ConversationTurnCreate,
+    ConversationTurnView,
+    ConversationView,
     CorrectionCapabilityView,
     DatasetCreate,
     DatasetSplitCreate,
@@ -67,8 +72,12 @@ from neuroagent.application.contracts import (
     StatisticalResultView,
     StatisticsRunCreate,
     WorkflowState,
+    WorkspaceCheckRequest,
+    WorkspaceCheckView,
+    WorkspacePickView,
 )
 from neuroagent.application.services import NeuroAgentService
+from neuroagent.literature.models import PaperIngestResult
 from neuroagent.skills.models import SkillSpec
 from neuroagent.workflow.state import TERMINAL_WORKFLOW_STATES
 
@@ -100,6 +109,97 @@ def update_environment_config(
     body: EnvironmentConfigUpdate, request: Request
 ) -> EnvironmentConfigView:
     return service_from(request).update_environment_config(body)
+
+
+@router.post("/workspaces/check", response_model=WorkspaceCheckView, tags=["workspaces"])
+def check_workspace(body: WorkspaceCheckRequest, request: Request) -> WorkspaceCheckView:
+    """Read-only workspace check used by the conversational workbench."""
+
+    return service_from(request).check_workspace(body)
+
+
+@router.post("/workspaces/pick", response_model=WorkspacePickView, tags=["workspaces"])
+def pick_workspace(request: Request) -> WorkspacePickView:
+    return service_from(request).pick_workspace()
+
+
+@router.post(
+    "/conversations",
+    response_model=ConversationView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["agent"],
+)
+def create_conversation(
+    body: ConversationCreate, request: Request, idempotency_key: IdempotencyKey
+) -> ConversationView:
+    return service_from(request).create_conversation(body, idempotency_key)
+
+
+@router.get("/conversations", response_model=list[ConversationView], tags=["agent"])
+def list_conversations(
+    request: Request, mode: ConversationMode | None = None
+) -> list[ConversationView]:
+    return service_from(request).list_conversations(mode)
+
+
+@router.get(
+    "/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"]
+)
+def get_conversation(conversation_id: str, request: Request) -> ConversationView:
+    return service_from(request).get_conversation(conversation_id)
+
+
+@router.post(
+    "/literature/papers",
+    response_model=PaperIngestResult,
+    status_code=status.HTTP_201_CREATED,
+    tags=["literature"],
+)
+async def ingest_literature_paper(
+    request: Request,
+    file: Annotated[UploadFile, File(description="Scientific paper PDF")],
+) -> PaperIngestResult:
+    service = service_from(request)
+    content = await file.read(service.literature.max_pdf_bytes + 1)
+    await file.close()
+    return await asyncio.to_thread(
+        service.literature.ingest, filename=file.filename or "", content=content
+    )
+
+
+@router.get(
+    "/literature/papers/{paper_id}",
+    response_model=PaperIngestResult,
+    tags=["literature"],
+)
+def get_literature_paper(paper_id: str, request: Request) -> PaperIngestResult:
+    return service_from(request).literature.get(paper_id)
+
+
+@router.get(
+    "/literature/papers",
+    response_model=list[PaperIngestResult],
+    tags=["literature"],
+)
+def list_literature_papers(request: Request) -> list[PaperIngestResult]:
+    return service_from(request).literature.list()
+
+
+@router.post(
+    "/conversations/{conversation_id}/turns",
+    response_model=ConversationTurnView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["agent"],
+)
+async def send_conversation_turn(
+    conversation_id: str,
+    body: ConversationTurnCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationTurnView:
+    return await service_from(request).send_conversation_turn(
+        conversation_id, body, idempotency_key
+    )
 
 
 @router.post(

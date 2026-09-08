@@ -246,6 +246,62 @@ class AgentTaskRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ConversationRow(Base):
+    __tablename__ = "conversations"
+    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    workspace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferred_profile_id: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.project_id", ondelete="RESTRICT"), nullable=True
+    )
+    active_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workflow_runs.run_id", ondelete="RESTRICT"), nullable=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class ConversationMessageRow(Base):
+    __tablename__ = "conversation_messages"
+    message_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (UniqueConstraint("conversation_id", "sequence"),)
+
+
+class ConversationToolCallRow(Base):
+    __tablename__ = "conversation_tool_calls"
+    tool_call_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    user_message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("conversation_messages.message_id", ondelete="CASCADE"),
+        index=True,
+    )
+    tool_name: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    input_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class QcReviewRow(Base):
     __tablename__ = "qc_review_revisions"
     review_revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -278,3 +334,56 @@ class QcApprovalRow(Base):
     decision: Mapped[str] = mapped_column(String(20))
     reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PaperRow(Base):
+    __tablename__ = "papers"
+    paper_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    authors_json: Mapped[str] = mapped_column(Text, default="[]")
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    journal: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    doi: Mapped[str | None] = mapped_column(String(300), nullable=True, index=True)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_file: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    page_count: Mapped[int] = mapped_column(Integer)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PaperSectionRow(Base):
+    __tablename__ = "paper_sections"
+    section_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("papers.paper_id", ondelete="CASCADE"), index=True
+    )
+    section_index: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(500))
+    section: Mapped[str] = mapped_column(String(200), index=True)
+    subsection: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    level: Mapped[int] = mapped_column(Integer)
+    page_start: Mapped[int] = mapped_column(Integer, index=True)
+    page_end: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    paragraphs_json: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    __table_args__ = (UniqueConstraint("paper_id", "section_index"),)
+
+
+class LiteratureChunkRow(Base):
+    __tablename__ = "literature_chunks"
+    chunk_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("papers.paper_id", ondelete="CASCADE"), index=True
+    )
+    section: Mapped[str] = mapped_column(String(200), index=True)
+    subsection: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    page_start: Mapped[int] = mapped_column(Integer, index=True)
+    page_end: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int] = mapped_column(Integer)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    __table_args__ = (UniqueConstraint("paper_id", "chunk_index"),)

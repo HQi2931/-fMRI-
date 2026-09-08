@@ -18,7 +18,8 @@
 - 已实现：用户选择本机 MATLAB/SPM/DPABI 路径、入口探测、受控 DPABI `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消、预期产物完整性检查，以及真实统计结果的证据登记与确定性 Markdown/JSON 复现报告。
 - 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径均已完成小型合成 smoke；会触发 DPARSFA 交互提示的 T1 分割/DARTEL 在 headless 路径明确拒绝。
 - 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
-- 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配和 rs-fMRI 本地证据问答。它们不启动 MATLAB、训练模型或联网检索。
+- 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
+- Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。新上传文献尚未自动入向量库，旧索引缺失页码不会伪造补齐。详情见 [实施报告](docs/rsfmri-chat-phase1-implementation-report.md)。
 - 已完成一个真实 Provider 轻量 smoke（无受试者信息）。运行页默认 Mock，MATLAB 选项仍需要不可跳过的逐次确认；这些小型验证不代表所有本机配置、数据形态或 DPABI 功能均已兼容。
 
 `v0.1.0` 尚未发布。当前是待审候选基线，详细范围和未完成项见 [MVP 范围](docs/product/mvp-scope.md)。
@@ -65,9 +66,11 @@ uv run python scripts\synthetic-demo.py --root tmp\synthetic-demo
 
 - [开发代理规则](AGENTS.md)
 - [项目结构](docs/architecture/project-structure.md)
+- [MVP1.0 目标架构](docs/architecture/mvp-1.0-target-architecture.md)
 - [Skill 层设计](docs/architecture/fmri-skill-layer.md)
 - [系统设计](docs/architecture/system-design.md)
 - [开发路线图](docs/plans/0002-full-mvp-roadmap.md)
+- [MVP1.0 开发路线图](docs/plans/0007-mvp-1.0-roadmap.md)
 - [开发与发布](docs/development/release-process.md)
 - [API v1 契约](docs/api/api-v1.md)
 - [MVP 验证与限制](docs/development/mvp-verification.md)

@@ -18,7 +18,7 @@ function pathOf(input: RequestInfo | URL): string {
 function defaultApi(input: RequestInfo | URL): Promise<Response> {
   const path = pathOf(input);
   if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
-  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles")) return json([]);
+  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles") || path.endsWith("/conversations")) return json([]);
   if (path.endsWith("/statistics/results")) return json([]);
   if (path.endsWith("/environment/probe")) return json({ ready: false, environment_hash: "e".repeat(64), components: [] });
   if (path.endsWith("/environment/config")) return json({ matlab_executable: null, spm_dir: null, dpabi_dir: null, matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false });
@@ -638,7 +638,7 @@ describe("App", () => {
   it.each([
     ["/qc", "先审查，再进入统计"],
     ["/statistics", "版本化统计设计"],
-    ["/settings", "运行条件与模型配置"],
+    ["/settings", "运行条件与服务商 API"],
   ])("renders the guarded %s page", async (route, heading) => {
     renderAt(route);
     expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
@@ -674,7 +674,7 @@ describe("App", () => {
     });
 
     await user.selectOptions(screen.getByLabelText("任务类型"), "log_summarizer");
-    await user.selectOptions(screen.getByLabelText("模型"), "provider1");
+    await user.selectOptions(screen.getByLabelText("模型"), "provider1:configured-model");
     await user.click(send);
     await user.selectOptions(screen.getByLabelText("任务类型"), "report_writer");
     await user.click(send);
@@ -687,6 +687,69 @@ describe("App", () => {
     expect(JSON.stringify(reportRequest)).not.toContain("TEST_API_KEY");
   });
 
+  it("separates RAG chat from the rs-fMRI work mode", async () => {
+    const profile = { profile: { id: "search-model", provider: "openai-compatible", base_url: "https://example.test", model: "fmri-chat", api_key_env: "SEARCH_API_KEY", priority: 10, capabilities: ["web_search"], timeout_seconds: 45 }, version: 1, created_at: now };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      const rag = {
+        answer: {
+          answer: "ALFF 衡量低频振幅，fALFF 使用低频功率与全频功率之比。",
+          disclaimer: "研究用途信息",
+          evidence: [{ source: "metrics.md", title: "domain/metrics.md", excerpt: "ALFF 与 fALFF 输入约束", score: 3 }],
+          in_scope: true,
+        },
+        remote_search_used: true,
+      };
+      const welcome = { message_id: "m0", conversation_id: "chat1", sequence: 1, role: "assistant", content: "欢迎", payload: {}, created_at: now };
+      if (path.endsWith("/model-profiles")) return json([profile]);
+      if (path.endsWith("/providers/models")) return json({ models: ["fmri-chat", "fmri-chat-fast"] });
+      if (path.endsWith("/conversations") && init?.method === "POST") {
+        return json({ conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 1, created_at: now, updated_at: now, messages: [welcome], tool_calls: [] }, 201);
+      }
+      if (path.endsWith("/conversations/chat1/turns") && init?.method === "POST") {
+        const userMessage = { message_id: "m1", conversation_id: "chat1", sequence: 2, role: "user", content: "ALFF 和 fALFF 有什么区别？", payload: {}, created_at: now };
+        const assistantMessage = { message_id: "m2", conversation_id: "chat1", sequence: 3, role: "assistant", content: rag.answer.answer, payload: { rag }, created_at: now };
+        return json({ conversation: { conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 2, created_at: now, updated_at: now, messages: [welcome, userMessage, assistantMessage], tool_calls: [] }, user_message: userMessage, assistant_message: assistantMessage, tool_call: null }, 201);
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.selectOptions(await screen.findByLabelText("模型"), "search-model:fmri-chat");
+    await user.click(screen.getByRole("checkbox", { name: "联网搜索" }));
+    await user.type(screen.getByPlaceholderText("例如：ALFF 和 fALFF 的输入阶段有什么区别？"), "ALFF 和 fALFF 有什么区别？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByText(/ALFF 衡量低频振幅/)).toBeInTheDocument();
+    expect(screen.getByText("domain/metrics.md")).toBeInTheDocument();
+    expect(screen.queryByLabelText("任务类型")).not.toBeInTheDocument();
+    const turnCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/conversations/chat1/turns"));
+    expect(JSON.parse(String(turnCall?.[1]?.body))).toMatchObject({
+      preferred_profile_id: "search-model",
+      model: "fmri-chat",
+      allow_remote_search: true,
+    });
+  });
+
+  it("uses the system folder picker instead of a typed workspace path", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/workspaces/pick") && init?.method === "POST") {
+        return json({ path: "D:\\selected-dpabi-workspace", cancelled: false });
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+
+    expect(screen.queryByRole("textbox", { name: "本机目录" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "浏览…" }));
+    expect(await screen.findByText("D:\\selected-dpabi-workspace")).toBeInTheDocument();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => pathOf(url).endsWith("/workspaces/pick")),
+    ).toBe(true);
+  });
+
   it("stores only non-secret provider metadata and runs a lightweight connectivity test", async () => {
     let profiles: unknown[] = [];
     const profile = { profile: { id: "deepseek-default", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "configured-model", api_key_env: "DEEPSEEK_API_KEY", priority: 10, capabilities: ["json_object"], timeout_seconds: 45 }, version: 1, created_at: now };
@@ -696,23 +759,21 @@ describe("App", () => {
       if (path.endsWith("/environment/probe")) return json({ ready: true, environment_hash: "e".repeat(64), components: [{ name: "MATLAB", available: true, evidence: "R2023b" }] });
       if (path.endsWith("/model-profiles") && init?.method === "POST") { profiles = [profile]; return json(profile, 201); }
       if (path.endsWith("/model-profiles")) return json(profiles);
-      if (path.endsWith("/providers/test")) return json({ profile_id: "deepseek-default", available: true, routing: { task_type: "plan_explainer", selected_profile_id: "deepseek-default", candidate_profile_ids: ["deepseek-default"], required_capabilities: ["json_object"], reason: "configured" }, context_hash: "c".repeat(64) });
+      if (path.endsWith("/providers/models")) return json({ models: ["configured-model", "reasoning-model"] });
       return defaultApi(input);
     });
     const user = userEvent.setup();
     renderAt("/settings");
-    await user.type(screen.getByLabelText("配置 ID"), "deepseek-default");
     await user.type(screen.getByLabelText("API 基址"), "https://api.deepseek.com");
     await user.type(screen.getByLabelText("密钥环境变量名"), "DEEPSEEK_API_KEY");
-    await user.type(screen.getByLabelText("模型名称（手动输入）"), "configured-model");
-    await user.click(screen.getByRole("button", { name: "保存模型配置" }));
-    expect(await screen.findByText(/模型配置已保存/)).toBeInTheDocument();
-    const testButton = await screen.findByRole("button", { name: "测试" });
+    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+    expect(await screen.findByText(/Agent 对话框可直接选择其返回的 2 个模型/)).toBeInTheDocument();
+    const testButton = await screen.findByRole("button", { name: "刷新模型列表" });
     await user.click(testButton);
-    expect(await screen.findByText(/轻量测试成功/)).toBeInTheDocument();
+    expect(await screen.findByText(/当前返回 2 个可选模型/)).toBeInTheDocument();
     const saved = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/model-profiles") && init?.method === "POST");
     const savedBody = JSON.parse(String(saved?.[1]?.body));
-    expect(savedBody.profile.id).toBe("deepseek-default");
+    expect(savedBody.profile.id).toBe("deepseek");
     expect(savedBody.api_key).toBeNull();
     expect(String(saved?.[1]?.body)).not.toContain("replace-locally");
   });

@@ -19,6 +19,84 @@ export type RuntimeEvent = Schemas["RuntimeEventView"];
 export type QcReview = Schemas["QcReviewView"];
 export type ModelProfile = Schemas["ModelProfileView"];
 export type AgentTask = Schemas["AgentTaskView"];
+export type WorkspaceCheck = {
+  path: string;
+  kind: "bids" | "dpabi_ready" | "dicom" | "nifti" | "mixed" | "unknown";
+  file_count: number;
+  nifti_count: number;
+  dicom_count: number;
+  subject_count: number;
+  functional_subject_count: number;
+  anatomical_subject_count: number;
+  input_stage: string | null;
+  output_directories: string[];
+  invalid_nifti_files: string[];
+  warnings: string[];
+  blocking_issues: string[];
+  subjects: Array<{
+    subject_id: string;
+    session_id: string | null;
+    functional_files: string[];
+    anatomical_files: string[];
+    dicom_files: string[];
+  }>;
+  checked_at: string;
+};
+export type WorkspacePick = { path: string | null; cancelled: boolean };
+export type ConversationMode = "chat" | "work";
+export type ConversationMessage = {
+  message_id: string;
+  conversation_id: string;
+  sequence: number;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+export type ConversationToolCall = {
+  tool_call_id: string;
+  conversation_id: string;
+  user_message_id: string;
+  tool_name: string;
+  status: "succeeded" | "failed" | "awaiting_confirmation";
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type Conversation = {
+  conversation_id: string;
+  mode: ConversationMode;
+  title: string;
+  workspace_path: string | null;
+  preferred_profile_id: string | null;
+  project_id: string | null;
+  active_run_id: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  messages: ConversationMessage[];
+  tool_calls: ConversationToolCall[];
+};
+export type ConversationTurn = {
+  conversation: Conversation;
+  user_message: ConversationMessage;
+  assistant_message: ConversationMessage;
+  tool_call: ConversationToolCall | null;
+};
+export type ConversationTurnBody = {
+  content: string;
+  action?: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
+  allow_remote_search?: boolean;
+  model?: string | null;
+  workspace_path?: string | null;
+  preferred_profile_id?: string | null;
+  project_id?: string | null;
+  plan_revision_id?: string | null;
+  expected_plan_hash?: string | null;
+  real_execution_confirmed?: boolean;
+};
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
 export type StatisticalResult = Schemas["StatisticalResultView"];
 export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
@@ -219,6 +297,31 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   environment: (signal?: AbortSignal) => request<EnvironmentProbe>("/environment/probe", { signal }),
   environmentConfig: (signal?: AbortSignal) => request<EnvironmentConfig>("/environment/config", { signal }),
+  checkWorkspace: (body: { path: string }, signal?: AbortSignal) =>
+    post<WorkspaceCheck>("/workspaces/check", body, signal),
+  pickWorkspace: (signal?: AbortSignal) =>
+    post<WorkspacePick>("/workspaces/pick", {}, signal),
+  conversations: (mode?: ConversationMode, signal?: AbortSignal) =>
+    request<Conversation[]>(
+      `/conversations${mode ? `?mode=${encodeURIComponent(mode)}` : ""}`,
+      { signal },
+    ),
+  createConversation: (
+    body: {
+      mode: ConversationMode;
+      title?: string | null;
+      workspace_path?: string | null;
+      preferred_profile_id?: string | null;
+    },
+    signal?: AbortSignal,
+  ) => post<Conversation>("/conversations", body, signal),
+  conversation: (conversationId: string, signal?: AbortSignal) =>
+    request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  sendConversationTurn: (
+    conversationId: string,
+    body: ConversationTurnBody,
+    signal?: AbortSignal,
+  ) => post<ConversationTurn>(`/conversations/${conversationId}/turns`, body, signal),
   updateEnvironmentConfig: (
     body: Schemas["EnvironmentConfigUpdate"],
     signal?: AbortSignal,

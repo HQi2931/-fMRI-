@@ -115,6 +115,35 @@ class DatasetProfile(StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class WorkspaceCheckRequest(StrictModel):
+    """Read-only request to validate a user-selected DPABI workspace."""
+
+    path: str = Field(min_length=1, max_length=4_000)
+
+
+class WorkspacePickView(StrictModel):
+    path: str | None = None
+    cancelled: bool = False
+
+
+class WorkspaceCheckView(StrictModel):
+    path: str
+    kind: DatasetKind
+    file_count: int
+    nifti_count: int
+    dicom_count: int
+    subject_count: int
+    functional_subject_count: int
+    anatomical_subject_count: int
+    input_stage: str | None = None
+    output_directories: list[str] = Field(default_factory=list)
+    invalid_nifti_files: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
+    subjects: list[SubjectManifestEntry] = Field(default_factory=list)
+    checked_at: datetime
+
+
 class ManifestRevisionView(StrictModel):
     manifest_id: str
     dataset_id: str
@@ -307,12 +336,20 @@ class ExecutionBackend(StrEnum):
     MATLAB = "matlab"
 
 
+class ExecutionWorkspaceMode(StrEnum):
+    """Where DPABI reads and writes its DataProcessDir."""
+
+    ISOLATED = "isolated"
+    IN_PLACE = "in_place"
+
+
 class RunCreate(StrictModel):
     project_id: str
     plan_revision_id: str
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     max_attempts: int = Field(default=1, ge=1, le=5)
     execution_backend: ExecutionBackend = ExecutionBackend.MOCK
+    workspace_mode: ExecutionWorkspaceMode = ExecutionWorkspaceMode.ISOLATED
     real_execution_confirmed: bool = False
     mock_outcome: MockOutcome = MockOutcome.SUCCEED
     mock_delay_ms: int = Field(default=0, ge=0, le=10_000)
@@ -321,6 +358,10 @@ class RunCreate(StrictModel):
     def require_real_execution_confirmation(self) -> RunCreate:
         if self.execution_backend is ExecutionBackend.MATLAB and not self.real_execution_confirmed:
             raise ValueError("real MATLAB execution requires explicit confirmation")
+        if self.workspace_mode is ExecutionWorkspaceMode.IN_PLACE and (
+            self.execution_backend is not ExecutionBackend.MATLAB
+        ):
+            raise ValueError("in-place workspace mode is available only for MATLAB execution")
         return self
 
 
@@ -753,6 +794,96 @@ class RsFmriQuestionRequest(StrictModel):
 class RsFmriAnswerView(StrictModel):
     answer: RsFmriAnswer
     remote_search_used: bool = False
+
+
+class ConversationMode(StrEnum):
+    CHAT = "chat"
+    WORK = "work"
+
+
+class ConversationRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+class ConversationToolStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+
+
+class ConversationAction(StrEnum):
+    AUTO = "auto"
+    CHECK_WORKSPACE = "check_workspace"
+    START_PREPROCESSING = "start_preprocessing"
+    GET_PROGRESS = "get_progress"
+
+
+class ConversationCreate(StrictModel):
+    mode: ConversationMode
+    title: str | None = Field(default=None, max_length=200)
+    workspace_path: str | None = Field(default=None, max_length=4_000)
+    preferred_profile_id: str | None = Field(default=None, max_length=63)
+
+
+class ConversationMessageView(StrictModel):
+    message_id: str
+    conversation_id: str
+    sequence: int
+    role: ConversationRole
+    content: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class ConversationToolCallView(StrictModel):
+    tool_call_id: str
+    conversation_id: str
+    user_message_id: str
+    tool_name: str
+    status: ConversationToolStatus
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationView(StrictModel):
+    conversation_id: str
+    mode: ConversationMode
+    title: str
+    workspace_path: str | None = None
+    preferred_profile_id: str | None = None
+    project_id: str | None = None
+    active_run_id: str | None = None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    messages: list[ConversationMessageView] = Field(default_factory=list)
+    tool_calls: list[ConversationToolCallView] = Field(default_factory=list)
+
+
+class ConversationTurnCreate(StrictModel):
+    content: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
+    stream: bool = False
+    action: ConversationAction = ConversationAction.AUTO
+    allow_remote_search: bool = False
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    workspace_path: str | None = Field(default=None, max_length=4_000)
+    preferred_profile_id: str | None = Field(default=None, max_length=63)
+    project_id: str | None = None
+    plan_revision_id: str | None = None
+    expected_plan_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    real_execution_confirmed: bool = False
+
+
+class ConversationTurnView(StrictModel):
+    conversation: ConversationView
+    user_message: ConversationMessageView
+    assistant_message: ConversationMessageView
+    tool_call: ConversationToolCallView | None = None
 
 
 class OrganizationSubjectInput(StrictModel):

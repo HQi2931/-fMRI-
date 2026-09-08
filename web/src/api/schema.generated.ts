@@ -89,6 +89,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Conversations */
+        get: operations["list_conversations_api_v1_conversations_get"];
+        put?: never;
+        /** Create Conversation */
+        post: operations["create_conversation_api_v1_conversations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Conversation */
+        get: operations["get_conversation_api_v1_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send Conversation Turn */
+        post: operations["send_conversation_turn_api_v1_conversations__conversation_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/corrections": {
         parameters: {
             query?: never;
@@ -235,6 +287,41 @@ export interface paths {
         };
         /** Health */
         get: operations["health_api_v1_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/literature/papers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Literature Papers */
+        get: operations["list_literature_papers_api_v1_literature_papers_get"];
+        put?: never;
+        /** Ingest Literature Paper */
+        post: operations["ingest_literature_paper_api_v1_literature_papers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/literature/papers/{paper_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Literature Paper */
+        get: operations["get_literature_paper_api_v1_literature_papers__paper_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -842,6 +929,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Workspace
+         * @description Read-only workspace check used by the conversational workbench.
+         */
+        post: operations["check_workspace_api_v1_workspaces_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pick Workspace */
+        post: operations["pick_workspace_api_v1_workspaces_pick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1020,11 +1144,80 @@ export interface components {
             /** Z */
             z: number;
         };
+        /** Body_ingest_literature_paper_api_v1_literature_papers_post */
+        Body_ingest_literature_paper_api_v1_literature_papers_post: {
+            /**
+             * File
+             * @description Scientific paper PDF
+             */
+            file: string;
+        };
         /**
          * Centering
          * @enum {string}
          */
         Centering: "none" | "grand_mean" | "within_group";
+        /** ChunkMetadata */
+        ChunkMetadata: {
+            /**
+             * Atlas
+             * @default []
+             */
+            atlas: string[];
+            /**
+             * Chunker
+             * @default scientific_chunker_v1
+             */
+            chunker: string;
+            /**
+             * Dataset
+             * @default []
+             */
+            dataset: string[];
+            /** Extra */
+            extra?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Frequency Band
+             * @default []
+             */
+            frequency_band: (string | number)[];
+            /**
+             * Harmonization
+             * @default []
+             */
+            harmonization: string[];
+            /**
+             * Metrics
+             * @default []
+             */
+            metrics: string[];
+            /**
+             * Modality
+             * @default rs-fMRI
+             */
+            modality: string;
+            /**
+             * Parser
+             * @default rule_based_section_parser_v1
+             */
+            parser: string;
+            /**
+             * Software
+             * @default []
+             */
+            software: string[];
+            /** Source Section Id */
+            source_section_id?: string | null;
+            /**
+             * Statistics
+             * @default []
+             */
+            statistics: string[];
+            /** Topic */
+            topic?: string | null;
+        };
         /** ClusterLocalization */
         ClusterLocalization: {
             /** Atlas Label */
@@ -1081,6 +1274,162 @@ export interface components {
             statistic?: number | null;
             /** Voxel Count */
             voxel_count?: number | null;
+        };
+        /**
+         * ConversationAction
+         * @enum {string}
+         */
+        ConversationAction: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
+        /** ConversationCreate */
+        ConversationCreate: {
+            mode: components["schemas"]["ConversationMode"];
+            /** Preferred Profile Id */
+            preferred_profile_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Workspace Path */
+            workspace_path?: string | null;
+        };
+        /** ConversationMessageView */
+        ConversationMessageView: {
+            /** Content */
+            content: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Message Id */
+            message_id: string;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            role: components["schemas"]["ConversationRole"];
+            /** Sequence */
+            sequence: number;
+        };
+        /**
+         * ConversationMode
+         * @enum {string}
+         */
+        ConversationMode: "chat" | "work";
+        /**
+         * ConversationRole
+         * @enum {string}
+         */
+        ConversationRole: "user" | "assistant" | "tool";
+        /** ConversationToolCallView */
+        ConversationToolCallView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error */
+            error?: string | null;
+            /** Input */
+            input?: {
+                [key: string]: unknown;
+            };
+            /** Output */
+            output?: {
+                [key: string]: unknown;
+            };
+            status: components["schemas"]["ConversationToolStatus"];
+            /** Tool Call Id */
+            tool_call_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** User Message Id */
+            user_message_id: string;
+        };
+        /**
+         * ConversationToolStatus
+         * @enum {string}
+         */
+        ConversationToolStatus: "succeeded" | "failed" | "awaiting_confirmation";
+        /** ConversationTurnCreate */
+        ConversationTurnCreate: {
+            /** @default auto */
+            action: components["schemas"]["ConversationAction"];
+            /**
+             * Allow Remote Search
+             * @default false
+             */
+            allow_remote_search: boolean;
+            /** Content */
+            content: string;
+            /** Expected Plan Hash */
+            expected_plan_hash?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Plan Revision Id */
+            plan_revision_id?: string | null;
+            /** Preferred Profile Id */
+            preferred_profile_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
+            /**
+             * Stream
+             * @default false
+             */
+            stream: boolean;
+            /** Workspace Path */
+            workspace_path?: string | null;
+        };
+        /** ConversationTurnView */
+        ConversationTurnView: {
+            assistant_message: components["schemas"]["ConversationMessageView"];
+            conversation: components["schemas"]["ConversationView"];
+            tool_call?: components["schemas"]["ConversationToolCallView"] | null;
+            user_message: components["schemas"]["ConversationMessageView"];
+        };
+        /** ConversationView */
+        ConversationView: {
+            /** Active Run Id */
+            active_run_id?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Messages */
+            messages?: components["schemas"]["ConversationMessageView"][];
+            mode: components["schemas"]["ConversationMode"];
+            /** Preferred Profile Id */
+            preferred_profile_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Title */
+            title: string;
+            /** Tool Calls */
+            tool_calls?: components["schemas"]["ConversationToolCallView"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+            /** Workspace Path */
+            workspace_path?: string | null;
         };
         /** CorrectionCapabilityView */
         CorrectionCapabilityView: {
@@ -1358,6 +1707,12 @@ export interface components {
          */
         ExecutionBackend: "mock" | "matlab";
         /**
+         * ExecutionWorkspaceMode
+         * @description Where DPABI reads and writes its DataProcessDir.
+         * @enum {string}
+         */
+        ExecutionWorkspaceMode: "isolated" | "in_place";
+        /**
          * FailureCode
          * @enum {string}
          */
@@ -1628,7 +1983,7 @@ export interface components {
          * ModelCapability
          * @enum {string}
          */
-        ModelCapability: "json_object" | "streaming" | "reasoning";
+        ModelCapability: "json_object" | "streaming" | "reasoning" | "web_search";
         /** ModelListRequest */
         ModelListRequest: {
             /** Api Key */
@@ -1825,6 +2180,117 @@ export interface components {
              * @default []
              */
             inventory: string[];
+        };
+        /** Paper */
+        Paper: {
+            /** Abstract */
+            abstract?: string | null;
+            /**
+             * Authors
+             * @default []
+             */
+            authors: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Doi */
+            doi?: string | null;
+            /** Journal */
+            journal?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Page Count */
+            page_count: number;
+            /** Paper Id */
+            paper_id: string;
+            /** Source File */
+            source_file: string;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Title */
+            title?: string | null;
+            /** Year */
+            year?: number | null;
+        };
+        /** PaperChunk */
+        PaperChunk: {
+            /** Chunk Id */
+            chunk_id: string;
+            /** Chunk Index */
+            chunk_index: number;
+            metadata?: components["schemas"]["ChunkMetadata"];
+            /** Page End */
+            page_end: number;
+            /** Page Start */
+            page_start: number;
+            /** Paper Id */
+            paper_id: string;
+            /** Section */
+            section: string;
+            /** Subsection */
+            subsection?: string | null;
+            /** Text */
+            text: string;
+            /** Token Count */
+            token_count: number;
+        };
+        /** PaperIngestResult */
+        PaperIngestResult: {
+            /** Chunks */
+            chunks: components["schemas"]["PaperChunk"][];
+            paper: components["schemas"]["Paper"];
+            /** Sections */
+            sections: components["schemas"]["PaperSection"][];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /** PaperSection */
+        PaperSection: {
+            /** Level */
+            level: number;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Page End */
+            page_end: number;
+            /** Page Start */
+            page_start: number;
+            /** Paper Id */
+            paper_id: string;
+            /** Paragraphs */
+            paragraphs: components["schemas"]["ParagraphSpan"][];
+            /** Section */
+            section: string;
+            /** Section Id */
+            section_id: string;
+            /**
+             * Section Index
+             * @default 0
+             */
+            section_index: number;
+            /** Subsection */
+            subsection?: string | null;
+            /** Text */
+            text: string;
+            /** Title */
+            title: string;
+        };
+        /** ParagraphSpan */
+        ParagraphSpan: {
+            /** Page End */
+            page_end: number;
+            /** Page Start */
+            page_start: number;
+            /** Text */
+            text: string;
         };
         /** ParameterProvenance */
         ParameterProvenance: {
@@ -2292,6 +2758,8 @@ export interface components {
              * @default false
              */
             real_execution_confirmed: boolean;
+            /** @default isolated */
+            workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
         };
         /**
          * RunDiagnosisRequest
@@ -2952,6 +3420,59 @@ export interface components {
          * @enum {string}
          */
         WorkflowState: "queued" | "running" | "cancelling" | "qc_review" | "succeeded" | "failed_retryable" | "failed_terminal" | "timed_out" | "cancelled";
+        /**
+         * WorkspaceCheckRequest
+         * @description Read-only request to validate a user-selected DPABI workspace.
+         */
+        WorkspaceCheckRequest: {
+            /** Path */
+            path: string;
+        };
+        /** WorkspaceCheckView */
+        WorkspaceCheckView: {
+            /** Anatomical Subject Count */
+            anatomical_subject_count: number;
+            /** Blocking Issues */
+            blocking_issues?: string[];
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Dicom Count */
+            dicom_count: number;
+            /** File Count */
+            file_count: number;
+            /** Functional Subject Count */
+            functional_subject_count: number;
+            /** Input Stage */
+            input_stage?: string | null;
+            /** Invalid Nifti Files */
+            invalid_nifti_files?: string[];
+            kind: components["schemas"]["DatasetKind"];
+            /** Nifti Count */
+            nifti_count: number;
+            /** Output Directories */
+            output_directories?: string[];
+            /** Path */
+            path: string;
+            /** Subject Count */
+            subject_count: number;
+            /** Subjects */
+            subjects?: components["schemas"]["SubjectManifestEntry"][];
+            /** Warnings */
+            warnings?: string[];
+        };
+        /** WorkspacePickView */
+        WorkspacePickView: {
+            /**
+             * Cancelled
+             * @default false
+             */
+            cancelled: boolean;
+            /** Path */
+            path?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -3295,6 +3816,320 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClusterLocalizationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_conversations_api_v1_conversations_get: {
+        parameters: {
+            query?: {
+                mode?: components["schemas"]["ConversationMode"] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_conversation_api_v1_conversations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_conversation_api_v1_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    send_conversation_turn_api_v1_conversations__conversation_id__turns_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationTurnCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationTurnView"];
                 };
             };
             /** @description Bad Request */
@@ -4067,6 +4902,234 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_literature_papers_api_v1_literature_papers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperIngestResult"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    ingest_literature_paper_api_v1_literature_papers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_ingest_literature_paper_api_v1_literature_papers_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperIngestResult"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_literature_paper_api_v1_literature_papers__paper_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                paper_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperIngestResult"];
                 };
             };
             /** @description Bad Request */
@@ -7130,6 +8193,158 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    check_workspace_api_v1_workspaces_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceCheckView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    pick_workspace_api_v1_workspaces_pick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePickView"];
                 };
             };
             /** @description Bad Request */

@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- 新增 rs-fMRI Chat Mode Phase 1：独立 `ChatAgent`、窄接口、PDF 文献管理、科研 section 识别、section-aware chunking 和逐页 traceability；按后续要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG，修复融合去重并减少重复重排。新上传 chunks 尚未自动向量化，旧库缺失页码保持未知。
+- 新增 MVP1.0 目标架构、能力化模块单体 ADR 和 10–12 周开发路线图，明确以显式应用服务、窄端口、版本化 JobEnvelope、服务端状态真源和前端 feature 分片渐进演进，不拆微服务。
+- 新增 Agent 对话工作台：可选择本机 fMRI 工作区，调用只读检查并在右侧展示 DPABI 输入阶段、受试者配对、NIfTI 头标记问题和已有结果目录。
+- Agent 工作台新增 `Chat`/`Work` 分类：Chat 调用本地 rs-fMRI RAG 并展示证据，Work 承载工作区检查、预处理和结果分析入口。
+- Chat 现可把本地 RAG 证据交给用户选择的 LLM 生成回答；显式开启联网搜索时，仅路由到声明 `web_search` 能力的模型，并保存模型、脱敏上下文哈希和 URL 引用。
+- 设置页改为服务商 API 绑定：绑定后立即读取 `/models`，Agent 对话框直接列出该服务商返回的全部模型，不再要求用户逐个创建“已配置模型”。
+- 新增 `POST /api/v1/workspaces/check` 工作区检查接口；检查不会注册项目、修改原始数据或启动 MATLAB。
+- Chat/Work 多轮消息、会话绑定和每次工具调用现已持久化到 SQLite，可在刷新页面后恢复。
+- Work 对话已编排工作区检查、运行进度和 DPABI 启动；真实启动继续要求已审批计划和逐次确认，并进入现有 Workflow/Worker。
+- 工作区目录只能通过系统文件夹选择器选取；新增显式 `in_place` DPABI 模式，在复核冻结输入哈希后把所选 DPABI-ready 工作副本作为 `WorkingDir`，结果 stage 写回该工作区，运行脚本、日志和登记产物保持 attempt 隔离。
+
 ### v0.1.0 release work
 
 - 新增 `ExecutionBackend` 控制面：Mock 默认；MATLAB 必须逐次确认、配置开关和环境探测同时通过。

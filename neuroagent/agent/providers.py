@@ -7,7 +7,12 @@ from typing import Protocol
 
 import httpx
 
-from neuroagent.agent.models import ModelCapability, ModelProfile, ProviderResponse
+from neuroagent.agent.models import (
+    ModelCapability,
+    ModelProfile,
+    ProviderCitation,
+    ProviderResponse,
+)
 
 
 class ProviderError(RuntimeError):
@@ -24,6 +29,9 @@ class ModelProvider(Protocol):
         profile: ModelProfile,
         api_key: str,
         messages: Sequence[dict[str, str]],
+        *,
+        web_search: bool = False,
+        json_object: bool | None = None,
     ) -> ProviderResponse: ...
 
 
@@ -36,14 +44,23 @@ class OpenAICompatibleProvider:
         profile: ModelProfile,
         api_key: str,
         messages: Sequence[dict[str, str]],
+        *,
+        web_search: bool = False,
+        json_object: bool | None = None,
     ) -> ProviderResponse:
         payload: dict[str, object] = {
             "model": profile.model,
             "messages": list(messages),
             "stream": False,
         }
-        if ModelCapability.JSON_OBJECT in profile.capabilities:
+        if json_object is True or (
+            json_object is None and ModelCapability.JSON_OBJECT in profile.capabilities
+        ):
             payload["response_format"] = {"type": "json_object"}
+        if web_search:
+            if ModelCapability.WEB_SEARCH not in profile.capabilities:
+                raise ProviderError("profile does not declare web search support")
+            payload["web_search_options"] = {"search_context_size": "medium"}
 
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=profile.timeout_seconds)
@@ -63,7 +80,8 @@ class OpenAICompatibleProvider:
             if response.status_code >= 400:
                 raise ProviderError(f"provider rejected request ({response.status_code})")
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
+            message = body["choices"][0]["message"]
+            content = message["content"]
             if not isinstance(content, str):
                 raise ProviderError("provider returned non-text content")
             usage = {
@@ -71,11 +89,26 @@ class OpenAICompatibleProvider:
                 for key, value in (body.get("usage") or {}).items()
                 if isinstance(value, int)
             }
+            citations: list[ProviderCitation] = []
+            seen_urls: set[str] = set()
+            for annotation in message.get("annotations") or []:
+                if not isinstance(annotation, dict):
+                    continue
+                citation = annotation.get("url_citation")
+                if not isinstance(citation, dict):
+                    continue
+                url = citation.get("url")
+                title = citation.get("title")
+                if not isinstance(url, str) or not isinstance(title, str) or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                citations.append(ProviderCitation(url=url, title=title))
             return ProviderResponse(
                 content=content,
                 provider_request_id=body.get("id"),
                 model=str(body.get("model") or profile.model),
                 usage=usage,
+                citations=tuple(citations),
             )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise RetryableProviderError("provider transport failed") from exc
@@ -121,21 +154,30 @@ class OpenAICompatibleProvider:
 class MockProvider:
     """Deterministic test provider with an explicit response queue."""
 
-    def __init__(self, responses: Sequence[str | Exception]) -> None:
+    def __init__(self, responses: Sequence[str | ProviderResponse | Exception]) -> None:
         self._responses = list(responses)
         self.requests: list[tuple[ModelProfile, Sequence[dict[str, str]]]] = []
+        self.request_options: list[dict[str, bool | None]] = []
 
     async def generate(
         self,
         profile: ModelProfile,
         api_key: str,
         messages: Sequence[dict[str, str]],
+        *,
+        web_search: bool = False,
+        json_object: bool | None = None,
     ) -> ProviderResponse:
         del api_key
         self.requests.append((profile, messages))
+        self.request_options.append(
+            {"web_search": web_search, "json_object": json_object}
+        )
         if not self._responses:
             raise ProviderError("mock response queue is empty")
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if isinstance(response, ProviderResponse):
+            return response
         return ProviderResponse(content=response, model=profile.model)

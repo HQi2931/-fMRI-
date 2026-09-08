@@ -88,8 +88,9 @@ def test_repository_split_preserves_baseline_methods_exactly() -> None:
         assert not overlap, f"duplicate repository methods: {sorted(overlap)}"
         found.update(methods)
 
-    intentional_boundary_changes = {
-        "create_run",
+        intentional_boundary_changes = {
+            "create_model_profile",
+            "create_run",
         "_register_artifacts_in_session",
         "finalize_job_success",
     }

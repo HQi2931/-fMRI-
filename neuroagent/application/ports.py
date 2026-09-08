@@ -16,6 +16,10 @@ from neuroagent.application.contracts import (
     ApprovalCreate,
     ApprovalView,
     ArtifactView,
+    ConversationMessageView,
+    ConversationMode,
+    ConversationToolCallView,
+    ConversationView,
     DatasetSplitView,
     DatasetView,
     DemographicsRevisionView,
@@ -91,6 +95,10 @@ class DatasetInspectorPort(Protocol):
     def inspect(self, source_path: Path) -> dict[str, Any]: ...
 
 
+class WorkspacePickerPort(Protocol):
+    def pick_directory(self) -> str | None: ...
+
+
 class DemographicsReaderPort(Protocol):
     def __call__(
         self,
@@ -113,6 +121,41 @@ class RepositoryPort(Protocol):
     """Typed persistence operations required by application use cases and the worker."""
 
     def atomic(self) -> AbstractContextManager[None]: ...
+
+    def create_conversation(
+        self,
+        *,
+        mode: ConversationMode,
+        title: str,
+        welcome: str,
+        workspace_path: str | None,
+        preferred_profile_id: str | None,
+    ) -> ConversationView: ...
+
+    def get_conversation(self, conversation_id: str) -> ConversationView: ...
+
+    def list_conversations(
+        self, *, mode: ConversationMode | None = None
+    ) -> list[ConversationView]: ...
+
+    def append_conversation_exchange(
+        self,
+        conversation_id: str,
+        *,
+        user_content: str,
+        assistant_content: str,
+        assistant_payload: dict[str, Any],
+        tool: dict[str, Any] | None,
+        workspace_path: str | None,
+        preferred_profile_id: str | None,
+        project_id: str | None,
+        active_run_id: str | None,
+    ) -> tuple[
+        ConversationView,
+        ConversationMessageView,
+        ConversationMessageView,
+        ConversationToolCallView | None,
+    ]: ...
 
     def begin_idempotent_request(
         self,

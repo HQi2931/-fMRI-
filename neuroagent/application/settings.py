@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     dpabi_version: str = "unspecified"
     adapter_version: str = "1.0.0"
     dataset_scan_max_files: int = Field(default=100_000, ge=1)
+    literature_max_pdf_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    literature_chunk_target_tokens: int = Field(default=600, ge=400, le=800)
+    literature_chunk_overlap_tokens: int = Field(default=100, ge=80, le=150)
+    rag_db_dir: Path | None = None
+    rag_collection: str = "fmri_literature_v1"
+    rag_api_key_env: str = "DASHSCOPE_API_KEY"
+    rag_rerank: bool = True
     worker_lease_seconds: int = Field(default=30, ge=1)
     idempotency_lease_seconds: int = Field(default=300, ge=30)
     redaction_salt: str | None = None

@@ -14,7 +14,8 @@
 
 ## 当前阶段
 
-仅建立目录边界，未实现记忆服务、存储或召回算法。
+`interfaces.py` 已定义 `MemorySnapshot` 和 `MemoryService`。Phase 1 仅使用 conversation 已持久化消息的
+有界 recent window，不建立独立 memory 表，不做长期记忆、摘要、语义召回或 pinned context 自动更新。
 
 ## 后续核心接口
 

@@ -14,6 +14,7 @@ class ModelCapability(StrEnum):
     JSON_OBJECT = "json_object"
     STREAMING = "streaming"
     REASONING = "reasoning"
+    WEB_SEARCH = "web_search"
 
 
 class TaskType(StrEnum):
@@ -151,6 +152,14 @@ class ProviderResponse(BaseModel):
     provider_request_id: str | None = None
     model: str
     usage: dict[str, int] = Field(default_factory=dict)
+    citations: tuple[ProviderCitation, ...] = ()
+
+
+class ProviderCitation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    url: str
+    title: str
 
 
 class GatewayResult(BaseModel):
