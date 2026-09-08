@@ -15,7 +15,8 @@
 ## 当前阶段
 
 `interfaces.py` 已定义 `ContextMessage`、`PinnedContext`、`ContextPacket` 和 `ContextManager`。
-Phase 1 的最小构建器只组装调用方提供的 recent messages、retrieval evidence 和 pinned context；
+最小构建器组装调用方提供的 recent messages、retrieval evidence、pinned context 和 summary；
+Gateway 已消费这些字段并统一脱敏，当前问题只出现一次；最近窗口仍限制为 12 条。
 尚未实现 token budget、摘要、压缩或 pinned context 自动提取。
 
 ## 后续核心接口

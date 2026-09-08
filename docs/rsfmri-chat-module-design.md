@@ -1,5 +1,12 @@
 # rs-fMRI Chat Mode Phase 1 设计
 
+> 2026-09-08 更新：下文保留 Phase 1 历史设计／验证记录。当前已接通最近消息、固定上下文及摘要的脱敏模型输入；
+> 意图判断与追问改写合并一次调用，明确寒暄免检索；上传 PDF 可手动加入独立 Chroma collection，
+> 支持状态、重试与论文筛选；逐消息引用按正文编号校验，可定位原 PDF 物理页。
+> 当前接口与操作以 [API 文档](api/api-v1.md) 为准。仍无流式输出、OCR、长期记忆或后台索引队列；
+> 本轮仅作离线定向验证，未调用真实 DashScope／回答模型，不将离线通过视为在线质量验证。
+
+
 ## 用户后续要求：直接复用已有 RAG
 
 本更新替代下文原设计中“仅 RAG 接口、不引入向量实现”的范围约束，其余模块边界不变。
@@ -287,11 +294,11 @@ Phase 1 只定义：
 
 ## 13. Citation 扩展点
 
-Phase 1 citation 模型包含 `citation_id`、`chunk_id`、`paper_id`、title、section/subsection、page_start/page_end、excerpt。下一阶段 LLM prompt 使用受控 evidence label（如 `[C1]`），回答后 CitationService 只解析这些允许 label 并与本次 retrieved set 交叉验证；未知 label 丢弃或使回答失败，绝不接受模型自造来源。
+Citation 模型包含 `citation_id`、`chunk_id`、`paper_id`、title、section/subsection、page_start/page_end、excerpt。LLM prompt 使用受控 evidence label（如 `[C1]`）；回答后只保留正文实际引用且属于本轮证据集的编号，无效编号会从正文移除并标记引用不完整。Provider 返回的 URL 来源按正文中的真实链接保留。
 
 ## 14. Memory / Context 扩展点
 
-`MemoryService` 后续可返回：recent window、conversation summary、pinned records；`ContextManager` 按 system -> pinned -> retrieval -> summary -> recent 的优先级和 token budget 组包。Pinned record 使用 `key/value/priority/source_message_id`，压缩时不可静默丢失 high priority。Phase 1 不自动写长期 memory。
+`MemoryService` 返回有界 recent window，并可携带调用方提供的 conversation summary 和 pinned records；这些字段现已通过统一脱敏网关传给模型。当前仍不自动生成摘要、不自动提取 pinned context，也不写长期 memory。
 
 ## 15. 持久化设计
 

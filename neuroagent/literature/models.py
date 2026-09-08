@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -90,6 +90,9 @@ class PaperSection(LiteratureModel):
         return self
 
 
+IndexStatus = Literal["not_indexed", "indexing", "ready", "failed"]
+
+
 class Paper(LiteratureModel):
     paper_id: str = Field(min_length=1)
     title: str | None = None
@@ -98,6 +101,8 @@ class Paper(LiteratureModel):
     journal: str | None = None
     doi: str | None = None
     abstract: str | None = None
+    index_status: IndexStatus = "not_indexed"
+    index_error: str | None = None
     source_file: str = Field(min_length=1)
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     page_count: int = Field(ge=1)

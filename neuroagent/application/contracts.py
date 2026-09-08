@@ -866,6 +866,7 @@ class ConversationView(StrictModel):
 
 
 class ConversationTurnCreate(StrictModel):
+    paper_ids: tuple[str, ...] = ()
     content: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
     stream: bool = False
     action: ConversationAction = ConversationAction.AUTO

@@ -309,6 +309,7 @@ class ConversationMixin(BaseServiceMixin):
                         session_id=conversation_id,
                         message=request.content,
                         stream=request.stream,
+                        paper_ids=request.paper_ids,
                         recent_messages=recent_messages,
                         preferred_profile_id=preferred_profile_id,
                         model=request.model,
@@ -363,7 +364,7 @@ class ConversationMixin(BaseServiceMixin):
             return result.answer, payload, tool, preferred_profile_id
 
         def finalize(
-            prepared: tuple[str, dict[str, Any], dict[str, Any], str | None]
+            prepared: tuple[str, dict[str, Any], dict[str, Any], str | None],
         ) -> ConversationTurnView:
             assistant_content, payload, tool, preferred_profile_id = prepared
             conversation = self.repository.get_conversation(conversation_id)

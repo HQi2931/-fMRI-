@@ -1,5 +1,12 @@
 # rs-fMRI Chat Mode Phase 1 实施报告
 
+> 2026-09-08 更新：下文保留 Phase 1 历史设计／验证记录。当前已接通最近消息、固定上下文及摘要的脱敏模型输入；
+> 意图判断与追问改写合并一次调用，明确寒暄免检索；上传 PDF 可手动加入独立 Chroma collection，
+> 支持状态、重试与论文筛选；逐消息引用按正文编号校验，可定位原 PDF 物理页。
+> 当前接口与操作以 [API 文档](api/api-v1.md) 为准。仍无流式输出、OCR、长期记忆或后台索引队列；
+> 本轮仅作离线定向验证，未调用真实 DashScope／回答模型，不将离线通过视为在线质量验证。
+
+
 - 日期：2026-09-07
 - 范围：Milestone 1～3
 - 结果：Chat Skeleton、Literature Management、PDF 结构化解析、section-aware chunking 和 chunk traceability 已完成。按用户后续要求，额外直接移植并优化 fMRIAnalysis 的 RAG；未开发 Work Mode。
@@ -171,7 +178,7 @@ section、subsection、chunk_index 和 source_section_id。SQLite 分列持久�
 
 ## 12. 当前有没有实现 Embedding
 
-有可选实现：直接复用 DashScope text-embedding-v4，用于查询既有 1,024 维索引。没有重新嵌入文献，也未自动为新上传论文建索引。
+有可选实现：直接复用 DashScope text-embedding-v4，用于查询既有 1,024 维索引。上传论文不会自动索引；用户点击“加入知识库”后，系统将脱敏后的 chunks 写入独立 collection。
 
 ## 13. 当前有没有实现 Vector DB
 
@@ -180,13 +187,13 @@ section、subsection、chunk_index 和 source_section_id。SQLite 分列持久�
 ## 14. 当前有没有实现真正的 RAG
 
 已有可选的真实 RAG 代码链路：查询扩展 → DashScope embedding → Chroma → RRF → 可选 rerank → 现有 LLM → 来源列表。
-在线端到端尚未实测（项目要求单独授权真实 Provider smoke）；旧索引离线查询已验证。新上传论文的 chunks 尚未自动加入该索引。
+在线端到端尚未实测（项目要求单独授权真实 Provider smoke）；旧索引离线查询已验证。上传论文使用独立 collection，不修改旧索引。
 
 ## 15. 哪些部分只是为后续 RAG 预留
 
 EmbeddingProvider、VectorStore、Retriever、Reranker、RagService、RetrievedChunk、ContextPacket、
 MemorySnapshot、CitationService，以及 chunk 上的 rs-fMRI metadata 字段均是扩展边界。
-RAG 已有 fMRIAnalysis 适配实现；新论文 indexing、BM25、Hybrid、严格逐句 citation 校验及长期 memory 尚未实现。
+RAG 已有 fMRIAnalysis 适配与上传论文手动索引；BM25、Hybrid、逐句科学论断校验及长期 memory 尚未实现。
 
 ## 16. 如何扩展成 Hybrid Retrieval
 
@@ -195,9 +202,8 @@ metadata filter，再交给 Reranker。组合后的实现满足现有 RagService
 
 ## 17. 如何扩展 Citation
 
-下一阶段检索结果直接携带持久化 chunk_id/paper_id/section/page。给模型的每个 evidence 分配稳定编号，
-模型只能引用该编号；CitationService 用本次 retrieved set 校验编号并从数据库生成最终引用。不存在于
-retrieved set 的来源拒绝或丢弃，禁止模型自由生成 paper/page。
+检索结果携带持久化 chunk_id/paper_id/section/page。每个 evidence 在进入模型前分配稳定编号；回答后
+按本次 retrieved set 校验编号，未知编号从正文移除并标记引用不完整。paper/page 始终取自检索元数据。
 
 ## 18. 如何接 Memory / Context
 
@@ -229,18 +235,17 @@ draft 转换为受控 SkillRequest/Plan；不得从 ChatAgent 直接创建 Run �
 - 多栏排版、复杂表格、页眉页脚可能造成文本阅读顺序噪声。
 - Section alias 以常见英文科研标题为主，非标准/其他语言标题可能退化为 Front Matter。
 - token count 是正则近似值，不等同于具体模型 tokenizer。
-- 上传论文 chunks 尚未接入检索、rerank 或 citation answer pipeline。
+- 上传论文可手动接入检索、最终 rerank 和 citation answer pipeline；尚未执行真实在线质量验证。
 - 旧索引没有 paper_id/page 字段；保留其真实 chunk ID、标题和 section，页码明确为空，不伪造 Citation。
 - 尚未验证真实 DashScope 调用质量/延迟；沿用源实现的请求重试，服务故障时可能等待较长。
-- 当前来源列表受 retrieved set 约束，但尚未对 LLM 正文每个引用或科学论断进行逐句校验。
-- 当前 context 只完成结构组包，现有 ModelGateway adapter 尚未消费 summary/pinned/recent messages。
+- 当前编号来源受 retrieved set 约束，但尚未对每个无编号科学论断进行逐句证据校验。
+- ModelGateway 已消费 summary/pinned/recent messages；系统尚不自动生成摘要或长期记忆。
 - multipart 上传尚未使用现有 JSON 幂等租约；不确定响应时需先核对 SHA-256/列表，重复上传会形成新 Paper。
 - 列表接口当前返回完整 sections/chunks，论文库很大后应增加分页和 summary DTO。
 
 ## 22. 下一阶段最推荐做什么
 
-先授权一次轻量在线检索（本机已接入索引副本，环境中已有 Key）；随后把新上传的带页码 chunks 增量写入独立 Chroma collection，
-不要重建旧库。优先完成新文献 Citation 闭环，再按实际检索质量决定是否添加 BM25 + RRF Hybrid。
+下一步是在明确授权后做一次小规模在线检索，验证真实 embedding、最终重排、回答质量和延迟；再按结果决定是否添加 BM25 + RRF Hybrid。
 仅选少量真实科研问题验证来源与答案质量，不堆叠低价值测试。
 
 ## Phase 1 边界确认

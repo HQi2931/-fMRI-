@@ -8,7 +8,11 @@ import hashlib
 import logging
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from neuroagent.retrieval.uploaded_index import UploadedLiteratureIndex
 
 from neuroagent.application.errors import ApplicationError, InputValidationError, NotFoundError
 from neuroagent.literature.chunker import ScientificChunker
@@ -28,7 +32,9 @@ class LiteratureService:
         section_parser: SectionParser,
         chunker: ScientificChunker,
         max_pdf_bytes: int,
+        indexer: UploadedLiteratureIndex | None = None,
     ) -> None:
+        self._indexer = indexer
         self._repository = repository
         self._work_root = work_root.resolve()
         self._pdf_parser = pdf_parser
@@ -151,6 +157,35 @@ class LiteratureService:
             len(chunks),
         )
         return result
+
+    def index(self, paper_id: str) -> PaperIngestResult:
+        result = self.get(paper_id)
+        if self._indexer is None:
+            raise ApplicationError("rag_unavailable", "文献索引尚未配置。", status_code=503)
+        self._repository.set_literature_index_status(paper_id, "indexing")
+        try:
+            self._indexer.index(result)
+        except Exception as exc:
+            message = (
+                exc.message
+                if isinstance(exc, ApplicationError)
+                else "文献索引失败，请检查 DashScope 和索引配置后重试。"
+            )
+            self._repository.set_literature_index_status(paper_id, "failed", message)
+            if isinstance(exc, ApplicationError):
+                raise
+            raise ApplicationError("literature_index_failed", message, status_code=503) from exc
+        self._repository.set_literature_index_status(paper_id, "ready")
+        return self.get(paper_id)
+
+    def source(self, paper_id: str) -> Path:
+        result = self.get(paper_id)
+        path = (self._work_root / result.paper.source_file).resolve()
+        if not path.is_relative_to(self._work_root):
+            raise InputValidationError("path_outside_work_root", "论文文件路径越界。")
+        if not path.is_file():
+            raise NotFoundError("paper_source", paper_id)
+        return path
 
     def get(self, paper_id: str) -> PaperIngestResult:
         try:

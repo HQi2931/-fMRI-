@@ -5,14 +5,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from neuroagent.analysis.models import RsFmriAnswer
-from neuroagent.chat.interfaces import LlmResult
-from neuroagent.chat.models import ChatIntent, Citation, WorkRequest
+from neuroagent.chat.interfaces import ChatAgentError, LlmResult
+from neuroagent.chat.models import ChatAgentRequest, ChatIntent, Citation, RoutedIntent, WorkRequest
 from neuroagent.context.interfaces import (
     ContextManager,
     ContextMessage,
@@ -38,8 +37,8 @@ class RuleBasedIntentRouter:
     )
     _BAND = re.compile(r"(0?\.\d+)\s*(?:-|–|—|至|到|,)\s*(0?\.\d+)")
 
-    def route(self, message: str) -> tuple[ChatIntent, WorkRequest | None]:
-        text = message.strip()
+    async def route(self, request: ChatAgentRequest) -> RoutedIntent:
+        text = request.message.strip()
         if self._WORK_VERBS.search(text) and not self._KNOWLEDGE_MARKERS.search(text):
             lowered = text.casefold()
             if "alff" in lowered:
@@ -54,59 +53,48 @@ class RuleBasedIntentRouter:
             band = self._BAND.search(text)
             if band:
                 parameters["frequency_band"] = [float(band.group(1)), float(band.group(2))]
-            return ChatIntent.WORK_REQUEST, WorkRequest(task=task, parameters=parameters)
+            return RoutedIntent(
+                intent=ChatIntent.WORK_REQUEST,
+                query=text,
+                work_request=WorkRequest(task=task, parameters=parameters),
+            )
         if self._KNOWLEDGE_MARKERS.search(text) or "?" in text or "？" in text:
-            return ChatIntent.KNOWLEDGE_QUERY, None
-        return ChatIntent.CONVERSATION, None
+            return RoutedIntent(intent=ChatIntent.KNOWLEDGE_QUERY, query=text)
+        return RoutedIntent(intent=ChatIntent.CONVERSATION, query=text)
 
 
 class ModelIntentRouter:
-    """Classify intent with the configured LLM and fail closed to rules.
+    """Resolve intent and contextual retrieval queries in one model call."""
 
-    The classifier only returns a small allow-listed JSON contract. It never
-    dispatches work; malformed, unavailable, or uncertain model output uses
-    ``RuleBasedIntentRouter`` instead.
-    """
+    _GREETING = re.compile(
+        r"^(?:你好|您好|嗨|谢谢|感谢|再见|hello|hi|thanks|thank you)[!！。.?？\s]*$", re.I
+    )
 
     def __init__(
         self,
-        classify: Callable[[str], Awaitable[str]],
+        classify: Callable[[ChatAgentRequest], Awaitable[str]],
         *,
-        fallback: RuleBasedIntentRouter | None = None,
+        has_profiles: Callable[[], bool],
     ) -> None:
         self._classify = classify
-        self._fallback = fallback or RuleBasedIntentRouter()
+        self._has_profiles = has_profiles
+        self._rules = RuleBasedIntentRouter()
 
-    async def route(self, message: str) -> tuple[ChatIntent, WorkRequest | None]:
+    async def route(self, request: ChatAgentRequest) -> RoutedIntent:
+        routed = await self._rules.route(request)
+        if self._GREETING.fullmatch(request.message.strip()):
+            return routed.model_copy(update={"intent": ChatIntent.CONVERSATION})
+        if routed.intent is ChatIntent.WORK_REQUEST:
+            return routed
+        if not (request.preferred_profile_id or self._has_profiles()):
+            return routed.model_copy(update={"intent": ChatIntent.KNOWLEDGE_QUERY})
+        raw = await self._classify(request)
         try:
-            raw = await self._classify(message)
-            payload = _parse_intent_payload(raw)
-            intent = ChatIntent(payload["intent"])
-            if intent is ChatIntent.WORK_REQUEST:
-                task = payload.get("task")
-                if not isinstance(task, str) or not task.strip():
-                    raise ValueError("work request task is missing")
-                parameters = payload.get("parameters", {})
-                if not isinstance(parameters, dict):
-                    raise ValueError("work request parameters are invalid")
-                return intent, WorkRequest(task=task.strip(), parameters=parameters)
-            return intent, None
-        except Exception:
-            return self._fallback.route(message)
-
-
-def _parse_intent_payload(raw: str) -> dict[str, Any]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
-    payload = json.loads(text)
-    if not isinstance(payload, dict) or payload.get("intent") not in {
-        ChatIntent.KNOWLEDGE_QUERY.value,
-        ChatIntent.CONVERSATION.value,
-        ChatIntent.WORK_REQUEST.value,
-    }:
-        raise ValueError("unknown intent")
-    return payload
+            return RoutedIntent.model_validate_json(raw)
+        except ValueError as exc:
+            raise ChatAgentError(
+                "chat_intent_invalid", "模型未返回有效的意图与检索问题，请重试。"
+            ) from exc
 
 
 class RequestMemoryService:
@@ -207,7 +195,8 @@ class LocalEvidenceRagService:
         answer = self._answer(query)
         chunks = tuple(
             RetrievedChunk(
-                chunk_id="local:" + hashlib.sha256(
+                chunk_id="local:"
+                + hashlib.sha256(
                     f"{item.source}\0{item.title}\0{item.excerpt}".encode()
                 ).hexdigest()[:24],
                 source=item.source,
@@ -254,8 +243,12 @@ class GatewayLlmClient:
     ) -> LlmResult:
         result = await self._generate(
             question=context.question,
+            recent_messages=[item.model_dump() for item in context.recent_messages],
+            pinned_context=[item.model_dump() for item in context.pinned_context],
+            conversation_summary=context.conversation_summary,
             evidence=[
                 {
+                    "citation_id": f"C{index}",
                     "source": chunk.source,
                     "title": chunk.title,
                     "excerpt": chunk.text,
@@ -267,7 +260,7 @@ class GatewayLlmClient:
                     "page_start": chunk.page_start,
                     "page_end": chunk.page_end,
                 }
-                for chunk in context.retrieval_context
+                for index, chunk in enumerate(context.retrieval_context, 1)
             ],
             preferred_profile_id=preferred_profile_id,
             model=model,

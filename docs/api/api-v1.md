@@ -4,7 +4,7 @@
 
 ## 通用规则
 
-- JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。Phase 1 的 multipart PDF 上传是例外，客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
+- JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
 - 修改已有资源时，请求体会携带 `expected_*_version`、计划哈希或 revision 哈希。不匹配时失败关闭，不自动覆盖。
 - 业务错误、请求校验、框架 HTTP 错误、未匹配 API 路径和意外 `500` 都返回 `{"error": {"code", "message", "details", "trace_id"}}`；意外错误不会返回原始异常文本。每个 HTTP 响应都有 `X-Trace-ID`，客户端仍应先检查 HTTP 状态码。
 - 下表中的 Artifact 接口只返回元数据、相对路径、校验和与 provenance。当前没有 Artifact 文件下载接口。
@@ -61,6 +61,11 @@ Chat 回合请求从 Phase 1 起包含 `stream` 字段。当前只支持 `false`
 Work Mode。普通回答中的 citation 只由类型化检索证据或 Provider 返回的 URL annotation 生成，
 不会从模型自由文本中猜测来源。
 
+Chat 回合支持可选 `paper_ids: string[]`；省略或空列表搜索全部可用文献，非空仅搜索所选已索引论文。
+最近 12 条消息通过同一脱敏网关参与意图判断和回答；明确寒暄不检索，执行需求仍只生成草案。
+正文 `[C1]` 编号对应本轮证据；无效编号移除并提示，`assistant_message.payload.chat.citations`
+只保存实际引用来源。引用包含章节、摘录和物理页码，旧库缺失页码为 null。
+
 ## Literature 文献管理
 
 | 方法 | 路径 | 用途 |
@@ -68,6 +73,8 @@ Work Mode。普通回答中的 citation 只由类型化检索证据或 Provider 
 | `POST` | `/literature/papers` | multipart 上传一篇 PDF，返回 Paper、sections、chunks 和解析 warnings |
 | `GET` | `/literature/papers` | 列出已摄取论文及其结构化结果 |
 | `GET` | `/literature/papers/{paper_id}` | 读取 Paper、sections 和可追溯 chunks |
+| `POST` | `/literature/papers/{paper_id}/index` | 显式发送脱敏文本到 DashScope 并 upsert 索引，返回 PaperIngestResult |
+| `GET` | `/literature/papers/{paper_id}/source` | 受控读取原 PDF，可配合 `#page=N` 定位物理页 |
 
 PDF 原文件保存在 `allowed_work_root/literature/{paper_id}/source.pdf`，API/SQLite 只保存该规范相对路径。
 默认大小上限 50 MiB。解析使用 `pypdf` 逐物理页抽取文本；无文本层、加密、损坏、伪 PDF 和超限文件
@@ -75,7 +82,12 @@ PDF 原文件保存在 `allowed_work_root/literature/{paper_id}/source.pdf`，AP
 Methods 及 rs-fMRI 常见 Methods 子节、Results、Discussion、Conclusion、References；无法识别时保留为
 Front Matter。Chunker 在 section 内按 paragraph/sentence 聚合，默认约 600 tokens、100 overlap，
 每个 chunk 持久化 `paper_id`、section/subsection、物理页范围、token count、index 和 rs-fMRI metadata
-占位。当前不会为这些 chunks 生成 embedding 或建立检索索引。
+占位。上传不自动建立索引。调用 index 后，同一 HTTP 请求完成索引，无后台队列。
+Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `index_error`；失败保留论文，
+中断后可重新请求索引。迁移 `0009_literature_index` 将已有论文标为 not_indexed，不补建向量。
+向量保存在 `allowed_work_root/literature_index` 的 `uploaded_literature_v1` collection，旧库保持不变。
+索引需要可选 rag 依赖、DashScope Key 和既有脱敏配置；未通过外发校验的文本不会发送。
+只有 ready 论文参与检索，两路候选只进行一次最终重排。
 
 ## 数据、人口学和划分
 

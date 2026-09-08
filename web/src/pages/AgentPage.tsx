@@ -6,14 +6,15 @@ import {
   type Conversation,
   type ConversationMode,
   type ModelProfile,
-  type RsFmriAnswer,
+  type Citation,
+  type PaperIngestResult,
   type WorkspaceCheck,
 } from "../api/client";
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; citations?: Citation[] };
 type TaskType = "plan_explainer" | "log_summarizer" | "report_writer";
 type ModelChoice = {
   key: string;
@@ -38,21 +39,13 @@ const WORK_WELCOME: ChatMessage = {
 function messagesFrom(conversation: Conversation): ChatMessage[] {
   return conversation.messages
     .filter((item) => item.role === "user" || item.role === "assistant")
-    .map((item) => ({ id: item.message_id, role: item.role as "user" | "assistant", text: item.content }));
+    .map((item) => ({ id: item.message_id, role: item.role as "user" | "assistant", text: item.content, citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations }));
 }
 
 function workspaceReportFrom(conversation: Conversation): WorkspaceCheck | null {
   for (const item of [...conversation.messages].reverse()) {
     const checked = item.payload.workspace_check;
     if (checked && typeof checked === "object") return checked as WorkspaceCheck;
-  }
-  return null;
-}
-
-function ragAnswerFrom(conversation: Conversation): RsFmriAnswer | null {
-  for (const item of [...conversation.messages].reverse()) {
-    const rag = item.payload.rag;
-    if (rag && typeof rag === "object") return rag as RsFmriAnswer;
   }
   return null;
 }
@@ -69,12 +62,27 @@ function kindLabel(kind: WorkspaceCheck["kind"]): string {
 }
 
 function MessageHistory({ messages }: { messages: ChatMessage[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <div className="chat-history" aria-live="polite">
       {messages.map((item) => (
         <div className={`chat-bubble chat-${item.role}`} key={item.id}>
           <span>{item.role === "assistant" ? "✦ Agent" : "你"}</span>
-          <p>{item.text}</p>
+          <p>{item.text.split(/(\[C\d+\])/g).map((part, index) => {
+            const citation = item.citations?.find((entry) => `[${entry.citation_id}]` === part);
+            return citation ? <button key={index} className="citation-link" type="button" aria-expanded={expanded === `${item.id}-${citation.citation_id}`} onClick={() => setExpanded(expanded === `${item.id}-${citation.citation_id}` ? null : `${item.id}-${citation.citation_id}`)}>{part}</button> : part;
+          })}</p>
+          <div className="citation-sources">{item.citations?.filter((citation) => !item.text.includes(`[${citation.citation_id}]`)).map((citation) => (
+            <button key={citation.citation_id} className="citation-link" type="button" aria-expanded={expanded === `${item.id}-${citation.citation_id}`} onClick={() => setExpanded(expanded === `${item.id}-${citation.citation_id}` ? null : `${item.id}-${citation.citation_id}`)}>[{citation.citation_id}] {citation.title}</button>
+          ))}</div>
+          {item.citations?.map((citation) => expanded === `${item.id}-${citation.citation_id}` && (
+            <div className="citation-detail" key={citation.citation_id}>
+              <strong>[{citation.citation_id}] {citation.title}</strong>
+              <div>{[citation.section, citation.subsection].filter(Boolean).join(" / ") || "章节未知"} · {citation.page_start ? `物理页 ${citation.page_start}${citation.page_end && citation.page_end !== citation.page_start ? `–${citation.page_end}` : ""}` : "页码未知"}</div>
+              <p>{citation.excerpt}</p>
+              {citation.paper_id ? <a href={`${api.paperSource(citation.paper_id)}${citation.page_start ? `#page=${citation.page_start}` : ""}`} target="_blank" rel="noreferrer">打开原 PDF</a> : /^https?:\/\//.test(citation.source) ? <a href={citation.source} target="_blank" rel="noreferrer">打开来源</a> : <small>{citation.source}</small>}
+            </div>
+          ))}
         </div>
       ))}
     </div>
@@ -108,7 +116,10 @@ export function AgentPage() {
   const [taskType, setTaskType] = useState<TaskType>("plan_explainer");
   const [workspacePath, setWorkspacePath] = useState(workspace.workspacePath ?? "");
   const [report, setReport] = useState<WorkspaceCheck | null>(null);
-  const [ragAnswer, setRagAnswer] = useState<RsFmriAnswer | null>(null);
+  const [papers, setPapers] = useState<PaperIngestResult[]>([]);
+  const [selectedPaperIds, setSelectedPaperIds] = useState<string[]>([]);
+  const [indexingIds, setIndexingIds] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([CHAT_WELCOME]);
   const [workMessages, setWorkMessages] = useState<ChatMessage[]>([WORK_WELCOME]);
   const [prompt, setPrompt] = useState("");
@@ -149,7 +160,6 @@ export function AgentPage() {
         const work = conversations.find((item) => item.mode === "work");
         if (chat) {
           setChatMessages(messagesFrom(chat));
-          setRagAnswer(ragAnswerFrom(chat));
         }
         if (work) {
           setWorkMessages(messagesFrom(work));
@@ -164,6 +174,38 @@ export function AgentPage() {
       });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.papers(controller.signal).then(setPapers).catch((caught) => {
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
+    });
+    return () => controller.abort();
+  }, []);
+
+  async function uploadPaper(file: File): Promise<void> {
+    setUploading(true);
+    setError("");
+    try {
+      const result = await api.uploadPaper(file);
+      setPapers((items) => [result, ...items.filter((item) => item.paper.paper_id !== result.paper.paper_id)]);
+      setMessage("论文已解析保存，点击“加入知识库”后可用于问答。");
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setUploading(false); }
+  }
+
+  async function indexPaper(paperId: string): Promise<void> {
+    setIndexingIds((items) => [...items, paperId]);
+    setError("");
+    try {
+      const result = await api.indexPaper(paperId);
+      setPapers((items) => items.map((item) => item.paper.paper_id === paperId ? result : item));
+    } catch (caught) {
+      const detail = describeError(caught);
+      setError(detail);
+      setPapers((items) => items.map((item) => item.paper.paper_id === paperId ? { ...item, paper: { ...item.paper, index_status: "failed", index_error: detail } } : item));
+    } finally { setIndexingIds((items) => items.filter((id) => id !== paperId)); }
+  }
 
   function switchMode(nextMode: ConversationMode): void {
     setMode(nextMode);
@@ -254,9 +296,8 @@ export function AgentPage() {
         preferred_profile_id: selectedModel?.profileId ?? null,
         model: selectedModel?.model ?? null,
         allow_remote_search: allowRemoteSearch,
+        paper_ids: selectedPaperIds.length ? selectedPaperIds : undefined,
       });
-      const answer = turn.assistant_message.payload.rag as RsFmriAnswer;
-      setRagAnswer(answer);
       setChatMessages(messagesFrom(turn.conversation));
     } catch (caught) {
       setError(describeError(caught));
@@ -412,7 +453,7 @@ export function AgentPage() {
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="例如：ALFF 和 fALFF 的输入阶段有什么区别？"
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
+                  if (event.key === "Enter" && !event.shiftKey && !busy) {
                     event.preventDefault();
                     void sendChatMessage();
                   }
@@ -435,18 +476,21 @@ export function AgentPage() {
             </div>
           </section>
           <aside className="panel workspace-report-panel">
-            <div className="panel-heading"><div><span className="eyebrow">RAG</span><h2>回答依据</h2></div></div>
-            {!ragAnswer ? (
-              <EmptyState title="等待问题" detail="回答后，这里会列出本地 RAG 与联网搜索返回的引用来源。" />
-            ) : ragAnswer.answer.evidence.length === 0 ? (
-              <EmptyState title="未找到项目证据" detail="可以换一种问法，或将相关方法文档加入项目知识库。" />
-            ) : (
-              <ul className="evidence-list">
-                {ragAnswer.answer.evidence.map((item) => (
-                  <li key={`${item.source}-${item.title}`}><strong>{item.source.startsWith("http") ? <a href={item.source} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</strong><p>{item.excerpt}</p><span>{item.source.startsWith("http") ? "联网来源" : `本地相关度 ${item.score}`}</span></li>
-                ))}
-              </ul>
-            )}
+            <div className="panel-heading"><div><span className="eyebrow">论文</span><h2>问答知识库</h2></div></div>
+            <label className="paper-upload">上传 PDF<input type="file" accept="application/pdf,.pdf" disabled={uploading} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadPaper(file); event.target.value = ""; }} /></label>
+            {uploading && <p role="status">正在解析论文…</p>}
+            <p className="muted">上传仅解析与保存。点击“加入知识库”会将论文文本片段发送至 DashScope，建立检索索引。</p>
+            <p className="muted">{selectedPaperIds.length ? `仅检索已选择的 ${selectedPaperIds.length} 篇论文。` : "未选择论文时检索全部可用文献。"} 点击回答中的 [C1] 等编号查看来源。</p>
+            {papers.length === 0 ? <EmptyState title="尚未上传论文" detail="上传 PDF 后可手动加入知识库。" /> : <ul className="paper-list">{papers.map(({ paper }) => {
+              const indexing = indexingIds.includes(paper.paper_id);
+              const status = indexing ? "indexing" : paper.index_status;
+              return <li key={paper.paper_id}>
+                <label><input type="checkbox" aria-label={`检索 ${paper.title || paper.paper_id}`} disabled={status !== "ready"} checked={selectedPaperIds.includes(paper.paper_id)} onChange={(event) => setSelectedPaperIds((items) => event.target.checked ? [...items, paper.paper_id] : items.filter((id) => id !== paper.paper_id))} /><strong>{paper.title || "未命名论文"}</strong></label>
+                <p>{paper.page_count} 页 · {{ not_indexed: "未索引", indexing: "索引中或上次中断，可重试", ready: "可检索", failed: "索引失败" }[status]}</p>
+                {paper.index_error && <p className="paper-error">{paper.index_error}</p>}
+                <div className="paper-actions"><a href={api.paperSource(paper.paper_id)} target="_blank" rel="noreferrer">原 PDF</a>{status !== "ready" && <button type="button" className="button button-secondary" disabled={indexing} onClick={() => void indexPaper(paper.paper_id)}>{indexing ? "正在加入…" : status === "failed" || status === "indexing" ? "重试加入知识库" : "加入知识库"}</button>}</div>
+              </li>;
+            })}</ul>}
           </aside>
         </div>
       ) : (

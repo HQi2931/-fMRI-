@@ -337,6 +337,8 @@ class QcApprovalRow(Base):
 
 
 class PaperRow(Base):
+    index_status: Mapped[str] = mapped_column(String(20), default="not_indexed")
+    index_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     __tablename__ = "papers"
     paper_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str | None] = mapped_column(String(500), nullable=True)

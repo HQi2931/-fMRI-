@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from neuroagent.application.contracts import (
     AgentTaskCreate,
@@ -142,9 +142,7 @@ def list_conversations(
     return service_from(request).list_conversations(mode)
 
 
-@router.get(
-    "/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"]
-)
+@router.get("/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"])
 def get_conversation(conversation_id: str, request: Request) -> ConversationView:
     return service_from(request).get_conversation(conversation_id)
 
@@ -164,6 +162,22 @@ async def ingest_literature_paper(
     await file.close()
     return await asyncio.to_thread(
         service.literature.ingest, filename=file.filename or "", content=content
+    )
+
+
+@router.post(
+    "/literature/papers/{paper_id}/index", response_model=PaperIngestResult, tags=["literature"]
+)
+def index_literature_paper(paper_id: str, request: Request) -> PaperIngestResult:
+    return service_from(request).literature.index(paper_id)
+
+
+@router.get(
+    "/literature/papers/{paper_id}/source", response_class=FileResponse, tags=["literature"]
+)
+def get_literature_source(paper_id: str, request: Request) -> FileResponse:
+    return FileResponse(
+        service_from(request).literature.source(paper_id), media_type="application/pdf"
     )
 
 

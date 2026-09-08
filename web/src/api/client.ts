@@ -2,6 +2,12 @@ import type { components } from "./schema.generated";
 
 type Schemas = components["schemas"];
 
+export type PaperIngestResult = Schemas["PaperIngestResult"];
+export type Citation = {
+  citation_id: string; chunk_id: string; source: string; title: string; excerpt: string;
+  paper_id?: string | null; section?: string | null; subsection?: string | null;
+  page_start?: number | null; page_end?: number | null;
+};
 export type Health = Schemas["HealthView"];
 export type EnvironmentProbe = Schemas["EnvironmentProbeView"];
 export type EnvironmentConfig = Schemas["EnvironmentConfigView"];
@@ -89,6 +95,7 @@ export type ConversationTurnBody = {
   content: string;
   action?: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
   allow_remote_search?: boolean;
+  paper_ids?: string[];
   model?: string | null;
   workspace_path?: string | null;
   preferred_profile_id?: string | null;
@@ -238,7 +245,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const { idempotent = false, headers, ...init } = options;
   const requestHeaders = new Headers(headers);
   requestHeaders.set("Accept", "application/json");
-  if (init.body !== undefined) requestHeaders.set("Content-Type", "application/json");
+  if (init.body !== undefined && !(init.body instanceof FormData)) requestHeaders.set("Content-Type", "application/json");
 
   let mutationFingerprint: string | undefined;
   if (idempotent && !requestHeaders.has("Idempotency-Key")) {
@@ -294,6 +301,14 @@ function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> 
 }
 
 export const api = {
+  papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
+  uploadPaper: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<PaperIngestResult>("/literature/papers", { method: "POST", body });
+  },
+  indexPaper: (paperId: string) => request<PaperIngestResult>(`/literature/papers/${encodeURIComponent(paperId)}/index`, { method: "POST" }),
+  paperSource: (paperId: string) => `/api/v1/literature/papers/${encodeURIComponent(paperId)}/source`,
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   environment: (signal?: AbortSignal) => request<EnvironmentProbe>("/environment/probe", { signal }),
   environmentConfig: (signal?: AbortSignal) => request<EnvironmentConfig>("/environment/config", { signal }),

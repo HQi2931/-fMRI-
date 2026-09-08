@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import inspect
+import re
 
 from neuroagent.chat.interfaces import ChatAgentError, CitationService, IntentRouter, LLMClient
 from neuroagent.chat.models import ChatAgentRequest, ChatAgentResponse, ChatIntent
 from neuroagent.context.interfaces import ContextManager
 from neuroagent.memory.interfaces import MemoryService
-from neuroagent.retrieval.interfaces import RagService
+from neuroagent.retrieval.interfaces import RagService, RetrievalResult
 
 
 class ChatAgent:
@@ -37,12 +37,11 @@ class ChatAgent:
                 "chat_streaming_not_implemented",
                 "Chat token streaming 尚未在本阶段启用。",
             )
-        routed = self._intent_router.route(request.message)
-        intent, work_request = (
-            await routed if inspect.isawaitable(routed) else routed
-        )
+        routed = await self._intent_router.route(request)
+        intent, work_request = routed.intent, routed.work_request
         if intent is ChatIntent.WORK_REQUEST:
-            assert work_request is not None
+            if work_request is None:
+                raise ChatAgentError("chat_intent_invalid", "执行需求缺少任务草案，请重试。")
             return ChatAgentResponse(
                 session_id=request.session_id,
                 intent=intent,
@@ -64,7 +63,17 @@ class ChatAgent:
             recent_messages=request.recent_messages,
             pinned_context=request.pinned_context,
         )
-        retrieval = await self._rag_service.retrieve(request.message)
+        retrieval_performed = intent is ChatIntent.KNOWLEDGE_QUERY
+        retrieval = (
+            await self._rag_service.retrieve(
+                routed.query,
+                filters={"paper_ids": list(request.paper_ids)} if request.paper_ids else None,
+            )
+            if retrieval_performed
+            else RetrievalResult(
+                suggested_answer="你好，我可以协助你阅读论文和讨论 rs-fMRI 科研方法。"
+            )
+        )
         context = self._context_manager.build(
             question=request.message,
             recent_messages=memory.recent_messages,
@@ -82,18 +91,41 @@ class ChatAgent:
             )
         citations = self._citation_service.build(
             retrieval.chunks,
-            provider_citations=(
-                llm_result.provider_citations if llm_result is not None else ()
-            ),
+            provider_citations=(llm_result.provider_citations if llm_result is not None else ()),
         )
         answer = (
             llm_result.content
             if llm_result is not None
-            else retrieval.suggested_answer
-            or "当前没有足够证据回答这个问题。"
+            else retrieval.suggested_answer or "当前没有足够证据回答这个问题。"
         )
+        known = {
+            citation.citation_id
+            for citation in citations
+            if citation.paper_id is not None or not citation.chunk_id.startswith("web:")
+        }
+        cited = set(re.findall(r"\[(C\d+)\]", answer))
+        unknown = cited - known
+        if unknown:
+            answer = re.sub(
+                r"\[(C\d+)\]", lambda match: "" if match[1] in unknown else match[0], answer
+            )
+            answer += "\n\n部分引用未能对应本次证据，已移除无效编号，引用不完整。"
+        linked_urls = set(re.findall(r"\]\((https?://[^\s)]+)\)", answer))
+        citations = tuple(
+            citation
+            for citation in citations
+            if (citation.citation_id in cited and citation.citation_id in known)
+            or (citation.chunk_id.startswith("web:") and citation.source in linked_urls)
+        )
+        if (
+            retrieval_performed
+            and not retrieval.chunks
+            and not (llm_result and llm_result.provider_citations)
+        ):
+            answer = "未找到文献依据；以下内容仅供一般方法讨论。\n\n" + answer
         metadata = {
-            "retrieval_performed": True,
+            "retrieval_performed": retrieval_performed,
+            "retrieval_query": routed.query if retrieval_performed else None,
             "retrieved_chunk_count": len(retrieval.chunks),
             "in_scope": retrieval.in_scope,
             "llm_used": llm_result is not None,

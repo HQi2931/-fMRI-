@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from neuroagent.literature.models import (
+    IndexStatus,
     PageText,
     PaperIngestResult,
     PaperSection,
@@ -21,6 +22,12 @@ class SectionParser(Protocol):
 
 
 class LiteratureRepository(Protocol):
+    def set_literature_index_status(
+        self, paper_id: str, status: IndexStatus, error: str | None = None
+    ) -> None: ...
+
+    def list_ready_paper_ids(self, paper_ids: list[str] | None = None) -> list[str]: ...
+
     def save_literature(self, result: PaperIngestResult) -> None: ...
 
     def get_literature(self, paper_id: str) -> PaperIngestResult: ...

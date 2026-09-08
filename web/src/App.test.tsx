@@ -18,7 +18,7 @@ function pathOf(input: RequestInfo | URL): string {
 function defaultApi(input: RequestInfo | URL): Promise<Response> {
   const path = pathOf(input);
   if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
-  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles") || path.endsWith("/conversations")) return json([]);
+  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles") || path.endsWith("/conversations") || path.endsWith("/literature/papers")) return json([]);
   if (path.endsWith("/statistics/results")) return json([]);
   if (path.endsWith("/environment/probe")) return json({ ready: false, environment_hash: "e".repeat(64), components: [] });
   if (path.endsWith("/environment/config")) return json({ matlab_executable: null, spm_dir: null, dpabi_dir: null, matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false });
@@ -689,8 +689,13 @@ describe("App", () => {
 
   it("separates RAG chat from the rs-fMRI work mode", async () => {
     const profile = { profile: { id: "search-model", provider: "openai-compatible", base_url: "https://example.test", model: "fmri-chat", api_key_env: "SEARCH_API_KEY", priority: 10, capabilities: ["web_search"], timeout_seconds: 45 }, version: 1, created_at: now };
+    const paper = { paper_id: "paper1", title: "方法论文", page_count: 3, index_status: "not_indexed", index_error: null };
+    let savedConversation: unknown = null;
     vi.mocked(fetch).mockImplementation((input, init) => {
       const path = pathOf(input);
+      if (path.endsWith("/literature/papers") && init?.method === "POST") return json({ paper, sections: [], chunks: [], warnings: [] }, 201);
+      if (path.endsWith("/literature/papers/paper1/index")) return json({ paper: { ...paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] });
+      if (path.endsWith("/conversations") && init?.method !== "POST" && savedConversation) return json([savedConversation]);
       const rag = {
         answer: {
           answer: "ALFF 衡量低频振幅，fALFF 使用低频功率与全频功率之比。",
@@ -708,27 +713,40 @@ describe("App", () => {
       }
       if (path.endsWith("/conversations/chat1/turns") && init?.method === "POST") {
         const userMessage = { message_id: "m1", conversation_id: "chat1", sequence: 2, role: "user", content: "ALFF 和 fALFF 有什么区别？", payload: {}, created_at: now };
-        const assistantMessage = { message_id: "m2", conversation_id: "chat1", sequence: 3, role: "assistant", content: rag.answer.answer, payload: { rag }, created_at: now };
-        return json({ conversation: { conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 2, created_at: now, updated_at: now, messages: [welcome, userMessage, assistantMessage], tool_calls: [] }, user_message: userMessage, assistant_message: assistantMessage, tool_call: null }, 201);
+        const assistantMessage = { message_id: "m2", conversation_id: "chat1", sequence: 3, role: "assistant", content: `${rag.answer.answer} [C1]`, payload: { chat: { citations: [{ citation_id: "C1", chunk_id: "chunk1", source: "metrics.md", title: "domain/metrics.md", excerpt: "ALFF 与 fALFF 输入约束", paper_id: "paper1", section: "Methods", page_start: 2, page_end: 2 }] } }, created_at: now };
+        savedConversation = { conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 2, created_at: now, updated_at: now, messages: [welcome, userMessage, assistantMessage], tool_calls: [] };
+        return json({ conversation: savedConversation, user_message: userMessage, assistant_message: assistantMessage, tool_call: null }, 201);
       }
       return defaultApi(input);
     });
     const user = userEvent.setup();
     renderAt("/agent");
     await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.upload(screen.getByLabelText("上传 PDF"), new File(["%PDF synthetic fixture"], "methods.pdf", { type: "application/pdf" }));
+    await user.click(await screen.findByRole("button", { name: "加入知识库" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "检索 方法论文" })).toBeEnabled());
+    await user.click(screen.getByRole("checkbox", { name: "检索 方法论文" }));
     await user.selectOptions(await screen.findByLabelText("模型"), "search-model:fmri-chat");
     await user.click(screen.getByRole("checkbox", { name: "联网搜索" }));
     await user.type(screen.getByPlaceholderText("例如：ALFF 和 fALFF 的输入阶段有什么区别？"), "ALFF 和 fALFF 有什么区别？");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(await screen.findByText(/ALFF 衡量低频振幅/)).toBeInTheDocument();
-    expect(screen.getByText("domain/metrics.md")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "[C1]" }));
+    expect(screen.getByText("[C1] domain/metrics.md")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
     expect(screen.queryByLabelText("任务类型")).not.toBeInTheDocument();
     const turnCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/conversations/chat1/turns"));
     expect(JSON.parse(String(turnCall?.[1]?.body))).toMatchObject({
       preferred_profile_id: "search-model",
       model: "fmri-chat",
       allow_remote_search: true,
+      paper_ids: ["paper1"],
     });
+    cleanup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.click(await screen.findByRole("button", { name: "[C1]" }));
+    expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
   });
 
   it("uses the system folder picker instead of a typed workspace path", async () => {

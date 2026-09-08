@@ -29,6 +29,12 @@ class WorkRequest(ChatModel):
     requires_user_confirmation: bool = True
 
 
+class RoutedIntent(ChatModel):
+    intent: ChatIntent
+    query: str
+    work_request: WorkRequest | None = None
+
+
 class Citation(ChatModel):
     citation_id: str = Field(min_length=1)
     chunk_id: str = Field(min_length=1)
@@ -45,6 +51,7 @@ class Citation(ChatModel):
 class ChatAgentRequest(ChatModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=32_000)
+    paper_ids: tuple[str, ...] = ()
     stream: bool = False
     recent_messages: tuple[ContextMessage, ...] = ()
     pinned_context: tuple[PinnedContext, ...] = ()

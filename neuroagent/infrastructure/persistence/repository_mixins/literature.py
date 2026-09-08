@@ -20,6 +20,7 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
 )
 from neuroagent.literature.models import (
     ChunkMetadata,
+    IndexStatus,
     Paper,
     PaperChunk,
     PaperIngestResult,
@@ -29,6 +30,23 @@ from neuroagent.literature.models import (
 
 
 class LiteratureMixin(RepositoryBaseMixin):
+    def set_literature_index_status(
+        self, paper_id: str, status: IndexStatus, error: str | None = None
+    ) -> None:
+        with self._write_session() as session:
+            paper = session.get(PaperRow, paper_id)
+            if paper is None:
+                raise NotFoundError("paper", paper_id)
+            paper.index_status = status
+            paper.index_error = error
+
+    def list_ready_paper_ids(self, paper_ids: list[str] | None = None) -> list[str]:
+        with self.database.session_factory() as session:
+            query = select(PaperRow.paper_id).where(PaperRow.index_status == "ready")
+            if paper_ids is not None:
+                query = query.where(PaperRow.paper_id.in_(paper_ids))
+            return list(session.scalars(query))
+
     def save_literature(self, result: PaperIngestResult) -> None:
         paper = result.paper
         with self._write_session() as session:
@@ -44,6 +62,8 @@ class LiteratureMixin(RepositoryBaseMixin):
                     source_file=paper.source_file,
                     source_sha256=paper.source_sha256,
                     page_count=paper.page_count,
+                    index_status=paper.index_status,
+                    index_error=paper.index_error,
                     metadata_json=json.dumps(paper.metadata, ensure_ascii=False),
                     warnings_json=json.dumps(list(result.warnings), ensure_ascii=False),
                     created_at=paper.created_at,
@@ -144,6 +164,8 @@ class LiteratureMixin(RepositoryBaseMixin):
                 source_file=paper.source_file,
                 source_sha256=paper.source_sha256,
                 page_count=paper.page_count,
+                index_status=paper.index_status,
+                index_error=paper.index_error,
                 metadata=_load(paper.metadata_json, {}),
                 created_at=_as_utc(paper.created_at),
             ),

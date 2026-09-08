@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from neuroagent.chat.models import ChatAgentRequest, ChatIntent, Citation, WorkRequest
+from neuroagent.chat.models import ChatAgentRequest, Citation, RoutedIntent
 from neuroagent.context.interfaces import ContextPacket
 from neuroagent.retrieval.interfaces import RetrievedChunk
 
@@ -26,9 +25,7 @@ class LlmResult(BaseModel):
 
 
 class IntentRouter(Protocol):
-    def route(self, message: str) -> (
-        tuple[ChatIntent, WorkRequest | None] | Awaitable[tuple[ChatIntent, WorkRequest | None]]
-    ): ...
+    async def route(self, request: ChatAgentRequest) -> RoutedIntent: ...
 
 
 class LLMClient(Protocol):

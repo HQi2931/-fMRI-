@@ -19,7 +19,8 @@ from neuroagent.retrieval.fmrianalysis.retriever import (
     _generate_query_variants,
     _reciprocal_rank_fusion,
 )
-from neuroagent.retrieval.interfaces import RetrievalResult, RetrievedChunk
+from neuroagent.retrieval.interfaces import RagService, RetrievalResult, RetrievedChunk
+from neuroagent.retrieval.uploaded_index import UploadedLiteratureIndex
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +29,17 @@ class FmriAnalysisRagService:
     def __init__(
         self,
         *,
-        db_dir: Path,
+        db_dir: Path | None,
         collection: str,
         secret_resolver: SecretResolver,
         api_key_env: str,
         redaction_salt: str | None,
         rerank: bool = True,
+        uploaded_index: UploadedLiteratureIndex | None = None,
+        fallback_rag: RagService | None = None,
     ) -> None:
+        self._fallback_rag = fallback_rag
+        self._uploaded_index = uploaded_index
         self._db_dir = db_dir
         self._collection = collection
         self._secrets = secret_resolver
@@ -47,8 +52,16 @@ class FmriAnalysisRagService:
     async def retrieve(
         self, query: str, *, limit: int = 8, filters: dict[str, Any] | None = None
     ) -> RetrievalResult:
-        if filters and set(filters) - {"category"}:
-            raise InputValidationError("rag_filter_unsupported", "当前检索仅支持 category 过滤。")
+        if filters and set(filters) - {"category", "paper_ids"}:
+            raise InputValidationError(
+                "rag_filter_unsupported", "当前检索仅支持 category 和 paper_ids 过滤。"
+            )
+        paper_ids = (filters or {}).get("paper_ids") or None
+        ready = self._uploaded_index.ready_ids(paper_ids) if self._uploaded_index else []
+        if not ready and (paper_ids or self._db_dir is None):
+            if not paper_ids and self._fallback_rag is not None:
+                return await self._fallback_rag.retrieve(query, limit=limit, filters=filters)
+            return RetrievalResult(chunks=(), suggested_answer="当前文献库没有检索到可用证据。")
         if not self._salt:
             raise InputValidationError(
                 "redaction_policy_not_configured", "文献检索外发前需要配置脱敏策略。"
@@ -65,7 +78,11 @@ class FmriAnalysisRagService:
 
     def _retrieve(self, query: str, limit: int, filters: dict[str, Any]) -> RetrievalResult:
         with self._lock:
-            if not (self._db_dir / "chroma.sqlite3").is_file():
+            if (
+                self._db_dir is not None
+                and not filters.get("paper_ids")
+                and not (self._db_dir / "chroma.sqlite3").is_file()
+            ):
                 raise ApplicationError("rag_index_missing", "未找到已有文献索引。", status_code=503)
             key = self._secrets.resolve(self._api_key_env)
             if not key:
@@ -73,7 +90,11 @@ class FmriAnalysisRagService:
                     "rag_key_missing", "未配置文献检索的 DashScope API Key。", status_code=503
                 )
             try:
-                if self._retriever is None:
+                if (
+                    self._retriever is None
+                    and self._db_dir is not None
+                    and not filters.get("paper_ids")
+                ):
                     self._retriever = LiteratureRetriever(
                         db_dir=self._db_dir,
                         collection_name=self._collection,
@@ -91,8 +112,16 @@ class FmriAnalysisRagService:
                         min_results=0,
                     )
                     for variant in variants
+                    if self._db_dir is not None and not filters.get("paper_ids")
                 ]
                 fused = _reciprocal_rank_fusion(ranked, top_n=limit * 2)
+                if self._uploaded_index is not None:
+                    fused.extend(
+                        self._uploaded_index.candidates(
+                            query, limit=limit * 2, paper_ids=filters.get("paper_ids") or None
+                        )
+                    )
+                fused.sort(key=lambda item: float(item.get("rrf_score", 0)), reverse=True)
             except Exception as exc:
                 logger.warning("Literature retrieval failed type=%s", type(exc).__name__)
                 raise ApplicationError(
@@ -105,12 +134,23 @@ class FmriAnalysisRagService:
                 try:
                     from neuroagent.retrieval.fmrianalysis.reranker import DashScopeReranker
 
+                    if not self._salt:
+                        raise InputValidationError(
+                            "redaction_policy_not_configured", "需要配置脱敏策略。"
+                        )
+                    fused = list(
+                        OutboundContextPolicy(self._salt)
+                        .redact({"evidence": fused})
+                        .payload["evidence"]
+                    )
                     fused = DashScopeReranker(api_key=key).rerank_with_texts(
                         query, fused, text_key="content", top_n=limit
                     )
                     rerank_used = True
                 except Exception as exc:
-                    logger.warning("Rerank fallback type=%s", type(exc).__name__)
+                    raise ApplicationError(
+                        "rag_rerank_failed", "文献重排失败，请重试。", status_code=503
+                    ) from exc
             chunks = tuple(_to_chunk(item) for item in fused[:limit] if item.get("content"))
             return RetrievalResult(
                 chunks=chunks,

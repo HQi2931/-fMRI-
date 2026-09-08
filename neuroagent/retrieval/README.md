@@ -24,9 +24,9 @@
 
 安装 `uv sync --extra rag`，设置 `RSFMRI_RAG_DB_DIR` 为已有索引的副本，以及
 `DASHSCOPE_API_KEY` 和现有脱敏配置。collection 默认 `fmri_literature_v1`。
-未配置索引则继续原本地文档检索。不要在原索引上做迁移或重建。
+未配置旧索引且没有可检索上传论文时继续本地文档检索。不要在原索引上做迁移或重建。
 
-旧索引没有页码时明确返回未知；新上传 PDF 的持久化 chunks 有页码，但尚未自动向量化入库。
+旧索引没有页码时明确返回未知。上传 PDF 后显式调用加入知识库接口，文本经外发脱敏策略后发送 DashScope；以持久化 chunk ID upsert 到工作目录 literature_index 的 uploaded_literature_v1 collection。索引状态持久化为 not_indexed/indexing/ready/failed，只有 ready 论文参与检索。按 paper_ids 检索只查询指定上传论文，否则合并旧库与上传论文候选后执行一次重排。失败保留论文并支持手动重试，不自动补建索引。
 RAG extra 的直接依赖是 langchain-chroma、requests；Chroma 及其传递依赖仅可选安装。
 
 ## 后续核心接口

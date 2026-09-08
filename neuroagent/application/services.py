@@ -36,6 +36,7 @@ from neuroagent.application.service_mixins import (
 )
 from neuroagent.application.settings import Settings
 from neuroagent.chat.agent import ChatAgent
+from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.chat.services import (
     DEFAULT_CITATION_SERVICE,
     DEFAULT_CONTEXT_MANAGER,
@@ -51,6 +52,7 @@ from neuroagent.literature.ports import LiteratureRepository
 from neuroagent.literature.section_parser import RuleBasedSectionParser
 from neuroagent.literature.service import LiteratureService
 from neuroagent.retrieval.fmrianalysis_service import FmriAnalysisRagService
+from neuroagent.retrieval.uploaded_index import UploadedLiteratureIndex
 from neuroagent.skills.compiler import SkillCompiler
 from neuroagent.skills.registry import SkillRegistry
 from neuroagent.skills.resolver import SkillResolver
@@ -101,7 +103,15 @@ class NeuroAgentService(
         self.secret_writer = secret_writer
         self.providers = dict(providers)
         self.workspace_picker = workspace_picker
+        uploaded_index = UploadedLiteratureIndex(
+            work_root=settings.allowed_work_root,
+            repository=cast(LiteratureRepository, repository),
+            secret_resolver=secret_resolver,
+            api_key_env=settings.rag_api_key_env,
+            redaction_salt=settings.redaction_salt,
+        )
         self.literature = LiteratureService(
+            indexer=uploaded_index,
             repository=cast(LiteratureRepository, repository),
             work_root=settings.allowed_work_root,
             pdf_parser=PypdfParser(),
@@ -113,7 +123,10 @@ class NeuroAgentService(
             max_pdf_bytes=settings.literature_max_pdf_bytes,
         )
         self.chat_agent = ChatAgent(
-            intent_router=ModelIntentRouter(self._classify_chat_intent),
+            intent_router=ModelIntentRouter(
+                self._classify_chat_intent,
+                has_profiles=lambda: bool(self.repository.list_model_profiles()),
+            ),
             rag_service=FmriAnalysisRagService(
                 db_dir=settings.rag_db_dir,
                 collection=settings.rag_collection,
@@ -121,10 +134,14 @@ class NeuroAgentService(
                 api_key_env=settings.rag_api_key_env,
                 redaction_salt=settings.redaction_salt,
                 rerank=settings.rag_rerank,
-            ) if settings.rag_db_dir else LocalEvidenceRagService(
-                lambda question: self.answer_rsfmri_question(
-                    RsFmriQuestionRequest(question=question, allow_remote_search=False)
-                ).answer
+                uploaded_index=uploaded_index,
+                fallback_rag=LocalEvidenceRagService(
+                    lambda question: (
+                        self.answer_rsfmri_question(
+                            RsFmriQuestionRequest(question=question, allow_remote_search=False)
+                        ).answer
+                    )
+                ),
             ),
             context_manager=DEFAULT_CONTEXT_MANAGER,
             memory_service=DEFAULT_MEMORY_SERVICE,
@@ -138,21 +155,16 @@ class NeuroAgentService(
     def close(self) -> None:
         self.database.dispose()
 
-    async def _classify_chat_intent(self, message: str) -> str:
-        prompt = (
-            "将用户消息分类为 rs-fMRI Chat 意图。只返回 JSON, 不要 Markdown。\n"
-            '格式: {"intent":"knowledge_query|conversation|work_request",'
-            '"task":"可选任务名","parameters":{}}\n'
-            "knowledge_query: 询问概念、方法、原理或文献; conversation: 普通对话; "
-            "work_request: 明确要求对用户数据执行、计算、运行或处理。"
-            "仅提到某个方法不代表 work_request。\n用户消息: " + message
-        )
-        result = await self._model_gateway().generate_chat(
-            question=prompt,
+    async def _classify_chat_intent(self, request: ChatAgentRequest) -> str:
+        result = await self._generate_rsfmri_chat(
+            question=request.message,
             evidence=[],
-            preferred_profile_id=None,
-            model=None,
+            recent_messages=[item.model_dump() for item in request.recent_messages[-12:]],
+            pinned_context=[item.model_dump() for item in request.pinned_context],
+            preferred_profile_id=request.preferred_profile_id,
+            model=request.model,
             allow_web_search=False,
+            routing=True,
         )
         return result.response.content
 

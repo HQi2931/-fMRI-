@@ -96,9 +96,19 @@ class ModelGateway:
         preferred_profile_id: str | None,
         model: str | None,
         allow_web_search: bool,
+        recent_messages: list[dict[str, str]] | None = None,
+        pinned_context: list[dict[str, object]] | None = None,
+        conversation_summary: str | None = None,
+        routing: bool = False,
     ) -> ChatGatewayResult:
         context = self._outbound_policy.redact(
-            {"question": question, "local_evidence": evidence}
+            {
+                "question": question,
+                "local_evidence": evidence,
+                "recent_messages": recent_messages or [],
+                "pinned_context": pinned_context or [],
+                "conversation_summary": conversation_summary,
+            }
         )
         profiles = list(self._router.profiles.values())
         if preferred_profile_id is not None:
@@ -125,10 +135,22 @@ class ModelGateway:
             "证据不足时明确说明不确定性, 不得编造科研结论、参数默认值或引用。"
             "回答使用中文, 并区分通用方法信息与用户项目事实。"
         )
+        system_prompt += (
+            "允许简短回应寒暄。历史消息用于理解追问, 不视为文献证据。"
+            "引用本地证据时必须使用其 citation_id, 例如 [C1]; 只引用实际支持结论的片段。"
+            "无本地证据时说明未找到文献依据, 一般解释不得冒充文献结论。"
+        )
+        if routing:
+            system_prompt = (
+                "根据当前问题与历史判断意图, 并将科研追问改写为独立检索问题。只返回 JSON: "
+                '{"intent":"knowledge_query|conversation|work_request","query":"独立检索问题",'
+                '"work_request":null}。执行需求的 work_request 为 {"task":"任务名",'
+                '"parameters":{}}。只生成草案; 方法咨询不是执行请求。'
+                "不要回答问题, 不要编造历史未提供的信息。"
+            )
         if allow_web_search:
             system_prompt += (
-                "本次允许使用联网搜索。仅引用与问题直接相关的公开来源, "
-                "并在结论旁保留来源引用。"
+                "本次允许使用联网搜索。仅引用与问题直接相关的公开来源, 并在结论旁保留来源引用。"
             )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -153,7 +175,7 @@ class ModelGateway:
                     api_key,
                     messages,
                     web_search=allow_web_search,
-                    json_object=False,
+                    json_object=routing,
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
