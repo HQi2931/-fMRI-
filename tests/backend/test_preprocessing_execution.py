@@ -17,6 +17,7 @@ from neuroagent.application.contracts import (
     ApprovalDecision,
     DatasetCreate,
     ExecutionBackend,
+    ExecutionWorkspaceMode,
     ManifestScanRequest,
     ProjectCreate,
     RunCreate,
@@ -57,10 +58,14 @@ def _write_synthetic_series(path: Path) -> None:
             stream.write(struct.pack("<729f", *values))
 
 
-def _prepare(root: Path, *, real: bool = False):
+def _prepare(root: Path, *, real: bool = False, in_place: bool = False):
     source = root / "source"
     source.mkdir(parents=True)
-    image = source / "sub-01" / "func" / "rest.nii"
+    image = (
+        source / "FunRaw" / "sub-01" / "rest.nii"
+        if in_place
+        else source / "sub-01" / "func" / "rest.nii"
+    )
     _write_synthetic_series(image)
     settings = (
         _fake_stack(root / "fake", "preprocessing")
@@ -136,6 +141,9 @@ def _prepare(root: Path, *, real: bool = False):
             plan_revision_id=plan.plan_revision_id,
             expected_plan_hash=plan.plan_hash,
             execution_backend=ExecutionBackend.MATLAB,
+            workspace_mode=(
+                ExecutionWorkspaceMode.IN_PLACE if in_place else ExecutionWorkspaceMode.ISOLATED
+            ),
             real_execution_confirmed=True,
         ),
         "run",
@@ -208,6 +216,31 @@ def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, mon
         assert lineage["volume_count"] == 120 and lineage["metadata_verified"]
         assert lineage["subject_id"] == "sub-01"
         assert lineage["artifact_id"] == image.artifact_id
+        assert source.read_bytes() == before
+    finally:
+        service.close()
+
+
+def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path, monkeypatch):
+    service, run, source = _prepare(tmp_path, in_place=True)
+    before = source.read_bytes()
+
+    def fake_in_place_execute(self, job, *, is_cancelled):
+        rendered = self.dry_run(job).rendered
+        script = rendered.entry_script.read_text(encoding="utf-8")
+        workspace_text = str(source.parents[2].resolve()).replace("\\", "/")
+        assert workspace_text in script
+        staged = rendered.run_directory / "staging/FunImg/sub-01/rest.nii"
+        assert not staged.exists()
+        staged.parent.mkdir(parents=True)
+        staged.write_bytes(before)
+        return _fake_execute(self, job, is_cancelled=is_cancelled)
+
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", fake_in_place_execute)
+    try:
+        assert build_worker(service).run_once()
+        result = service.get_run(run.run_id)
+        assert result.state.value == "qc_review", result.model_dump_json()
         assert source.read_bytes() == before
     finally:
         service.close()

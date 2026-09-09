@@ -23,10 +23,15 @@ rs_fMRI_Agent/
 │  ├─ agent/                   模型路由、Provider、脱敏和结构化输出
 │  ├─ api/                     FastAPI 路由、错误映射、静态前端入口
 │  ├─ application/             用例编排、公共契约、端口、环境锁和确定性报告
+│  ├─ chat/                    ChatAgent、intent 路由和 Chat 专用窄接口
+│  ├─ context/                 Chat 上下文 packet 接口和最小构建器
 │  ├─ domain/fmri/             纯 fMRI 领域模型、结果合同与科学校验规则
 │  ├─ execution/               Mock 与受控 MATLAB 执行适配
 │  ├─ infrastructure/          SQLite、文件系统检查和环境探测
+│  ├─ literature/              PDF 解析、section 识别和科研 chunking
+│  ├─ memory/                  Memory snapshot/service 扩展接口
 │  ├─ observability/           审计事件与追踪上下文
+│  ├─ retrieval/               RAG/Embedding/VectorStore/Retriever 协议
 │  ├─ skills/                  Skill Registry、Resolver、Validator、Compiler
 │  ├─ tools/                   类型化 DPABI、staging 与 Tool Registry
 │  ├─ workflow/                状态机、队列 Worker 与任务领取
@@ -37,6 +42,7 @@ rs_fMRI_Agent/
 │  ├─ agent/                   路由、脱敏与结构输出测试
 │  ├─ backend/                 API、持久化、任务和数据管理测试
 │  ├─ integration/             真实 SQLite/Service/Mock Worker 的纯合成闭环
+│  ├─ literature/              PDF、section、chunk 和页码追溯测试
 │  └─ science/                 DPABI 映射、顺序、统计和执行边界测试
 ├─ web/
 │  ├─ e2e/                     Playwright Mock 端到端场景

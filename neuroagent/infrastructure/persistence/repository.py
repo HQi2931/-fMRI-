@@ -49,8 +49,10 @@ from neuroagent.infrastructure.persistence.models import (
 )
 from neuroagent.infrastructure.persistence.repository_mixins import (
     ArtifactEventMixin,
+    ConversationMixin,
     IdempotencyMixin,
     JobExecutionMixin,
+    LiteratureMixin,
     ModelAgentMixin,
     PlanApprovalMixin,
     ProjectDatasetMixin,
@@ -75,6 +77,8 @@ class SqliteRepository(
     JobExecutionMixin,
     ArtifactEventMixin,
     ModelAgentMixin,
+    ConversationMixin,
+    LiteratureMixin,
 ):
     def __init__(self, database: Database) -> None:
         self.database = database

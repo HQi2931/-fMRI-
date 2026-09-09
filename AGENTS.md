@@ -22,7 +22,7 @@
 - 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及最终发布门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于已发布。
 - `docs/architecture/neuroagent-framework-architecture.md` 是已标记为部分被替代的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
-- `memory`、`retrieval`、`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖，不要优先实现。
+- `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖。
 - 优先建立最小垂直闭环：数据检查 → Skill 解析与方案校验 → 人工确认 → Workflow/MATLAB/DPABI 执行 → QC → 统计分析 → 报告。
 
 ## 3. 已确认的本机科研软件环境

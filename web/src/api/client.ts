@@ -2,6 +2,12 @@ import type { components } from "./schema.generated";
 
 type Schemas = components["schemas"];
 
+export type PaperIngestResult = Schemas["PaperIngestResult"];
+export type Citation = {
+  citation_id: string; chunk_id: string; source: string; title: string; excerpt: string;
+  paper_id?: string | null; section?: string | null; subsection?: string | null;
+  page_start?: number | null; page_end?: number | null;
+};
 export type Health = Schemas["HealthView"];
 export type EnvironmentProbe = Schemas["EnvironmentProbeView"];
 export type EnvironmentConfig = Schemas["EnvironmentConfigView"];
@@ -19,6 +25,87 @@ export type RuntimeEvent = Schemas["RuntimeEventView"];
 export type QcReview = Schemas["QcReviewView"];
 export type ModelProfile = Schemas["ModelProfileView"];
 export type AgentTask = Schemas["AgentTaskView"];
+export type WorkspaceCheck = {
+  path: string;
+  kind: "bids" | "dpabi_ready" | "dicom" | "nifti" | "mixed" | "unknown";
+  file_count: number;
+  nifti_count: number;
+  dicom_count: number;
+  subject_count: number;
+  functional_subject_count: number;
+  anatomical_subject_count: number;
+  input_stage: string | null;
+  output_directories: string[];
+  invalid_nifti_files: string[];
+  warnings: string[];
+  blocking_issues: string[];
+  subjects: Array<{
+    subject_id: string;
+    session_id: string | null;
+    functional_files: string[];
+    anatomical_files: string[];
+    dicom_files: string[];
+  }>;
+  checked_at: string;
+};
+export type WorkspacePick = { path: string | null; cancelled: boolean };
+export type ConversationMode = "chat" | "work";
+export type ConversationMessage = {
+  message_id: string;
+  conversation_id: string;
+  sequence: number;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+export type ConversationToolCall = {
+  tool_call_id: string;
+  conversation_id: string;
+  user_message_id: string;
+  tool_name: string;
+  status: "succeeded" | "failed" | "awaiting_confirmation";
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type Conversation = {
+  conversation_id: string;
+  mode: ConversationMode;
+  title: string;
+  workspace_path: string | null;
+  preferred_profile_id: string | null;
+  project_id: string | null;
+  active_run_id: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  messages: ConversationMessage[];
+  tool_calls: ConversationToolCall[];
+};
+export type ConversationTurn = {
+  conversation: Conversation;
+  user_message: ConversationMessage;
+  assistant_message: ConversationMessage;
+  tool_call: ConversationToolCall | null;
+};
+export type ConversationContext = Schemas["ConversationContextView"];
+export type ConversationMemory = Schemas["MemoryView"];
+export type ConversationTurnBody = {
+  content: string;
+  action?: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
+  allow_remote_search?: boolean;
+  paper_ids?: string[];
+  model?: string | null;
+  workspace_path?: string | null;
+  preferred_profile_id?: string | null;
+  project_id?: string | null;
+  plan_revision_id?: string | null;
+  expected_plan_hash?: string | null;
+  real_execution_confirmed?: boolean;
+};
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
 export type StatisticalResult = Schemas["StatisticalResultView"];
 export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
@@ -160,7 +247,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const { idempotent = false, headers, ...init } = options;
   const requestHeaders = new Headers(headers);
   requestHeaders.set("Accept", "application/json");
-  if (init.body !== undefined) requestHeaders.set("Content-Type", "application/json");
+  if (init.body !== undefined && !(init.body instanceof FormData)) requestHeaders.set("Content-Type", "application/json");
 
   let mutationFingerprint: string | undefined;
   if (idempotent && !requestHeaders.has("Idempotency-Key")) {
@@ -215,10 +302,69 @@ function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> 
   });
 }
 
+function patch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, {
+    method: "PATCH",
+    body: canonicalJson(body),
+    idempotent: true,
+    signal,
+  });
+}
+
 export const api = {
+  papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
+  uploadPaper: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<PaperIngestResult>("/literature/papers", { method: "POST", body });
+  },
+  indexPaper: (paperId: string) => request<PaperIngestResult>(`/literature/papers/${encodeURIComponent(paperId)}/index`, { method: "POST" }),
+  paperSource: (paperId: string) => `/api/v1/literature/papers/${encodeURIComponent(paperId)}/source`,
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   environment: (signal?: AbortSignal) => request<EnvironmentProbe>("/environment/probe", { signal }),
   environmentConfig: (signal?: AbortSignal) => request<EnvironmentConfig>("/environment/config", { signal }),
+  checkWorkspace: (body: { path: string }, signal?: AbortSignal) =>
+    post<WorkspaceCheck>("/workspaces/check", body, signal),
+  pickWorkspace: (signal?: AbortSignal) =>
+    post<WorkspacePick>("/workspaces/pick", {}, signal),
+  conversations: (mode?: ConversationMode, signal?: AbortSignal) =>
+    request<Conversation[]>(
+      `/conversations${mode ? `?mode=${encodeURIComponent(mode)}` : ""}`,
+      { signal },
+    ),
+  createConversation: (
+    body: {
+      mode: ConversationMode;
+      title?: string | null;
+      workspace_path?: string | null;
+      preferred_profile_id?: string | null;
+    },
+    signal?: AbortSignal,
+  ) => post<Conversation>("/conversations", body, signal),
+  conversation: (conversationId: string, signal?: AbortSignal) =>
+    request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  conversationContext: (conversationId: string, signal?: AbortSignal) =>
+    request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
+  createConversationMemory: (
+    conversationId: string,
+    body: Schemas["MemoryCreate"],
+    signal?: AbortSignal,
+  ) => post<ConversationMemory>(`/conversations/${conversationId}/context/memories`, body, signal),
+  updateConversationMemory: (
+    conversationId: string,
+    memoryId: string,
+    body: Schemas["MemoryUpdate"],
+    signal?: AbortSignal,
+  ) => patch<ConversationMemory>(
+    `/conversations/${conversationId}/context/memories/${memoryId}`,
+    body,
+    signal,
+  ),
+  sendConversationTurn: (
+    conversationId: string,
+    body: ConversationTurnBody,
+    signal?: AbortSignal,
+  ) => post<ConversationTurn>(`/conversations/${conversationId}/turns`, body, signal),
   updateEnvironmentConfig: (
     body: Schemas["EnvironmentConfigUpdate"],
     signal?: AbortSignal,

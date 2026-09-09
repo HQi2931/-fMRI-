@@ -14,13 +14,11 @@
 
 ## 当前阶段
 
-仅建立目录边界，未实现记忆服务、存储或召回算法。
+SQLite 已保存会话/项目范围的 `memory_records`。允许列表内的语言、篇幅和格式偏好可以自动确认；频段等科学参数只生成待确认候选。用户可通过 Conversation Context API 确认、修改、拒绝、固定或忘记记忆。
+
+确认记忆可进入上下文，项目记忆只在同一项目内共享。已审批计划、运行、QC 和产物状态不复制为记忆，始终从业务表实时读取。“忘记”会清空正文并保留审计墓碑。
 
 ## 后续核心接口
 
-- `MemoryRecord`
-- `MemoryScope`
-- `MemoryService`
-- `MemoryRepository`
-- `MemoryPolicy`
-- `MemoryUpdate`
+- 语义记忆召回
+- 可配置的记忆过期策略

@@ -4,13 +4,14 @@ import { api, describeError, type EnvironmentConfig, type EnvironmentProbe, type
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 
-const CAPABILITIES = ["json_object", "streaming", "reasoning"] as const;
+const CAPABILITIES = ["json_object", "streaming", "reasoning", "web_search"] as const;
 type Capability = (typeof CAPABILITIES)[number];
 
 const CAPABILITY_LABELS: Record<Capability, string> = {
   json_object: "JSON 结构化输出",
   streaming: "流式输出",
   reasoning: "推理",
+  web_search: "联网搜索（OpenAI-compatible）",
 };
 
 const PROVIDER_PRESETS = [
@@ -46,19 +47,16 @@ export function SettingsPage() {
   const [spmVersion, setSpmVersion] = useState("unspecified");
   const [dpabiVersion, setDpabiVersion] = useState("unspecified");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
-  const [profileId, setProfileId] = useState("");
   const [presetLabel, setPresetLabel] = useState("");
   const [provider, setProvider] = useState("openai-compatible");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [keyEnv, setKeyEnv] = useState("");
-  const [model, setModel] = useState("");
-  const [pickedModel, setPickedModel] = useState("");
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
   const [priority, setPriority] = useState(100);
   const [capabilities, setCapabilities] = useState<Capability[]>(["json_object"]);
   const [timeoutSeconds, setTimeoutSeconds] = useState(45);
+  const [contextWindowTokens, setContextWindowTokens] = useState(16384);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(2048);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -118,8 +116,6 @@ export function SettingsPage() {
       setProvider("openai-compatible");
       setBaseUrl(preset.baseUrl);
       setKeyEnv(preset.keyEnv);
-      setAvailableModels([]);
-      setPickedModel("");
     }
   }
 
@@ -132,57 +128,53 @@ export function SettingsPage() {
   }
 
   function resetForm(): void {
-    setProfileId("");
     setPresetLabel("");
     setBaseUrl("");
     setApiKey("");
     setKeyEnv("");
-    setModel("");
-    setPickedModel("");
-    setAvailableModels([]);
   }
 
-  async function fetchModels(): Promise<void> {
-    setLoadingModels(true);
-    setError("");
-    setMessage("");
-    try {
-      const result = await api.listProviderModels({
-        base_url: baseUrl.trim(),
-        api_key: apiKey.trim() || null,
-        api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
-      });
-      setAvailableModels(result.models);
-      setMessage(result.models.length > 0 ? `已获取 ${result.models.length} 个可用模型。` : "该服务商未返回可用模型。");
-    } catch (caught) {
-      setError(describeError(caught));
-      setAvailableModels([]);
-    } finally {
-      setLoadingModels(false);
-    }
-  }
-
-  async function saveProfile(): Promise<void> {
+  async function bindProvider(): Promise<void> {
     setBusy(true);
     setError("");
     setMessage("");
     try {
+      const models = await api.listProviderModels({
+        base_url: baseUrl.trim(),
+        api_key: apiKey.trim() || null,
+        api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
+      });
+      if (models.models.length === 0) throw new Error("该服务商没有返回可选择的模型。");
+      const existing = profiles.find((item) =>
+        item.profile.base_url === baseUrl.trim().replace(/\/$/, "") &&
+        item.profile.api_key_env === keyEnv.trim(),
+      );
+      const derivedId = keyEnv.trim().toLowerCase().replace(/_api_key$/, "").replace(/_/g, "-");
+      const baseId = derivedId.length >= 2 ? derivedId : "provider";
+      let connectionId = existing?.profile.id ?? baseId.slice(0, 63);
+      let suffix = 2;
+      while (!existing && profiles.some((item) => item.profile.id === connectionId)) {
+        connectionId = `${baseId.slice(0, 60)}-${suffix}`;
+        suffix += 1;
+      }
       await api.createProfile({
         profile: {
-          id: profileId.trim(),
+          id: connectionId,
           provider: provider.trim(),
           base_url: baseUrl.trim(),
-          model: (pickedModel || model).trim(),
+          model: models.models[0],
           api_key_env: keyEnv.trim(),
           priority,
           capabilities,
           timeout_seconds: timeoutSeconds,
+          context_window_tokens: contextWindowTokens,
+          max_output_tokens: maxOutputTokens,
         },
         api_key: apiKey.trim() || null,
       });
       resetForm();
       await refresh();
-      setMessage("模型配置已保存；API Key 已写入本地 .env，未进入数据库或浏览器。");
+      setMessage(`服务商 API 已绑定；Agent 对话框可直接选择其返回的 ${models.models.length} 个模型。API Key 仅写入本地 .env。`);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -195,8 +187,12 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const result = await api.testProvider({ profile_id: item.profile.id, expected_profile_version: item.version });
-      setMessage(result.available ? `Provider ${item.profile.id} 轻量测试成功。` : `Provider ${item.profile.id} 当前不可用。`);
+      const result = await api.listProviderModels({
+        base_url: item.profile.base_url,
+        api_key: null,
+        api_key_env: item.profile.api_key_env,
+      });
+      setMessage(`服务商连接正常，当前返回 ${result.models.length} 个可选模型。`);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -205,14 +201,14 @@ export function SettingsPage() {
   }
 
   async function removeProfile(item: ModelProfile): Promise<void> {
-    if (!window.confirm(`确定删除模型配置「${item.profile.id}」（${item.profile.model}）吗？`)) return;
+    if (!window.confirm(`确定解除服务商「${item.profile.base_url}」的 API 绑定吗？`)) return;
     setBusy(true);
     setError("");
     setMessage("");
     try {
       await api.deleteProfile(item.profile.id);
       await refresh();
-      setMessage(`已删除模型配置 ${item.profile.id}。`);
+      setMessage("已解除服务商 API 绑定。");
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -224,8 +220,8 @@ export function SettingsPage() {
     <>
       <PageHeader
         eyebrow="本机环境"
-        title="运行条件与模型配置"
-        description="选择服务商、填写 API Key 即可拉取该服务商的可用模型；可配置多个模型，Agent 按任务能力与优先级路由。"
+        title="运行条件与服务商 API"
+        description="绑定模型服务商的 API Key 后，Agent 对话框会直接加载并显示该服务商提供的模型，无需逐个创建模型配置。"
         action={<button className="button button-secondary" type="button" disabled={busy} onClick={() => refresh().catch((caught) => setError(describeError(caught)))}>重新探测</button>}
       />
       <Feedback message={error || message} error={Boolean(error)} />
@@ -263,9 +259,8 @@ export function SettingsPage() {
       </section>
       <div className="two-column">
         <section className="panel">
-          <span className="eyebrow">新增模型配置</span><h2>OpenAI-compatible</h2>
+          <span className="eyebrow">绑定服务商 API</span><h2>OpenAI-compatible</h2>
           <div className="parameter-list">
-            <label>配置 ID<input value={profileId} onChange={(event) => setProfileId(event.target.value)} placeholder="如 zhipu-glm、kimi-k2（小写字母/数字/连字符）" /></label>
             <label>服务商预设
               <select value={presetLabel} onChange={(event) => applyPreset(event.target.value)}>
                 <option value="">选择服务商（自动填基址与密钥变量名）</option>
@@ -275,20 +270,12 @@ export function SettingsPage() {
             <label>API Key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="填写后可直接拉取模型；保存时写入本地 .env（不进入数据库）" autoComplete="off" /></label>
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="openai-compatible">openai-compatible</option></select></label>
             <label>API 基址<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" /></label>
-            <div className="model-field">
-              <div className="model-pick-row">
-                <select value={pickedModel} onChange={(event) => setPickedModel(event.target.value)} disabled={loadingModels} aria-label="模型名称">
-                  <option value="">{availableModels.length > 0 ? "从列表选择（或下方手动输入）" : "先点「获取模型」"}</option>
-                  {availableModels.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-                <button type="button" className="button button-secondary" onClick={fetchModels} disabled={busy || loadingModels || !baseUrl.trim()}>{loadingModels ? "获取中…" : "获取模型"}</button>
-              </div>
-              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="手动输入模型名（下拉为空或需自定义时）" aria-label="模型名称（手动输入）" />
-            </div>
             <label>密钥环境变量名<input value={keyEnv} onChange={(event) => setKeyEnv(event.target.value)} placeholder="以 _API_KEY 结尾，如 DEEPSEEK_API_KEY" /></label>
             <div className="form-grid">
               <label>优先级<input type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label>
               <label>超时秒<input type="number" min={1} max={300} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
+              <label>上下文窗口<input type="number" min={4096} max={2000000} value={contextWindowTokens} onChange={(event) => setContextWindowTokens(Number(event.target.value))} /></label>
+              <label>回答 token 上限<input type="number" min={256} max={65536} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
             </div>
             <fieldset className="capability-field">
               <legend>能力</legend>
@@ -300,24 +287,25 @@ export function SettingsPage() {
               ))}
             </fieldset>
           </div>
-          <p className="muted">API Key 只写入未跟踪的本地 <code>.env</code>，不进入数据库、日志或浏览器状态；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
-          <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !profileId.trim() || !baseUrl.trim() || !keyEnv.trim() || (!pickedModel && !model.trim())} onClick={saveProfile}>保存模型配置</button></div>
+          <p className="muted">绑定时会立即验证 API 并读取模型列表。API Key 只写入未跟踪的本地 <code>.env</code>，不进入数据库、日志或浏览器状态；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
+          <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : "绑定 API 并读取模型"}</button></div>
         </section>
         <section className="panel">
-          <span className="eyebrow">已配置模型</span><h2>{profiles.length} 项</h2>
-          {profiles.length === 0 ? <EmptyState title="尚无模型配置" detail="Agent 功能保持关闭；数据、Skill 与 Workflow 不依赖外部模型。" /> : (
+          <span className="eyebrow">已绑定服务商</span><h2>{profiles.length} 项</h2>
+          {profiles.length === 0 ? <EmptyState title="尚未绑定服务商 API" detail="绑定后，服务商提供的模型会直接出现在 Agent 对话框中。" /> : (
             <div className="profile-list">
               {profiles.map((item) => (
                 <div key={item.profile.id} className="profile-card">
                   <div className="profile-card-head">
-                    <strong>{item.profile.model}</strong>
-                    <StatusPill tone="info">{item.profile.id}</StatusPill>
+                    <strong>{new URL(item.profile.base_url).hostname}</strong>
+                    <StatusPill tone="info">API 已绑定</StatusPill>
                   </div>
                   <p className="muted">{item.profile.provider} · {item.profile.base_url}</p>
-                  <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "无"}</p>
+                  <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 上下文 {item.profile.context_window_tokens} · 回答 {item.profile.max_output_tokens} token</p>
+                  <p className="muted">能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
                   <div className="button-row">
-                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>测试</button>
-                    <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>删除</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>刷新模型列表</button>
+                    <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>
                   </div>
                 </div>
               ))}
