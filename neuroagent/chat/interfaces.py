@@ -22,6 +22,7 @@ class LlmResult(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
     provider_citations: tuple[dict[str, str], ...] = ()
     remote_search_used: bool = False
+    redaction_count: int = Field(default=0, ge=0)
 
 
 class IntentRouter(Protocol):

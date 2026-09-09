@@ -124,6 +124,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Conversation Context */
+        get: operations["get_conversation_context_api_v1_conversations__conversation_id__context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/context/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Conversation Memory */
+        post: operations["create_conversation_memory_api_v1_conversations__conversation_id__context_memories_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/context/memories/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Conversation Memory */
+        patch: operations["update_conversation_memory_api_v1_conversations__conversation_id__context_memories__memory_id__patch"];
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -1309,11 +1360,37 @@ export interface components {
             /** Voxel Count */
             voxel_count?: number | null;
         };
+        /** ContextSummaryView */
+        ContextSummaryView: {
+            /** Content */
+            content: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Covered Sequence */
+            covered_sequence: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Method */
+            method: string;
+            /** Source Hash */
+            source_hash: string;
+            /** Summary Id */
+            summary_id: string;
+        };
         /**
          * ConversationAction
          * @enum {string}
          */
         ConversationAction: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
+        /** ConversationContextView */
+        ConversationContextView: {
+            /** Memories */
+            memories?: components["schemas"]["MemoryView"][];
+            summary?: components["schemas"]["ContextSummaryView"] | null;
+        };
         /** ConversationCreate */
         ConversationCreate: {
             mode: components["schemas"]["ConversationMode"];
@@ -1910,6 +1987,85 @@ export interface components {
             expected_dataset_version: number;
         };
         /**
+         * MemoryAction
+         * @enum {string}
+         */
+        MemoryAction: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget";
+        /** MemoryCreate */
+        MemoryCreate: {
+            /** Content */
+            content: string;
+            /** Key */
+            key: string;
+            kind: components["schemas"]["MemoryKind"];
+            /**
+             * Pinned
+             * @default true
+             */
+            pinned: boolean;
+            /** @default conversation */
+            scope: components["schemas"]["MemoryScope"];
+            /** Source Message Id */
+            source_message_id?: string | null;
+        };
+        /**
+         * MemoryKind
+         * @enum {string}
+         */
+        MemoryKind: "preference" | "instruction" | "scientific_parameter";
+        /**
+         * MemoryScope
+         * @enum {string}
+         */
+        MemoryScope: "conversation" | "project";
+        /**
+         * MemoryStatus
+         * @enum {string}
+         */
+        MemoryStatus: "pending" | "confirmed" | "rejected" | "forgotten";
+        /** MemoryUpdate */
+        MemoryUpdate: {
+            action: components["schemas"]["MemoryAction"];
+            /** Content */
+            content?: string | null;
+            /** Expected Version */
+            expected_version: number;
+        };
+        /** MemoryView */
+        MemoryView: {
+            /** Confidence */
+            confidence: number;
+            /** Content */
+            content: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Key */
+            key: string;
+            kind: components["schemas"]["MemoryKind"];
+            /** Memory Id */
+            memory_id: string;
+            /** Pinned */
+            pinned: boolean;
+            /** Project Id */
+            project_id?: string | null;
+            scope: components["schemas"]["MemoryScope"];
+            /** Source Message Id */
+            source_message_id?: string | null;
+            status: components["schemas"]["MemoryStatus"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /**
          * MetricKind
          * @enum {string}
          */
@@ -2054,8 +2210,18 @@ export interface components {
              * @default []
              */
             capabilities: components["schemas"]["ModelCapability"][];
+            /**
+             * Context Window Tokens
+             * @default 16384
+             */
+            context_window_tokens: number;
             /** Id */
             id: string;
+            /**
+             * Max Output Tokens
+             * @default 2048
+             */
+            max_output_tokens: number;
             /** Model */
             model: string;
             /**
@@ -4095,6 +4261,247 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_conversation_context_api_v1_conversations__conversation_id__context_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationContextView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_conversation_memory_api_v1_conversations__conversation_id__context_memories_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_conversation_memory_api_v1_conversations__conversation_id__context_memories__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
                 };
             };
             /** @description Bad Request */

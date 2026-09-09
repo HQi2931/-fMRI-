@@ -17,6 +17,7 @@ from neuroagent.application.contracts import (
     ArtifactView,
     ClusterLocalizationRequest,
     ClusterLocalizationView,
+    ConversationContextView,
     ConversationCreate,
     ConversationMode,
     ConversationTurnCreate,
@@ -35,6 +36,9 @@ from neuroagent.application.contracts import (
     HealthView,
     ManifestRevisionView,
     ManifestScanRequest,
+    MemoryCreate,
+    MemoryUpdate,
+    MemoryView,
     MlTableInspectRequest,
     MlTableInspectView,
     MlTemplateCreateRequest,
@@ -145,6 +149,51 @@ def list_conversations(
 @router.get("/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"])
 def get_conversation(conversation_id: str, request: Request) -> ConversationView:
     return service_from(request).get_conversation(conversation_id)
+
+
+@router.get(
+    "/conversations/{conversation_id}/context",
+    response_model=ConversationContextView,
+    tags=["agent"],
+)
+def get_conversation_context(
+    conversation_id: str, request: Request
+) -> ConversationContextView:
+    return service_from(request).get_conversation_context(conversation_id)
+
+
+@router.post(
+    "/conversations/{conversation_id}/context/memories",
+    response_model=MemoryView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["agent"],
+)
+def create_conversation_memory(
+    conversation_id: str,
+    body: MemoryCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> MemoryView:
+    return service_from(request).create_conversation_memory(
+        conversation_id, body, idempotency_key
+    )
+
+
+@router.patch(
+    "/conversations/{conversation_id}/context/memories/{memory_id}",
+    response_model=MemoryView,
+    tags=["agent"],
+)
+def update_conversation_memory(
+    conversation_id: str,
+    memory_id: str,
+    body: MemoryUpdate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> MemoryView:
+    return service_from(request).update_conversation_memory(
+        conversation_id, memory_id, body, idempotency_key
+    )
 
 
 @router.post(

@@ -164,10 +164,12 @@ class ModelAgentMixin(BaseServiceMixin):
         preferred_profile_id: str | None,
         model: str | None,
         allow_web_search: bool,
-        recent_messages: list[dict[str, str]] | None = None,
+        recent_messages: list[dict[str, object]] | None = None,
         pinned_context: list[dict[str, object]] | None = None,
         conversation_summary: str | None = None,
+        work_context: dict[str, object] | None = None,
         routing: bool = False,
+        summary_mode: bool = False,
     ) -> ChatGatewayResult:
         try:
             return await self._model_gateway().generate_chat(
@@ -175,7 +177,9 @@ class ModelAgentMixin(BaseServiceMixin):
                 recent_messages=recent_messages,
                 pinned_context=pinned_context,
                 conversation_summary=conversation_summary,
+                work_context=work_context,
                 routing=routing,
+                summary_mode=summary_mode,
                 evidence=evidence,
                 preferred_profile_id=preferred_profile_id,
                 model=model,

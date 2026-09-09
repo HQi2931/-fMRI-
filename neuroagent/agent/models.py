@@ -68,6 +68,8 @@ class ModelProfile(BaseModel):
     priority: int = Field(default=100, ge=0, le=10_000)
     capabilities: frozenset[ModelCapability] = frozenset()
     timeout_seconds: float = Field(default=45.0, gt=0, le=300)
+    context_window_tokens: int = Field(default=16_384, ge=4_096, le=2_000_000)
+    max_output_tokens: int = Field(default=2_048, ge=256, le=65_536)
 
     @field_validator("base_url")
     @classmethod

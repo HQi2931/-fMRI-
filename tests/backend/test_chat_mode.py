@@ -100,6 +100,38 @@ def test_chat_unknown_session_returns_not_found(service: NeuroAgentService) -> N
     assert response.json()["error"]["code"] == "not_found"
 
 
+def test_conversation_memory_can_be_confirmed_and_forgotten(
+    service: NeuroAgentService,
+) -> None:
+    with TestClient(create_app(service=service)) as client:
+        session_id = create_chat(client, "memory-chat-create")
+        created = client.post(
+            f"/api/v1/conversations/{session_id}/context/memories",
+            json={
+                "kind": "instruction",
+                "key": "style",
+                "content": "回答保持简洁",
+                "scope": "conversation",
+                "pinned": True,
+            },
+            headers={"Idempotency-Key": "memory-create"},
+        )
+        memory = created.json()
+        listed = client.get(f"/api/v1/conversations/{session_id}/context")
+        forgotten = client.patch(
+            f"/api/v1/conversations/{session_id}/context/memories/{memory['memory_id']}",
+            json={"action": "forget", "expected_version": memory["version"]},
+            headers={"Idempotency-Key": "memory-forget"},
+        )
+        listed_after = client.get(f"/api/v1/conversations/{session_id}/context")
+
+    assert created.status_code == 201
+    assert listed.json()["memories"][0]["content"] == "回答保持简洁"
+    assert forgotten.status_code == 200
+    assert forgotten.json()["content"] == ""
+    assert listed_after.json()["memories"] == []
+
+
 async def test_context_reaches_gateway_once_and_is_redacted() -> None:
     import json
     from unittest.mock import AsyncMock

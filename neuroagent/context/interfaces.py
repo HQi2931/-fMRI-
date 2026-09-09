@@ -14,6 +14,8 @@ class ContextMessage(BaseModel):
 
     role: str = Field(pattern=r"^(system|user|assistant)$")
     content: str = Field(min_length=1)
+    message_id: str | None = None
+    sequence: int | None = Field(default=None, ge=1)
 
 
 class PinnedContext(BaseModel):
@@ -33,6 +35,7 @@ class ContextPacket(BaseModel):
     retrieval_context: tuple[RetrievedChunk, ...] = ()
     pinned_context: tuple[PinnedContext, ...] = ()
     conversation_summary: str | None = None
+    work_context: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -45,4 +48,8 @@ class ContextManager(Protocol):
         retrieval_context: tuple[RetrievedChunk, ...],
         pinned_context: tuple[PinnedContext, ...],
         conversation_summary: str | None,
+        context_window_tokens: int = 16_384,
+        max_output_tokens: int = 2_048,
+        context_kind: str = "knowledge_query",
+        work_context: dict[str, Any] | None = None,
     ) -> ContextPacket: ...

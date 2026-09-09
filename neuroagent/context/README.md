@@ -14,18 +14,11 @@
 
 ## 当前阶段
 
-`interfaces.py` 已定义 `ContextMessage`、`PinnedContext`、`ContextPacket` 和 `ContextManager`。
-最小构建器组装调用方提供的 recent messages、retrieval evidence、pinned context 和 summary；
-Gateway 已消费这些字段并统一脱敏，当前问题只出现一次；最近窗口仍限制为 12 条。
-尚未实现 token budget、摘要、压缩或 pinned context 自动提取。
+`ContextEngine` 已按模型窗口为当前问题、最近完整问答轮次、检索证据、确认记忆、滚动摘要和 Work 状态分配预算。Chat 与 Work 共用同一选择逻辑，Gateway 在发送前统一脱敏；每次成功构建保存不含完整正文的结构化快照。
+
+长对话在未摘要历史达到 24 条消息或超过对话预算阈值时压缩，保留最近 6 个完整问答轮次。Chat 优先调用当前模型生成摘要，失败时使用确定性摘录；Work 使用确定性摘录。
 
 ## 后续核心接口
 
-- `ContextEngine`
-- `ContextPacket`
-- `ContextSnapshot`
-- `Gatherer`
-- `Selector`
-- `Structurer`
-- `Compressor`
-- `TokenBudget`
+- Provider 专用 token 计数器
+- 更细粒度的上下文调试视图

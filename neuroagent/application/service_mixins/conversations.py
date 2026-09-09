@@ -9,15 +9,16 @@ from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.contracts import (
-    ConversationAction,
+    ConversationContextView,
     ConversationCreate,
     ConversationMode,
     ConversationToolStatus,
     ConversationTurnCreate,
     ConversationTurnView,
     ConversationView,
-    ExecutionBackend,
-    ExecutionWorkspaceMode,
+    MemoryCreate,
+    MemoryUpdate,
+    MemoryView,
     RsFmriAnswerView,
     RsFmriQuestionRequest,
     RunCreate,
@@ -25,12 +26,16 @@ from neuroagent.application.contracts import (
     WorkspaceCheckRequest,
     WorkspaceCheckView,
 )
-from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
+from neuroagent.application.conversation_context import (
+    ContextBudgetError,
+    ConversationContextCoordinator,
+)
+from neuroagent.application.conversation_work import ConversationWorkCoordinator
+from neuroagent.application.errors import InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
-from neuroagent.context.interfaces import ContextMessage
 
 
 class ConversationMixin(BaseServiceMixin):
@@ -39,6 +44,8 @@ class ConversationMixin(BaseServiceMixin):
     get_run: Callable[[str], RunView]
     create_run: Callable[[RunCreate, str], RunView]
     chat_agent: ChatAgent
+    conversation_context: ConversationContextCoordinator
+    conversation_work: ConversationWorkCoordinator
 
     def create_conversation(
         self, request: ConversationCreate, idempotency_key: str
@@ -73,6 +80,57 @@ class ConversationMixin(BaseServiceMixin):
     def get_conversation(self, conversation_id: str) -> ConversationView:
         return self.repository.get_conversation(conversation_id)
 
+    def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
+        return self.repository.get_conversation_context(conversation_id)
+
+    def create_conversation_memory(
+        self, conversation_id: str, request: MemoryCreate, idempotency_key: str
+    ) -> MemoryView:
+        def act() -> MemoryView:
+            memory = self.repository.create_memory(conversation_id, request)
+            self.repository.append_event(
+                project_id=memory.project_id,
+                run_id=None,
+                event_type="MemoryUpdated",
+                severity="info",
+                payload={"memory_id": memory.memory_id, "action": "create"},
+            )
+            return memory
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:memories:create",
+            key=idempotency_key,
+            request=request,
+            response_type=MemoryView,
+            action=act,
+        )
+
+    def update_conversation_memory(
+        self,
+        conversation_id: str,
+        memory_id: str,
+        request: MemoryUpdate,
+        idempotency_key: str,
+    ) -> MemoryView:
+        def act() -> MemoryView:
+            memory = self.repository.update_memory(conversation_id, memory_id, request)
+            self.repository.append_event(
+                project_id=memory.project_id,
+                run_id=None,
+                event_type="MemoryUpdated",
+                severity="info",
+                payload={"memory_id": memory.memory_id, "action": request.action.value},
+            )
+            return memory
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:memories:{memory_id}",
+            key=idempotency_key,
+            request=request,
+            response_type=MemoryView,
+            action=act,
+        )
+
     async def send_conversation_turn(
         self,
         conversation_id: str,
@@ -99,158 +157,36 @@ class ConversationMixin(BaseServiceMixin):
             active_run_id = conversation.active_run_id
             tool: dict[str, Any] | None = None
             payload: dict[str, Any] = {}
+            try:
+                prepared_context = self.conversation_context.prepare_work(
+                    conversation,
+                    question=request.content,
+                    preferred_profile_id=preferred_profile_id,
+                    project_id=project_id,
+                    active_run_id=active_run_id,
+                    plan_revision_id=request.plan_revision_id,
+                )
+                work_packet = prepared_context.packet
+                context_state = prepared_context.state
+                preferred_profile_id = prepared_context.profile_id
+            except ContextBudgetError as exc:
+                raise InputValidationError(
+                    "context_input_too_large", "当前消息超过所选模型的上下文预算。"
+                ) from exc
 
-            if conversation.mode is ConversationMode.CHAT:
-                answer = self.answer_rsfmri_question(
-                    RsFmriQuestionRequest(question=request.content, allow_remote_search=False)
-                )
-                payload = {"rag": answer.model_dump(mode="json")}
-                tool = self._tool_result(
-                    "rag_rsfmri_question",
-                    {"question": request.content, "allow_remote_search": False},
-                    payload,
-                )
-                assistant_content = answer.answer.answer
-            else:
-                action = self._resolve_work_action(request, workspace_path, active_run_id)
-                try:
-                    if action is ConversationAction.CHECK_WORKSPACE:
-                        if workspace_path is None:
-                            assistant_content = "请先点击“浏览”并选择工作区。"
-                        else:
-                            checked = self.check_workspace(
-                                WorkspaceCheckRequest(path=workspace_path)
-                            )
-                            workspace_path = checked.path
-                            payload = {"workspace_check": checked.model_dump(mode="json")}
-                            tool = self._tool_result(
-                                "check_workspace", {"path": workspace_path}, payload
-                            )
-                            if checked.blocking_issues:
-                                assistant_content = (
-                                    "工作区检查完成，发现 "
-                                    f"{len(checked.blocking_issues)} 个阻断问题。"
-                                    "请先按右侧列表修正，再准备预处理。"
-                                )
-                            else:
-                                assistant_content = (
-                                    "工作区检查通过：识别到 "
-                                    f"{checked.functional_subject_count} 名受试者的功能输入。"
-                                    "你可以继续准备已审核的预处理方案。"
-                                )
-                    elif action is ConversationAction.GET_PROGRESS:
-                        if active_run_id is None:
-                            assistant_content = "当前对话尚未启动运行。"
-                        else:
-                            run = self.get_run(active_run_id)
-                            payload = {"run": run.model_dump(mode="json")}
-                            tool = self._tool_result(
-                                "get_run_progress", {"run_id": active_run_id}, payload
-                            )
-                            assistant_content = (
-                                f"运行 {run.run_id[:8]} 当前状态为 {run.state.value}，"
-                                f"已执行 {run.attempt} 次。"
-                            )
-                    elif action is ConversationAction.START_PREPROCESSING:
-                        missing = [
-                            name
-                            for name, value in (
-                                ("project_id", project_id),
-                                ("plan_revision_id", request.plan_revision_id),
-                                ("expected_plan_hash", request.expected_plan_hash),
-                            )
-                            if value is None
-                        ]
-                        if missing or not request.real_execution_confirmed:
-                            tool = {
-                                "tool_name": "start_dpabi_preprocessing",
-                                "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
-                                "input": {
-                                    "workspace_path": workspace_path,
-                                    "missing": missing,
-                                },
-                                "output": {},
-                            }
-                            assistant_content = (
-                                "启动前需要已验证并审批的计划，以及本次真实 MATLAB/DPABI 运行确认。"
-                                "确认后，任务会进入现有 Workflow/Worker 队列，"
-                                "并在所选工作区原位生成 DPABI 结果目录。"
-                            )
-                        else:
-                            assert project_id is not None
-                            assert request.plan_revision_id is not None
-                            assert request.expected_plan_hash is not None
-                            project = self.repository.get_project(project_id)
-                            plan = self.repository.get_plan(request.plan_revision_id)
-                            if plan.project_id != project_id:
-                                raise ConflictError(
-                                    "cross_project_plan",
-                                    "审批计划不属于当前项目。",
-                                )
-                            dataset_ref = plan.plan.get("skill_plan", {}).get("dataset_ref")
-                            if not isinstance(dataset_ref, str):
-                                raise InputValidationError(
-                                    "preprocessing_skill_plan_required",
-                                    "原位 DPABI 运行只接受已编译的预处理 SkillPlan。",
-                                )
-                            dataset = self.repository.get_dataset(dataset_ref)
-                            bound_workspace = self.path_policy.validate_read_path(
-                                dataset.source_path,
-                                project_roots=project.source_roots,
-                                expect_directory=True,
-                            )
-                            if workspace_path is not None:
-                                selected_workspace = self.path_policy.validate_read_path(
-                                    workspace_path,
-                                    project_roots=project.source_roots,
-                                    expect_directory=True,
-                                )
-                                if selected_workspace != bound_workspace:
-                                    raise ConflictError(
-                                        "conversation_workspace_plan_mismatch",
-                                        "当前对话选择的工作区与审批计划绑定的数据集不一致。",
-                                    )
-                            workspace_path = str(bound_workspace)
-                            run = self.create_run(
-                                RunCreate(
-                                    project_id=project_id,
-                                    plan_revision_id=request.plan_revision_id,
-                                    expected_plan_hash=request.expected_plan_hash,
-                                    execution_backend=ExecutionBackend.MATLAB,
-                                    workspace_mode=ExecutionWorkspaceMode.IN_PLACE,
-                                    real_execution_confirmed=True,
-                                ),
-                                f"{idempotency_key}:run",
-                            )
-                            active_run_id = run.run_id
-                            payload = {"run": run.model_dump(mode="json")}
-                            tool = self._tool_result(
-                                "start_dpabi_preprocessing",
-                                {
-                                    "project_id": project_id,
-                                    "plan_revision_id": request.plan_revision_id,
-                                    "workspace_mode": "in_place",
-                                },
-                                payload,
-                            )
-                            assistant_content = (
-                                f"DPABI 任务已进入 Workflow/Worker 队列，运行 ID 为 {run.run_id}。"
-                                "结果会写入该计划绑定的数据集工作区；可以继续询问运行进度。"
-                            )
-                    else:
-                        assistant_content = (
-                            "我已记录这条工作要求。你可以让我检查工作区、查看运行进度，"
-                            "或在已有审核计划后明确启动 DPABI 预处理。"
-                        )
-                except ApplicationError as exc:
-                    tool = {
-                        "tool_name": self._tool_name(action),
-                        "status": ConversationToolStatus.FAILED.value,
-                        "input": {"workspace_path": workspace_path},
-                        "output": {},
-                        "error": exc.message,
-                    }
-                    assistant_content = exc.message
+            action_result = self.conversation_work.execute(
+                request,
+                workspace_path=workspace_path,
+                active_run_id=active_run_id,
+                project_id=project_id,
+                idempotency_key=idempotency_key,
+            )
+            workspace_path = action_result.workspace_path
+            active_run_id = action_result.active_run_id
+            payload = action_result.payload
+            tool = action_result.tool
+            assistant_content = action_result.assistant_content
+            payload["context"] = work_packet.metadata
 
             stored, user_message, assistant_message, stored_tool = (
                 self.repository.append_conversation_exchange(
@@ -264,6 +200,14 @@ class ConversationMixin(BaseServiceMixin):
                     project_id=project_id,
                     active_run_id=active_run_id,
                 )
+            )
+            self.conversation_context.persist_snapshot(
+                conversation_id,
+                assistant_message_id=assistant_message.message_id,
+                context_metadata=work_packet.metadata,
+                summary_id=context_state.summary.summary_id if context_state.summary else None,
+                memory_ids=[item.memory_id for item in context_state.memories if item.pinned],
+                profile_id=preferred_profile_id,
             )
             return ConversationTurnView(
                 conversation=stored,
@@ -298,11 +242,13 @@ class ConversationMixin(BaseServiceMixin):
                 if request.preferred_profile_id is not None
                 else conversation.preferred_profile_id
             )
-            recent_messages = tuple(
-                ContextMessage(role=item.role.value, content=item.content)
-                for item in conversation.messages[-12:]
-                if item.role.value in {"user", "assistant"}
+            prepared_context = await self.conversation_context.prepare_chat(
+                conversation,
+                question=request.content,
+                preferred_profile_id=preferred_profile_id,
+                model=request.model,
             )
+            preferred_profile_id = prepared_context.profile_id
             try:
                 result = await self.chat_agent.respond(
                     ChatAgentRequest(
@@ -310,14 +256,22 @@ class ConversationMixin(BaseServiceMixin):
                         message=request.content,
                         stream=request.stream,
                         paper_ids=request.paper_ids,
-                        recent_messages=recent_messages,
+                        recent_messages=prepared_context.recent_messages,
+                        pinned_context=prepared_context.pinned_context,
+                        conversation_summary=(
+                            prepared_context.summary.content if prepared_context.summary else None
+                        ),
+                        context_window_tokens=prepared_context.context_window_tokens,
+                        max_output_tokens=prepared_context.max_output_tokens,
                         preferred_profile_id=preferred_profile_id,
                         model=request.model,
                         allow_remote_search=request.allow_remote_search,
                     )
                 )
-            except ChatAgentError as exc:
-                raise InputValidationError(exc.code, exc.message) from exc
+            except (ChatAgentError, ContextBudgetError) as exc:
+                code = getattr(exc, "code", "context_input_too_large")
+                message = getattr(exc, "message", "当前消息超过所选模型的上下文预算。")
+                raise InputValidationError(code, message) from exc
             evidence = tuple(
                 EvidenceChunk(
                     source=citation.source,
@@ -339,6 +293,10 @@ class ConversationMixin(BaseServiceMixin):
             payload = {
                 "rag": view.model_dump(mode="json"),
                 "chat": result.model_dump(mode="json"),
+                "context_summary_id": (
+                    prepared_context.summary.summary_id if prepared_context.summary else None
+                ),
+                "memory_ids": list(prepared_context.memory_ids),
             }
             model_metadata = result.metadata.get("model")
             if isinstance(model_metadata, dict):
@@ -366,27 +324,7 @@ class ConversationMixin(BaseServiceMixin):
         def finalize(
             prepared: tuple[str, dict[str, Any], dict[str, Any], str | None],
         ) -> ConversationTurnView:
-            assistant_content, payload, tool, preferred_profile_id = prepared
-            conversation = self.repository.get_conversation(conversation_id)
-            stored, user_message, assistant_message, stored_tool = (
-                self.repository.append_conversation_exchange(
-                    conversation_id,
-                    user_content=request.content,
-                    assistant_content=assistant_content,
-                    assistant_payload=payload,
-                    tool=tool,
-                    workspace_path=conversation.workspace_path,
-                    preferred_profile_id=preferred_profile_id,
-                    project_id=conversation.project_id,
-                    active_run_id=conversation.active_run_id,
-                )
-            )
-            return ConversationTurnView(
-                conversation=stored,
-                user_message=user_message,
-                assistant_message=assistant_message,
-                tool_call=stored_tool,
-            )
+            return self._persist_chat_turn(conversation_id, request, prepared)
 
         return await self._idempotent_async(
             scope=f"conversations:{conversation_id}:turns",
@@ -397,24 +335,51 @@ class ConversationMixin(BaseServiceMixin):
             finalize=finalize,
         )
 
-    @staticmethod
-    def _resolve_work_action(
+    def _persist_chat_turn(
+        self,
+        conversation_id: str,
         request: ConversationTurnCreate,
-        workspace_path: str | None,
-        active_run_id: str | None,
-    ) -> ConversationAction:
-        if request.action is not ConversationAction.AUTO:
-            return request.action
-        text = request.content.casefold()
-        if any(word in text for word in ("进度", "状态", "运行到", "完成了吗")):
-            return ConversationAction.GET_PROGRESS
-        if any(word in text for word in ("启动", "运行", "执行", "开始预处理")):
-            return ConversationAction.START_PREPROCESSING
-        if workspace_path and any(word in text for word in ("检查", "扫描", "格式", "dpabi")):
-            return ConversationAction.CHECK_WORKSPACE
-        if workspace_path and active_run_id is None:
-            return ConversationAction.CHECK_WORKSPACE
-        return ConversationAction.AUTO
+        prepared: tuple[str, dict[str, Any], dict[str, Any], str | None],
+    ) -> ConversationTurnView:
+        assistant_content, payload, tool, preferred_profile_id = prepared
+        conversation = self.repository.get_conversation(conversation_id)
+        stored, user_message, assistant_message, stored_tool = (
+            self.repository.append_conversation_exchange(
+                conversation_id,
+                user_content=request.content,
+                assistant_content=assistant_content,
+                assistant_payload=payload,
+                tool=tool,
+                workspace_path=conversation.workspace_path,
+                preferred_profile_id=preferred_profile_id,
+                project_id=conversation.project_id,
+                active_run_id=conversation.active_run_id,
+            )
+        )
+        context_metadata = payload.get("chat", {}).get("metadata", {}).get("context", {})
+        model_metadata = payload.get("model")
+        context_hash = self.conversation_context.persist_snapshot(
+            conversation_id,
+            assistant_message_id=assistant_message.message_id,
+            context_metadata=context_metadata,
+            summary_id=payload.get("context_summary_id"),
+            memory_ids=payload.get("memory_ids", []),
+            profile_id=preferred_profile_id,
+            model_metadata=model_metadata if isinstance(model_metadata, dict) else None,
+        )
+        self.repository.append_event(
+            project_id=conversation.project_id,
+            run_id=conversation.active_run_id,
+            event_type="ContextBuilt",
+            severity="info",
+            payload={"conversation_id": conversation_id, "context_hash": context_hash},
+        )
+        return ConversationTurnView(
+            conversation=stored,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            tool_call=stored_tool,
+        )
 
     @staticmethod
     def _tool_result(
@@ -426,12 +391,3 @@ class ConversationMixin(BaseServiceMixin):
             "input": input_data,
             "output": output,
         }
-
-    @staticmethod
-    def _tool_name(action: ConversationAction) -> str:
-        return {
-            ConversationAction.CHECK_WORKSPACE: "check_workspace",
-            ConversationAction.START_PREPROCESSING: "start_dpabi_preprocessing",
-            ConversationAction.GET_PROGRESS: "get_run_progress",
-            ConversationAction.AUTO: "work_router",
-        }[action]

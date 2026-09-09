@@ -4,22 +4,34 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from neuroagent.application.contracts import (
+    ContextSummaryView,
+    ConversationContextView,
     ConversationMessageView,
     ConversationMode,
     ConversationRole,
     ConversationToolCallView,
     ConversationToolStatus,
     ConversationView,
+    MemoryAction,
+    MemoryCreate,
+    MemoryKind,
+    MemoryScope,
+    MemoryStatus,
+    MemoryUpdate,
+    MemoryView,
 )
-from neuroagent.application.errors import NotFoundError
+from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json
 from neuroagent.infrastructure.persistence.models import (
+    ContextSnapshotRow,
+    ContextSummaryRow,
     ConversationMessageRow,
     ConversationRow,
     ConversationToolCallRow,
+    MemoryRecordRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
@@ -149,6 +161,205 @@ class ConversationMixin(RepositoryBaseMixin):
                 self._tool_call(tool_row) if tool_row is not None else None,
             )
 
+    def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
+        with self.database.session_factory() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            summary_row = session.scalars(
+                select(ContextSummaryRow)
+                .where(ContextSummaryRow.conversation_id == conversation_id)
+                .order_by(ContextSummaryRow.covered_sequence.desc())
+            ).first()
+            memory_filter = MemoryRecordRow.conversation_id == conversation_id
+            if conversation.project_id is not None:
+                memory_filter = or_(
+                    memory_filter,
+                    (MemoryRecordRow.scope == MemoryScope.PROJECT.value)
+                    & (MemoryRecordRow.project_id == conversation.project_id),
+                )
+            rows = session.scalars(
+                select(MemoryRecordRow)
+                .where(
+                    memory_filter,
+                    MemoryRecordRow.status.in_(
+                        [MemoryStatus.PENDING.value, MemoryStatus.CONFIRMED.value]
+                    ),
+                )
+                .order_by(MemoryRecordRow.pinned.desc(), MemoryRecordRow.updated_at.desc())
+            ).all()
+            return ConversationContextView(
+                summary=self._summary(summary_row) if summary_row else None,
+                memories=[self._memory(item) for item in rows],
+            )
+
+    def create_memory(self, conversation_id: str, request: MemoryCreate) -> MemoryView:
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            if request.scope is MemoryScope.PROJECT and conversation.project_id is None:
+                raise InputValidationError(
+                    "project_context_required", "项目记忆要求对话已绑定项目。"
+                )
+            row = MemoryRecordRow(
+                memory_id=_id(),
+                conversation_id=conversation_id,
+                project_id=(
+                    conversation.project_id if request.scope is MemoryScope.PROJECT else None
+                ),
+                scope=request.scope.value,
+                kind=request.kind.value,
+                key=request.key,
+                content=request.content,
+                status=MemoryStatus.CONFIRMED.value,
+                pinned=request.pinned,
+                source_message_id=request.source_message_id,
+                confidence=1.0,
+                version=1,
+            )
+            session.add(row)
+            session.flush()
+            return self._memory(row)
+
+    def upsert_memory_candidate(
+        self,
+        conversation_id: str,
+        *,
+        kind: MemoryKind,
+        key: str,
+        content: str,
+        status: MemoryStatus,
+        pinned: bool,
+        confidence: float,
+    ) -> MemoryView:
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            row = session.scalars(
+                select(MemoryRecordRow).where(
+                    MemoryRecordRow.conversation_id == conversation_id,
+                    MemoryRecordRow.scope == MemoryScope.CONVERSATION.value,
+                    MemoryRecordRow.kind == kind.value,
+                    MemoryRecordRow.key == key,
+                )
+            ).first()
+            if row is None:
+                row = MemoryRecordRow(
+                    memory_id=_id(),
+                    conversation_id=conversation_id,
+                    project_id=None,
+                    scope=MemoryScope.CONVERSATION.value,
+                    kind=kind.value,
+                    key=key,
+                    content=content,
+                    status=status.value,
+                    pinned=pinned,
+                    confidence=confidence,
+                    version=1,
+                )
+                session.add(row)
+            elif row.status != MemoryStatus.CONFIRMED.value:
+                row.content = content
+                row.status = status.value
+                row.pinned = pinned
+                row.confidence = confidence
+                row.version += 1
+            session.flush()
+            return self._memory(row)
+
+    def update_memory(
+        self, conversation_id: str, memory_id: str, request: MemoryUpdate
+    ) -> MemoryView:
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            row = session.get(MemoryRecordRow, memory_id)
+            accessible = row is not None and (
+                row.conversation_id == conversation_id
+                or (
+                    row.scope == MemoryScope.PROJECT.value
+                    and row.project_id == conversation.project_id
+                )
+            )
+            if not accessible or row is None:
+                raise NotFoundError("memory", memory_id)
+            if row.version != request.expected_version:
+                raise ConflictError(
+                    "revision_conflict",
+                    "记忆版本已变化,请刷新后重试。",
+                    expected=request.expected_version,
+                    actual=row.version,
+                )
+            if request.action is MemoryAction.CONFIRM:
+                row.status = MemoryStatus.CONFIRMED.value
+            elif request.action is MemoryAction.UPDATE:
+                if request.content is None:
+                    raise InputValidationError("memory_content_required", "修改记忆需要内容。")
+                row.content = request.content
+                row.status = MemoryStatus.CONFIRMED.value
+            elif request.action is MemoryAction.REJECT:
+                row.status = MemoryStatus.REJECTED.value
+                row.pinned = False
+            elif request.action is MemoryAction.PIN:
+                row.pinned = True
+            elif request.action is MemoryAction.UNPIN:
+                row.pinned = False
+            else:
+                row.status = MemoryStatus.FORGOTTEN.value
+                row.content = ""
+                row.pinned = False
+            row.version += 1
+            session.flush()
+            return self._memory(row)
+
+    def create_context_summary(
+        self,
+        conversation_id: str,
+        *,
+        content: str,
+        covered_sequence: int,
+        source_hash: str,
+        method: str,
+    ) -> ContextSummaryView:
+        with self._write_session() as session:
+            if session.get(ConversationRow, conversation_id) is None:
+                raise NotFoundError("conversation", conversation_id)
+            row = ContextSummaryRow(
+                summary_id=_id(),
+                conversation_id=conversation_id,
+                content=content,
+                covered_sequence=covered_sequence,
+                source_hash=source_hash,
+                method=method,
+            )
+            session.add(row)
+            session.flush()
+            return self._summary(row)
+
+    def create_context_snapshot(
+        self,
+        conversation_id: str,
+        *,
+        assistant_message_id: str | None,
+        context_hash: str,
+        profile_id: str | None,
+        manifest: dict[str, Any],
+    ) -> None:
+        with self._write_session() as session:
+            session.add(
+                ContextSnapshotRow(
+                    snapshot_id=_id(),
+                    conversation_id=conversation_id,
+                    assistant_message_id=assistant_message_id,
+                    context_hash=context_hash,
+                    profile_id=profile_id,
+                    manifest_json=canonical_json(manifest),
+                )
+            )
+
     @classmethod
     def _conversation_view(cls, session: Any, row: ConversationRow) -> ConversationView:
         messages = session.scalars(
@@ -201,4 +412,35 @@ class ConversationMixin(RepositoryBaseMixin):
             error=row.error,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
+        )
+
+    @staticmethod
+    def _memory(row: MemoryRecordRow) -> MemoryView:
+        return MemoryView(
+            memory_id=row.memory_id,
+            conversation_id=row.conversation_id,
+            project_id=row.project_id,
+            scope=MemoryScope(row.scope),
+            kind=MemoryKind(row.kind),
+            key=row.key,
+            content=row.content,
+            status=MemoryStatus(row.status),
+            pinned=row.pinned,
+            source_message_id=row.source_message_id,
+            confidence=row.confidence,
+            version=row.version,
+            created_at=_as_utc(row.created_at),
+            updated_at=_as_utc(row.updated_at),
+        )
+
+    @staticmethod
+    def _summary(row: ContextSummaryRow) -> ContextSummaryView:
+        return ContextSummaryView(
+            summary_id=row.summary_id,
+            conversation_id=row.conversation_id,
+            content=row.content,
+            covered_sequence=row.covered_sequence,
+            source_hash=row.source_hash,
+            method=row.method,
+            created_at=_as_utc(row.created_at),
         )

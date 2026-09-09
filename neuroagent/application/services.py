@@ -15,6 +15,8 @@ from neuroagent.application.contracts import (
     RsFmriQuestionRequest,
     WorkspacePickView,
 )
+from neuroagent.application.conversation_context import ConversationContextCoordinator
+from neuroagent.application.conversation_work import ConversationWorkCoordinator
 from neuroagent.application.environment_lock import EnvironmentLockProvider
 from neuroagent.application.ports import (
     DatabaseLifecyclePort,
@@ -45,6 +47,7 @@ from neuroagent.chat.services import (
     LocalEvidenceRagService,
     ModelIntentRouter,
 )
+from neuroagent.context.engine import ContextEngine
 from neuroagent.domain.fmri.skillpacks.builtin import build_builtin_registry
 from neuroagent.literature.chunker import ScientificChunker
 from neuroagent.literature.pdf_parser import PypdfParser
@@ -103,6 +106,20 @@ class NeuroAgentService(
         self.secret_writer = secret_writer
         self.providers = dict(providers)
         self.workspace_picker = workspace_picker
+        self.context_engine: ContextEngine = cast(ContextEngine, DEFAULT_CONTEXT_MANAGER)
+        self.conversation_context = ConversationContextCoordinator(
+            repository,
+            self.context_engine,
+            self._generate_rsfmri_chat,
+        )
+        self.conversation_work = ConversationWorkCoordinator(
+            repository=repository,
+            path_policy=path_policy,
+            check_workspace=self.check_workspace,
+            get_run=self.get_run,
+            create_run=self.create_run,
+            tool_result=self._tool_result,
+        )
         uploaded_index = UploadedLiteratureIndex(
             work_root=settings.allowed_work_root,
             repository=cast(LiteratureRepository, repository),
@@ -143,7 +160,7 @@ class NeuroAgentService(
                     )
                 ),
             ),
-            context_manager=DEFAULT_CONTEXT_MANAGER,
+            context_manager=self.context_engine,
             memory_service=DEFAULT_MEMORY_SERVICE,
             llm_client=GatewayLlmClient(
                 generate=self._generate_rsfmri_chat,
@@ -156,11 +173,27 @@ class NeuroAgentService(
         self.database.dispose()
 
     async def _classify_chat_intent(self, request: ChatAgentRequest) -> str:
+        routing_context = self.context_engine.build(
+            question=request.message,
+            recent_messages=request.recent_messages,
+            retrieval_context=(),
+            pinned_context=request.pinned_context,
+            conversation_summary=request.conversation_summary,
+            context_window_tokens=request.context_window_tokens,
+            max_output_tokens=request.max_output_tokens,
+            context_kind="conversation",
+            work_context=request.work_context,
+        )
         result = await self._generate_rsfmri_chat(
             question=request.message,
             evidence=[],
-            recent_messages=[item.model_dump() for item in request.recent_messages[-12:]],
-            pinned_context=[item.model_dump() for item in request.pinned_context],
+            recent_messages=[
+                {"role": item.role, "content": item.content}
+                for item in routing_context.recent_messages
+            ],
+            pinned_context=[item.model_dump() for item in routing_context.pinned_context],
+            conversation_summary=routing_context.conversation_summary,
+            work_context=routing_context.work_context,
             preferred_profile_id=request.preferred_profile_id,
             model=request.model,
             allow_web_search=False,

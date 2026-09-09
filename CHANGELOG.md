@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Chat/Work 接入统一上下文引擎：按模型窗口选择最近完整轮次、检索证据、确认记忆和权威工作状态；长对话按阈值生成滚动摘要，并保存脱敏结构化快照。新增会话/项目记忆 API、Agent 记忆管理入口，以及模型上下文窗口和回答 token 上限配置。
+
 - Chat 科研问答闭环：最近 12 条消息接入脱敏模型上下文，寒暄免检索，意图与追问改写合并一次调用；PDF 可手动加入独立知识库，支持索引状态、失败重试和论文筛选；回答按证据编号保存引用，可逐消息展开并定位原 PDF 物理页。新增索引状态迁移，旧论文不自动建索引。
 
 - 新增 rs-fMRI Chat Mode Phase 1：独立 `ChatAgent`、窄接口、PDF 文献管理、科研 section 识别、section-aware chunking 和逐页 traceability；按后续要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG，修复融合去重并减少重复重排。上传 chunks 由显式“加入知识库”操作向量化，旧库缺失页码保持未知。

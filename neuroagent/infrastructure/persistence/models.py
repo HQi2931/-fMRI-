@@ -302,6 +302,64 @@ class ConversationToolCallRow(Base):
     )
 
 
+class ContextSummaryRow(Base):
+    __tablename__ = "context_summary_revisions"
+    summary_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    covered_sequence: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    method: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MemoryRecordRow(Base):
+    __tablename__ = "memory_records"
+    memory_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.project_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    scope: Mapped[str] = mapped_column(String(20), index=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    key: Mapped[str] = mapped_column(String(100))
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    __table_args__ = (UniqueConstraint("conversation_id", "scope", "kind", "key"),)
+
+
+class ContextSnapshotRow(Base):
+    __tablename__ = "context_snapshots"
+    snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    assistant_message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversation_messages.message_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    context_hash: Mapped[str] = mapped_column(String(64), index=True)
+    profile_id: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    manifest_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class QcReviewRow(Base):
     __tablename__ = "qc_review_revisions"
     review_revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)

@@ -91,6 +91,8 @@ export type ConversationTurn = {
   assistant_message: ConversationMessage;
   tool_call: ConversationToolCall | null;
 };
+export type ConversationContext = Schemas["ConversationContextView"];
+export type ConversationMemory = Schemas["MemoryView"];
 export type ConversationTurnBody = {
   content: string;
   action?: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
@@ -300,6 +302,15 @@ function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> 
   });
 }
 
+function patch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, {
+    method: "PATCH",
+    body: canonicalJson(body),
+    idempotent: true,
+    signal,
+  });
+}
+
 export const api = {
   papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
   uploadPaper: (file: File) => {
@@ -332,6 +343,23 @@ export const api = {
   ) => post<Conversation>("/conversations", body, signal),
   conversation: (conversationId: string, signal?: AbortSignal) =>
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  conversationContext: (conversationId: string, signal?: AbortSignal) =>
+    request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
+  createConversationMemory: (
+    conversationId: string,
+    body: Schemas["MemoryCreate"],
+    signal?: AbortSignal,
+  ) => post<ConversationMemory>(`/conversations/${conversationId}/context/memories`, body, signal),
+  updateConversationMemory: (
+    conversationId: string,
+    memoryId: string,
+    body: Schemas["MemoryUpdate"],
+    signal?: AbortSignal,
+  ) => patch<ConversationMemory>(
+    `/conversations/${conversationId}/context/memories/${memoryId}`,
+    body,
+    signal,
+  ),
   sendConversationTurn: (
     conversationId: string,
     body: ConversationTurnBody,

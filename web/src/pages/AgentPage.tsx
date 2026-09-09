@@ -4,6 +4,8 @@ import {
   api,
   describeError,
   type Conversation,
+  type ConversationContext,
+  type ConversationMemory,
   type ConversationMode,
   type ModelProfile,
   type Citation,
@@ -126,6 +128,8 @@ export function AgentPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [conversationContext, setConversationContext] = useState<ConversationContext>({ memories: [], summary: null });
+  const [memoryDraft, setMemoryDraft] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -174,6 +178,21 @@ export function AgentPage() {
       });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const conversationId = conversationIds[mode];
+    if (!conversationId) {
+      setConversationContext({ memories: [], summary: null });
+      return;
+    }
+    const controller = new AbortController();
+    api.conversationContext(conversationId, controller.signal)
+      .then(setConversationContext)
+      .catch((caught) => {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
+      });
+    return () => controller.abort();
+  }, [conversationIds, mode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -228,6 +247,54 @@ export function AgentPage() {
     return created.conversation_id;
   }
 
+  async function refreshContext(conversationId: string): Promise<void> {
+    setConversationContext(await api.conversationContext(conversationId));
+  }
+
+  async function addMemory(): Promise<void> {
+    const content = memoryDraft.trim();
+    if (!content) return;
+    setBusy(true);
+    try {
+      const conversationId = await ensureConversation(mode);
+      await api.createConversationMemory(conversationId, {
+        kind: "instruction",
+        key: `manual-${Date.now()}`,
+        content,
+        scope: "conversation",
+        pinned: true,
+        source_message_id: null,
+      });
+      setMemoryDraft("");
+      await refreshContext(conversationId);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeMemory(
+    memory: ConversationMemory,
+    action: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget",
+  ): Promise<void> {
+    const content = action === "update" ? window.prompt("修改记忆", memory.content)?.trim() : undefined;
+    if (action === "update" && !content) return;
+    setBusy(true);
+    try {
+      await api.updateConversationMemory(memory.conversation_id, memory.memory_id, {
+        action,
+        expected_version: memory.version,
+        content,
+      });
+      await refreshContext(memory.conversation_id);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function pickWorkspace(): Promise<void> {
     setBusy(true);
     setError("");
@@ -256,6 +323,7 @@ export function AgentPage() {
         preferred_profile_id: selectedModel?.profileId ?? null,
       });
       setWorkMessages(messagesFrom(turn.conversation));
+      await refreshContext(conversationId);
       const checkedValue = turn.assistant_message.payload.workspace_check;
       if (!checkedValue || typeof checkedValue !== "object") {
         setMessage(turn.assistant_message.content);
@@ -299,6 +367,7 @@ export function AgentPage() {
         paper_ids: selectedPaperIds.length ? selectedPaperIds : undefined,
       });
       setChatMessages(messagesFrom(turn.conversation));
+      await refreshContext(conversationId);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -325,6 +394,7 @@ export function AgentPage() {
       setWorkMessages(messagesFrom(turn.conversation));
       const checked = turn.assistant_message.payload.workspace_check;
       if (checked && typeof checked === "object") setReport(checked as WorkspaceCheck);
+      await refreshContext(conversationId);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -353,6 +423,7 @@ export function AgentPage() {
         real_execution_confirmed: true,
       });
       setWorkMessages(messagesFrom(turn.conversation));
+      await refreshContext(conversationId);
       if (turn.conversation.active_run_id) {
         updateWorkspace({ runId: turn.conversation.active_run_id, runState: "queued" });
       }
@@ -401,6 +472,9 @@ export function AgentPage() {
   }
 
   const isChat = mode === "chat";
+  const memories = (conversationContext.memories ?? []).filter(
+    (item) => item.status === "pending" || item.pinned,
+  );
   const selectedModel = modelChoices.find((item) => item.key === selectedModelKey);
   const canSearchWithSelection = selectedModel
     ? selectedModel.capabilities.includes("web_search")
@@ -438,6 +512,38 @@ export function AgentPage() {
         </button>
       </div>
       <Feedback message={error || message} error={Boolean(error)} />
+      <details className="memory-drawer">
+        <summary>对话记忆 <span>{memories.length}</span></summary>
+        <div className="memory-drawer-body">
+          <div className="memory-create">
+            <input
+              aria-label="新增固定记忆"
+              value={memoryDraft}
+              onChange={(event) => setMemoryDraft(event.target.value)}
+              placeholder="例如：回答保持简洁"
+            />
+            <button className="button button-secondary" type="button" disabled={busy || !memoryDraft.trim()} onClick={() => void addMemory()}>固定</button>
+          </div>
+          {memories.length === 0 ? (
+            <p className="muted">尚无待确认或已固定的记忆。</p>
+          ) : (
+            <ul className="memory-list">
+              {memories.map((item) => (
+                <li key={item.memory_id}>
+                  <div><StatusPill tone={item.status === "pending" ? "warn" : "good"}>{item.status === "pending" ? "待确认" : item.pinned ? "已固定" : "已确认"}</StatusPill><strong>{item.content}</strong><small>{item.kind === "scientific_parameter" ? "科研参数" : item.kind === "preference" ? "偏好" : "指令"}</small></div>
+                  <div className="memory-actions">
+                    {item.status === "pending" && <button type="button" onClick={() => void changeMemory(item, "confirm")}>确认</button>}
+                    <button type="button" onClick={() => void changeMemory(item, "update")}>修改</button>
+                    {item.status === "pending" && <button type="button" onClick={() => void changeMemory(item, "reject")}>拒绝</button>}
+                    <button type="button" onClick={() => void changeMemory(item, item.pinned ? "unpin" : "pin")}>{item.pinned ? "取消固定" : "固定"}</button>
+                    <button type="button" onClick={() => void changeMemory(item, "forget")}>忘记</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </details>
 
       {isChat ? (
         <div className="conversation-layout">

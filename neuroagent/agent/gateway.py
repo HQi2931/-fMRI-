@@ -32,6 +32,7 @@ class ChatGatewayResult:
     context_hash: str
     attempted_profile_ids: tuple[str, ...]
     remote_search_used: bool
+    redaction_count: int
 
 
 class ModelGateway:
@@ -96,10 +97,12 @@ class ModelGateway:
         preferred_profile_id: str | None,
         model: str | None,
         allow_web_search: bool,
-        recent_messages: list[dict[str, str]] | None = None,
+        recent_messages: list[dict[str, object]] | None = None,
         pinned_context: list[dict[str, object]] | None = None,
         conversation_summary: str | None = None,
+        work_context: dict[str, object] | None = None,
         routing: bool = False,
+        summary_mode: bool = False,
     ) -> ChatGatewayResult:
         context = self._outbound_policy.redact(
             {
@@ -108,6 +111,7 @@ class ModelGateway:
                 "recent_messages": recent_messages or [],
                 "pinned_context": pinned_context or [],
                 "conversation_summary": conversation_summary,
+                "work_context": work_context or {},
             }
         )
         profiles = list(self._router.profiles.values())
@@ -148,6 +152,11 @@ class ModelGateway:
                 '"parameters":{}}。只生成草案; 方法咨询不是执行请求。'
                 "不要回答问题, 不要编造历史未提供的信息。"
             )
+        elif summary_mode:
+            system_prompt = (
+                "将较早的对话压缩为简洁中文摘要, 保留用户目标、已明确偏好、已作决定和"
+                "未解决问题。不要添加新事实。只返回 JSON: {\"summary\":\"...\"}。"
+            )
         if allow_web_search:
             system_prompt += (
                 "本次允许使用联网搜索。仅引用与问题直接相关的公开来源, 并在结论旁保留来源引用。"
@@ -175,7 +184,7 @@ class ModelGateway:
                     api_key,
                     messages,
                     web_search=allow_web_search,
-                    json_object=routing,
+                    json_object=routing or summary_mode,
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
@@ -186,6 +195,7 @@ class ModelGateway:
                 context_hash=context.context_hash,
                 attempted_profile_ids=tuple(attempted),
                 remote_search_used=allow_web_search,
+                redaction_count=context.redaction_count,
             )
         if last_retryable:
             raise ModelGatewayError(

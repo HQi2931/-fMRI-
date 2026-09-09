@@ -55,6 +55,8 @@ export function SettingsPage() {
   const [priority, setPriority] = useState(100);
   const [capabilities, setCapabilities] = useState<Capability[]>(["json_object"]);
   const [timeoutSeconds, setTimeoutSeconds] = useState(45);
+  const [contextWindowTokens, setContextWindowTokens] = useState(16384);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(2048);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -165,6 +167,8 @@ export function SettingsPage() {
           priority,
           capabilities,
           timeout_seconds: timeoutSeconds,
+          context_window_tokens: contextWindowTokens,
+          max_output_tokens: maxOutputTokens,
         },
         api_key: apiKey.trim() || null,
       });
@@ -270,6 +274,8 @@ export function SettingsPage() {
             <div className="form-grid">
               <label>优先级<input type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label>
               <label>超时秒<input type="number" min={1} max={300} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
+              <label>上下文窗口<input type="number" min={4096} max={2000000} value={contextWindowTokens} onChange={(event) => setContextWindowTokens(Number(event.target.value))} /></label>
+              <label>回答 token 上限<input type="number" min={256} max={65536} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
             </div>
             <fieldset className="capability-field">
               <legend>能力</legend>
@@ -295,7 +301,8 @@ export function SettingsPage() {
                     <StatusPill tone="info">API 已绑定</StatusPill>
                   </div>
                   <p className="muted">{item.profile.provider} · {item.profile.base_url}</p>
-                  <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
+                  <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 上下文 {item.profile.context_window_tokens} · 回答 {item.profile.max_output_tokens} token</p>
+                  <p className="muted">能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
                   <div className="button-row">
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>刷新模型列表</button>
                     <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>

@@ -52,6 +52,7 @@ class OpenAICompatibleProvider:
             "model": profile.model,
             "messages": list(messages),
             "stream": False,
+            "max_tokens": profile.max_output_tokens,
         }
         if json_object is True or (
             json_object is None and ModelCapability.JSON_OBJECT in profile.capabilities

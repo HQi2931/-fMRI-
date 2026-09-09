@@ -62,6 +62,7 @@ class ChatAgent:
             session_id=request.session_id,
             recent_messages=request.recent_messages,
             pinned_context=request.pinned_context,
+            conversation_summary=request.conversation_summary,
         )
         retrieval_performed = intent is ChatIntent.KNOWLEDGE_QUERY
         retrieval = (
@@ -80,6 +81,10 @@ class ChatAgent:
             retrieval_context=retrieval.chunks,
             pinned_context=memory.pinned_context,
             conversation_summary=memory.conversation_summary,
+            context_window_tokens=request.context_window_tokens,
+            max_output_tokens=request.max_output_tokens,
+            context_kind=intent.value,
+            work_context=request.work_context,
         )
         llm_result = None
         if retrieval.in_scope and self._llm_client.available(request.preferred_profile_id):
@@ -90,7 +95,7 @@ class ChatAgent:
                 allow_remote_search=request.allow_remote_search,
             )
         citations = self._citation_service.build(
-            retrieval.chunks,
+            context.retrieval_context,
             provider_citations=(llm_result.provider_citations if llm_result is not None else ()),
         )
         answer = (
@@ -142,7 +147,9 @@ class ChatAgent:
                 "attempted_profile_ids": list(llm_result.attempted_profile_ids),
                 "usage": llm_result.usage,
                 "remote_search_used": llm_result.remote_search_used,
+                "redaction_count": llm_result.redaction_count,
             }
+        metadata["context"] = context.metadata
         return ChatAgentResponse(
             session_id=request.session_id,
             intent=intent,

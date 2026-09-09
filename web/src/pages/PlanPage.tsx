@@ -54,6 +54,208 @@ function readableValue(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? String(value);
 }
 
+type PlanAuditPanelProps = {
+  plan: PlanRevision;
+  steps: StepView[];
+  skillPlan: Partial<CompiledSkillPlan> | null;
+  planAuditReady: boolean;
+  approvalActor: string;
+  approvalReason: string;
+  busy: boolean;
+  onApprovalActorChange: (value: string) => void;
+  onApprovalReasonChange: (value: string) => void;
+  onApprove: () => Promise<void>;
+};
+
+function PlanAuditPanel({
+  plan,
+  steps,
+  skillPlan,
+  planAuditReady,
+  approvalActor,
+  approvalReason,
+  busy,
+  onApprovalActorChange,
+  onApprovalReasonChange,
+  onApprove,
+}: PlanAuditPanelProps) {
+  const blockingIssueCount = plan.validation_issues.filter(
+    (issue) => issue.severity === "blocking",
+  ).length;
+
+  return (
+    <div className="two-column wide-left">
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">计划 DAG</span>
+            <h2>{steps.length} 个确定性步骤</h2>
+          </div>
+          <code>{plan.plan_hash.slice(0, 12)}…</code>
+        </div>
+        <div className="workflow-map">
+          {steps.map((step, index) => (
+            <div className="workflow-node" key={step.step_id}>
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <strong>{step.step_id}</strong>
+                <small>{step.tool?.capability ?? step.capability ?? step.tool?.tool_id}</small>
+              </div>
+              {index < steps.length - 1 && <i aria-hidden="true" />}
+            </div>
+          ))}
+        </div>
+        <details className="audit-details" open>
+          <summary>冻结参数与环境锁</summary>
+          <dl className="detail-list">
+            <div>
+              <dt>完整计划哈希</dt>
+              <dd className="hash-value">{plan.plan_hash}</dd>
+            </div>
+            <div>
+              <dt>manifest 哈希</dt>
+              <dd className="hash-value">{plan.manifest_hash}</dd>
+            </div>
+            <div>
+              <dt>环境哈希</dt>
+              <dd className="hash-value">{plan.environment_hash}</dd>
+            </div>
+            {skillPlan?.preprocessing_parameters_hash && (
+              <div>
+                <dt>预处理参数哈希</dt>
+                <dd className="hash-value">{skillPlan.preprocessing_parameters_hash}</dd>
+              </div>
+            )}
+            {skillPlan?.environment && (
+              <>
+                <div>
+                  <dt>MATLAB</dt>
+                  <dd>{skillPlan.environment.matlab_version}</dd>
+                </div>
+                <div>
+                  <dt>SPM</dt>
+                  <dd>{skillPlan.environment.spm_version}</dd>
+                </div>
+                <div>
+                  <dt>DPABI</dt>
+                  <dd>{skillPlan.environment.dpabi_version}</dd>
+                </div>
+                <div>
+                  <dt>适配器</dt>
+                  <dd>{skillPlan.environment.adapter_version}</dd>
+                </div>
+              </>
+            )}
+          </dl>
+          <h3>解析后的科学参数</h3>
+          {skillPlan?.resolved_parameters?.length ? (
+            <dl className="frozen-parameter-list">
+              {skillPlan.resolved_parameters.map(([name, value]) => (
+                <div key={name}>
+                  <dt>{name}</dt>
+                  <dd>
+                    <pre>{readableValue(value)}</pre>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="muted">
+              此记录没有可展示的解析参数条目；审批仍会绑定空参数集合、环境与完整哈希。
+            </p>
+          )}
+          <h3>Skill / Tool 锁</h3>
+          {skillPlan?.skill_locks?.length ? (
+            <ul className="compact-list">
+              {skillPlan.skill_locks.map((lock) => (
+                <li key={`${lock.skill_id}-${lock.version}`}>
+                  {lock.skill_id} · {lock.version}
+                  <small>{lock.content_hash}</small>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">此记录未提供 Skill 锁详情。</p>
+          )}
+          {skillPlan?.warnings?.length ? (
+            <div className="issue-box">
+              <strong>编译警告</strong>
+              <ul>
+                {skillPlan.warnings.map((warning, index) => (
+                  <li key={`${warning.code}-${index}`}>
+                    {warning.code}：{warning.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </details>
+      </section>
+      <aside className="panel">
+        <span className="eyebrow">审批绑定</span>
+        <h2>不可变 revision</h2>
+        <dl className="detail-list">
+          <div>
+            <dt>manifest</dt>
+            <dd>{plan.manifest_hash.slice(0, 10)}…</dd>
+          </div>
+          <div>
+            <dt>environment</dt>
+            <dd>{plan.environment_hash.slice(0, 10)}…</dd>
+          </div>
+          <div>
+            <dt>计划版本</dt>
+            <dd>{plan.version}</dd>
+          </div>
+          <div>
+            <dt>阻断问题</dt>
+            <dd>{blockingIssueCount}</dd>
+          </div>
+        </dl>
+        {!planAuditReady && (
+          <div className="issue-box">
+            <StatusPill tone="danger">审批已阻断</StatusPill>
+            <p>当前响应缺少冻结的解析参数或环境快照，请刷新或联系维护者。</p>
+          </div>
+        )}
+        <div className="form-grid">
+          <label>
+            计划审批人
+            <input
+              value={approvalActor}
+              onChange={(event) => onApprovalActorChange(event.target.value)}
+              disabled={plan.state !== "awaiting_approval" || !planAuditReady}
+            />
+          </label>
+          <label>
+            计划审批理由
+            <textarea
+              value={approvalReason}
+              onChange={(event) => onApprovalReasonChange(event.target.value)}
+              disabled={plan.state !== "awaiting_approval" || !planAuditReady}
+              placeholder="说明已核对的 manifest、科学参数、DAG、Skill/Tool 与环境锁"
+            />
+          </label>
+        </div>
+        <button
+          className="button button-primary button-full"
+          type="button"
+          disabled={
+            busy
+            || plan.state !== "awaiting_approval"
+            || !planAuditReady
+            || !approvalActor.trim()
+            || !approvalReason.trim()
+          }
+          onClick={onApprove}
+        >
+          确认并批准此版本
+        </button>
+      </aside>
+    </div>
+  );
+}
+
 export function PlanPage() {
   const workspace = useWorkspace();
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -521,7 +723,7 @@ export function PlanPage() {
         </details>
         <div className="button-row"><button className="button button-primary" type="button" disabled={busy || Boolean(plan) || !protocol.trim() || !parameterSource || !parameterEvidence.trim()} onClick={compilePlan}>校验并编译计划</button></div>
       </section>
-      {plan && <div className="two-column wide-left"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">计划 DAG</span><h2>{steps.length} 个确定性步骤</h2></div><code>{plan.plan_hash.slice(0, 12)}…</code></div><div className="workflow-map">{steps.map((step, index) => <div className="workflow-node" key={step.step_id}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{step.step_id}</strong><small>{step.tool?.capability ?? step.capability ?? step.tool?.tool_id}</small></div>{index < steps.length - 1 && <i aria-hidden="true" />}</div>)}</div><details className="audit-details" open><summary>冻结参数与环境锁</summary><dl className="detail-list"><div><dt>完整计划哈希</dt><dd className="hash-value">{plan.plan_hash}</dd></div><div><dt>manifest 哈希</dt><dd className="hash-value">{plan.manifest_hash}</dd></div><div><dt>环境哈希</dt><dd className="hash-value">{plan.environment_hash}</dd></div>{skillPlan?.preprocessing_parameters_hash && <div><dt>预处理参数哈希</dt><dd className="hash-value">{skillPlan.preprocessing_parameters_hash}</dd></div>}{skillPlan?.environment && <><div><dt>MATLAB</dt><dd>{skillPlan.environment.matlab_version}</dd></div><div><dt>SPM</dt><dd>{skillPlan.environment.spm_version}</dd></div><div><dt>DPABI</dt><dd>{skillPlan.environment.dpabi_version}</dd></div><div><dt>适配器</dt><dd>{skillPlan.environment.adapter_version}</dd></div></>}</dl><h3>解析后的科学参数</h3>{skillPlan?.resolved_parameters?.length ? <dl className="frozen-parameter-list">{skillPlan.resolved_parameters.map(([name, value]) => <div key={name}><dt>{name}</dt><dd><pre>{readableValue(value)}</pre></dd></div>)}</dl> : <p className="muted">此记录没有可展示的解析参数条目；审批仍会绑定空参数集合、环境与完整哈希。</p>}<h3>Skill / Tool 锁</h3>{skillPlan?.skill_locks?.length ? <ul className="compact-list">{skillPlan.skill_locks.map((lock) => <li key={`${lock.skill_id}-${lock.version}`}>{lock.skill_id} · {lock.version}<small>{lock.content_hash}</small></li>)}</ul> : <p className="muted">此记录未提供 Skill 锁详情。</p>}{skillPlan?.warnings?.length ? <div className="issue-box"><strong>编译警告</strong><ul>{skillPlan.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.code}：{warning.message}</li>)}</ul></div> : null}</details></section><aside className="panel"><span className="eyebrow">审批绑定</span><h2>不可变 revision</h2><dl className="detail-list"><div><dt>manifest</dt><dd>{plan.manifest_hash.slice(0, 10)}…</dd></div><div><dt>environment</dt><dd>{plan.environment_hash.slice(0, 10)}…</dd></div><div><dt>计划版本</dt><dd>{plan.version}</dd></div><div><dt>阻断问题</dt><dd>{plan.validation_issues.filter((issue) => issue.severity === "blocking").length}</dd></div></dl>{!planAuditReady && <div className="issue-box"><StatusPill tone="danger">审批已阻断</StatusPill><p>当前响应缺少冻结的解析参数或环境快照，请刷新或联系维护者。</p></div>}<div className="form-grid"><label>计划审批人<input value={approvalActor} onChange={(event) => setApprovalActor(event.target.value)} disabled={plan.state !== "awaiting_approval" || !planAuditReady} /></label><label>计划审批理由<textarea value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} disabled={plan.state !== "awaiting_approval" || !planAuditReady} placeholder="说明已核对的 manifest、科学参数、DAG、Skill/Tool 与环境锁" /></label></div><button className="button button-primary button-full" type="button" disabled={busy || plan.state !== "awaiting_approval" || !planAuditReady || !approvalActor.trim() || !approvalReason.trim()} onClick={approve}>确认并批准此版本</button></aside></div>}
+      {plan && <PlanAuditPanel plan={plan} steps={steps} skillPlan={skillPlan} planAuditReady={planAuditReady} approvalActor={approvalActor} approvalReason={approvalReason} busy={busy} onApprovalActorChange={setApprovalActor} onApprovalReasonChange={setApprovalReason} onApprove={approve} />}
     </>
   );
 }

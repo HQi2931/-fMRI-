@@ -12,6 +12,7 @@ from typing import Any
 from neuroagent.analysis.models import RsFmriAnswer
 from neuroagent.chat.interfaces import ChatAgentError, LlmResult
 from neuroagent.chat.models import ChatAgentRequest, ChatIntent, Citation, RoutedIntent, WorkRequest
+from neuroagent.context.engine import ContextEngine
 from neuroagent.context.interfaces import (
     ContextManager,
     ContextMessage,
@@ -98,41 +99,24 @@ class ModelIntentRouter:
 
 
 class RequestMemoryService:
-    def __init__(self, *, recent_limit: int = 12) -> None:
-        self._recent_limit = recent_limit
-
     def recall(
         self,
         *,
         session_id: str,
         recent_messages: tuple[ContextMessage, ...],
         pinned_context: tuple[PinnedContext, ...],
+        conversation_summary: str | None,
     ) -> MemorySnapshot:
         del session_id
         return MemorySnapshot(
-            recent_messages=recent_messages[-self._recent_limit :],
-            pinned_context=pinned_context,
-        )
-
-
-class DefaultContextManager:
-    def build(
-        self,
-        *,
-        question: str,
-        recent_messages: tuple[ContextMessage, ...],
-        retrieval_context: tuple[RetrievedChunk, ...],
-        pinned_context: tuple[PinnedContext, ...],
-        conversation_summary: str | None,
-    ) -> ContextPacket:
-        return ContextPacket(
-            question=question,
             recent_messages=recent_messages,
-            retrieval_context=retrieval_context,
             pinned_context=pinned_context,
             conversation_summary=conversation_summary,
-            metadata={"phase": "chat_phase_1"},
         )
+
+
+class DefaultContextManager(ContextEngine):
+    pass
 
 
 class EvidenceCitationService:
@@ -246,6 +230,7 @@ class GatewayLlmClient:
             recent_messages=[item.model_dump() for item in context.recent_messages],
             pinned_context=[item.model_dump() for item in context.pinned_context],
             conversation_summary=context.conversation_summary,
+            work_context=context.work_context,
             evidence=[
                 {
                     "citation_id": f"C{index}",
@@ -278,6 +263,7 @@ class GatewayLlmClient:
                 for citation in result.response.citations
             ),
             remote_search_used=result.remote_search_used,
+            redaction_count=result.redaction_count,
         )
 
 

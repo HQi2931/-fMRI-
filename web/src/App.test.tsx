@@ -691,6 +691,7 @@ describe("App", () => {
     const profile = { profile: { id: "search-model", provider: "openai-compatible", base_url: "https://example.test", model: "fmri-chat", api_key_env: "SEARCH_API_KEY", priority: 10, capabilities: ["web_search"], timeout_seconds: 45 }, version: 1, created_at: now };
     const paper = { paper_id: "paper1", title: "方法论文", page_count: 3, index_status: "not_indexed", index_error: null };
     let indexAttempts = 0;
+    let memoryVisible = true;
     let savedConversation: unknown = null;
     vi.mocked(fetch).mockImplementation((input, init) => {
       const path = pathOf(input);
@@ -702,6 +703,11 @@ describe("App", () => {
           : json({ paper: { ...paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] });
       }
       if (path.endsWith("/conversations") && init?.method !== "POST" && savedConversation) return json([savedConversation]);
+      if (path.endsWith("/conversations/chat1/context/memories/memory1") && init?.method === "PATCH") {
+        memoryVisible = false;
+        return json({ memory_id: "memory1", conversation_id: "chat1", project_id: null, scope: "conversation", kind: "preference", key: "length", content: "", status: "forgotten", pinned: false, source_message_id: null, confidence: 1, version: 2, created_at: now, updated_at: now });
+      }
+      if (path.endsWith("/conversations/chat1/context")) return json({ summary: null, memories: memoryVisible ? [{ memory_id: "memory1", conversation_id: "chat1", project_id: null, scope: "conversation", kind: "preference", key: "length", content: "回答保持简洁", status: "confirmed", pinned: true, source_message_id: null, confidence: 1, version: 1, created_at: now, updated_at: now }] : [] });
       const rag = {
         answer: {
           answer: "ALFF 衡量低频振幅，fALFF 使用低频功率与全频功率之比。",
@@ -728,6 +734,7 @@ describe("App", () => {
     const user = userEvent.setup();
     renderAt("/agent");
     await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+
     await user.upload(screen.getByLabelText("上传 PDF"), new File(["%PDF synthetic fixture"], "methods.pdf", { type: "application/pdf" }));
     await user.click(await screen.findByRole("button", { name: "加入知识库" }));
     expect(await screen.findByRole("button", { name: "重试加入知识库" })).toBeInTheDocument();
@@ -739,6 +746,10 @@ describe("App", () => {
     await user.type(screen.getByPlaceholderText("例如：ALFF 和 fALFF 的输入阶段有什么区别？"), "ALFF 和 fALFF 有什么区别？");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(await screen.findByText(/ALFF 衡量低频振幅/)).toBeInTheDocument();
+    await user.click(await screen.findByText("对话记忆"));
+    expect(await screen.findByText("回答保持简洁")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "忘记" }));
+    await waitFor(() => expect(screen.queryByText("回答保持简洁")).not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "[C1]" }));
     expect(screen.getByText("[C1] domain/metrics.md")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
@@ -755,6 +766,42 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
     await user.click(await screen.findByRole("button", { name: "[C1]" }));
     expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
+  });
+
+  it("shows paper indexing states and recovers from a failed upload", async () => {
+    const papers = [
+      { paper: { paper_id: "pending", title: null, page_count: 1, index_status: "not_indexed", index_error: null }, sections: [], chunks: [], warnings: [] },
+      { paper: { paper_id: "failed", title: "失败论文", page_count: 2, index_status: "failed", index_error: "上次索引失败" }, sections: [], chunks: [], warnings: [] },
+    ];
+    let resolveIndex: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/literature/papers") && (init?.method ?? "GET") === "GET") return json(papers);
+      if (path.endsWith("/literature/papers") && init?.method === "POST") {
+        return json({ error: { code: "unsupported_file_type", message: "只支持 PDF 文献文件" } }, 415);
+      }
+      if (path.endsWith("/literature/papers/pending/index")) {
+        return new Promise<Response>((resolve) => { resolveIndex = resolve; });
+      }
+      if (path.endsWith("/literature/papers/failed/index")) {
+        return json({ error: { code: "literature_index_failed", message: "索引服务不可用" } }, 503);
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    expect(screen.getByText("未命名论文")).toBeInTheDocument();
+    expect(screen.getByText("上次索引失败")).toBeInTheDocument();
+    await user.upload(screen.getByLabelText("上传 PDF"), new File(["bad"], "bad.pdf", { type: "application/pdf" }));
+    expect(await screen.findByText("只支持 PDF 文献文件")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "加入知识库" }));
+    expect(await screen.findByText(/索引中或上次中断/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "正在加入…" })).toBeDisabled();
+    resolveIndex?.(new Response(JSON.stringify({ paper: { ...papers[0].paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "检索 pending" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "重试加入知识库" }));
+    expect((await screen.findAllByText("索引服务不可用")).length).toBeGreaterThanOrEqual(1);
   });
 
   it("uses the system folder picker instead of a typed workspace path", async () => {

@@ -16,6 +16,8 @@ from neuroagent.application.contracts import (
     ApprovalCreate,
     ApprovalView,
     ArtifactView,
+    ContextSummaryView,
+    ConversationContextView,
     ConversationMessageView,
     ConversationMode,
     ConversationToolCallView,
@@ -24,6 +26,11 @@ from neuroagent.application.contracts import (
     DatasetView,
     DemographicsRevisionView,
     ManifestRevisionView,
+    MemoryCreate,
+    MemoryKind,
+    MemoryStatus,
+    MemoryUpdate,
+    MemoryView,
     ModelProfileInput,
     ModelProfileView,
     PlanRevisionView,
@@ -156,6 +163,46 @@ class RepositoryPort(Protocol):
         ConversationMessageView,
         ConversationToolCallView | None,
     ]: ...
+
+    def get_conversation_context(self, conversation_id: str) -> ConversationContextView: ...
+
+    def create_memory(self, conversation_id: str, request: MemoryCreate) -> MemoryView: ...
+
+    def upsert_memory_candidate(
+        self,
+        conversation_id: str,
+        *,
+        kind: MemoryKind,
+        key: str,
+        content: str,
+        status: MemoryStatus,
+        pinned: bool,
+        confidence: float,
+    ) -> MemoryView: ...
+
+    def update_memory(
+        self, conversation_id: str, memory_id: str, request: MemoryUpdate
+    ) -> MemoryView: ...
+
+    def create_context_summary(
+        self,
+        conversation_id: str,
+        *,
+        content: str,
+        covered_sequence: int,
+        source_hash: str,
+        method: str,
+    ) -> ContextSummaryView: ...
+
+    def create_context_snapshot(
+        self,
+        conversation_id: str,
+        *,
+        assistant_message_id: str | None,
+        context_hash: str,
+        profile_id: str | None,
+        manifest: dict[str, Any],
+    ) -> None: ...
 
     def begin_idempotent_request(
         self,
@@ -293,6 +340,8 @@ class RepositoryPort(Protocol):
     def create_qc_review(self, request: QcReviewCreate) -> QcReviewView: ...
 
     def get_qc_review(self, review_revision_id: str) -> QcReviewView: ...
+
+    def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None: ...
 
     def approve_qc_review(
         self, review_revision_id: str, request: QcReviewApprove

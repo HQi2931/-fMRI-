@@ -55,6 +55,10 @@ class ChatAgentRequest(ChatModel):
     stream: bool = False
     recent_messages: tuple[ContextMessage, ...] = ()
     pinned_context: tuple[PinnedContext, ...] = ()
+    conversation_summary: str | None = None
+    work_context: dict[str, Any] = Field(default_factory=dict)
+    context_window_tokens: int = Field(default=16_384, ge=4_096)
+    max_output_tokens: int = Field(default=2_048, ge=256)
     preferred_profile_id: str | None = None
     model: str | None = None
     allow_remote_search: bool = False

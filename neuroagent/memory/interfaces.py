@@ -24,4 +24,5 @@ class MemoryService(Protocol):
         session_id: str,
         recent_messages: tuple[ContextMessage, ...],
         pinned_context: tuple[PinnedContext, ...],
+        conversation_summary: str | None,
     ) -> MemorySnapshot: ...

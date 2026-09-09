@@ -820,6 +820,33 @@ class ConversationAction(StrEnum):
     GET_PROGRESS = "get_progress"
 
 
+class MemoryScope(StrEnum):
+    CONVERSATION = "conversation"
+    PROJECT = "project"
+
+
+class MemoryKind(StrEnum):
+    PREFERENCE = "preference"
+    INSTRUCTION = "instruction"
+    SCIENTIFIC_PARAMETER = "scientific_parameter"
+
+
+class MemoryStatus(StrEnum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    FORGOTTEN = "forgotten"
+
+
+class MemoryAction(StrEnum):
+    CONFIRM = "confirm"
+    UPDATE = "update"
+    REJECT = "reject"
+    PIN = "pin"
+    UNPIN = "unpin"
+    FORGET = "forget"
+
+
 class ConversationCreate(StrictModel):
     mode: ConversationMode
     title: str | None = Field(default=None, max_length=200)
@@ -885,6 +912,53 @@ class ConversationTurnView(StrictModel):
     user_message: ConversationMessageView
     assistant_message: ConversationMessageView
     tool_call: ConversationToolCallView | None = None
+
+
+class MemoryCreate(StrictModel):
+    kind: MemoryKind
+    key: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=4_000)
+    scope: MemoryScope = MemoryScope.CONVERSATION
+    pinned: bool = True
+    source_message_id: str | None = None
+
+
+class MemoryUpdate(StrictModel):
+    action: MemoryAction
+    expected_version: int = Field(ge=1)
+    content: str | None = Field(default=None, min_length=1, max_length=4_000)
+
+
+class MemoryView(StrictModel):
+    memory_id: str
+    conversation_id: str
+    project_id: str | None = None
+    scope: MemoryScope
+    kind: MemoryKind
+    key: str
+    content: str
+    status: MemoryStatus
+    pinned: bool
+    source_message_id: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContextSummaryView(StrictModel):
+    summary_id: str
+    conversation_id: str
+    content: str
+    covered_sequence: int = Field(ge=0)
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: str
+    created_at: datetime
+
+
+class ConversationContextView(StrictModel):
+    summary: ContextSummaryView | None = None
+    memories: list[MemoryView] = Field(default_factory=list)
 
 
 class OrganizationSubjectInput(StrictModel):
