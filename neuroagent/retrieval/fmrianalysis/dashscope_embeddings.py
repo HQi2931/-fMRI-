@@ -14,7 +14,15 @@ import time
 from typing import Any, Optional
 
 import requests
-from langchain_core.embeddings import Embeddings
+
+try:
+    from langchain_core.embeddings import Embeddings
+except ModuleNotFoundError:
+
+    class Embeddings:
+        """Minimal fallback so the HTTP adapter remains importable without RAG extras."""
+
+        pass
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
