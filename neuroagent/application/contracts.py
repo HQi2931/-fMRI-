@@ -8,7 +8,7 @@ from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from neuroagent.agent.models import (
     AgentTaskRequest,
@@ -829,6 +829,8 @@ class MemoryKind(StrEnum):
     PREFERENCE = "preference"
     INSTRUCTION = "instruction"
     SCIENTIFIC_PARAMETER = "scientific_parameter"
+    PROJECT_FACT = "project_fact"
+    DECISION = "decision"
 
 
 class MemoryStatus(StrEnum):
@@ -845,10 +847,14 @@ class MemoryAction(StrEnum):
     PIN = "pin"
     UNPIN = "unpin"
     FORGET = "forget"
+    ACCEPT_PROPOSAL = "accept_proposal"
+    MERGE_PROPOSAL = "merge_proposal"
+    REJECT_PROPOSAL = "reject_proposal"
 
 
 class ConversationCreate(StrictModel):
     mode: ConversationMode
+    project_id: str | None = None
     title: str | None = Field(default=None, max_length=200)
     workspace_path: str | None = Field(default=None, max_length=4_000)
     preferred_profile_id: str | None = Field(default=None, max_length=63)
@@ -915,6 +921,8 @@ class ConversationTurnView(StrictModel):
 
 
 class MemoryCreate(StrictModel):
+    importance: float = Field(default=0.5, ge=0, le=1)
+    expires_at: AwareDatetime | None = None
     kind: MemoryKind
     key: str = Field(min_length=1, max_length=100)
     content: str = Field(min_length=1, max_length=4_000)
@@ -924,12 +932,19 @@ class MemoryCreate(StrictModel):
 
 
 class MemoryUpdate(StrictModel):
+    importance: float | None = Field(default=None, ge=0, le=1)
+    expires_at: AwareDatetime | None = None
     action: MemoryAction
     expected_version: int = Field(ge=1)
     content: str | None = Field(default=None, min_length=1, max_length=4_000)
 
 
 class MemoryView(StrictModel):
+    semantic_indexed: bool = False
+    importance: float = Field(default=0.5, ge=0, le=1)
+    expires_at: datetime | None = None
+    proposed_content: str | None = None
+    proposal_source_message_id: str | None = None
     memory_id: str
     conversation_id: str
     project_id: str | None = None

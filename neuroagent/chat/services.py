@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from neuroagent.analysis.models import RsFmriAnswer
-from neuroagent.chat.interfaces import ChatAgentError, LlmResult
+from neuroagent.chat.interfaces import LlmResult
 from neuroagent.chat.models import ChatAgentRequest, ChatIntent, Citation, RoutedIntent, WorkRequest
 from neuroagent.context.engine import ContextEngine
 from neuroagent.context.interfaces import (
@@ -70,6 +70,9 @@ class ModelIntentRouter:
     _GREETING = re.compile(
         r"^(?:你好|您好|嗨|谢谢|感谢|再见|hello|hi|thanks|thank you)[!！。.?？\s]*$", re.I
     )
+    _CONTEXTUAL_FOLLOWUP = re.compile(
+        r"^(?:那|那么|它|这个|上述|前面|继续|再说|and |what about|how about|that\b|it\b)", re.I
+    )
 
     def __init__(
         self,
@@ -89,13 +92,13 @@ class ModelIntentRouter:
             return routed
         if not (request.preferred_profile_id or self._has_profiles()):
             return routed.model_copy(update={"intent": ChatIntent.KNOWLEDGE_QUERY})
+        if not self._CONTEXTUAL_FOLLOWUP.search(request.message.strip()):
+            return routed
         raw = await self._classify(request)
         try:
             return RoutedIntent.model_validate_json(raw)
-        except ValueError as exc:
-            raise ChatAgentError(
-                "chat_intent_invalid", "模型未返回有效的意图与检索问题，请重试。"
-            ) from exc
+        except ValueError:
+            return routed
 
 
 class RequestMemoryService:

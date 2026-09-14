@@ -111,6 +111,7 @@ export function AgentPage() {
   const workspace = useWorkspace();
   const [mode, setMode] = useState<ConversationMode>("work");
   const [conversationIds, setConversationIds] = useState<Partial<Record<ConversationMode, string>>>({});
+  const [conversationList, setConversationList] = useState<Conversation[]>([]);
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [modelChoices, setModelChoices] = useState<ModelChoice[]>([]);
   const [selectedModelKey, setSelectedModelKey] = useState("");
@@ -130,12 +131,18 @@ export function AgentPage() {
   const [busy, setBusy] = useState(false);
   const [conversationContext, setConversationContext] = useState<ConversationContext>({ memories: [], summary: null });
   const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryScope, setMemoryScope] = useState<"conversation" | "project">("conversation");
+  const [memoryImportance, setMemoryImportance] = useState("0.5");
+  const [memoryExpiry, setMemoryExpiry] = useState("");
+  const [memorySearch, setMemorySearch] = useState("");
+  const [memoryIndexing, setMemoryIndexing] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([api.profiles(controller.signal), api.conversations(undefined, controller.signal)])
       .then(async ([loadedProfiles, conversations]) => {
         setProfiles(loadedProfiles);
+        setConversationList(conversations);
         const modelResults = await Promise.allSettled(
           loadedProfiles.map((item) =>
             api.listProviderModels({
@@ -240,8 +247,10 @@ export function AgentPage() {
       mode: targetMode,
       workspace_path: targetMode === "work" ? workspacePath.trim() || null : null,
       preferred_profile_id: selectedModel?.profileId ?? null,
+      project_id: workspace.projectId ?? null,
     });
     setConversationIds((items) => ({ ...items, [targetMode]: created.conversation_id }));
+    setConversationList((items) => [created, ...items]);
     if (targetMode === "chat") setChatMessages(messagesFrom(created));
     else setWorkMessages(messagesFrom(created));
     return created.conversation_id;
@@ -249,6 +258,44 @@ export function AgentPage() {
 
   async function refreshContext(conversationId: string): Promise<void> {
     setConversationContext(await api.conversationContext(conversationId));
+  }
+
+  function cacheConversation(conversation: Conversation): void {
+    setConversationList((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
+  }
+
+  async function startNewConversation(): Promise<void> {
+    setBusy(true);
+    setError("");
+    try {
+      const created = await api.createConversation({
+        mode,
+        project_id: workspace.projectId ?? null,
+        workspace_path: mode === "work" ? workspacePath.trim() || null : null,
+        preferred_profile_id: selectedModel?.profileId ?? null,
+      });
+      setConversationIds((items) => ({ ...items, [mode]: created.conversation_id }));
+      setConversationList((items) => [created, ...items]);
+      setConversationContext({ memories: [], summary: null });
+      if (mode === "chat") setChatMessages(messagesFrom(created));
+      else {
+        setWorkMessages(messagesFrom(created));
+        setReport(null);
+      }
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  function selectConversation(conversationId: string): void {
+    const selected = conversationList.find((item) => item.conversation_id === conversationId);
+    if (!selected) return;
+    setConversationIds((items) => ({ ...items, [mode]: conversationId }));
+    if (mode === "chat") setChatMessages(messagesFrom(selected));
+    else {
+      setWorkMessages(messagesFrom(selected));
+      setReport(workspaceReportFrom(selected));
+      if (selected.workspace_path) setWorkspacePath(selected.workspace_path);
+    }
   }
 
   async function addMemory(): Promise<void> {
@@ -261,8 +308,10 @@ export function AgentPage() {
         kind: "instruction",
         key: `manual-${Date.now()}`,
         content,
-        scope: "conversation",
+        scope: memoryScope,
         pinned: true,
+        importance: Number(memoryImportance),
+        expires_at: memoryExpiry ? new Date(`${memoryExpiry}T23:59:59`).toISOString() : null,
         source_message_id: null,
       });
       setMemoryDraft("");
@@ -276,10 +325,14 @@ export function AgentPage() {
 
   async function changeMemory(
     memory: ConversationMemory,
-    action: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget",
+    action: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget" | "accept_proposal" | "merge_proposal" | "reject_proposal",
   ): Promise<void> {
-    const content = action === "update" ? window.prompt("修改记忆", memory.content)?.trim() : undefined;
-    if (action === "update" && !content) return;
+    const content = action === "update"
+      ? window.prompt("修改记忆", memory.content)?.trim()
+      : action === "merge_proposal"
+        ? window.prompt("合并当前记忆与新建议", `${memory.content}；${memory.proposed_content ?? ""}`)?.trim()
+        : undefined;
+    if ((action === "update" || action === "merge_proposal") && !content) return;
     setBusy(true);
     try {
       await api.updateConversationMemory(memory.conversation_id, memory.memory_id, {
@@ -293,6 +346,19 @@ export function AgentPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function indexMemories(): Promise<void> {
+    const conversationId = conversationIds[mode];
+    if (!conversationId) return;
+    setMemoryIndexing(true);
+    setError("");
+    try {
+      const result = await api.indexConversationMemories(conversationId);
+      setMessage(result.warning || `语义索引已更新：${result.indexed ?? "0"} 条。`);
+      await refreshContext(conversationId);
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setMemoryIndexing(false); }
   }
 
   async function pickWorkspace(): Promise<void> {
@@ -322,6 +388,7 @@ export function AgentPage() {
         workspace_path: path,
         preferred_profile_id: selectedModel?.profileId ?? null,
       });
+      cacheConversation(turn.conversation);
       setWorkMessages(messagesFrom(turn.conversation));
       await refreshContext(conversationId);
       const checkedValue = turn.assistant_message.payload.workspace_check;
@@ -366,6 +433,7 @@ export function AgentPage() {
         allow_remote_search: allowRemoteSearch,
         paper_ids: selectedPaperIds.length ? selectedPaperIds : undefined,
       });
+      cacheConversation(turn.conversation);
       setChatMessages(messagesFrom(turn.conversation));
       await refreshContext(conversationId);
     } catch (caught) {
@@ -391,6 +459,7 @@ export function AgentPage() {
         plan_revision_id: workspace.planRevisionId ?? null,
         expected_plan_hash: workspace.planHash ?? null,
       });
+      cacheConversation(turn.conversation);
       setWorkMessages(messagesFrom(turn.conversation));
       const checked = turn.assistant_message.payload.workspace_check;
       if (checked && typeof checked === "object") setReport(checked as WorkspaceCheck);
@@ -422,6 +491,7 @@ export function AgentPage() {
         expected_plan_hash: workspace.planHash,
         real_execution_confirmed: true,
       });
+      cacheConversation(turn.conversation);
       setWorkMessages(messagesFrom(turn.conversation));
       await refreshContext(conversationId);
       if (turn.conversation.active_run_id) {
@@ -472,9 +542,13 @@ export function AgentPage() {
   }
 
   const isChat = mode === "chat";
-  const memories = (conversationContext.memories ?? []).filter(
-    (item) => item.status === "pending" || item.pinned,
+  const memoryQuery = memorySearch.trim().toLocaleLowerCase();
+  const memories = (conversationContext.memories ?? []).filter((item) =>
+    (item.status === "pending" || item.status === "confirmed")
+    && (!memoryQuery || `${item.key} ${item.content} ${item.proposed_content ?? ""}`.toLocaleLowerCase().includes(memoryQuery)),
   );
+  const modeConversations = conversationList.filter((item) => item.mode === mode);
+  const activeConversation = modeConversations.find((item) => item.conversation_id === conversationIds[mode]);
   const selectedModel = modelChoices.find((item) => item.key === selectedModelKey);
   const canSearchWithSelection = selectedModel
     ? selectedModel.capabilities.includes("web_search")
@@ -512,6 +586,10 @@ export function AgentPage() {
         </button>
       </div>
       <Feedback message={error || message} error={Boolean(error)} />
+      <div className="conversation-switcher panel">
+        <label>当前会话<select aria-label="当前会话" value={conversationIds[mode] ?? ""} onChange={(event) => selectConversation(event.target.value)}><option value="">尚未创建</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title} · {new Date(item.updated_at).toLocaleString()}</option>)}</select></label>
+        <button className="button button-secondary" type="button" disabled={busy} onClick={() => void startNewConversation()}>新建会话</button>
+      </div>
       <details className="memory-drawer">
         <summary>对话记忆 <span>{memories.length}</span></summary>
         <div className="memory-drawer-body">
@@ -522,15 +600,20 @@ export function AgentPage() {
               onChange={(event) => setMemoryDraft(event.target.value)}
               placeholder="例如：回答保持简洁"
             />
-            <button className="button button-secondary" type="button" disabled={busy || !memoryDraft.trim()} onClick={() => void addMemory()}>固定</button>
+            <select aria-label="记忆范围" value={memoryScope} onChange={(event) => setMemoryScope(event.target.value as "conversation" | "project")}><option value="conversation">当前会话</option><option value="project" disabled={!(activeConversation?.project_id ?? workspace.projectId)}>当前项目</option></select>
+            <select aria-label="记忆重要性" value={memoryImportance} onChange={(event) => setMemoryImportance(event.target.value)}><option value="0.3">一般</option><option value="0.5">重要</option><option value="0.8">很重要</option><option value="1">最高</option></select>
+            <input aria-label="记忆到期日" type="date" value={memoryExpiry} onChange={(event) => setMemoryExpiry(event.target.value)} />
+            <button className="button button-secondary" type="button" disabled={busy || !memoryDraft.trim()} onClick={() => void addMemory()}>保存记忆</button>
           </div>
+          <div className="memory-tools"><input aria-label="搜索记忆" placeholder="搜索记忆" value={memorySearch} onChange={(event) => setMemorySearch(event.target.value)} /><button type="button" className="button button-secondary" disabled={memoryIndexing || !conversationIds[mode]} onClick={() => void indexMemories()}>{memoryIndexing ? "索引中…" : "更新语义索引"}</button></div>
           {memories.length === 0 ? (
             <p className="muted">尚无待确认或已固定的记忆。</p>
           ) : (
             <ul className="memory-list">
               {memories.map((item) => (
                 <li key={item.memory_id}>
-                  <div><StatusPill tone={item.status === "pending" ? "warn" : "good"}>{item.status === "pending" ? "待确认" : item.pinned ? "已固定" : "已确认"}</StatusPill><strong>{item.content}</strong><small>{item.kind === "scientific_parameter" ? "科研参数" : item.kind === "preference" ? "偏好" : "指令"}</small></div>
+                  <div><StatusPill tone={item.status === "pending" ? "warn" : "good"}>{item.status === "pending" ? "待确认" : item.pinned ? "已固定" : "已确认"}</StatusPill><strong>{item.content}</strong><small>{{ scientific_parameter: "科研参数", preference: "偏好", instruction: "指令", project_fact: "项目事实", decision: "已作决定" }[item.kind]} · {item.semantic_indexed ? "语义索引就绪" : "关键词可召回"}</small></div>
+                  {item.proposed_content && <div className="memory-proposal"><small>发现冲突建议</small><strong>{item.proposed_content}</strong><div className="memory-actions"><button type="button" onClick={() => void changeMemory(item, "accept_proposal")}>采用新值</button><button type="button" onClick={() => void changeMemory(item, "merge_proposal")}>合并</button><button type="button" onClick={() => void changeMemory(item, "reject_proposal")}>保留原值</button></div></div>}
                   <div className="memory-actions">
                     {item.status === "pending" && <button type="button" onClick={() => void changeMemory(item, "confirm")}>确认</button>}
                     <button type="button" onClick={() => void changeMemory(item, "update")}>修改</button>

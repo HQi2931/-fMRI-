@@ -115,12 +115,11 @@ class ChatAgent:
                 r"\[(C\d+)\]", lambda match: "" if match[1] in unknown else match[0], answer
             )
             answer += "\n\n部分引用未能对应本次证据，已移除无效编号，引用不完整。"
-        linked_urls = set(re.findall(r"\]\((https?://[^\s)]+)\)", answer))
         citations = tuple(
             citation
             for citation in citations
             if (citation.citation_id in cited and citation.citation_id in known)
-            or (citation.chunk_id.startswith("web:") and citation.source in linked_urls)
+            or citation.chunk_id.startswith("web:")
         )
         if (
             retrieval_performed

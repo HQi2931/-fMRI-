@@ -336,6 +336,7 @@ export const api = {
     body: {
       mode: ConversationMode;
       title?: string | null;
+      project_id?: string | null;
       workspace_path?: string | null;
       preferred_profile_id?: string | null;
     },
@@ -345,6 +346,8 @@ export const api = {
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>
     request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
+  indexConversationMemories: (conversationId: string, signal?: AbortSignal) =>
+    post<Record<string, string>>(`/conversations/${conversationId}/context/index`, {}, signal),
   createConversationMemory: (
     conversationId: string,
     body: Schemas["MemoryCreate"],

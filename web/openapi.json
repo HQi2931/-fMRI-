@@ -857,6 +857,17 @@
             ],
             "title": "Preferred Profile Id"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
           "title": {
             "anyOf": [
               {
@@ -2463,7 +2474,10 @@
           "reject",
           "pin",
           "unpin",
-          "forget"
+          "forget",
+          "accept_proposal",
+          "merge_proposal",
+          "reject_proposal"
         ],
         "title": "MemoryAction",
         "type": "string"
@@ -2476,6 +2490,25 @@
             "minLength": 1,
             "title": "Content",
             "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "importance": {
+            "default": 0.5,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Importance",
+            "type": "number"
           },
           "key": {
             "maxLength": 100,
@@ -2519,7 +2552,9 @@
         "enum": [
           "preference",
           "instruction",
-          "scientific_parameter"
+          "scientific_parameter",
+          "project_fact",
+          "decision"
         ],
         "title": "MemoryKind",
         "type": "string"
@@ -2565,6 +2600,31 @@
             "minimum": 1.0,
             "title": "Expected Version",
             "type": "integer"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
           }
         },
         "required": [
@@ -2596,6 +2656,25 @@
             "title": "Created At",
             "type": "string"
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "importance": {
+            "default": 0.5,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Importance",
+            "type": "number"
+          },
           "key": {
             "title": "Key",
             "type": "string"
@@ -2622,8 +2701,35 @@
             ],
             "title": "Project Id"
           },
+          "proposal_source_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Source Message Id"
+          },
+          "proposed_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Content"
+          },
           "scope": {
             "$ref": "#/components/schemas/MemoryScope"
+          },
+          "semantic_indexed": {
+            "default": false,
+            "title": "Semantic Indexed",
+            "type": "boolean"
           },
           "source_message_id": {
             "anyOf": [
@@ -8167,6 +8273,102 @@
           }
         },
         "summary": "Get Conversation Context",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/context/index": {
+      "post": {
+        "operationId": "index_conversation_memories_api_v1_conversations__conversation_id__context_index_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Index Conversation Memories Api V1 Conversations  Conversation Id  Context Index Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Index Conversation Memories",
         "tags": [
           "agent"
         ]

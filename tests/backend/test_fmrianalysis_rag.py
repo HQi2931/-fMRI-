@@ -3,7 +3,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest, ChatIntent
 from neuroagent.chat.services import ModelIntentRouter
 from neuroagent.retrieval.fmrianalysis.retriever import _reciprocal_rank_fusion
@@ -63,17 +62,16 @@ async def test_model_router_parses_allowlisted_json() -> None:
         lambda _request: _async_text('{"intent":"knowledge_query","query":"ALFF 是什么?"}'),
         has_profiles=lambda: True,
     )
-    result = await router.route(ChatAgentRequest(session_id="s", message="ALFF 是什么?"))
+    result = await router.route(ChatAgentRequest(session_id="s", message="那 ALFF 是什么?"))
     assert result.intent is ChatIntent.KNOWLEDGE_QUERY
     assert result.query == "ALFF 是什么?"
 
 
-async def test_model_router_reports_invalid_output_without_silent_fallback() -> None:
+async def test_model_router_falls_back_safely_when_rewrite_output_is_invalid() -> None:
     router = ModelIntentRouter(lambda _request: _async_text("not-json"), has_profiles=lambda: True)
-    with pytest.raises(ChatAgentError, match="模型未返回有效"):
-        await router.route(
-            ChatAgentRequest(session_id="s", message="你知道怎么做 ALFF 的预处理吗?")
-        )
+    result = await router.route(ChatAgentRequest(session_id="s", message="那它有什么作用?"))
+    assert result.intent is ChatIntent.KNOWLEDGE_QUERY
+    assert result.query == "那它有什么作用?"
 
 
 async def _async_text(value: str) -> str:

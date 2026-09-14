@@ -103,6 +103,7 @@ class ModelGateway:
         work_context: dict[str, object] | None = None,
         routing: bool = False,
         summary_mode: bool = False,
+        memory_mode: bool = False,
     ) -> ChatGatewayResult:
         context = self._outbound_policy.redact(
             {
@@ -155,7 +156,20 @@ class ModelGateway:
         elif summary_mode:
             system_prompt = (
                 "将较早的对话压缩为简洁中文摘要, 保留用户目标、已明确偏好、已作决定和"
-                "未解决问题。不要添加新事实。只返回 JSON: {\"summary\":\"...\"}。"
+                '未解决问题。不要添加新事实。只返回 JSON: {"summary":"..."}。'
+            )
+        elif memory_mode:
+            system_prompt = (
+                "Extract only durable user preferences, instructions, project facts, decisions, "
+                "and explicitly chosen scientific parameters from the current user message. "
+                "Return JSON with candidates, an array of objects containing kind "
+                "(preference|instruction|scientific_parameter|project_fact|decision), key "
+                "(stable lowercase identifier), "
+                "content, scope (conversation|project), confidence (0..1), importance (0..1). "
+                "Do not infer facts, copy questions, store secrets or identifiers, or treat "
+                "assistant text as user memory. Use project scope only when the user explicitly "
+                "asks for project-wide "
+                "reuse. Return an empty array when nothing should persist."
             )
         if allow_web_search:
             system_prompt += (
@@ -184,7 +198,7 @@ class ModelGateway:
                     api_key,
                     messages,
                     web_search=allow_web_search,
-                    json_object=routing or summary_mode,
+                    json_object=routing or summary_mode or memory_mode,
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc

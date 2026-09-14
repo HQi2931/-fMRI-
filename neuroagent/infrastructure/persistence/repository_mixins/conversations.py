@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 
 from neuroagent.application.contracts import (
     ContextSummaryView,
@@ -31,7 +32,9 @@ from neuroagent.infrastructure.persistence.models import (
     ConversationMessageRow,
     ConversationRow,
     ConversationToolCallRow,
+    MemoryEmbeddingRow,
     MemoryRecordRow,
+    ProjectRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
@@ -50,14 +53,18 @@ class ConversationMixin(RepositoryBaseMixin):
         welcome: str,
         workspace_path: str | None,
         preferred_profile_id: str | None,
+        project_id: str | None = None,
     ) -> ConversationView:
         with self._write_session() as session:
+            if project_id is not None and session.get(ProjectRow, project_id) is None:
+                raise NotFoundError("project", project_id)
             row = ConversationRow(
                 conversation_id=_id(),
                 mode=mode.value,
                 title=title,
                 workspace_path=workspace_path,
                 preferred_profile_id=preferred_profile_id,
+                project_id=project_id,
                 version=1,
             )
             session.add(row)
@@ -188,9 +195,24 @@ class ConversationMixin(RepositoryBaseMixin):
                 )
                 .order_by(MemoryRecordRow.pinned.desc(), MemoryRecordRow.updated_at.desc())
             ).all()
+            indexed_versions = {
+                item.memory_id: item.memory_version
+                for item in session.scalars(
+                    select(MemoryEmbeddingRow).where(
+                        MemoryEmbeddingRow.memory_id.in_([row.memory_id for row in rows])
+                    )
+                ).all()
+            }
             return ConversationContextView(
                 summary=self._summary(summary_row) if summary_row else None,
-                memories=[self._memory(item) for item in rows],
+                memories=[
+                    self._memory(item).model_copy(
+                        update={
+                            "semantic_indexed": indexed_versions.get(item.memory_id) == item.version
+                        }
+                    )
+                    for item in rows
+                ],
             )
 
     def create_memory(self, conversation_id: str, request: MemoryCreate) -> MemoryView:
@@ -202,7 +224,51 @@ class ConversationMixin(RepositoryBaseMixin):
                 raise InputValidationError(
                     "project_context_required", "项目记忆要求对话已绑定项目。"
                 )
+            if request.source_message_id is not None:
+                source = session.get(ConversationMessageRow, request.source_message_id)
+                if (
+                    source is None
+                    or source.conversation_id != conversation_id
+                    or source.role != "user"
+                ):
+                    raise InputValidationError(
+                        "memory_source_invalid",
+                        "Memory source must be a user message in this conversation.",
+                    )
+            scope_filter = (
+                (MemoryRecordRow.scope == MemoryScope.CONVERSATION.value)
+                & (MemoryRecordRow.conversation_id == conversation_id)
+                if request.scope is MemoryScope.CONVERSATION
+                else (MemoryRecordRow.scope == MemoryScope.PROJECT.value)
+                & (MemoryRecordRow.project_id == conversation.project_id)
+            )
+            existing = session.scalars(
+                select(MemoryRecordRow).where(
+                    scope_filter,
+                    MemoryRecordRow.kind == request.kind.value,
+                    MemoryRecordRow.key == request.key,
+                )
+            ).first()
+            if existing is not None:
+                if (
+                    existing.status == "confirmed"
+                    and existing.content == request.content
+                    and existing.pinned == request.pinned
+                    and existing.importance == request.importance
+                    and (_as_utc(existing.expires_at) if existing.expires_at else None)
+                    == request.expires_at
+                    and existing.source_message_id == request.source_message_id
+                ):
+                    return self._memory(existing)
+                raise ConflictError(
+                    "memory_key_conflict",
+                    "A memory with this key exists; explicitly update or resolve it.",
+                    memory_id=existing.memory_id,
+                    version=existing.version,
+                )
             row = MemoryRecordRow(
+                importance=request.importance,
+                expires_at=request.expires_at,
                 memory_id=_id(),
                 conversation_id=conversation_id,
                 project_id=(
@@ -232,15 +298,35 @@ class ConversationMixin(RepositoryBaseMixin):
         status: MemoryStatus,
         pinned: bool,
         confidence: float,
+        source_message_id: str,
+        scope: MemoryScope = MemoryScope.CONVERSATION,
+        importance: float = 0.5,
     ) -> MemoryView:
         with self._write_session() as session:
             conversation = session.get(ConversationRow, conversation_id)
             if conversation is None:
                 raise NotFoundError("conversation", conversation_id)
+            source = session.get(ConversationMessageRow, source_message_id)
+            if source is None or source.conversation_id != conversation_id or source.role != "user":
+                raise InputValidationError(
+                    "memory_source_invalid",
+                    "Memory source must be a user message in this conversation.",
+                )
+            if scope is MemoryScope.PROJECT and conversation.project_id is None:
+                raise InputValidationError(
+                    "project_context_required",
+                    "Project memory requires a project-bound conversation.",
+                )
+            scope_filter = (
+                (MemoryRecordRow.scope == MemoryScope.CONVERSATION.value)
+                & (MemoryRecordRow.conversation_id == conversation_id)
+                if scope is MemoryScope.CONVERSATION
+                else (MemoryRecordRow.scope == MemoryScope.PROJECT.value)
+                & (MemoryRecordRow.project_id == conversation.project_id)
+            )
             row = session.scalars(
                 select(MemoryRecordRow).where(
-                    MemoryRecordRow.conversation_id == conversation_id,
-                    MemoryRecordRow.scope == MemoryScope.CONVERSATION.value,
+                    scope_filter,
                     MemoryRecordRow.kind == kind.value,
                     MemoryRecordRow.key == key,
                 )
@@ -249,25 +335,49 @@ class ConversationMixin(RepositoryBaseMixin):
                 row = MemoryRecordRow(
                     memory_id=_id(),
                     conversation_id=conversation_id,
-                    project_id=None,
-                    scope=MemoryScope.CONVERSATION.value,
+                    project_id=conversation.project_id if scope is MemoryScope.PROJECT else None,
+                    scope=scope.value,
                     kind=kind.value,
                     key=key,
                     content=content,
                     status=status.value,
                     pinned=pinned,
                     confidence=confidence,
+                    importance=importance,
+                    source_message_id=source_message_id,
                     version=1,
                 )
                 session.add(row)
-            elif row.status != MemoryStatus.CONFIRMED.value:
+            elif row.status == MemoryStatus.PENDING.value:
                 row.content = content
                 row.status = status.value
                 row.pinned = pinned
                 row.confidence = confidence
+                row.importance = importance
+                row.source_message_id = source_message_id
                 row.version += 1
+            elif row.status == MemoryStatus.CONFIRMED.value and row.content != content:
+                row.proposed_content = content
+                row.proposal_source_message_id = source_message_id
+                row.version += 1
+                session.execute(
+                    update(MemoryEmbeddingRow)
+                    .where(MemoryEmbeddingRow.memory_id == row.memory_id)
+                    .values(memory_version=row.version)
+                )
             session.flush()
             return self._memory(row)
+
+    def get_forgotten_source_message_ids(self, conversation_id: str) -> set[str]:
+        with self.database.session_factory() as session:
+            source_ids = session.scalars(
+                select(MemoryRecordRow.source_message_id).where(
+                    MemoryRecordRow.conversation_id == conversation_id,
+                    MemoryRecordRow.status == MemoryStatus.FORGOTTEN.value,
+                    MemoryRecordRow.source_message_id.is_not(None),
+                )
+            ).all()
+            return {source_id for source_id in source_ids if source_id is not None}
 
     def update_memory(
         self, conversation_id: str, memory_id: str, request: MemoryUpdate
@@ -293,27 +403,165 @@ class ConversationMixin(RepositoryBaseMixin):
                     expected=request.expected_version,
                     actual=row.version,
                 )
+            embedding_still_matches = False
             if request.action is MemoryAction.CONFIRM:
                 row.status = MemoryStatus.CONFIRMED.value
             elif request.action is MemoryAction.UPDATE:
-                if request.content is None:
+                if request.content is None and not (
+                    {"importance", "expires_at"} & request.model_fields_set
+                ):
                     raise InputValidationError("memory_content_required", "修改记忆需要内容。")
-                row.content = request.content
+                if request.content is not None:
+                    row.content = request.content
+                if request.importance is not None:
+                    row.importance = request.importance
+                if "expires_at" in request.model_fields_set:
+                    row.expires_at = request.expires_at
                 row.status = MemoryStatus.CONFIRMED.value
+                embedding_still_matches = request.content is None
             elif request.action is MemoryAction.REJECT:
                 row.status = MemoryStatus.REJECTED.value
                 row.pinned = False
             elif request.action is MemoryAction.PIN:
                 row.pinned = True
+                embedding_still_matches = True
             elif request.action is MemoryAction.UNPIN:
                 row.pinned = False
+                embedding_still_matches = True
+            elif request.action is MemoryAction.ACCEPT_PROPOSAL:
+                if row.proposed_content is None:
+                    raise InputValidationError(
+                        "memory_proposal_missing", "No memory proposal exists."
+                    )
+                row.content = row.proposed_content
+                row.source_message_id = row.proposal_source_message_id
+                row.proposed_content = None
+                row.proposal_source_message_id = None
+            elif request.action is MemoryAction.MERGE_PROPOSAL:
+                if row.proposed_content is None or request.content is None:
+                    raise InputValidationError(
+                        "memory_merge_content_required", "Merged memory content is required."
+                    )
+                row.content = request.content
+                row.source_message_id = row.proposal_source_message_id
+                row.proposed_content = None
+                row.proposal_source_message_id = None
+            elif request.action is MemoryAction.REJECT_PROPOSAL:
+                if row.proposed_content is None:
+                    raise InputValidationError(
+                        "memory_proposal_missing", "No memory proposal exists."
+                    )
+                row.proposed_content = None
+                row.proposal_source_message_id = None
+                embedding_still_matches = True
             else:
                 row.status = MemoryStatus.FORGOTTEN.value
                 row.content = ""
                 row.pinned = False
+                row.proposed_content = None
+                row.proposal_source_message_id = None
+                if row.source_message_id is not None:
+                    sequence = session.scalar(
+                        select(ConversationMessageRow.sequence).where(
+                            ConversationMessageRow.message_id == row.source_message_id
+                        )
+                    )
+                    if sequence is not None:
+                        session.execute(
+                            delete(ContextSummaryRow).where(
+                                ContextSummaryRow.conversation_id == row.conversation_id,
+                                ContextSummaryRow.covered_sequence >= sequence,
+                            )
+                        )
             row.version += 1
+            if embedding_still_matches:
+                session.execute(
+                    update(MemoryEmbeddingRow)
+                    .where(MemoryEmbeddingRow.memory_id == memory_id)
+                    .values(memory_version=row.version)
+                )
+            else:
+                session.execute(
+                    delete(MemoryEmbeddingRow).where(MemoryEmbeddingRow.memory_id == memory_id)
+                )
             session.flush()
             return self._memory(row)
+
+    def store_memory_embedding(
+        self,
+        conversation_id: str,
+        memory_id: str,
+        *,
+        expected_version: int,
+        model_identity: str,
+        vector: tuple[float, ...],
+    ) -> bool:
+        from neuroagent.memory.semantic import cosine
+
+        if cosine(vector, vector) is None:
+            raise InputValidationError("invalid_memory_vector", "Invalid memory embedding.")
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            memory = session.get(MemoryRecordRow, memory_id)
+            if conversation is None or memory is None:
+                raise NotFoundError("memory", memory_id)
+            accessible = memory.conversation_id == conversation_id or (
+                memory.scope == "project"
+                and conversation.project_id is not None
+                and memory.project_id == conversation.project_id
+            )
+            if not accessible:
+                raise NotFoundError("memory", memory_id)
+            if (
+                memory.version != expected_version
+                or memory.status != "confirmed"
+                or (
+                    memory.expires_at is not None
+                    and _as_utc(memory.expires_at) <= datetime.now(UTC)
+                )
+            ):
+                return False
+            embedding = session.get(MemoryEmbeddingRow, memory_id)
+            if embedding is None:
+                session.add(
+                    MemoryEmbeddingRow(
+                        memory_id=memory_id,
+                        memory_version=expected_version,
+                        model_identity=model_identity,
+                        vector_json=canonical_json(list(vector)),
+                    )
+                )
+            else:
+                embedding.memory_version = expected_version
+                embedding.model_identity = model_identity
+                embedding.vector_json = canonical_json(list(vector))
+            return True
+
+    def get_memory_embeddings(
+        self,
+        conversation_id: str,
+    ) -> dict[str, tuple[int, str, tuple[float, ...]]]:
+        state = self.get_conversation_context(conversation_id)
+        versions = {
+            item.memory_id: item.version
+            for item in state.memories
+            if item.status is MemoryStatus.CONFIRMED
+        }
+        with self.database.session_factory() as session:
+            rows = session.scalars(
+                select(MemoryEmbeddingRow).where(
+                    MemoryEmbeddingRow.memory_id.in_(versions),
+                )
+            ).all()
+            return {
+                row.memory_id: (
+                    row.memory_version,
+                    row.model_identity,
+                    tuple(_load(row.vector_json, [])),
+                )
+                for row in rows
+                if row.memory_version == versions[row.memory_id]
+            }
 
     def create_context_summary(
         self,
@@ -417,6 +665,10 @@ class ConversationMixin(RepositoryBaseMixin):
     @staticmethod
     def _memory(row: MemoryRecordRow) -> MemoryView:
         return MemoryView(
+            importance=row.importance,
+            expires_at=_as_utc(row.expires_at) if row.expires_at is not None else None,
+            proposed_content=row.proposed_content,
+            proposal_source_message_id=row.proposal_source_message_id,
             memory_id=row.memory_id,
             conversation_id=row.conversation_id,
             project_id=row.project_id,

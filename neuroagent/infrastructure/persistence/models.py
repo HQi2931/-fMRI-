@@ -317,6 +317,10 @@ class ContextSummaryRow(Base):
 
 class MemoryRecordRow(Base):
     __tablename__ = "memory_records"
+    importance: Mapped[float] = mapped_column(default=0.5)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    proposed_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_source_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     memory_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
@@ -341,6 +345,17 @@ class MemoryRecordRow(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     __table_args__ = (UniqueConstraint("conversation_id", "scope", "kind", "key"),)
+
+
+class MemoryEmbeddingRow(Base):
+    __tablename__ = "memory_embeddings"
+    memory_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("memory_records.memory_id", ondelete="CASCADE"), primary_key=True
+    )
+    memory_version: Mapped[int] = mapped_column(Integer)
+    model_identity: Mapped[str] = mapped_column(Text)
+    vector_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class ContextSnapshotRow(Base):

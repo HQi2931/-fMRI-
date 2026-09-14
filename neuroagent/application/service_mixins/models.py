@@ -170,6 +170,7 @@ class ModelAgentMixin(BaseServiceMixin):
         work_context: dict[str, object] | None = None,
         routing: bool = False,
         summary_mode: bool = False,
+        memory_mode: bool = False,
     ) -> ChatGatewayResult:
         try:
             return await self._model_gateway().generate_chat(
@@ -180,6 +181,7 @@ class ModelAgentMixin(BaseServiceMixin):
                 work_context=work_context,
                 routing=routing,
                 summary_mode=summary_mode,
+                memory_mode=memory_mode,
                 evidence=evidence,
                 preferred_profile_id=preferred_profile_id,
                 model=model,

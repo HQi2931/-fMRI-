@@ -50,4 +50,3 @@ def test_context_engine_triggers_summary_for_long_history() -> None:
         context_window_tokens=16_384,
         max_output_tokens=2_048,
     )
-

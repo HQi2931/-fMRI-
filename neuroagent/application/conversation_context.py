@@ -15,6 +15,7 @@ from neuroagent.application.contracts import (
     ConversationContextView,
     ConversationView,
     MemoryKind,
+    MemoryScope,
     MemoryStatus,
     ModelProfileView,
 )
@@ -22,6 +23,8 @@ from neuroagent.application.errors import ApplicationError
 from neuroagent.application.ports import RepositoryPort
 from neuroagent.context.engine import ContextBudgetError, ContextEngine
 from neuroagent.context.interfaces import ContextMessage, ContextPacket, PinnedContext
+from neuroagent.memory.models import MemoryCandidateBatch, MemoryCandidateDraft
+from neuroagent.memory.service import SemanticMemoryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,9 @@ class PreparedChatContext:
     context_window_tokens: int
     max_output_tokens: int
     memory_ids: tuple[str, ...]
+    memory_recall: dict[str, Any]
+    memory_candidates: tuple[MemoryCandidateDraft, ...]
+    memory_extraction: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +50,7 @@ class PreparedWorkContext:
     profile_id: str | None
     packet: ContextPacket
     state: ConversationContextView
+    memory_candidates: tuple[MemoryCandidateDraft, ...]
 
 
 class ConversationContextCoordinator:
@@ -54,10 +61,12 @@ class ConversationContextCoordinator:
         repository: RepositoryPort,
         engine: ContextEngine,
         summary_generator: Callable[..., Awaitable[ChatGatewayResult]],
+        semantic_memory: SemanticMemoryService | None = None,
     ) -> None:
         self._repository = repository
         self._engine = engine
         self._summary_generator = summary_generator
+        self._semantic_memory = semantic_memory or SemanticMemoryService(repository)
 
     def context_limits(self, preferred_profile_id: str | None) -> tuple[int, int]:
         profiles = self._repository.list_model_profiles()
@@ -74,7 +83,6 @@ class ConversationContextCoordinator:
         preferred_profile_id: str | None,
         model: str | None,
     ) -> PreparedChatContext:
-        self.capture_memory_candidates(conversation.conversation_id, question)
         profile_id = preferred_profile_id
         context_window_tokens, max_output_tokens = self.context_limits(profile_id)
         messages = self.messages_from(conversation)
@@ -86,7 +94,13 @@ class ConversationContextCoordinator:
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
         )
-        state = self._repository.get_conversation_context(conversation.conversation_id)
+        recalled = await self._semantic_memory.recall(conversation.conversation_id, question)
+        candidates, extraction = await self._extract_memory_candidates(
+            question,
+            preferred_profile_id=profile_id,
+            model=model,
+            project_bound=conversation.project_id is not None,
+        )
         recent_messages = tuple(
             item
             for item in messages
@@ -95,11 +109,28 @@ class ConversationContextCoordinator:
         return PreparedChatContext(
             profile_id=profile_id,
             recent_messages=recent_messages,
-            pinned_context=self.pinned_context(state),
+            pinned_context=tuple(
+                PinnedContext(
+                    key=item.memory.memory_id,
+                    value=item.memory.content,
+                    priority="high" if item.memory.pinned else "medium",
+                )
+                for item in recalled.matches
+            ),
             summary=summary,
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
-            memory_ids=tuple(item.memory_id for item in state.memories if item.pinned),
+            memory_ids=tuple(item.memory.memory_id for item in recalled.matches),
+            memory_recall={
+                "backend": recalled.backend,
+                "warning": recalled.warning,
+                "matches": [
+                    {"memory_id": item.memory.memory_id, "reason": item.reason, "score": item.score}
+                    for item in recalled.matches
+                ],
+            },
+            memory_candidates=candidates,
+            memory_extraction=extraction,
         )
 
     def prepare_work(
@@ -112,7 +143,6 @@ class ConversationContextCoordinator:
         active_run_id: str | None,
         plan_revision_id: str | None,
     ) -> PreparedWorkContext:
-        self.capture_memory_candidates(conversation.conversation_id, question)
         profile_id = preferred_profile_id
         context_window_tokens, max_output_tokens = self.context_limits(profile_id)
         self._prepare_work_summary(
@@ -136,7 +166,12 @@ class ConversationContextCoordinator:
                 plan_revision_id=plan_revision_id,
             ),
         )
-        return PreparedWorkContext(profile_id=profile_id, packet=packet, state=state)
+        return PreparedWorkContext(
+            profile_id=profile_id,
+            packet=packet,
+            state=state,
+            memory_candidates=self._rule_candidates(question),
+        )
 
     def work_context(
         self,
@@ -212,7 +247,8 @@ class ConversationContextCoordinator:
         )
         return context_hash
 
-    def capture_memory_candidates(self, conversation_id: str, content: str) -> None:
+    def _rule_candidates(self, content: str) -> tuple[MemoryCandidateDraft, ...]:
+        candidates: list[MemoryCandidateDraft] = []
         preferences = (
             (r"(?:请|以后)?用英文(?:回答)?", "language", "使用英文回答"),
             (r"(?:请|以后)?用中文(?:回答)?", "language", "使用中文回答"),
@@ -222,25 +258,27 @@ class ConversationContextCoordinator:
         )
         for pattern, key, value in preferences:
             if re.search(pattern, content, re.IGNORECASE):
-                self._repository.upsert_memory_candidate(
-                    conversation_id,
-                    kind=MemoryKind.PREFERENCE,
-                    key=key,
-                    content=value,
-                    status=MemoryStatus.CONFIRMED,
-                    pinned=True,
-                    confidence=1.0,
+                candidates.append(
+                    MemoryCandidateDraft(
+                        kind=MemoryKind.PREFERENCE,
+                        key=key,
+                        content=value,
+                        status=MemoryStatus.CONFIRMED,
+                        pinned=True,
+                        confidence=1.0,
+                        importance=0.8,
+                    )
                 )
         band = re.search("(0?\\.\\d+)\\s*[-\\u2013\\u2014至到,]\\s*(0?\\.\\d+)", content)
         if band and re.search(r"ALFF|fALFF|滤波|频段", content, re.IGNORECASE):
-            self._repository.upsert_memory_candidate(
-                conversation_id,
-                kind=MemoryKind.SCIENTIFIC_PARAMETER,
-                key="frequency_band",
-                content=f"频段 {band.group(1)}-{band.group(2)} Hz",
-                status=MemoryStatus.PENDING,
-                pinned=False,
-                confidence=0.9,
+            candidates.append(
+                MemoryCandidateDraft(
+                    kind=MemoryKind.SCIENTIFIC_PARAMETER,
+                    key="frequency_band",
+                    content=f"频段 {band.group(1)}-{band.group(2)} Hz",
+                    confidence=0.9,
+                    importance=0.8,
+                )
             )
         smoothing = re.search(
             r"(?:平滑|smooth\w*)\D{0,8}(\d+(?:\.\d+)?)\s*mm",
@@ -248,24 +286,24 @@ class ConversationContextCoordinator:
             re.IGNORECASE,
         )
         if smoothing:
-            self._repository.upsert_memory_candidate(
-                conversation_id,
-                kind=MemoryKind.SCIENTIFIC_PARAMETER,
-                key="smoothing_fwhm",
-                content=f"平滑核 {smoothing.group(1)} mm",
-                status=MemoryStatus.PENDING,
-                pinned=False,
-                confidence=0.9,
+            candidates.append(
+                MemoryCandidateDraft(
+                    kind=MemoryKind.SCIENTIFIC_PARAMETER,
+                    key="smoothing_fwhm",
+                    content=f"平滑核 {smoothing.group(1)} mm",
+                    confidence=0.9,
+                    importance=0.8,
+                )
             )
         if re.search(r"(?:排除|剔除).{0,30}(?:受试者|被试|FD|头动|帧)", content, re.IGNORECASE):
-            self._repository.upsert_memory_candidate(
-                conversation_id,
-                kind=MemoryKind.SCIENTIFIC_PARAMETER,
-                key="exclusion_rule",
-                content=content[:240],
-                status=MemoryStatus.PENDING,
-                pinned=False,
-                confidence=0.8,
+            candidates.append(
+                MemoryCandidateDraft(
+                    kind=MemoryKind.SCIENTIFIC_PARAMETER,
+                    key="exclusion_rule",
+                    content=content[:240],
+                    confidence=0.8,
+                    importance=0.9,
+                )
             )
         method = re.search(
             r"(?:采用|使用|选择)\s*(ALFF|fALFF|ReHo|种子点相关|ICA)",
@@ -273,18 +311,102 @@ class ConversationContextCoordinator:
             re.IGNORECASE,
         )
         if method:
-            self._repository.upsert_memory_candidate(
-                conversation_id,
-                kind=MemoryKind.SCIENTIFIC_PARAMETER,
-                key="method_selection",
-                content=f"方法选择 {method.group(1)}",
-                status=MemoryStatus.PENDING,
-                pinned=False,
-                confidence=0.9,
+            candidates.append(
+                MemoryCandidateDraft(
+                    kind=MemoryKind.SCIENTIFIC_PARAMETER,
+                    key="method_selection",
+                    content=f"方法选择 {method.group(1)}",
+                    confidence=0.9,
+                    importance=0.9,
+                )
             )
+        return tuple({(item.kind, item.key): item for item in candidates}.values())
 
-    @staticmethod
-    def messages_from(conversation: ConversationView) -> tuple[ContextMessage, ...]:
+    async def _extract_memory_candidates(
+        self,
+        content: str,
+        *,
+        preferred_profile_id: str | None,
+        model: str | None,
+        project_bound: bool,
+    ) -> tuple[tuple[MemoryCandidateDraft, ...], dict[str, Any]]:
+        rules = self._rule_candidates(content)
+        marker = re.search(
+            r"(?:记住|以后|偏好|我希望|我的项目|项目中|决定|采用|使用|选择|remember|prefer|always)",
+            content,
+            re.IGNORECASE,
+        )
+        if marker is None or not (preferred_profile_id or self._repository.list_model_profiles()):
+            return rules, {"model_used": False, "candidate_count": len(rules)}
+        try:
+            result = await self._summary_generator(
+                question=content,
+                evidence=[],
+                recent_messages=[],
+                pinned_context=[],
+                conversation_summary=None,
+                preferred_profile_id=preferred_profile_id,
+                model=model,
+                allow_web_search=False,
+                memory_mode=True,
+            )
+            parsed = MemoryCandidateBatch.model_validate_json(result.response.content)
+            model_candidates = tuple(
+                candidate.model_copy(
+                    update={
+                        "status": MemoryStatus.PENDING,
+                        "pinned": False,
+                        "scope": candidate.scope if project_bound else MemoryScope.CONVERSATION,
+                    }
+                )
+                for candidate in parsed.candidates
+            )
+            combined = {(item.kind, item.key): item for item in model_candidates}
+            for rule in rules:
+                model_candidate = combined.get((rule.kind, rule.key))
+                combined[(rule.kind, rule.key)] = (
+                    rule.model_copy(update={"scope": model_candidate.scope})
+                    if model_candidate is not None
+                    else rule
+                )
+            return tuple(combined.values()), {
+                "model_used": True,
+                "candidate_count": len(combined),
+                "profile_id": result.selected_profile_id,
+                "redaction_count": result.redaction_count,
+            }
+        except (ApplicationError, ValueError, TypeError):
+            return rules, {
+                "model_used": False,
+                "candidate_count": len(rules),
+                "warning": "memory_extraction_unavailable",
+            }
+
+    def persist_memory_candidates(
+        self,
+        conversation_id: str,
+        candidates: tuple[MemoryCandidateDraft, ...],
+        source_message_id: str,
+    ) -> tuple[str, ...]:
+        stored = []
+        for candidate in candidates:
+            memory = self._repository.upsert_memory_candidate(
+                conversation_id,
+                kind=candidate.kind,
+                key=candidate.key,
+                content=candidate.content,
+                status=candidate.status,
+                pinned=candidate.pinned,
+                confidence=candidate.confidence,
+                source_message_id=source_message_id,
+                scope=candidate.scope,
+                importance=candidate.importance,
+            )
+            stored.append(memory.memory_id)
+        return tuple(stored)
+
+    def messages_from(self, conversation: ConversationView) -> tuple[ContextMessage, ...]:
+        forgotten = self._repository.get_forgotten_source_message_ids(conversation.conversation_id)
         return tuple(
             ContextMessage(
                 role=item.role.value,
@@ -293,7 +415,7 @@ class ConversationContextCoordinator:
                 sequence=item.sequence,
             )
             for item in conversation.messages
-            if item.role.value in {"user", "assistant"}
+            if item.role.value in {"user", "assistant"} and item.message_id not in forgotten
         )
 
     @staticmethod
@@ -430,7 +552,7 @@ class ConversationContextCoordinator:
                 (item.profile for item in profiles if item.profile.id == preferred_profile_id),
                 None,
             )
-        return profiles[0].profile if profiles else None
+        return min(profiles, key=lambda item: item.profile.priority).profile if profiles else None
 
     @staticmethod
     def _context_hash(

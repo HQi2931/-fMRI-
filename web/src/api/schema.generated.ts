@@ -141,6 +141,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/context/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Index Conversation Memories */
+        post: operations["index_conversation_memories_api_v1_conversations__conversation_id__context_index_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/context/memories": {
         parameters: {
             query?: never;
@@ -1396,6 +1413,8 @@ export interface components {
             mode: components["schemas"]["ConversationMode"];
             /** Preferred Profile Id */
             preferred_profile_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
             /** Title */
             title?: string | null;
             /** Workspace Path */
@@ -1990,11 +2009,18 @@ export interface components {
          * MemoryAction
          * @enum {string}
          */
-        MemoryAction: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget";
+        MemoryAction: "confirm" | "update" | "reject" | "pin" | "unpin" | "forget" | "accept_proposal" | "merge_proposal" | "reject_proposal";
         /** MemoryCreate */
         MemoryCreate: {
             /** Content */
             content: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Importance
+             * @default 0.5
+             */
+            importance: number;
             /** Key */
             key: string;
             kind: components["schemas"]["MemoryKind"];
@@ -2012,7 +2038,7 @@ export interface components {
          * MemoryKind
          * @enum {string}
          */
-        MemoryKind: "preference" | "instruction" | "scientific_parameter";
+        MemoryKind: "preference" | "instruction" | "scientific_parameter" | "project_fact" | "decision";
         /**
          * MemoryScope
          * @enum {string}
@@ -2030,6 +2056,10 @@ export interface components {
             content?: string | null;
             /** Expected Version */
             expected_version: number;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Importance */
+            importance?: number | null;
         };
         /** MemoryView */
         MemoryView: {
@@ -2044,6 +2074,13 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Importance
+             * @default 0.5
+             */
+            importance: number;
             /** Key */
             key: string;
             kind: components["schemas"]["MemoryKind"];
@@ -2053,7 +2090,16 @@ export interface components {
             pinned: boolean;
             /** Project Id */
             project_id?: string | null;
+            /** Proposal Source Message Id */
+            proposal_source_message_id?: string | null;
+            /** Proposed Content */
+            proposed_content?: string | null;
             scope: components["schemas"]["MemoryScope"];
+            /**
+             * Semantic Indexed
+             * @default false
+             */
+            semantic_indexed: boolean;
             /** Source Message Id */
             source_message_id?: string | null;
             status: components["schemas"]["MemoryStatus"];
@@ -4337,6 +4383,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationContextView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    index_conversation_memories_api_v1_conversations__conversation_id__context_index_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Bad Request */

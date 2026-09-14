@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from neuroagent.agent.providers import ModelProvider
+from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.secrets import SecretResolver
 from neuroagent.application.contracts import (
     EnvironmentConfigUpdate,
@@ -54,6 +55,8 @@ from neuroagent.literature.pdf_parser import PypdfParser
 from neuroagent.literature.ports import LiteratureRepository
 from neuroagent.literature.section_parser import RuleBasedSectionParser
 from neuroagent.literature.service import LiteratureService
+from neuroagent.memory.embeddings import MemoryEmbeddings
+from neuroagent.memory.service import SemanticMemoryService
 from neuroagent.retrieval.fmrianalysis_service import FmriAnalysisRagService
 from neuroagent.retrieval.uploaded_index import UploadedLiteratureIndex
 from neuroagent.skills.compiler import SkillCompiler
@@ -107,10 +110,24 @@ class NeuroAgentService(
         self.providers = dict(providers)
         self.workspace_picker = workspace_picker
         self.context_engine: ContextEngine = cast(ContextEngine, DEFAULT_CONTEXT_MANAGER)
+        self.semantic_memory = SemanticMemoryService(
+            repository,
+            MemoryEmbeddings(
+                settings.memory_embedding_profile,
+                secret_resolver,
+                OutboundContextPolicy(settings.redaction_salt),
+            )
+            if settings.memory_embedding_profile is not None and settings.redaction_salt
+            else None,
+            limit=settings.memory_recall_limit,
+            half_life_days=settings.memory_half_life_days,
+            minimum_similarity=settings.memory_minimum_similarity,
+        )
         self.conversation_context = ConversationContextCoordinator(
             repository,
             self.context_engine,
             self._generate_rsfmri_chat,
+            self.semantic_memory,
         )
         self.conversation_work = ConversationWorkCoordinator(
             repository=repository,

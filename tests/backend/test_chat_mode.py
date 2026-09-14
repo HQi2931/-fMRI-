@@ -249,7 +249,9 @@ def test_followup_retrieval_and_per_message_citations_persist(service: NeuroAgen
             headers={"Idempotency-Key": "greeting"},
         )
     assert rag.retrieve.call_count == calls_before_greeting
-    assert classifier.call_count == 2
+    # Only contextual follow-ups need a model rewrite; standalone questions use
+    # deterministic routing and preserve the provider call for the answer.
+    assert classifier.call_count == 1
     assert "ALFF 是什么？" in [m.content for m in classifier.call_args.args[0].recent_messages]
     assert classifier.call_args.args[0].model == "chosen"
     rag.retrieve.assert_awaited_with("ALFF 与 fALFF 的区别", filters={"paper_ids": ["paper-1"]})

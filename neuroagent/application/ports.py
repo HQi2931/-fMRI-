@@ -28,6 +28,7 @@ from neuroagent.application.contracts import (
     ManifestRevisionView,
     MemoryCreate,
     MemoryKind,
+    MemoryScope,
     MemoryStatus,
     MemoryUpdate,
     MemoryView,
@@ -137,6 +138,7 @@ class RepositoryPort(Protocol):
         welcome: str,
         workspace_path: str | None,
         preferred_profile_id: str | None,
+        project_id: str | None = None,
     ) -> ConversationView: ...
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
@@ -168,6 +170,21 @@ class RepositoryPort(Protocol):
 
     def create_memory(self, conversation_id: str, request: MemoryCreate) -> MemoryView: ...
 
+    def store_memory_embedding(
+        self,
+        conversation_id: str,
+        memory_id: str,
+        *,
+        expected_version: int,
+        model_identity: str,
+        vector: tuple[float, ...],
+    ) -> bool: ...
+
+    def get_memory_embeddings(
+        self,
+        conversation_id: str,
+    ) -> dict[str, tuple[int, str, tuple[float, ...]]]: ...
+
     def upsert_memory_candidate(
         self,
         conversation_id: str,
@@ -178,7 +195,12 @@ class RepositoryPort(Protocol):
         status: MemoryStatus,
         pinned: bool,
         confidence: float,
+        source_message_id: str,
+        scope: MemoryScope = MemoryScope.CONVERSATION,
+        importance: float = 0.5,
     ) -> MemoryView: ...
+
+    def get_forgotten_source_message_ids(self, conversation_id: str) -> set[str]: ...
 
     def update_memory(
         self, conversation_id: str, memory_id: str, request: MemoryUpdate

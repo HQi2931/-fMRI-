@@ -36,6 +36,7 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
+from neuroagent.memory.models import MemoryCandidateDraft
 
 
 class ConversationMixin(BaseServiceMixin):
@@ -71,6 +72,7 @@ class ConversationMixin(BaseServiceMixin):
                 welcome=welcome,
                 workspace_path=request.workspace_path,
                 preferred_profile_id=request.preferred_profile_id,
+                project_id=request.project_id,
             ),
         )
 
@@ -201,6 +203,19 @@ class ConversationMixin(BaseServiceMixin):
                     active_run_id=active_run_id,
                 )
             )
+            candidate_ids = self.conversation_context.persist_memory_candidates(
+                conversation_id,
+                prepared_context.memory_candidates,
+                user_message.message_id,
+            )
+            if candidate_ids:
+                self.repository.append_event(
+                    project_id=project_id,
+                    run_id=active_run_id,
+                    event_type="MemoryCandidatesUpdated",
+                    severity="info",
+                    payload={"conversation_id": conversation_id, "memory_ids": candidate_ids},
+                )
             self.conversation_context.persist_snapshot(
                 conversation_id,
                 assistant_message_id=assistant_message.message_id,
@@ -297,6 +312,11 @@ class ConversationMixin(BaseServiceMixin):
                     prepared_context.summary.summary_id if prepared_context.summary else None
                 ),
                 "memory_ids": list(prepared_context.memory_ids),
+                "memory_recall": prepared_context.memory_recall,
+                "memory_candidates": [
+                    item.model_dump(mode="json") for item in prepared_context.memory_candidates
+                ],
+                "memory_extraction": prepared_context.memory_extraction,
             }
             model_metadata = result.metadata.get("model")
             if isinstance(model_metadata, dict):
@@ -356,6 +376,21 @@ class ConversationMixin(BaseServiceMixin):
                 active_run_id=conversation.active_run_id,
             )
         )
+        candidates = tuple(
+            MemoryCandidateDraft.model_validate(item)
+            for item in payload.get("memory_candidates", [])
+        )
+        candidate_ids = self.conversation_context.persist_memory_candidates(
+            conversation_id, candidates, user_message.message_id
+        )
+        if candidate_ids:
+            self.repository.append_event(
+                project_id=conversation.project_id,
+                run_id=conversation.active_run_id,
+                event_type="MemoryCandidatesUpdated",
+                severity="info",
+                payload={"conversation_id": conversation_id, "memory_ids": candidate_ids},
+            )
         context_metadata = payload.get("chat", {}).get("metadata", {}).get("context", {})
         model_metadata = payload.get("model")
         context_hash = self.conversation_context.persist_snapshot(

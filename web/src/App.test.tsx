@@ -768,6 +768,106 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
   });
 
+  it("manages semantic memories, conflicts, indexing, and conversation switching", async () => {
+    const conversation = { conversation_id: "memory-chat", mode: "chat", title: "记忆会话", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 1, created_at: now, updated_at: now, messages: [], tool_calls: [] };
+    const proposal = { memory_id: "proposal", conversation_id: "memory-chat", project_id: null, scope: "conversation", kind: "decision", key: "method", content: "使用 ALFF", status: "confirmed", pinned: false, source_message_id: "source-1", confidence: 1, importance: 0.9, expires_at: null, proposed_content: "使用 fALFF", proposal_source_message_id: "source-2", version: 2, created_at: now, updated_at: now };
+    const pending = { memory_id: "pending", conversation_id: "memory-chat", project_id: null, scope: "conversation", kind: "project_fact", key: "cohort", content: "项目包含健康对照组", status: "pending", pinned: false, source_message_id: "source-3", confidence: 0.8, importance: 0.6, expires_at: null, proposed_content: null, proposal_source_message_id: null, version: 1, created_at: now, updated_at: now };
+    let memories: unknown[] = [proposal, pending];
+    let createCount = 0;
+    let memoryIndexCount = 0;
+    let manualMemoryCount = 0;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/conversations") && init?.method === "POST") {
+        createCount += 1;
+        const body = JSON.parse(String(init.body));
+        return json({ ...conversation, ...body, conversation_id: createCount === 1 ? "memory-chat" : `memory-session-${createCount}`, title: `记忆会话 ${createCount}` }, 201);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        manualMemoryCount += 1;
+        const created = { memory_id: `manual${manualMemoryCount === 1 ? "" : `-${manualMemoryCount}`}`, conversation_id: "memory-chat", project_id: null, status: "confirmed", confidence: 1, version: 1, created_at: now, updated_at: now, ...body };
+        memories = [created, ...memories];
+        return json(created, 201);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/proposal") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        expect(body.action).toBe("merge_proposal");
+        memories = [{ ...proposal, content: body.content, proposed_content: null, proposal_source_message_id: null, version: 3 }, ...memories.filter((item) => (item as { memory_id: string }).memory_id !== "proposal")];
+        return json(memories[0]);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/pending") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        const changed = { ...pending, status: body.action === "confirm" ? "confirmed" : pending.status, pinned: body.action === "pin", version: pending.version + 1 };
+        memories = memories.map((item) => (item as { memory_id: string }).memory_id === "pending" ? changed : item);
+        return json(changed);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/manual") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        const current = memories.find((item) => (item as { memory_id: string }).memory_id === "manual") as Record<string, unknown>;
+        const changed = { ...current, content: body.content, version: Number(current.version) + 1 };
+        memories = memories.map((item) => (item as { memory_id: string }).memory_id === "manual" ? changed : item);
+        return json(changed);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/index") && init?.method === "POST") {
+        memoryIndexCount += 1;
+        return memoryIndexCount === 1
+          ? json({ backend: "semantic", indexed: "2", stale: "0" })
+          : json({ backend: "lexical", warning: "memory_embedding_not_configured" });
+      }
+      if (path.endsWith("/conversations/memory-chat/context")) return json({ summary: null, memories });
+      return defaultApi(input);
+    });
+
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await user.click(screen.getByText("对话记忆"));
+    expect(await screen.findByText("发现冲突建议")).toBeInTheDocument();
+    vi.spyOn(window, "prompt").mockReturnValue("合并使用 ALFF 与 fALFF");
+    await user.click(screen.getByRole("button", { name: "合并" }));
+    await waitFor(() => expect(screen.queryByText("发现冲突建议")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "确认" })).not.toBeInTheDocument());
+    await user.click(screen.getAllByRole("button", { name: "固定" }).at(-1)!);
+
+    await user.type(screen.getByLabelText("新增固定记忆"), "回答列出关键假设");
+    await user.selectOptions(screen.getByLabelText("记忆重要性"), "0.8");
+    await user.type(screen.getByLabelText("记忆到期日"), "2027-01-31");
+    await user.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(await screen.findByText("回答列出关键假设")).toBeInTheDocument();
+    const createCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/context/memories"));
+    const createBody = JSON.parse(String(createCall?.[1]?.body));
+    expect(createBody.importance).toBe(0.8);
+    expect(createBody.expires_at).toContain("2027-01-31");
+    vi.spyOn(window, "prompt").mockReturnValue("回答列出假设与限制");
+    await user.click(screen.getAllByRole("button", { name: "修改" })[0]);
+    expect(await screen.findByText("回答列出假设与限制")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "更新语义索引" }));
+    expect(await screen.findByText("语义索引已更新：2 条。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "更新语义索引" }));
+    expect(await screen.findByText("memory_embedding_not_configured")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("搜索记忆"), "不存在");
+    expect(screen.queryByText("回答列出假设与限制")).not.toBeInTheDocument();
+    await user.clear(screen.getByLabelText("搜索记忆"));
+    expect(screen.getByText("回答列出假设与限制")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("记忆到期日"));
+    await user.type(screen.getByLabelText("新增固定记忆"), "无到期日记忆");
+    await user.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(await screen.findByText("无到期日记忆")).toBeInTheDocument();
+    vi.spyOn(window, "prompt").mockReturnValue(null);
+    await user.click(screen.getAllByRole("button", { name: "修改" })[0]);
+
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await user.selectOptions(screen.getByLabelText("当前会话"), "memory-chat");
+    expect(screen.getByLabelText("当前会话")).toHaveValue("memory-chat");
+    await user.click(screen.getByRole("tab", { name: /rs-fMRI 工作流/ }));
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(screen.getByLabelText("当前会话")).toHaveValue("memory-session-3");
+  });
+
   it("shows paper indexing states and recovers from a failed upload", async () => {
     const papers = [
       { paper: { paper_id: "pending", title: null, page_count: 1, index_status: "not_indexed", index_error: null }, sections: [], chunks: [], warnings: [] },

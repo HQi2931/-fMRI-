@@ -146,6 +146,19 @@ def list_conversations(
     return service_from(request).list_conversations(mode)
 
 
+@router.post("/conversations/{conversation_id}/context/index", tags=["agent"])
+async def index_conversation_memories(conversation_id: str, request: Request) -> dict[str, str]:
+    from neuroagent.application.errors import ApplicationError
+    from neuroagent.memory.embeddings import MemoryEmbeddingError
+
+    try:
+        return await service_from(request).semantic_memory.index(conversation_id)
+    except MemoryEmbeddingError as exc:
+        raise ApplicationError(
+            str(exc), "记忆索引失败,请检查服务配置后重试。", status_code=503
+        ) from exc
+
+
 @router.get("/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"])
 def get_conversation(conversation_id: str, request: Request) -> ConversationView:
     return service_from(request).get_conversation(conversation_id)
@@ -156,9 +169,7 @@ def get_conversation(conversation_id: str, request: Request) -> ConversationView
     response_model=ConversationContextView,
     tags=["agent"],
 )
-def get_conversation_context(
-    conversation_id: str, request: Request
-) -> ConversationContextView:
+def get_conversation_context(conversation_id: str, request: Request) -> ConversationContextView:
     return service_from(request).get_conversation_context(conversation_id)
 
 
@@ -174,9 +185,7 @@ def create_conversation_memory(
     request: Request,
     idempotency_key: IdempotencyKey,
 ) -> MemoryView:
-    return service_from(request).create_conversation_memory(
-        conversation_id, body, idempotency_key
-    )
+    return service_from(request).create_conversation_memory(conversation_id, body, idempotency_key)
 
 
 @router.patch(
