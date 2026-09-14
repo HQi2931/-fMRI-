@@ -14,15 +14,11 @@
 
 ## 当前阶段
 
-仅建立 gatherers、selectors、structure、compressors 和 snapshots 的目录边界，未实现上下文构建器。
+`ContextEngine` 已按模型窗口为当前问题、最近完整问答轮次、检索证据、确认记忆、滚动摘要和 Work 状态分配预算。Chat 与 Work 共用同一选择逻辑，Gateway 在发送前统一脱敏；每次成功构建保存不含完整正文的结构化快照。
+
+长对话在未摘要历史达到 24 条消息或超过对话预算阈值时压缩，保留最近 6 个完整问答轮次。Chat 优先调用当前模型生成摘要，失败时使用确定性摘录；Work 使用确定性摘录。
 
 ## 后续核心接口
 
-- `ContextEngine`
-- `ContextPacket`
-- `ContextSnapshot`
-- `Gatherer`
-- `Selector`
-- `Structurer`
-- `Compressor`
-- `TokenBudget`
+- Provider 专用 token 计数器
+- 更细粒度的上下文调试视图

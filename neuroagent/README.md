@@ -17,7 +17,7 @@
 | `infrastructure` | 数据检查、路径策略、SQLite/Alembic 和环境探测 |
 | `observability` | 持久化审计事件、SSE 游标和 trace ID |
 
-`core`、`context`、`memory`、`retrieval`、`multi_agent` 和 `plugins` 来自早期通用框架草案，当前只保留边界说明，不是本 MVP 的运行依赖。当前结构以根目录 `AGENTS.md`、系统设计、fMRI Skill 设计和 ADR 为准。
+`chat`、`context`、`memory`、`literature` 和 `retrieval` 已承载科研问答：有限历史上下文、PDF 摄取、手动索引和可追溯引用；不实现长期记忆。`core`、`multi_agent` 和通用 `plugins` 仍保留为扩展边界。当前结构以根目录 `AGENTS.md`、系统设计、fMRI Skill 设计和 ADR 为准。
 
 ## 依赖规则
 

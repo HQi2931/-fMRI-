@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from neuroagent.agent.models import GatewayResult
 from neuroagent.application.contracts import AgentTaskView, ModelProfileInput, ModelProfileView
-from neuroagent.application.errors import ConflictError, NotFoundError
+from neuroagent.application.errors import NotFoundError
 from neuroagent.application.hashing import canonical_json
 from neuroagent.infrastructure.persistence.models import (
     AgentTaskRow,
@@ -26,18 +26,17 @@ class ModelAgentMixin(RepositoryBaseMixin):
 
     def create_model_profile(self, profile: ModelProfileInput) -> ModelProfileView:
         with self._write_session() as session:
-            if session.get(ModelProfileRow, profile.id) is not None:
-                raise ConflictError(
-                    "model_profile_exists",
-                    "同名模型配置已存在; 模型配置是不可变资源。",
+            row = session.get(ModelProfileRow, profile.id)
+            if row is None:
+                row = ModelProfileRow(
                     profile_id=profile.id,
+                    profile_json=canonical_json(profile.model_dump(mode="json")),
+                    version=1,
                 )
-            row = ModelProfileRow(
-                profile_id=profile.id,
-                profile_json=canonical_json(profile.model_dump(mode="json")),
-                version=1,
-            )
-            session.add(row)
+                session.add(row)
+            else:
+                row.profile_json = canonical_json(profile.model_dump(mode="json"))
+                row.version += 1
             session.flush()
             return self._model_profile(row)
 

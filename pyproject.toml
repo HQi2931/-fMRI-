@@ -21,6 +21,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "python-dotenv>=1.1,<2",
+  "pypdf>=6,<7",
   "pyyaml>=6.0.2,<7",
   "sqlalchemy>=2.0.41,<3",
   "uvicorn[standard]>=0.35,<1",
@@ -29,6 +30,9 @@ dependencies = [
 [project.scripts]
 rsfmri-api = "neuroagent.api.main:main"
 rsfmri-worker = "neuroagent.workflow.worker:main"
+
+[project.optional-dependencies]
+rag = ["langchain-chroma>=0.2,<2", "requests>=2.32,<3"]
 
 [dependency-groups]
 dev = [

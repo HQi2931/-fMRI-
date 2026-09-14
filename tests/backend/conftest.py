@@ -34,6 +34,7 @@ def work_root(tmp_path: Path) -> Path:
 @pytest.fixture
 def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[NeuroAgentService]:
     settings = Settings(
+        rag_db_dir=None,  # Never inherit a developer's paid RAG configuration in tests.
         database_url=f"sqlite:///{(tmp_path / 'metadata.sqlite').as_posix()}",
         allowed_source_roots=[source_root],
         allowed_work_root=work_root,

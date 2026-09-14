@@ -150,6 +150,7 @@ export function RunsPage() {
         mock_outcome: outcome,
         mock_delay_ms: 50,
         execution_backend: executionBackend,
+        workspace_mode: "isolated",
         real_execution_confirmed: confirmed,
       });
       updateWorkspace({ runId: created.run_id, runVersion: created.version, runState: created.state });

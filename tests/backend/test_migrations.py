@@ -34,6 +34,12 @@ def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> No
         "qc_review_revisions",
         "qc_approval_records",
         "statistical_results",
+        "conversations",
+        "conversation_messages",
+        "conversation_tool_calls",
+        "papers",
+        "paper_sections",
+        "literature_chunks",
     }.issubset(tables)
 
 

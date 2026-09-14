@@ -98,6 +98,7 @@ class RunMixin(BaseServiceMixin):
                 "outcome": request.mock_outcome.value,
                 "delay_ms": request.mock_delay_ms,
                 "execution_backend": request.execution_backend.value,
+                "workspace_mode": request.workspace_mode.value,
                 "executor_type": (
                     "matlab_preprocessing"
                     if request.execution_backend is ExecutionBackend.MATLAB
@@ -129,6 +130,7 @@ class RunMixin(BaseServiceMixin):
                 payload={
                     "plan_revision_id": result.plan_revision_id,
                     "execution_backend": request.execution_backend.value,
+                    "workspace_mode": request.workspace_mode.value,
                     "executor_type": (
                         "matlab_preprocessing"
                         if request.execution_backend is ExecutionBackend.MATLAB

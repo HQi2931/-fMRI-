@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 from neuroagent.application.contracts import (
@@ -18,12 +19,57 @@ from neuroagent.application.contracts import (
     ManifestScanRequest,
     ProjectCreate,
     ProjectView,
+    WorkspaceCheckRequest,
+    WorkspaceCheckView,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class ProjectDatasetMixin(BaseServiceMixin):
+    def check_workspace(self, request: WorkspaceCheckRequest) -> WorkspaceCheckView:
+        """Inspect a selected workspace without registering or modifying it."""
+
+        source = self.path_policy.validate_project_source_root(request.path)
+        content = self.dataset_inspector.inspect(source)
+        profile = content["profile"]
+        subjects = content["subjects"]
+        warnings = list(profile.get("warnings", []))
+        functional_subject_count = sum(1 for item in subjects if item.get("functional_files"))
+        anatomical_subject_count = sum(1 for item in subjects if item.get("anatomical_files"))
+        blocking: list[str] = []
+        if profile["kind"] == "unknown":
+            blocking.append("未识别到可供 DPABI 使用的影像输入。")
+        if functional_subject_count == 0:
+            blocking.append("未识别到明确的功能 BOLD 输入。")
+        if any(len(item.get("functional_files", [])) > 1 for item in subjects):
+            blocking.append("存在多个功能候选, 必须先明确每个受试者使用的 run。")
+        invalid_nifti_files = list(content.get("invalid_nifti_files", []))
+        if invalid_nifti_files:
+            warnings.append(f"{len(invalid_nifti_files)} 个 NIfTI 文件的头标记无法读取。")
+            functional_files = {
+                file_path for item in subjects for file_path in item.get("functional_files", [])
+            }
+            if functional_files.intersection(invalid_nifti_files):
+                blocking.append("功能输入不是可读取的 NIfTI 文件, 不能交给 DPABI。")
+        return WorkspaceCheckView(
+            path=str(source),
+            kind=profile["kind"],
+            file_count=profile["file_count"],
+            nifti_count=profile["nifti_count"],
+            dicom_count=profile["dicom_count"],
+            subject_count=profile["subject_count"],
+            functional_subject_count=functional_subject_count,
+            anatomical_subject_count=anatomical_subject_count,
+            input_stage=content.get("input_stage"),
+            output_directories=content.get("output_directories", []),
+            invalid_nifti_files=invalid_nifti_files,
+            warnings=warnings,
+            blocking_issues=blocking,
+            subjects=subjects,
+            checked_at=datetime.now(UTC),
+        )
+
     def create_project(self, request: ProjectCreate, idempotency_key: str) -> ProjectView:
         def prepare() -> tuple[list[str], str]:
             roots = [

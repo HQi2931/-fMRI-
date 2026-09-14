@@ -47,6 +47,8 @@ class MatlabTemplateRenderer:
         job: MatlabJobSpec,
         environment: MatlabEnvironment,
         allowed_work_root: Path,
+        *,
+        preprocessing_workspace: Path | None = None,
     ) -> RenderedJob:
         work_root = allowed_work_root.resolve(strict=True)
         run_directory = (work_root / job.run_id).resolve()
@@ -97,8 +99,13 @@ class MatlabTemplateRenderer:
             subject_list = run_directory / "subject_list.txt"
             _write_stable(subject_list, "\n".join(job.payload.subject_ids) + "\n")
             base_cfg = self._resolve_artifact(run_directory, job, job.payload.base_cfg_artifact_id)
-            staging = (run_directory / job.payload.staging_relative_path).resolve()
-            _assert_within(staging, run_directory)
+            if preprocessing_workspace is None:
+                staging = (run_directory / job.payload.staging_relative_path).resolve()
+                _assert_within(staging, run_directory)
+            else:
+                staging = preprocessing_workspace.resolve(strict=True)
+                if not staging.is_dir():
+                    raise MatlabExecutionError("in-place DPABI workspace must be a directory")
             script = _replace_tokens(
                 self._load_template("run_preprocessing.m.tmpl"),
                 {
@@ -252,14 +259,21 @@ class ControlledMatlabExecutor:
         allowed_work_root: Path,
         *,
         allow_real_execution: bool = False,
+        preprocessing_workspace: Path | None = None,
     ) -> None:
         self._renderer = renderer
         self._environment = environment
         self._allowed_work_root = allowed_work_root
         self._allow_real_execution = allow_real_execution
+        self._preprocessing_workspace = preprocessing_workspace
 
     def dry_run(self, job: MatlabJobSpec) -> MatlabJobResult:
-        rendered = self._renderer.render(job, self._environment, self._allowed_work_root)
+        rendered = self._renderer.render(
+            job,
+            self._environment,
+            self._allowed_work_root,
+            preprocessing_workspace=self._preprocessing_workspace,
+        )
         return MatlabJobResult(
             status=MatlabJobStatus.DRY_RUN,
             job_hash=job.job_hash,
@@ -275,7 +289,12 @@ class ControlledMatlabExecutor:
             raise MatlabExecutionNotAuthorized(
                 "real MATLAB execution requires explicit caller authorization"
             )
-        rendered = self._renderer.render(job, self._environment, self._allowed_work_root)
+        rendered = self._renderer.render(
+            job,
+            self._environment,
+            self._allowed_work_root,
+            preprocessing_workspace=self._preprocessing_workspace,
+        )
         executable = Path(rendered.command[0])
         if not executable.is_file():
             raise MatlabExecutionError(f"MATLAB executable not found: {executable}")

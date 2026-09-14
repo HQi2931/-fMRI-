@@ -18,7 +18,7 @@ function pathOf(input: RequestInfo | URL): string {
 function defaultApi(input: RequestInfo | URL): Promise<Response> {
   const path = pathOf(input);
   if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
-  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles")) return json([]);
+  if (path.endsWith("/projects") || path.endsWith("/runs") || path.endsWith("/skills") || path.endsWith("/model-profiles") || path.endsWith("/conversations") || path.endsWith("/literature/papers")) return json([]);
   if (path.endsWith("/statistics/results")) return json([]);
   if (path.endsWith("/environment/probe")) return json({ ready: false, environment_hash: "e".repeat(64), components: [] });
   if (path.endsWith("/environment/config")) return json({ matlab_executable: null, spm_dir: null, dpabi_dir: null, matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false });
@@ -638,7 +638,7 @@ describe("App", () => {
   it.each([
     ["/qc", "先审查，再进入统计"],
     ["/statistics", "版本化统计设计"],
-    ["/settings", "运行条件与模型配置"],
+    ["/settings", "运行条件与服务商 API"],
   ])("renders the guarded %s page", async (route, heading) => {
     renderAt(route);
     expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
@@ -674,7 +674,7 @@ describe("App", () => {
     });
 
     await user.selectOptions(screen.getByLabelText("任务类型"), "log_summarizer");
-    await user.selectOptions(screen.getByLabelText("模型"), "provider1");
+    await user.selectOptions(screen.getByLabelText("模型"), "provider1:configured-model");
     await user.click(send);
     await user.selectOptions(screen.getByLabelText("任务类型"), "report_writer");
     await user.click(send);
@@ -687,6 +687,242 @@ describe("App", () => {
     expect(JSON.stringify(reportRequest)).not.toContain("TEST_API_KEY");
   });
 
+  it("separates RAG chat from the rs-fMRI work mode", async () => {
+    const profile = { profile: { id: "search-model", provider: "openai-compatible", base_url: "https://example.test", model: "fmri-chat", api_key_env: "SEARCH_API_KEY", priority: 10, capabilities: ["web_search"], timeout_seconds: 45 }, version: 1, created_at: now };
+    const paper = { paper_id: "paper1", title: "方法论文", page_count: 3, index_status: "not_indexed", index_error: null };
+    let indexAttempts = 0;
+    let memoryVisible = true;
+    let savedConversation: unknown = null;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/literature/papers") && init?.method === "POST") return json({ paper, sections: [], chunks: [], warnings: [] }, 201);
+      if (path.endsWith("/literature/papers/paper1/index")) {
+        indexAttempts += 1;
+        return indexAttempts === 1
+          ? json({ error: { code: "literature_index_failed", message: "索引服务暂时不可用" } }, 503)
+          : json({ paper: { ...paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] });
+      }
+      if (path.endsWith("/conversations") && init?.method !== "POST" && savedConversation) return json([savedConversation]);
+      if (path.endsWith("/conversations/chat1/context/memories/memory1") && init?.method === "PATCH") {
+        memoryVisible = false;
+        return json({ memory_id: "memory1", conversation_id: "chat1", project_id: null, scope: "conversation", kind: "preference", key: "length", content: "", status: "forgotten", pinned: false, source_message_id: null, confidence: 1, version: 2, created_at: now, updated_at: now });
+      }
+      if (path.endsWith("/conversations/chat1/context")) return json({ summary: null, memories: memoryVisible ? [{ memory_id: "memory1", conversation_id: "chat1", project_id: null, scope: "conversation", kind: "preference", key: "length", content: "回答保持简洁", status: "confirmed", pinned: true, source_message_id: null, confidence: 1, version: 1, created_at: now, updated_at: now }] : [] });
+      const rag = {
+        answer: {
+          answer: "ALFF 衡量低频振幅，fALFF 使用低频功率与全频功率之比。",
+          disclaimer: "研究用途信息",
+          evidence: [{ source: "metrics.md", title: "domain/metrics.md", excerpt: "ALFF 与 fALFF 输入约束", score: 3 }],
+          in_scope: true,
+        },
+        remote_search_used: true,
+      };
+      const welcome = { message_id: "m0", conversation_id: "chat1", sequence: 1, role: "assistant", content: "欢迎", payload: {}, created_at: now };
+      if (path.endsWith("/model-profiles")) return json([profile]);
+      if (path.endsWith("/providers/models")) return json({ models: ["fmri-chat", "fmri-chat-fast"] });
+      if (path.endsWith("/conversations") && init?.method === "POST") {
+        return json({ conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 1, created_at: now, updated_at: now, messages: [welcome], tool_calls: [] }, 201);
+      }
+      if (path.endsWith("/conversations/chat1/turns") && init?.method === "POST") {
+        const userMessage = { message_id: "m1", conversation_id: "chat1", sequence: 2, role: "user", content: "ALFF 和 fALFF 有什么区别？", payload: {}, created_at: now };
+        const assistantMessage = { message_id: "m2", conversation_id: "chat1", sequence: 3, role: "assistant", content: `${rag.answer.answer} [C1]`, payload: { chat: { citations: [{ citation_id: "C1", chunk_id: "chunk1", source: "metrics.md", title: "domain/metrics.md", excerpt: "ALFF 与 fALFF 输入约束", paper_id: "paper1", section: "Methods", page_start: 2, page_end: 2 }] } }, created_at: now };
+        savedConversation = { conversation_id: "chat1", mode: "chat", title: "fMRI 专项问答", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 2, created_at: now, updated_at: now, messages: [welcome, userMessage, assistantMessage], tool_calls: [] };
+        return json({ conversation: savedConversation, user_message: userMessage, assistant_message: assistantMessage, tool_call: null }, 201);
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+
+    await user.upload(screen.getByLabelText("上传 PDF"), new File(["%PDF synthetic fixture"], "methods.pdf", { type: "application/pdf" }));
+    await user.click(await screen.findByRole("button", { name: "加入知识库" }));
+    expect(await screen.findByRole("button", { name: "重试加入知识库" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试加入知识库" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "检索 方法论文" })).toBeEnabled());
+    await user.click(screen.getByRole("checkbox", { name: "检索 方法论文" }));
+    await user.selectOptions(await screen.findByLabelText("模型"), "search-model:fmri-chat");
+    await user.click(screen.getByRole("checkbox", { name: "联网搜索" }));
+    await user.type(screen.getByPlaceholderText("例如：ALFF 和 fALFF 的输入阶段有什么区别？"), "ALFF 和 fALFF 有什么区别？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByText(/ALFF 衡量低频振幅/)).toBeInTheDocument();
+    await user.click(await screen.findByText("对话记忆"));
+    expect(await screen.findByText("回答保持简洁")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "忘记" }));
+    await waitFor(() => expect(screen.queryByText("回答保持简洁")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "[C1]" }));
+    expect(screen.getByText("[C1] domain/metrics.md")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
+    expect(screen.queryByLabelText("任务类型")).not.toBeInTheDocument();
+    const turnCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/conversations/chat1/turns"));
+    expect(JSON.parse(String(turnCall?.[1]?.body))).toMatchObject({
+      preferred_profile_id: "search-model",
+      model: "fmri-chat",
+      allow_remote_search: true,
+      paper_ids: ["paper1"],
+    });
+    cleanup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.click(await screen.findByRole("button", { name: "[C1]" }));
+    expect(screen.getByRole("link", { name: "打开原 PDF" })).toHaveAttribute("href", "/api/v1/literature/papers/paper1/source#page=2");
+  });
+
+  it("manages semantic memories, conflicts, indexing, and conversation switching", async () => {
+    const conversation = { conversation_id: "memory-chat", mode: "chat", title: "记忆会话", workspace_path: null, preferred_profile_id: null, project_id: null, active_run_id: null, version: 1, created_at: now, updated_at: now, messages: [], tool_calls: [] };
+    const proposal = { memory_id: "proposal", conversation_id: "memory-chat", project_id: null, scope: "conversation", kind: "decision", key: "method", content: "使用 ALFF", status: "confirmed", pinned: false, source_message_id: "source-1", confidence: 1, importance: 0.9, expires_at: null, proposed_content: "使用 fALFF", proposal_source_message_id: "source-2", version: 2, created_at: now, updated_at: now };
+    const pending = { memory_id: "pending", conversation_id: "memory-chat", project_id: null, scope: "conversation", kind: "project_fact", key: "cohort", content: "项目包含健康对照组", status: "pending", pinned: false, source_message_id: "source-3", confidence: 0.8, importance: 0.6, expires_at: null, proposed_content: null, proposal_source_message_id: null, version: 1, created_at: now, updated_at: now };
+    let memories: unknown[] = [proposal, pending];
+    let createCount = 0;
+    let memoryIndexCount = 0;
+    let manualMemoryCount = 0;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/conversations") && init?.method === "POST") {
+        createCount += 1;
+        const body = JSON.parse(String(init.body));
+        return json({ ...conversation, ...body, conversation_id: createCount === 1 ? "memory-chat" : `memory-session-${createCount}`, title: `记忆会话 ${createCount}` }, 201);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        manualMemoryCount += 1;
+        const created = { memory_id: `manual${manualMemoryCount === 1 ? "" : `-${manualMemoryCount}`}`, conversation_id: "memory-chat", project_id: null, status: "confirmed", confidence: 1, version: 1, created_at: now, updated_at: now, ...body };
+        memories = [created, ...memories];
+        return json(created, 201);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/proposal") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        expect(body.action).toBe("merge_proposal");
+        memories = [{ ...proposal, content: body.content, proposed_content: null, proposal_source_message_id: null, version: 3 }, ...memories.filter((item) => (item as { memory_id: string }).memory_id !== "proposal")];
+        return json(memories[0]);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/pending") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        const changed = { ...pending, status: body.action === "confirm" ? "confirmed" : pending.status, pinned: body.action === "pin", version: pending.version + 1 };
+        memories = memories.map((item) => (item as { memory_id: string }).memory_id === "pending" ? changed : item);
+        return json(changed);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/memories/manual") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        const current = memories.find((item) => (item as { memory_id: string }).memory_id === "manual") as Record<string, unknown>;
+        const changed = { ...current, content: body.content, version: Number(current.version) + 1 };
+        memories = memories.map((item) => (item as { memory_id: string }).memory_id === "manual" ? changed : item);
+        return json(changed);
+      }
+      if (path.endsWith("/conversations/memory-chat/context/index") && init?.method === "POST") {
+        memoryIndexCount += 1;
+        return memoryIndexCount === 1
+          ? json({ backend: "semantic", indexed: "2", stale: "0" })
+          : json({ backend: "lexical", warning: "memory_embedding_not_configured" });
+      }
+      if (path.endsWith("/conversations/memory-chat/context")) return json({ summary: null, memories });
+      return defaultApi(input);
+    });
+
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await user.click(screen.getByText("对话记忆"));
+    expect(await screen.findByText("发现冲突建议")).toBeInTheDocument();
+    vi.spyOn(window, "prompt").mockReturnValue("合并使用 ALFF 与 fALFF");
+    await user.click(screen.getByRole("button", { name: "合并" }));
+    await waitFor(() => expect(screen.queryByText("发现冲突建议")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "确认" })).not.toBeInTheDocument());
+    await user.click(screen.getAllByRole("button", { name: "固定" }).at(-1)!);
+
+    await user.type(screen.getByLabelText("新增固定记忆"), "回答列出关键假设");
+    await user.selectOptions(screen.getByLabelText("记忆重要性"), "0.8");
+    await user.type(screen.getByLabelText("记忆到期日"), "2027-01-31");
+    await user.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(await screen.findByText("回答列出关键假设")).toBeInTheDocument();
+    const createCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/context/memories"));
+    const createBody = JSON.parse(String(createCall?.[1]?.body));
+    expect(createBody.importance).toBe(0.8);
+    expect(createBody.expires_at).toContain("2027-01-31");
+    vi.spyOn(window, "prompt").mockReturnValue("回答列出假设与限制");
+    await user.click(screen.getAllByRole("button", { name: "修改" })[0]);
+    expect(await screen.findByText("回答列出假设与限制")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "更新语义索引" }));
+    expect(await screen.findByText("语义索引已更新：2 条。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "更新语义索引" }));
+    expect(await screen.findByText("memory_embedding_not_configured")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("搜索记忆"), "不存在");
+    expect(screen.queryByText("回答列出假设与限制")).not.toBeInTheDocument();
+    await user.clear(screen.getByLabelText("搜索记忆"));
+    expect(screen.getByText("回答列出假设与限制")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("记忆到期日"));
+    await user.type(screen.getByLabelText("新增固定记忆"), "无到期日记忆");
+    await user.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(await screen.findByText("无到期日记忆")).toBeInTheDocument();
+    vi.spyOn(window, "prompt").mockReturnValue(null);
+    await user.click(screen.getAllByRole("button", { name: "修改" })[0]);
+
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await user.selectOptions(screen.getByLabelText("当前会话"), "memory-chat");
+    expect(screen.getByLabelText("当前会话")).toHaveValue("memory-chat");
+    await user.click(screen.getByRole("tab", { name: /rs-fMRI 工作流/ }));
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(screen.getByLabelText("当前会话")).toHaveValue("memory-session-3");
+  });
+
+  it("shows paper indexing states and recovers from a failed upload", async () => {
+    const papers = [
+      { paper: { paper_id: "pending", title: null, page_count: 1, index_status: "not_indexed", index_error: null }, sections: [], chunks: [], warnings: [] },
+      { paper: { paper_id: "failed", title: "失败论文", page_count: 2, index_status: "failed", index_error: "上次索引失败" }, sections: [], chunks: [], warnings: [] },
+    ];
+    let resolveIndex: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/literature/papers") && (init?.method ?? "GET") === "GET") return json(papers);
+      if (path.endsWith("/literature/papers") && init?.method === "POST") {
+        return json({ error: { code: "unsupported_file_type", message: "只支持 PDF 文献文件" } }, 415);
+      }
+      if (path.endsWith("/literature/papers/pending/index")) {
+        return new Promise<Response>((resolve) => { resolveIndex = resolve; });
+      }
+      if (path.endsWith("/literature/papers/failed/index")) {
+        return json({ error: { code: "literature_index_failed", message: "索引服务不可用" } }, 503);
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+    await user.click(screen.getByRole("tab", { name: /fMRI 专项问答/ }));
+    expect(screen.getByText("未命名论文")).toBeInTheDocument();
+    expect(screen.getByText("上次索引失败")).toBeInTheDocument();
+    await user.upload(screen.getByLabelText("上传 PDF"), new File(["bad"], "bad.pdf", { type: "application/pdf" }));
+    expect(await screen.findByText("只支持 PDF 文献文件")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "加入知识库" }));
+    expect(await screen.findByText(/索引中或上次中断/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "正在加入…" })).toBeDisabled();
+    resolveIndex?.(new Response(JSON.stringify({ paper: { ...papers[0].paper, index_status: "ready" }, sections: [], chunks: [], warnings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "检索 pending" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "重试加入知识库" }));
+    expect((await screen.findAllByText("索引服务不可用")).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("uses the system folder picker instead of a typed workspace path", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/workspaces/pick") && init?.method === "POST") {
+        return json({ path: "D:\\selected-dpabi-workspace", cancelled: false });
+      }
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/agent");
+
+    expect(screen.queryByRole("textbox", { name: "本机目录" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "浏览…" }));
+    expect(await screen.findByText("D:\\selected-dpabi-workspace")).toBeInTheDocument();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => pathOf(url).endsWith("/workspaces/pick")),
+    ).toBe(true);
+  });
+
   it("stores only non-secret provider metadata and runs a lightweight connectivity test", async () => {
     let profiles: unknown[] = [];
     const profile = { profile: { id: "deepseek-default", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "configured-model", api_key_env: "DEEPSEEK_API_KEY", priority: 10, capabilities: ["json_object"], timeout_seconds: 45 }, version: 1, created_at: now };
@@ -696,23 +932,21 @@ describe("App", () => {
       if (path.endsWith("/environment/probe")) return json({ ready: true, environment_hash: "e".repeat(64), components: [{ name: "MATLAB", available: true, evidence: "R2023b" }] });
       if (path.endsWith("/model-profiles") && init?.method === "POST") { profiles = [profile]; return json(profile, 201); }
       if (path.endsWith("/model-profiles")) return json(profiles);
-      if (path.endsWith("/providers/test")) return json({ profile_id: "deepseek-default", available: true, routing: { task_type: "plan_explainer", selected_profile_id: "deepseek-default", candidate_profile_ids: ["deepseek-default"], required_capabilities: ["json_object"], reason: "configured" }, context_hash: "c".repeat(64) });
+      if (path.endsWith("/providers/models")) return json({ models: ["configured-model", "reasoning-model"] });
       return defaultApi(input);
     });
     const user = userEvent.setup();
     renderAt("/settings");
-    await user.type(screen.getByLabelText("配置 ID"), "deepseek-default");
     await user.type(screen.getByLabelText("API 基址"), "https://api.deepseek.com");
     await user.type(screen.getByLabelText("密钥环境变量名"), "DEEPSEEK_API_KEY");
-    await user.type(screen.getByLabelText("模型名称（手动输入）"), "configured-model");
-    await user.click(screen.getByRole("button", { name: "保存模型配置" }));
-    expect(await screen.findByText(/模型配置已保存/)).toBeInTheDocument();
-    const testButton = await screen.findByRole("button", { name: "测试" });
+    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+    expect(await screen.findByText(/Agent 对话框可直接选择其返回的 2 个模型/)).toBeInTheDocument();
+    const testButton = await screen.findByRole("button", { name: "刷新模型列表" });
     await user.click(testButton);
-    expect(await screen.findByText(/轻量测试成功/)).toBeInTheDocument();
+    expect(await screen.findByText(/当前返回 2 个可选模型/)).toBeInTheDocument();
     const saved = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/model-profiles") && init?.method === "POST");
     const savedBody = JSON.parse(String(saved?.[1]?.body));
-    expect(savedBody.profile.id).toBe("deepseek-default");
+    expect(savedBody.profile.id).toBe("deepseek");
     expect(savedBody.api_key).toBeNull();
     expect(String(saved?.[1]?.body)).not.toContain("replace-locally");
   });

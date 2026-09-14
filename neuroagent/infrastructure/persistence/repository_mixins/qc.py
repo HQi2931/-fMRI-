@@ -332,6 +332,24 @@ class QcReviewMixin(RepositoryBaseMixin):
             )
             return self._qc_review(row, approval)
 
+    def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None:
+        with self.database.session_factory() as session:
+            row = session.scalar(
+                select(QcReviewRow)
+                .where(QcReviewRow.run_id == run_id)
+                .order_by(QcReviewRow.revision.desc())
+                .limit(1)
+            )
+            if row is None:
+                return None
+            approval = session.scalar(
+                select(QcApprovalRow)
+                .where(QcApprovalRow.review_revision_id == row.review_revision_id)
+                .order_by(QcApprovalRow.created_at.desc())
+                .limit(1)
+            )
+            return self._qc_review(row, approval)
+
     def approve_qc_review(
         self, review_revision_id: str, request: QcReviewApprove
     ) -> tuple[QcReviewView, RunView]:

@@ -4,7 +4,7 @@
 
 ## 通用规则
 
-- 所有 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。
+- JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
 - 修改已有资源时，请求体会携带 `expected_*_version`、计划哈希或 revision 哈希。不匹配时失败关闭，不自动覆盖。
 - 业务错误、请求校验、框架 HTTP 错误、未匹配 API 路径和意外 `500` 都返回 `{"error": {"code", "message", "details", "trace_id"}}`；意外错误不会返回原始异常文本。每个 HTTP 响应都有 `X-Trace-ID`，客户端仍应先检查 HTTP 状态码。
 - 下表中的 Artifact 接口只返回元数据、相对路径、校验和与 provenance。当前没有 Artifact 文件下载接口。
@@ -30,7 +30,64 @@
 | `GET` | `/projects` | 列出项目 |
 | `GET` | `/projects/{project_id}` | 读取项目 |
 | `GET` | `/projects/{project_id}/audit-events` | 按单调游标读取项目审计事件 |
+| `POST` | `/workspaces/check` | 对用户选择的本机目录执行只读 DPABI/fMRI 格式检查 |
+| `POST` | `/workspaces/pick` | 打开服务所在 Windows 会话的系统文件夹选择器 |
 | `POST` | `/projects/{project_id}/datasets` | 在项目允许根内登记数据集 |
+
+## 持久化对话与工具编排
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/conversations` | 创建 `chat` 或 `work` 对话并持久化欢迎消息 |
+| `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
+| `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
+| `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
+
+`chat` 先调用本地 `rag_rsfmri_question`；存在模型配置时，将限定范围的问题和本地证据通过
+`OutboundContextPolicy` 脱敏后交给所选 LLM。请求中的 `allow_remote_search=true` 只会路由到
+声明 `web_search` 能力的 Profile，并将 URL 引用、模型 Profile、上下文哈希和用量摘要保存到
+`rsfmri_chat_llm` 工具记录。没有模型配置且未要求联网时保留纯本地 RAG 回退。`work` 当前可编排
+`check_workspace`、`get_run_progress` 和 `start_dpabi_preprocessing`。每次工具调用都会保存
+输入摘要、状态、输出或安全错误。启动预处理必须提交已审批计划 ID、计划哈希和
+`real_execution_confirmed=true`；服务只负责排队，实际 MATLAB 仍由现有 Worker 执行。
+
+前端把 Model Profile 作为服务商 API 连接使用。绑定时调用 `/providers/models` 验证密钥并获取模型；
+Agent 页面再次读取该连接的模型列表，并在每个对话回合用 `model` 字段提交用户实际选择的模型。
+Profile 内部保存的 `model` 仅作为服务商暂时无法列出模型时的兼容回退，不要求用户额外维护。
+
+Chat 回合请求从 Phase 1 起包含 `stream` 字段。当前只支持 `false`；`true` 返回
+`422 chat_streaming_not_implemented`，为后续 SSE/NDJSON token stream 保留明确扩展位。ChatAgent 会把
+执行型语言转换为 `work_request` draft 并保存到消息 payload，但不会创建计划、运行 MATLAB 或调用
+Work Mode。普通回答中的 citation 只由类型化检索证据或 Provider 返回的 URL annotation 生成，
+不会从模型自由文本中猜测来源。
+
+Chat 回合支持可选 `paper_ids: string[]`；省略或空列表搜索全部可用文献，非空仅搜索所选已索引论文。
+最近 12 条消息通过同一脱敏网关参与意图判断和回答；明确寒暄不检索，执行需求仍只生成草案。
+正文 `[C1]` 编号对应本轮证据；无效编号移除并提示，`assistant_message.payload.chat.citations`
+只保存实际引用来源。引用包含章节、摘录和物理页码，旧库缺失页码为 null。
+
+## Literature 文献管理
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/literature/papers` | multipart 上传一篇 PDF，返回 Paper、sections、chunks 和解析 warnings |
+| `GET` | `/literature/papers` | 列出已摄取论文及其结构化结果 |
+| `GET` | `/literature/papers/{paper_id}` | 读取 Paper、sections 和可追溯 chunks |
+| `POST` | `/literature/papers/{paper_id}/index` | 显式发送脱敏文本到 DashScope 并 upsert 索引，返回 PaperIngestResult |
+| `GET` | `/literature/papers/{paper_id}/source` | 受控读取原 PDF，可配合 `#page=N` 定位物理页 |
+
+PDF 原文件保存在 `allowed_work_root/literature/{paper_id}/source.pdf`，API/SQLite 只保存该规范相对路径。
+默认大小上限 50 MiB。解析使用 `pypdf` 逐物理页抽取文本；无文本层、加密、损坏、伪 PDF 和超限文件
+返回稳定错误，不会导致服务退出。Section detector 使用可扩展别名规则识别 Abstract、Introduction、
+Methods 及 rs-fMRI 常见 Methods 子节、Results、Discussion、Conclusion、References；无法识别时保留为
+Front Matter。Chunker 在 section 内按 paragraph/sentence 聚合，默认约 600 tokens、100 overlap，
+每个 chunk 持久化 `paper_id`、section/subsection、物理页范围、token count、index 和 rs-fMRI metadata
+占位。上传不自动建立索引。调用 index 后，同一 HTTP 请求完成索引，无后台队列。
+Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `index_error`；失败保留论文，
+中断后可重新请求索引。迁移 `0009_literature_index` 将已有论文标为 not_indexed，不补建向量。
+向量保存在 `allowed_work_root/literature_index` 的 `uploaded_literature_v1` collection，旧库保持不变。
+索引需要可选 rag 依赖、DashScope Key 和既有脱敏配置；未通过外发校验的文本不会发送。
+只有 ready 论文参与检索，两路候选只进行一次最终重排。
 
 ## 数据、人口学和划分
 
@@ -61,7 +118,7 @@
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/runs` | 从已批准且当前有效的计划创建通用 Mock 运行 |
+| `POST` | `/runs` | 从已批准且当前有效的计划创建 Mock 或逐次确认的 MATLAB 运行 |
 | `GET` | `/runs` | 按项目/状态列出运行 |
 | `GET` | `/runs/{run_id}` | 读取运行 |
 | `POST` | `/runs/{run_id}/cancel` | 提交显式取消原因 |
@@ -71,7 +128,10 @@
 | `GET` | `/runs/{run_id}/artifacts` | 列出运行的 Artifact 元数据 |
 | `GET` | `/artifacts/{artifact_id}` | 读取单个 Artifact 元数据 |
 
-公共 `/runs` 当前只创建通用 Mock 作业，不会启动 MATLAB，也不会生成 ALFF/fALFF、ReHo 等真实指标图。
+`/runs` 默认创建 Mock 作业。显式选择 `execution_backend=matlab` 时，还必须满足本机执行开关、
+环境锁、计划审批和逐次确认。`workspace_mode=in_place` 仅接受 DPABI-ready 数据集；Worker 把该数据集
+目录传给 `DPARSFA_run` 作为 `WorkingDir`，DPABI stage/Results 留在所选工作区，脚本、日志、
+证据和登记产物仍保存在隔离 attempt 目录。
 
 ## 扩展分析预览
 
@@ -84,7 +144,7 @@
 | `POST` | `/cluster-localizations` | 用用户提供的 atlas 坐标标签匹配 cluster 峰值 |
 | `POST` | `/agent/rsfmri/questions` | 使用本地证据回答限定范围的 rs-fMRI 问题 |
 
-这些接口不接受自由 MATLAB/Python/Shell 文本。真实 ROI 执行、文件复制、ML 训练、NIfTI atlas 采样和联网检索仍需后续的审批工作流与受控 Tool。
+这些接口不接受自由 MATLAB/Python/Shell 文本。真实 ROI 执行、文件复制、ML 训练和 NIfTI atlas 采样仍需后续的审批工作流与受控 Tool。联网搜索仅在 Chat 回合显式开启，并由具备相应能力的模型 Provider 执行。
 
 ## QC 和统计设计
 
@@ -108,10 +168,10 @@
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/model-profiles` | 创建只引用本地密钥环境变量名的 Profile（可携带 `api_key` 写入本地 `.env`） |
-| `GET` | `/model-profiles` | 列出 Profile |
-| `GET` | `/model-profiles/{profile_id}` | 读取 Profile |
-| `DELETE` | `/model-profiles/{profile_id}` | 删除 Profile（不可变模型配置的显式移除） |
+| `POST` | `/model-profiles` | 绑定或更新只引用本地密钥环境变量名的服务商连接（可携带 `api_key` 写入本地 `.env`） |
+| `GET` | `/model-profiles` | 列出已绑定服务商 |
+| `GET` | `/model-profiles/{profile_id}` | 读取服务商连接 |
+| `DELETE` | `/model-profiles/{profile_id}` | 解除服务商连接 |
 | `POST` | `/providers/models` | 列出某个 OpenAI 兼容 Provider 的可用模型（传 base_url + api_key 或密钥环境变量名） |
 | `POST` | `/providers/test` | 发起一次脱敏的轻量连通性/schema smoke |
 | `POST` | `/agent/tasks` | 执行结构化 Agent 任务 |

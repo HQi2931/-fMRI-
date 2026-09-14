@@ -95,6 +95,25 @@ def test_renderer_uses_fixed_template_and_quotes_space_paths(tmp_path: Path) -> 
     )
 
 
+def test_renderer_can_bind_dpabi_to_an_explicit_in_place_workspace(tmp_path: Path) -> None:
+    work = tmp_path / "isolated-runs"
+    base = work / "run-001" / "input" / "base_cfg.mat"
+    base.parent.mkdir(parents=True)
+    base.write_bytes(b"synthetic-placeholder")
+    workspace = tmp_path / "selected-dpabi-workspace"
+    (workspace / "FunRaw" / "sub-01").mkdir(parents=True)
+
+    rendered = MatlabTemplateRenderer(Path("matlab/templates")).render(
+        job(), environment(tmp_path), work, preprocessing_workspace=workspace
+    )
+
+    script = rendered.entry_script.read_text(encoding="utf-8")
+    rendered_root = str(rendered.run_directory).replace("\\", "/")
+    assert str(workspace.resolve()).replace("\\", "/") in script
+    assert f"run_directory = '{rendered_root}';" in script
+    assert rendered.run_directory.is_relative_to(work.resolve())
+
+
 def test_real_execution_is_disabled_by_default(tmp_path: Path) -> None:
     work = tmp_path / "work"
     base = work / "run-001" / "input" / "base_cfg.mat"

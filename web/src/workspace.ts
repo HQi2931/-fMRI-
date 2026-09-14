@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from "react";
 
 export type WorkspaceState = {
+  workspacePath?: string;
+  workspaceKind?: string;
+  workspaceCheckedAt?: string;
   projectId?: string;
   projectVersion?: number;
   datasetId?: string;

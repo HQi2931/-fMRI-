@@ -13,6 +13,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from neuroagent.agent.models import ModelProfile
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -54,6 +56,17 @@ class Settings(BaseSettings):
     dpabi_version: str = "unspecified"
     adapter_version: str = "1.0.0"
     dataset_scan_max_files: int = Field(default=100_000, ge=1)
+    literature_max_pdf_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    literature_chunk_target_tokens: int = Field(default=600, ge=400, le=800)
+    literature_chunk_overlap_tokens: int = Field(default=100, ge=80, le=150)
+    rag_db_dir: Path | None = None
+    rag_collection: str = "fmri_literature_v1"
+    rag_api_key_env: str = "DASHSCOPE_API_KEY"
+    rag_rerank: bool = True
+    memory_embedding_profile: ModelProfile | None = None
+    memory_recall_limit: int = Field(default=12, ge=1, le=100)
+    memory_half_life_days: float = Field(default=180, gt=0)
+    memory_minimum_similarity: float = Field(default=0.45, ge=-1, le=1)
     worker_lease_seconds: int = Field(default=30, ge=1)
     idempotency_lease_seconds: int = Field(default=300, ge=30)
     redaction_salt: str | None = None

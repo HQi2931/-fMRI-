@@ -238,3 +238,67 @@ def test_arbitrary_or_clinical_context_is_rejected_before_provider_call() -> Non
             summary={"user_question": "请分析张三的 ALFF 结果", "ages": [31]},
         )
     assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["routing", "summary_mode", "memory_mode"])
+async def test_chat_structured_modes_use_json_and_selected_model(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = profile("chat-provider", "CHAT_MODE_API_KEY", 1)
+    provider = MockProvider([ProviderResponse(content="{}", model="override")])
+    monkeypatch.setenv("CHAT_MODE_API_KEY", "test-secret")
+    gateway = ModelGateway(
+        ModelRouter([configured], {}),
+        {configured.provider: provider},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+    result = await gateway.generate_chat(
+        question="remember this",
+        evidence=[],
+        preferred_profile_id=configured.id,
+        model="override",
+        allow_web_search=False,
+        **{mode: True},
+    )
+    assert result.selected_profile_id == configured.id
+    assert provider.request_options == [{"web_search": False, "json_object": True}]
+    assert provider.requests[0][0].model == "override"
+
+
+@pytest.mark.asyncio
+async def test_chat_gateway_reports_no_profile_and_exhausted_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty = ModelGateway(
+        ModelRouter([], {}),
+        {},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+    with pytest.raises(ModelGatewayError, match="no 可用的"):
+        await empty.generate_chat(
+            question="question",
+            evidence=[],
+            preferred_profile_id=None,
+            model=None,
+            allow_web_search=False,
+        )
+
+    configured = profile("retry-chat", "RETRY_CHAT_API_KEY", 1)
+    monkeypatch.setenv("RETRY_CHAT_API_KEY", "test-secret")
+    gateway = ModelGateway(
+        ModelRouter([configured], {}),
+        {configured.provider: MockProvider([RetryableProviderError("temporary")])},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+    with pytest.raises(ModelGatewayError, match="temporarily unavailable"):
+        await gateway.generate_chat(
+            question="question",
+            evidence=[],
+            preferred_profile_id=None,
+            model=None,
+            allow_web_search=False,
+        )

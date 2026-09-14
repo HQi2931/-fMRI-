@@ -9,6 +9,8 @@ from neuroagent.application.errors import PathPolicyError
 
 
 def _resolved(path: str | Path, *, must_exist: bool) -> Path:
+    # Every caller canonicalizes the value here before enforcing its trusted-root boundary.
+    # codeql[py/path-injection]
     candidate = Path(path).expanduser()
     try:
         return candidate.resolve(strict=must_exist)

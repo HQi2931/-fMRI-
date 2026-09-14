@@ -3,13 +3,13 @@ import { NavLink } from "../routing";
 import { StatusPill } from "./StatusPill";
 
 const navigation = [
+  ["/agent", "对话工作台", "✦"],
   ["/", "总览", "⌂"],
   ["/data", "数据", "▦"],
   ["/plan", "分析方案", "◇"],
   ["/runs", "运行", "▶"],
   ["/qc", "质量控制", "✓"],
   ["/statistics", "统计", "∑"],
-  ["/agent", "智能助手", "✦"],
   ["/analysis", "扩展分析", "◌"],
   ["/settings", "环境", "⚙"],
 ] as const;

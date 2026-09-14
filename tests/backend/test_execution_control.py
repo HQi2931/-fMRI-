@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.application.contracts import ExecutionBackend, RunCreate
+from neuroagent.application.contracts import (
+    ExecutionBackend,
+    ExecutionWorkspaceMode,
+    RunCreate,
+)
 from neuroagent.application.errors import ConflictError
 
 from .conftest import make_approved_plan, make_project
@@ -15,6 +19,7 @@ def test_run_requests_default_to_mock_and_matlab_requires_confirmation() -> None
         expected_plan_hash="a" * 64,
     )
     assert request.execution_backend is ExecutionBackend.MOCK
+    assert request.workspace_mode is ExecutionWorkspaceMode.ISOLATED
     assert request.real_execution_confirmed is False
 
     with pytest.raises(ValueError, match="explicit confirmation"):
@@ -23,6 +28,14 @@ def test_run_requests_default_to_mock_and_matlab_requires_confirmation() -> None
             plan_revision_id="plan",
             expected_plan_hash="a" * 64,
             execution_backend=ExecutionBackend.MATLAB,
+        )
+
+    with pytest.raises(ValueError, match="in-place workspace mode"):
+        RunCreate(
+            project_id="project",
+            plan_revision_id="plan",
+            expected_plan_hash="a" * 64,
+            workspace_mode=ExecutionWorkspaceMode.IN_PLACE,
         )
 
 

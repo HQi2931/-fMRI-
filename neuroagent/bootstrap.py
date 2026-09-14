@@ -13,6 +13,7 @@ from neuroagent.application.settings import Settings
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 from neuroagent.infrastructure.filesystem.dataset_inspector import DatasetInspector
 from neuroagent.infrastructure.filesystem.demographics import read_demographics
+from neuroagent.infrastructure.filesystem.directory_picker import SystemDirectoryPicker
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.infrastructure.mock_executor import MockJobExecutor
@@ -75,6 +76,7 @@ def build_service(
         secret_resolver=LocalDotenvSecretResolver(resolved_settings.secrets_file),
         secret_writer=secret_writer or LocalDotenvSecretWriter(),
         providers=providers,
+        workspace_picker=SystemDirectoryPicker(),
         skill_registry=skill_registry,
     )
 
