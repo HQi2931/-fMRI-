@@ -1,6 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, describeError, type CompiledSkillPlan, type PlanRevision, type PreprocessingInput, type Skill, type SkillPlanResolveBody } from "../api/client";
+import { describeError, type CompiledSkillPlan, type PlanRevision, type PreprocessingInput, type Skill, type SkillPlanResolveBody } from "../api/client";
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
@@ -256,83 +257,84 @@ function PlanAuditPanel({
   );
 }
 
-export function PlanPage() {
+export function PlanPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [plan, setPlan] = useState<PlanRevision | null>(null);
   const planIdRef = useRef<string | null>(null);
   const [skillPlan, setSkillPlan] = useState<Partial<CompiledSkillPlan> | null>(null);
   const [steps, setSteps] = useState<StepView[]>([]);
-  const [protocol, setProtocol] = useState("");
-  const [parameterSource, setParameterSource] = useState<ParameterSource | "">("");
-  const [parameterEvidence, setParameterEvidence] = useState("");
-  const [tr, setTr] = useState("");
-  const [timePoints, setTimePoints] = useState("");
-  const [dummyScans, setDummyScans] = useState("");
-  const [sliceTiming, setSliceTiming] = useState<BooleanChoice>("");
-  const [sliceOrder, setSliceOrder] = useState("");
-  const [referenceSlice, setReferenceSlice] = useState("");
-  const [realignment, setRealignment] = useState<BooleanChoice>("");
-  const [nuisance, setNuisance] = useState<BooleanChoice>("");
-  const [nuisanceTiming, setNuisanceTiming] = useState("");
-  const [polynomialTrend, setPolynomialTrend] = useState("");
-  const [headMotionModel, setHeadMotionModel] = useState("");
-  const [nuisanceCensoring, setNuisanceCensoring] = useState<BooleanChoice>("");
-  const [nuisanceFdType, setNuisanceFdType] = useState("");
-  const [nuisanceFdThreshold, setNuisanceFdThreshold] = useState("");
-  const [nuisancePreviousPoints, setNuisancePreviousPoints] = useState("");
-  const [nuisanceLaterPoints, setNuisanceLaterPoints] = useState("");
-  const [whiteMatter, setWhiteMatter] = useState<BooleanChoice>("");
-  const [whiteMatterMask, setWhiteMatterMask] = useState("");
-  const [whiteMatterThreshold, setWhiteMatterThreshold] = useState("");
-  const [whiteMatterMethod, setWhiteMatterMethod] = useState("");
-  const [whiteMatterComponents, setWhiteMatterComponents] = useState("");
-  const [csf, setCsf] = useState<BooleanChoice>("");
-  const [csfMask, setCsfMask] = useState("");
-  const [csfThreshold, setCsfThreshold] = useState("");
-  const [csfMethod, setCsfMethod] = useState("");
-  const [csfComponents, setCsfComponents] = useState("");
-  const [globalSignal, setGlobalSignal] = useState<BooleanChoice>("");
-  const [globalSignalMask, setGlobalSignalMask] = useState("");
-  const [globalSignalMethod, setGlobalSignalMethod] = useState("");
-  const [warpMasks, setWarpMasks] = useState<BooleanChoice>("");
-  const [nuisanceAddMean, setNuisanceAddMean] = useState<BooleanChoice>("");
-  const [normalizationMode, setNormalizationMode] = useState("");
-  const [normalizationTiming, setNormalizationTiming] = useState("");
-  const [voxelSize, setVoxelSize] = useState("");
-  const [boundingBox, setBoundingBox] = useState("");
-  const [structuralArtifact, setStructuralArtifact] = useState("");
-  const [affineRegularization, setAffineRegularization] = useState("");
-  const [detrend, setDetrend] = useState("");
-  const [filterTiming, setFilterTiming] = useState<FilterTiming | "">("");
-  const [filterLow, setFilterLow] = useState("");
-  const [filterHigh, setFilterHigh] = useState("");
-  const [filterAddMean, setFilterAddMean] = useState<BooleanChoice>("");
-  const [scrubbing, setScrubbing] = useState<BooleanChoice>("");
-  const [scrubbingTiming, setScrubbingTiming] = useState("");
-  const [fdType, setFdType] = useState("");
-  const [fdThreshold, setFdThreshold] = useState("");
-  const [previousPoints, setPreviousPoints] = useState("");
-  const [laterPoints, setLaterPoints] = useState("");
-  const [scrubbingMethod, setScrubbingMethod] = useState("");
-  const [smoothingTiming, setSmoothingTiming] = useState<SmoothingTiming | "">("");
-  const [smoothingMethod, setSmoothingMethod] = useState("");
-  const [smoothingFwhm, setSmoothingFwhm] = useState("");
-  const [alff, setAlff] = useState(false);
-  const [falff, setFalff] = useState(false);
-  const [reho, setReho] = useState(false);
-  const [metricLow, setMetricLow] = useState("");
-  const [metricHigh, setMetricHigh] = useState("");
-  const [rehoNeighbors, setRehoNeighbors] = useState("");
-  const [alffScalings, setAlffScalings] = useState<MetricScaling[]>([]);
-  const [rehoScalings, setRehoScalings] = useState<MetricScaling[]>([]);
-  const [metricMaskArtifact, setMetricMaskArtifact] = useState("");
-  const [resultSmoothing, setResultSmoothing] = useState<BooleanChoice>("");
-  const [resultSmoothingFwhm, setResultSmoothingFwhm] = useState("");
-  const [smoothReho, setSmoothReho] = useState<BooleanChoice>("");
-  const [smoothRehoFwhm, setSmoothRehoFwhm] = useState("");
-  const [approvalActor, setApprovalActor] = useState("");
-  const [approvalReason, setApprovalReason] = useState("");
+  const [protocol, setProtocol] = useCardState("protocol", "");
+  const [parameterSource, setParameterSource] = useCardState<ParameterSource | "">("parameterSource", "");
+  const [parameterEvidence, setParameterEvidence] = useCardState("parameterEvidence", "");
+  const [tr, setTr] = useCardState("tr", "");
+  const [timePoints, setTimePoints] = useCardState("timePoints", "");
+  const [dummyScans, setDummyScans] = useCardState("dummyScans", "");
+  const [sliceTiming, setSliceTiming] = useCardState<BooleanChoice>("sliceTiming", "");
+  const [sliceOrder, setSliceOrder] = useCardState("sliceOrder", "");
+  const [referenceSlice, setReferenceSlice] = useCardState("referenceSlice", "");
+  const [realignment, setRealignment] = useCardState<BooleanChoice>("realignment", "");
+  const [nuisance, setNuisance] = useCardState<BooleanChoice>("nuisance", "");
+  const [nuisanceTiming, setNuisanceTiming] = useCardState("nuisanceTiming", "");
+  const [polynomialTrend, setPolynomialTrend] = useCardState("polynomialTrend", "");
+  const [headMotionModel, setHeadMotionModel] = useCardState("headMotionModel", "");
+  const [nuisanceCensoring, setNuisanceCensoring] = useCardState<BooleanChoice>("nuisanceCensoring", "");
+  const [nuisanceFdType, setNuisanceFdType] = useCardState("nuisanceFdType", "");
+  const [nuisanceFdThreshold, setNuisanceFdThreshold] = useCardState("nuisanceFdThreshold", "");
+  const [nuisancePreviousPoints, setNuisancePreviousPoints] = useCardState("nuisancePreviousPoints", "");
+  const [nuisanceLaterPoints, setNuisanceLaterPoints] = useCardState("nuisanceLaterPoints", "");
+  const [whiteMatter, setWhiteMatter] = useCardState<BooleanChoice>("whiteMatter", "");
+  const [whiteMatterMask, setWhiteMatterMask] = useCardState("whiteMatterMask", "");
+  const [whiteMatterThreshold, setWhiteMatterThreshold] = useCardState("whiteMatterThreshold", "");
+  const [whiteMatterMethod, setWhiteMatterMethod] = useCardState("whiteMatterMethod", "");
+  const [whiteMatterComponents, setWhiteMatterComponents] = useCardState("whiteMatterComponents", "");
+  const [csf, setCsf] = useCardState<BooleanChoice>("csf", "");
+  const [csfMask, setCsfMask] = useCardState("csfMask", "");
+  const [csfThreshold, setCsfThreshold] = useCardState("csfThreshold", "");
+  const [csfMethod, setCsfMethod] = useCardState("csfMethod", "");
+  const [csfComponents, setCsfComponents] = useCardState("csfComponents", "");
+  const [globalSignal, setGlobalSignal] = useCardState<BooleanChoice>("globalSignal", "");
+  const [globalSignalMask, setGlobalSignalMask] = useCardState("globalSignalMask", "");
+  const [globalSignalMethod, setGlobalSignalMethod] = useCardState("globalSignalMethod", "");
+  const [warpMasks, setWarpMasks] = useCardState<BooleanChoice>("warpMasks", "");
+  const [nuisanceAddMean, setNuisanceAddMean] = useCardState<BooleanChoice>("nuisanceAddMean", "");
+  const [normalizationMode, setNormalizationMode] = useCardState("normalizationMode", "");
+  const [normalizationTiming, setNormalizationTiming] = useCardState("normalizationTiming", "");
+  const [voxelSize, setVoxelSize] = useCardState("voxelSize", "");
+  const [boundingBox, setBoundingBox] = useCardState("boundingBox", "");
+  const [structuralArtifact, setStructuralArtifact] = useCardState("structuralArtifact", "");
+  const [affineRegularization, setAffineRegularization] = useCardState("affineRegularization", "");
+  const [detrend, setDetrend] = useCardState("detrend", "");
+  const [filterTiming, setFilterTiming] = useCardState<FilterTiming | "">("filterTiming", "");
+  const [filterLow, setFilterLow] = useCardState("filterLow", "");
+  const [filterHigh, setFilterHigh] = useCardState("filterHigh", "");
+  const [filterAddMean, setFilterAddMean] = useCardState<BooleanChoice>("filterAddMean", "");
+  const [scrubbing, setScrubbing] = useCardState<BooleanChoice>("scrubbing", "");
+  const [scrubbingTiming, setScrubbingTiming] = useCardState("scrubbingTiming", "");
+  const [fdType, setFdType] = useCardState("fdType", "");
+  const [fdThreshold, setFdThreshold] = useCardState("fdThreshold", "");
+  const [previousPoints, setPreviousPoints] = useCardState("previousPoints", "");
+  const [laterPoints, setLaterPoints] = useCardState("laterPoints", "");
+  const [scrubbingMethod, setScrubbingMethod] = useCardState("scrubbingMethod", "");
+  const [smoothingTiming, setSmoothingTiming] = useCardState<SmoothingTiming | "">("smoothingTiming", "");
+  const [smoothingMethod, setSmoothingMethod] = useCardState("smoothingMethod", "");
+  const [smoothingFwhm, setSmoothingFwhm] = useCardState("smoothingFwhm", "");
+  const [alff, setAlff] = useCardState("alff", false);
+  const [falff, setFalff] = useCardState("falff", false);
+  const [reho, setReho] = useCardState("reho", false);
+  const [metricLow, setMetricLow] = useCardState("metricLow", "");
+  const [metricHigh, setMetricHigh] = useCardState("metricHigh", "");
+  const [rehoNeighbors, setRehoNeighbors] = useCardState("rehoNeighbors", "");
+  const [alffScalings, setAlffScalings] = useCardState<MetricScaling[]>("alffScalings", []);
+  const [rehoScalings, setRehoScalings] = useCardState<MetricScaling[]>("rehoScalings", []);
+  const [metricMaskArtifact, setMetricMaskArtifact] = useCardState("metricMaskArtifact", "");
+  const [resultSmoothing, setResultSmoothing] = useCardState<BooleanChoice>("resultSmoothing", "");
+  const [resultSmoothingFwhm, setResultSmoothingFwhm] = useCardState("resultSmoothingFwhm", "");
+  const [smoothReho, setSmoothReho] = useCardState<BooleanChoice>("smoothReho", "");
+  const [smoothRehoFwhm, setSmoothRehoFwhm] = useCardState("smoothRehoFwhm", "");
+  const [approvalActor, setApprovalActor] = useCardState("approvalActor", "");
+  const [approvalReason, setApprovalReason] = useCardState("approvalReason", "");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -359,7 +361,7 @@ export function PlanPage() {
       });
     }
     return () => controller.abort();
-  }, [workspace.planRevisionId]);
+  }, [api, workspace.planRevisionId]);
 
   const selectedMetrics = useMemo(() => [alff && "alff", falff && "falff", reho && "reho"].filter(Boolean) as MetricName[], [alff, falff, reho]);
 
@@ -541,7 +543,6 @@ export function PlanPage() {
     setMessage("");
     try {
       if (!protocol.trim()) throw new Error("必须填写课题方案或预注册依据。 ");
-      if (selectedMetrics.length === 0) throw new Error("至少选择一个指标。 ");
       const trSeconds = Number(tr);
       const metricBand = { low_hz: Number(metricLow), high_hz: Number(metricHigh) };
       const alffRequested = alff || falff;
@@ -550,25 +551,32 @@ export function PlanPage() {
       if (reho && rehoScalings.length === 0) throw new Error("必须至少选择一种 ReHo scaling。 ");
       if (reho && !["7", "19", "27"].includes(rehoNeighbors)) throw new Error("必须明确选择 ReHo 邻域。 ");
       const metricMask = metricMaskArtifact.trim();
-      if (!metricMask) throw new Error("ALFF、fALFF 和 ReHo 都必须选择已登记的脑掩膜 Artifact。 ");
-      const useResultSmoothing = bool(resultSmoothing, "是否进行全局指标结果平滑");
+      if (selectedMetrics.length > 0 && !metricMask) throw new Error("ALFF、fALFF 和 ReHo 都必须选择已登记的脑掩膜 Artifact。 ");
+      const useResultSmoothing = selectedMetrics.length > 0
+        ? bool(resultSmoothing, "是否进行全局指标结果平滑")
+        : false;
       const useSmoothReho = reho ? bool(smoothReho, "是否执行 ReHo 专用 SmoothReHo") : false;
       if (useResultSmoothing && useSmoothReho) throw new Error("ReHo 专用 SmoothReHo 与全局结果平滑不能同时启用。 ");
       const preprocessing = preprocessingBody();
-      if (preprocessing.expected_time_points === null) {
+      if (selectedMetrics.length > 0 && preprocessing.expected_time_points === null) {
         throw new Error("同一工作流计算指标前必须填写期望时间点，并由运行时头信息检查确认。 ");
       }
       if (reho && preprocessing.scrubbing.enabled && preprocessing.scrubbing.method === "cut") {
         throw new Error("CUT Scrubbing 后实际保留时间点未知；请先完成预处理并选择已验证 Artifact，再规划 ReHo。 ");
       }
-      const retainedVolumes = preprocessing.expected_time_points - preprocessing.dummy_scans;
-      const frequencyResolution = 1 / (preprocessing.tr_seconds * retainedVolumes);
-      if (
-        alffRequested
-        && ((metricBand.low_hz > 0 && metricBand.low_hz < frequencyResolution)
-          || metricBand.high_hz < frequencyResolution)
-      ) {
-        throw new Error("指标频段低于有效时间点支持的频率分辨率。 ");
+      if (selectedMetrics.length > 0) {
+        if (preprocessing.expected_time_points === null) {
+          throw new Error("同一工作流计算指标前必须填写期望时间点，并由运行时头信息检查确认。 ");
+        }
+        const retainedVolumes = preprocessing.expected_time_points - preprocessing.dummy_scans;
+        const frequencyResolution = 1 / (preprocessing.tr_seconds * retainedVolumes);
+        if (
+          alffRequested
+          && ((metricBand.low_hz > 0 && metricBand.low_hz < frequencyResolution)
+            || metricBand.high_hz < frequencyResolution)
+        ) {
+          throw new Error("指标频段低于有效时间点支持的频率分辨率。 ");
+        }
       }
       const globalResultFwhm = useResultSmoothing ? triple(resultSmoothingFwhm, "全局指标结果平滑 FWHM") : null;
       const resolvedSmoothRehoFwhm = useSmoothReho ? triple(smoothRehoFwhm, "ReHo 专用平滑 FWHM") : null;
@@ -611,6 +619,7 @@ export function PlanPage() {
         request,
         expected_project_version: workspace.projectVersion,
         supersedes_plan_revision_id: workspace.planRevisionId ?? null,
+        validation_mode: "strict",
       });
       planIdRef.current = resolved.plan_revision.plan_revision_id;
       setPlan(resolved.plan_revision);
@@ -656,11 +665,11 @@ export function PlanPage() {
 
   const planAuditReady = Boolean(skillPlan?.environment && Array.isArray(skillPlan.resolved_parameters));
 
-  if (!workspace.manifestId) return <><PageHeader eyebrow="分析方案" title="检查顺序、参数与风险" description="先冻结数据清单，才能把科学参数绑定到确定的输入。" /><section className="panel"><EmptyState title="尚无冻结 manifest" detail="请先在数据页面完成只读检查。" /></section></>;
+  if (!workspace.manifestId) return <>{!embedded && <PageHeader eyebrow="分析方案" title="检查顺序、参数与风险" description="先冻结数据清单，才能把科学参数绑定到确定的输入。" />}<section className="panel"><EmptyState title="尚无冻结 manifest" detail="请在对话中打开数据检查并冻结清单。" /></section></>;
 
   return (
     <>
-      <PageHeader eyebrow="分析方案" title="检查顺序、参数与风险" description="所有会改变科学结果的选择都在此显式填写；系统不会用隐藏默认值补齐。" action={plan && <StatusPill tone={plan.state === "approved" ? "good" : "warn"}>{plan.state}</StatusPill>} />
+      {!embedded && <PageHeader eyebrow="分析方案" title="检查顺序、参数与风险" description="所有会改变科学结果的选择都在此显式填写；系统不会用隐藏默认值补齐。" action={plan && <StatusPill tone={plan.state === "approved" ? "good" : "warn"}>{plan.state}</StatusPill>} />}
       <Feedback message={error || message} error={Boolean(error)} />
       <section className="panel plan-form">
         <div className="panel-heading"><div><span className="eyebrow">输入与指标</span><h2>课题级明确选择</h2></div><span className="muted">已注册 Skill：{skills.length}</span></div>
@@ -672,7 +681,7 @@ export function PlanPage() {
           <label>期望时间点（同工作流指标必填）<input inputMode="numeric" value={timePoints} onChange={(event) => setTimePoints(event.target.value)} disabled={Boolean(plan)} /></label>
           <label>删除初始时间点数量<input inputMode="numeric" value={dummyScans} onChange={(event) => setDummyScans(event.target.value)} disabled={Boolean(plan)} /></label>
         </div>
-        <fieldset><legend>指标</legend><label className="check-field"><input type="checkbox" checked={alff} onChange={(event) => setAlff(event.target.checked)} disabled={Boolean(plan)} /> ALFF</label><label className="check-field"><input type="checkbox" checked={falff} onChange={(event) => setFalff(event.target.checked)} disabled={Boolean(plan)} /> fALFF</label><label className="check-field"><input type="checkbox" checked={reho} onChange={(event) => setReho(event.target.checked)} disabled={Boolean(plan)} /> ReHo</label></fieldset>
+        <fieldset><legend>指标（可留空，仅执行预处理）</legend><label className="check-field"><input type="checkbox" checked={alff} onChange={(event) => setAlff(event.target.checked)} disabled={Boolean(plan)} /> ALFF</label><label className="check-field"><input type="checkbox" checked={falff} onChange={(event) => setFalff(event.target.checked)} disabled={Boolean(plan)} /> fALFF</label><label className="check-field"><input type="checkbox" checked={reho} onChange={(event) => setReho(event.target.checked)} disabled={Boolean(plan)} /> ReHo</label></fieldset>
         <div className="form-grid">
           {(alff || falff) && <><label>指标频段 low Hz<input value={metricLow} onChange={(event) => setMetricLow(event.target.value)} disabled={Boolean(plan)} /></label><label>指标频段 high Hz<input value={metricHigh} onChange={(event) => setMetricHigh(event.target.value)} disabled={Boolean(plan)} /></label></>}
           {reho && <label>ReHo 邻域<select value={rehoNeighbors} onChange={(event) => setRehoNeighbors(event.target.value)} disabled={Boolean(plan)}><option value="">明确选择</option><option value="7">7</option><option value="19">19</option><option value="27">27</option></select></label>}

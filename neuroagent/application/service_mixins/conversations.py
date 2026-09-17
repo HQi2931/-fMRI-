@@ -9,6 +9,7 @@ from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.contracts import (
+    ConversationAction,
     ConversationContextView,
     ConversationCreate,
     ConversationMode,
@@ -23,15 +24,16 @@ from neuroagent.application.contracts import (
     RsFmriQuestionRequest,
     RunCreate,
     RunView,
-    WorkspaceCheckRequest,
-    WorkspaceCheckView,
 )
 from neuroagent.application.conversation_context import (
     ContextBudgetError,
     ConversationContextCoordinator,
 )
-from neuroagent.application.conversation_work import ConversationWorkCoordinator
-from neuroagent.application.errors import InputValidationError
+from neuroagent.application.conversation_work import (
+    ConversationWorkCoordinator,
+    WorkActionResult,
+)
+from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
@@ -41,7 +43,6 @@ from neuroagent.memory.models import MemoryCandidateDraft
 
 class ConversationMixin(BaseServiceMixin):
     answer_rsfmri_question: Callable[[RsFmriQuestionRequest], RsFmriAnswerView]
-    check_workspace: Callable[[WorkspaceCheckRequest], WorkspaceCheckView]
     get_run: Callable[[str], RunView]
     create_run: Callable[[RunCreate, str], RunView]
     chat_agent: ChatAgent
@@ -58,8 +59,8 @@ class ConversationMixin(BaseServiceMixin):
             "这里是 fMRI 专项问答。我会检索项目内的 rs-fMRI、DPABI 和统计方法文档，"
             "并根据找到的证据回答。"
             if request.mode is ConversationMode.CHAT
-            else "这里是 rs-fMRI 工作模式。请选择工作区，我会调用检查工具，"
-            "再协助启动受控预处理和查看进度。"
+            else "这里是 rs-fMRI 工作模式。请选择由你维护文件内容的工作区，"
+            "我会协助准备预处理、查看进度和分析结果。"
         )
         return self._idempotent(
             scope=f"conversations:{request.mode.value}:create",
@@ -147,7 +148,16 @@ class ConversationMixin(BaseServiceMixin):
                 idempotency_key,
             )
 
-        def act() -> ConversationTurnView:
+        async def prepare() -> tuple[
+            int,
+            WorkActionResult,
+            dict[str, Any],
+            tuple[MemoryCandidateDraft, ...],
+            str | None,
+            list[str],
+            str | None,
+            dict[str, Any] | None,
+        ]:
             conversation = self.repository.get_conversation(conversation_id)
             workspace_path = request.workspace_path or conversation.workspace_path
             preferred_profile_id = (
@@ -157,8 +167,6 @@ class ConversationMixin(BaseServiceMixin):
             )
             project_id = request.project_id or conversation.project_id
             active_run_id = conversation.active_run_id
-            tool: dict[str, Any] | None = None
-            payload: dict[str, Any] = {}
             try:
                 prepared_context = self.conversation_context.prepare_work(
                     conversation,
@@ -176,27 +184,71 @@ class ConversationMixin(BaseServiceMixin):
                     "context_input_too_large", "当前消息超过所选模型的上下文预算。"
                 ) from exc
 
-            action_result = self.conversation_work.execute(
-                request,
-                workspace_path=workspace_path,
-                active_run_id=active_run_id,
-                project_id=project_id,
-                idempotency_key=idempotency_key,
+            if request.action is ConversationAction.AUTO:
+                action_result = await self.route_work_card(  # type: ignore[attr-defined]
+                    conversation, request
+                )
+            else:
+                action_result = self.conversation_work.execute(
+                    request,
+                    workspace_path=workspace_path,
+                    active_run_id=active_run_id,
+                    project_id=project_id,
+                    idempotency_key=idempotency_key,
+                )
+            model_metadata: dict[str, Any] | None = None
+            return (
+                conversation.version,
+                action_result,
+                work_packet.metadata,
+                prepared_context.memory_candidates,
+                context_state.summary.summary_id if context_state.summary else None,
+                [item.memory_id for item in context_state.memories if item.pinned],
+                preferred_profile_id,
+                model_metadata,
             )
+
+        def finalize(
+            prepared: tuple[
+                int,
+                WorkActionResult,
+                dict[str, Any],
+                tuple[MemoryCandidateDraft, ...],
+                str | None,
+                list[str],
+                str | None,
+                dict[str, Any] | None,
+            ],
+        ) -> ConversationTurnView:
+            (
+                expected_conversation_version,
+                action_result,
+                context_metadata,
+                memory_candidates,
+                summary_id,
+                pinned_memory_ids,
+                preferred_profile_id,
+                model_metadata,
+            ) = prepared
+            conversation = self.repository.get_conversation(conversation_id)
+            if conversation.version != expected_conversation_version:
+                raise ConflictError(
+                    "conversation_changed_during_prepare",
+                    "工作请求准备期间对话已变化，请基于最新状态重试。",
+                )
+            project_id = action_result.project_id or request.project_id or conversation.project_id
             workspace_path = action_result.workspace_path
             active_run_id = action_result.active_run_id
             payload = action_result.payload
-            tool = action_result.tool
-            assistant_content = action_result.assistant_content
-            payload["context"] = work_packet.metadata
+            payload["context"] = context_metadata
 
             stored, user_message, assistant_message, stored_tool = (
                 self.repository.append_conversation_exchange(
                     conversation_id,
                     user_content=request.content,
-                    assistant_content=assistant_content,
+                    assistant_content=action_result.assistant_content,
                     assistant_payload=payload,
-                    tool=tool,
+                    tool=action_result.tool,
                     workspace_path=workspace_path,
                     preferred_profile_id=preferred_profile_id,
                     project_id=project_id,
@@ -205,7 +257,7 @@ class ConversationMixin(BaseServiceMixin):
             )
             candidate_ids = self.conversation_context.persist_memory_candidates(
                 conversation_id,
-                prepared_context.memory_candidates,
+                memory_candidates,
                 user_message.message_id,
             )
             if candidate_ids:
@@ -219,10 +271,11 @@ class ConversationMixin(BaseServiceMixin):
             self.conversation_context.persist_snapshot(
                 conversation_id,
                 assistant_message_id=assistant_message.message_id,
-                context_metadata=work_packet.metadata,
-                summary_id=context_state.summary.summary_id if context_state.summary else None,
-                memory_ids=[item.memory_id for item in context_state.memories if item.pinned],
+                context_metadata=context_metadata,
+                summary_id=summary_id,
+                memory_ids=pinned_memory_ids,
                 profile_id=preferred_profile_id,
+                model_metadata=model_metadata,
             )
             return ConversationTurnView(
                 conversation=stored,
@@ -231,12 +284,13 @@ class ConversationMixin(BaseServiceMixin):
                 tool_call=stored_tool,
             )
 
-        return self._idempotent(
+        return await self._idempotent_async(
             scope=f"conversations:{conversation_id}:turns",
             key=idempotency_key,
             request=request,
             response_type=ConversationTurnView,
-            action=act,
+            prepare=prepare,
+            finalize=finalize,
         )
 
     async def _send_chat_turn(

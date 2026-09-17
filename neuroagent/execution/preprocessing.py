@@ -274,6 +274,9 @@ def _validate_frozen_inputs(
         raise ValueError("manifest subject roles do not match frozen content")
     if content.get("profile") != manifest.profile.model_dump(mode="json"):
         raise ValueError("manifest profile does not match frozen content")
+    invalid_nifti = content.get("invalid_nifti_files")
+    if isinstance(invalid_nifti, list) and invalid_nifti:
+        raise ValueError("frozen manifest contains NIfTI files with unreadable headers")
     if manifest.profile.kind not in {DatasetKind.NIFTI, DatasetKind.BIDS, DatasetKind.DPABI_READY}:
         raise ValueError("real preprocessing requires a frozen NIfTI input manifest")
 

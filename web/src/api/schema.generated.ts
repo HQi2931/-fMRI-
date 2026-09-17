@@ -124,6 +124,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/cards/{card_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Work Card Action */
+        post: operations["work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/context": {
         parameters: {
             query?: never;
@@ -1031,6 +1048,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/work/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Work Capabilities */
+        get: operations["work_capabilities_api_v1_work_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/check": {
         parameters: {
             query?: never;
@@ -1401,7 +1435,7 @@ export interface components {
          * ConversationAction
          * @enum {string}
          */
-        ConversationAction: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
+        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "get_progress" | "get_qc_status" | "get_statistical_results";
         /** ConversationContextView */
         ConversationContextView: {
             /** Memories */
@@ -1497,10 +1531,14 @@ export interface components {
              * @default false
              */
             allow_remote_search: boolean;
+            /** Card Kind */
+            card_kind?: ("project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings") | null;
             /** Content */
             content: string;
             /** Expected Plan Hash */
             expected_plan_hash?: string | null;
+            /** Expected Project Version */
+            expected_project_version?: number | null;
             /** Model */
             model?: string | null;
             /**
@@ -1514,18 +1552,24 @@ export interface components {
             preferred_profile_id?: string | null;
             /** Project Id */
             project_id?: string | null;
+            /** Qc Review Id */
+            qc_review_id?: string | null;
             /**
              * Real Execution Confirmed
              * @default false
              */
             real_execution_confirmed: boolean;
+            skill_plan_intent?: components["schemas"]["SkillPlanIntent"] | null;
             /**
              * Stream
              * @default false
              */
             stream: boolean;
+            /** Target Run Id */
+            target_run_id?: string | null;
             /** Workspace Path */
             workspace_path?: string | null;
+            workspace_setup?: components["schemas"]["WorkspaceSetupIntent"] | null;
         };
         /** ConversationTurnView */
         ConversationTurnView: {
@@ -1614,6 +1658,8 @@ export interface components {
             dicom_count: number;
             /** File Count */
             file_count: number;
+            /** Issues */
+            issues?: string[];
             kind: components["schemas"]["DatasetKind"];
             /** Nifti Count */
             nifti_count: number;
@@ -1911,7 +1957,14 @@ export interface components {
             attempted_profile_ids: string[];
             /** Context Hash */
             context_hash: string;
+            /** Model */
+            model?: string | null;
             recommendation: components["schemas"]["StructuredRecommendation"];
+            /**
+             * Redaction Count
+             * @default 0
+             */
+            redaction_count: number;
             routing: components["schemas"]["RoutingDecision"];
         };
         /**
@@ -2004,6 +2057,11 @@ export interface components {
         ManifestScanRequest: {
             /** Expected Dataset Version */
             expected_dataset_version: number;
+            /**
+             * Report Only
+             * @default false
+             */
+            report_only: boolean;
         };
         /**
          * MemoryAction
@@ -3113,10 +3171,37 @@ export interface components {
          */
         SafeAgentSummary: {
             /**
+             * Anatomical Subject Count
+             * @default 0
+             */
+            anatomical_subject_count: number;
+            /**
+             * Dicom Count
+             * @default 0
+             */
+            dicom_count: number;
+            /**
+             * File Count
+             * @default 0
+             */
+            file_count: number;
+            /**
+             * Format Issues
+             * @default []
+             */
+            format_issues: string[];
+            /**
+             * Functional Subject Count
+             * @default 0
+             */
+            functional_subject_count: number;
+            /**
              * Has Blocking Issues
              * @default false
              */
             has_blocking_issues: boolean;
+            /** Input Stage */
+            input_stage?: string | null;
             /**
              * Issue Count
              * @default 0
@@ -3127,13 +3212,32 @@ export interface components {
              * @default []
              */
             metric_kinds: ("alff" | "falff" | "reho")[];
+            /**
+             * Nifti Count
+             * @default 0
+             */
+            nifti_count: number;
+            /**
+             * Output Directories
+             * @default []
+             */
+            output_directories: string[];
             purpose: components["schemas"]["AgentSummaryPurpose"];
+            /**
+             * Subject Count
+             * @default 0
+             */
+            subject_count: number;
+            /** User Question */
+            user_question?: string | null;
             /**
              * Workflow State
              * @default not_started
              * @enum {string}
              */
             workflow_state: "not_started" | "draft" | "awaiting_approval" | "approved" | "queued" | "running" | "qc_review" | "succeeded" | "failed" | "cancelled";
+            /** Workspace Kind */
+            workspace_kind?: string | null;
         };
         /**
          * ScrubbingMethod
@@ -3245,6 +3349,12 @@ export interface components {
             request: components["schemas"]["SkillPlanIntent"];
             /** Supersedes Plan Revision Id */
             supersedes_plan_revision_id?: string | null;
+            /**
+             * Validation Mode
+             * @default strict
+             * @enum {string}
+             */
+            validation_mode: "strict" | "report_only";
         };
         /** SkillPlanResolveView */
         SkillPlanResolveView: {
@@ -3538,10 +3648,16 @@ export interface components {
          * @description The only Agent result accepted by deterministic application services.
          */
         StructuredRecommendation: {
+            /** Adjustment Steps */
+            adjustment_steps?: string[];
+            /** Expected Layout */
+            expected_layout?: string[];
             /** Proposed Skill Request */
             proposed_skill_request?: {
                 [key: string]: unknown;
             } | null;
+            /** Recommended Target Stage */
+            recommended_target_stage?: string | null;
             /** Requires User Confirmation */
             requires_user_confirmation: boolean;
             /** Summary */
@@ -3674,6 +3790,68 @@ export interface components {
             /** Severity */
             severity: string;
         };
+        /** WorkCard */
+        WorkCard: {
+            /** Allowed Operations */
+            allowed_operations?: ("saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview")[];
+            bindings?: components["schemas"]["WorkCardBindings"];
+            /** Card Id */
+            card_id: string;
+            /** Draft */
+            draft?: {
+                [key: string]: unknown;
+            };
+            /** Draft Ref */
+            draft_ref: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings";
+            /** Title */
+            title: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /** WorkCardAction */
+        WorkCardAction: {
+            /** Args */
+            args?: unknown[];
+            /** Expected Version */
+            expected_version: number;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview";
+        };
+        /** WorkCardActionView */
+        WorkCardActionView: {
+            card: components["schemas"]["WorkCard"];
+            conversation: components["schemas"]["ConversationView"];
+            /** Result */
+            result?: unknown;
+        };
+        /** WorkCardBindings */
+        WorkCardBindings: {
+            /** Dataset Id */
+            dataset_id?: string | null;
+            /** Manifest Id */
+            manifest_id?: string | null;
+            /** Plan Revision Id */
+            plan_revision_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Qc Review Id */
+            qc_review_id?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Statistical Design Id */
+            statistical_design_id?: string | null;
+        };
         /**
          * WorkflowState
          * @enum {string}
@@ -3691,8 +3869,6 @@ export interface components {
         WorkspaceCheckView: {
             /** Anatomical Subject Count */
             anatomical_subject_count: number;
-            /** Blocking Issues */
-            blocking_issues?: string[];
             /**
              * Checked At
              * Format: date-time
@@ -3702,12 +3878,16 @@ export interface components {
             dicom_count: number;
             /** File Count */
             file_count: number;
+            /** Free Space Bytes */
+            free_space_bytes: number;
             /** Functional Subject Count */
             functional_subject_count: number;
             /** Input Stage */
             input_stage?: string | null;
             /** Invalid Nifti Files */
             invalid_nifti_files?: string[];
+            /** Issues */
+            issues?: string[];
             kind: components["schemas"]["DatasetKind"];
             /** Nifti Count */
             nifti_count: number;
@@ -3719,6 +3899,8 @@ export interface components {
             subject_count: number;
             /** Subjects */
             subjects?: components["schemas"]["SubjectManifestEntry"][];
+            /** Total Space Bytes */
+            total_space_bytes: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -3731,6 +3913,22 @@ export interface components {
             cancelled: boolean;
             /** Path */
             path?: string | null;
+        };
+        /**
+         * WorkspaceSetupIntent
+         * @description Explicit metadata needed to register a checked workspace.
+         *
+         *     The selected workspace remains the dataset source. ``work_root`` is a
+         *     separate application-owned directory for run metadata and isolated
+         *     attempts; it must still pass the configured path policy.
+         */
+        WorkspaceSetupIntent: {
+            /** Dataset Name */
+            dataset_name: string;
+            /** Project Name */
+            project_name: string;
+            /** Work Root */
+            work_root: string;
         };
     };
     responses: never;
@@ -4307,6 +4505,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkCardAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkCardActionView"];
                 };
             };
             /** @description Bad Request */
@@ -8921,6 +9202,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    work_capabilities_api_v1_work_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
                 };
             };
             /** @description Bad Request */

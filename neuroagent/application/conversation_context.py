@@ -243,6 +243,10 @@ class ConversationContextCoordinator:
                 "summary_id": summary_id,
                 "memory_ids": memory_ids,
                 "redaction_count": redaction_count,
+                "model_context_hash": (
+                    model_metadata.get("context_hash") if model_metadata else None
+                ),
+                "model": model_metadata.get("model") if model_metadata else None,
             },
         )
         return context_hash

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   api,
@@ -10,14 +10,17 @@ import {
   type ModelProfile,
   type Citation,
   type PaperIngestResult,
-  type WorkspaceCheck,
+  type Run,
+  type WorkCardKind,
+  type WorkCardResult,
 } from "../api/client";
 import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
+import { capabilities, cardsFrom } from "../work/catalog";
+import { WorkCardView } from "../work/WorkCards";
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string; citations?: Citation[] };
-type TaskType = "plan_explainer" | "log_summarizer" | "report_writer";
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; citations?: Citation[]; payload?: Record<string, unknown> };
 type ModelChoice = {
   key: string;
   profileId: string;
@@ -25,7 +28,6 @@ type ModelChoice = {
   label: string;
   capabilities: ModelProfile["profile"]["capabilities"];
 };
-
 const CHAT_WELCOME: ChatMessage = {
   id: "chat-welcome",
   role: "assistant",
@@ -35,32 +37,13 @@ const CHAT_WELCOME: ChatMessage = {
 const WORK_WELCOME: ChatMessage = {
   id: "work-welcome",
   role: "assistant",
-  text: "这里是 rs-fMRI 工作模式。请先选择工作区，我会检查输入格式，再协助准备预处理、QC 和结果分析。",
+  text: "这里是 rs-fMRI 工作模式。请选择由你维护文件内容的工作区，我会协助准备预处理、QC 和结果分析。",
 };
 
 function messagesFrom(conversation: Conversation): ChatMessage[] {
   return conversation.messages
     .filter((item) => item.role === "user" || item.role === "assistant")
-    .map((item) => ({ id: item.message_id, role: item.role as "user" | "assistant", text: item.content, citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations }));
-}
-
-function workspaceReportFrom(conversation: Conversation): WorkspaceCheck | null {
-  for (const item of [...conversation.messages].reverse()) {
-    const checked = item.payload.workspace_check;
-    if (checked && typeof checked === "object") return checked as WorkspaceCheck;
-  }
-  return null;
-}
-
-function kindLabel(kind: WorkspaceCheck["kind"]): string {
-  return {
-    bids: "BIDS",
-    dpabi_ready: "DPABI-ready",
-    dicom: "DICOM",
-    nifti: "普通 NIfTI",
-    mixed: "混合目录",
-    unknown: "未识别",
-  }[kind];
+    .map((item) => ({ id: item.message_id, role: item.role as "user" | "assistant", text: item.content, payload: item.payload, citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations }));
 }
 
 function MessageHistory({ messages }: { messages: ChatMessage[] }) {
@@ -107,8 +90,9 @@ function modelChoice(profile: ModelProfile, model: string): ModelChoice {
   };
 }
 
-export function AgentPage() {
+export function AgentPage({ initialCapability }: { initialCapability?: string }) {
   const workspace = useWorkspace();
+  const initialWorkspacePath = useRef(workspace.workspacePath).current;
   const [mode, setMode] = useState<ConversationMode>("work");
   const [conversationIds, setConversationIds] = useState<Partial<Record<ConversationMode, string>>>({});
   const [conversationList, setConversationList] = useState<Conversation[]>([]);
@@ -116,9 +100,8 @@ export function AgentPage() {
   const [modelChoices, setModelChoices] = useState<ModelChoice[]>([]);
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [allowRemoteSearch, setAllowRemoteSearch] = useState(false);
-  const [taskType, setTaskType] = useState<TaskType>("plan_explainer");
   const [workspacePath, setWorkspacePath] = useState(workspace.workspacePath ?? "");
-  const [report, setReport] = useState<WorkspaceCheck | null>(null);
+  const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [papers, setPapers] = useState<PaperIngestResult[]>([]);
   const [selectedPaperIds, setSelectedPaperIds] = useState<string[]>([]);
   const [indexingIds, setIndexingIds] = useState<string[]>([]);
@@ -136,6 +119,7 @@ export function AgentPage() {
   const [memoryExpiry, setMemoryExpiry] = useState("");
   const [memorySearch, setMemorySearch] = useState("");
   const [memoryIndexing, setMemoryIndexing] = useState(false);
+  const [legacyHint, setLegacyHint] = useState(initialCapability ?? "");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -174,8 +158,11 @@ export function AgentPage() {
         }
         if (work) {
           setWorkMessages(messagesFrom(work));
-          setReport(workspaceReportFrom(work));
-          if (work.workspace_path) setWorkspacePath(work.workspace_path);
+          // The project-bound workspace persisted by the Data/Plan flow is
+          // authoritative. A previously selected conversation may carry a
+          // stale workspace path from another project and must not override it
+          // when Work is reopened.
+          if (work.workspace_path && !initialWorkspacePath) setWorkspacePath(work.workspace_path);
         }
       })
       .catch((caught) => {
@@ -184,7 +171,48 @@ export function AgentPage() {
         }
       });
     return () => controller.abort();
-  }, []);
+  }, [initialWorkspacePath]);
+
+  useEffect(() => {
+    if (initialCapability) setLegacyHint(initialCapability);
+  }, [initialCapability]);
+
+  useEffect(() => {
+    const onCapability = (event: Event) => {
+      const kind = (event as CustomEvent<string>).detail;
+      if (kind) void openCapability(kind as WorkCardKind);
+    };
+    window.addEventListener("work-capability", onCapability);
+    return () => window.removeEventListener("work-capability", onCapability);
+  });
+
+  const workConversation = conversationList.find((item) => item.conversation_id === conversationIds.work);
+  useEffect(() => {
+    const runId = workConversation?.active_run_id ?? workspace.runId;
+    if (!runId) {
+      setActiveRun(null);
+      return;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const terminal = new Set(["succeeded", "failed_terminal", "timed_out", "cancelled"]);
+    const poll = async () => {
+      try {
+        const run = await api.run(runId, controller.signal);
+        if (controller.signal.aborted) return;
+        setActiveRun(run);
+        updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
+        if (!terminal.has(run.state)) timer = setTimeout(() => void poll(), 2_000);
+      } catch (caught) {
+        if (!(caught instanceof DOMException && caught.name === "AbortError")) setActiveRun(null);
+      }
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [workConversation?.active_run_id, workspace.runId]);
 
   useEffect(() => {
     const conversationId = conversationIds[mode];
@@ -280,7 +308,6 @@ export function AgentPage() {
       if (mode === "chat") setChatMessages(messagesFrom(created));
       else {
         setWorkMessages(messagesFrom(created));
-        setReport(null);
       }
     } catch (caught) { setError(describeError(caught)); }
     finally { setBusy(false); }
@@ -293,7 +320,6 @@ export function AgentPage() {
     if (mode === "chat") setChatMessages(messagesFrom(selected));
     else {
       setWorkMessages(messagesFrom(selected));
-      setReport(workspaceReportFrom(selected));
       if (selected.workspace_path) setWorkspacePath(selected.workspace_path);
     }
   }
@@ -361,58 +387,6 @@ export function AgentPage() {
     finally { setMemoryIndexing(false); }
   }
 
-  async function pickWorkspace(): Promise<void> {
-    setBusy(true);
-    setError("");
-    try {
-      const picked = await api.pickWorkspace();
-      if (picked.path) setWorkspacePath(picked.path);
-    } catch (caught) {
-      setError(describeError(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function checkWorkspace(): Promise<void> {
-    const path = workspacePath.trim();
-    if (!path) return;
-    setBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const conversationId = await ensureConversation("work");
-      const turn = await api.sendConversationTurn(conversationId, {
-        content: "检查所选工作区是否符合 DPABI 输入格式",
-        action: "check_workspace",
-        workspace_path: path,
-        preferred_profile_id: selectedModel?.profileId ?? null,
-      });
-      cacheConversation(turn.conversation);
-      setWorkMessages(messagesFrom(turn.conversation));
-      await refreshContext(conversationId);
-      const checkedValue = turn.assistant_message.payload.workspace_check;
-      if (!checkedValue || typeof checkedValue !== "object") {
-        setMessage(turn.assistant_message.content);
-        return;
-      }
-      const checked = checkedValue as WorkspaceCheck;
-      setReport(checked);
-      updateWorkspace({
-        workspacePath: checked.path,
-        workspaceKind: checked.kind,
-        workspaceCheckedAt: checked.checked_at,
-      });
-      const outcome = checked.blocking_issues.length
-        ? `检查完成，但有 ${checked.blocking_issues.length} 个阻断问题，需要先处理。`
-        : `检查完成：${checked.functional_subject_count} 名受试者的功能输入可以进入下一步。`;
-      setMessage(outcome);
-    } catch (caught) {
-      setError(describeError(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function sendChatMessage(): Promise<void> {
     const text = prompt.trim();
@@ -456,13 +430,13 @@ export function AgentPage() {
         workspace_path: workspacePath.trim() || null,
         preferred_profile_id: selectedModel?.profileId ?? null,
         project_id: workspace.projectId ?? null,
+        target_run_id: workspace.runId ?? null,
+        qc_review_id: workspace.qcReviewId ?? null,
         plan_revision_id: workspace.planRevisionId ?? null,
         expected_plan_hash: workspace.planHash ?? null,
       });
       cacheConversation(turn.conversation);
       setWorkMessages(messagesFrom(turn.conversation));
-      const checked = turn.assistant_message.payload.workspace_check;
-      if (checked && typeof checked === "object") setReport(checked as WorkspaceCheck);
       await refreshContext(conversationId);
     } catch (caught) {
       setError(describeError(caught));
@@ -471,74 +445,102 @@ export function AgentPage() {
     }
   }
 
-  async function startPreprocessing(): Promise<void> {
-    if (!workspace.projectId || !workspace.planRevisionId || !workspace.planHash) return;
-    const existingOutputs = report?.output_directories.length
-      ? `\n\n工作区已存在这些结果目录：${report.output_directories.join("、")}。DPABI 可能写入其中的同名产物。`
-      : "";
-    if (!window.confirm(`确认使用已审批计划启动本次 MATLAB/DPABI 运行，并在所选工作区生成结果目录？${existingOutputs}`)) return;
+  async function openCapability(kind: WorkCardKind, content?: string): Promise<void> {
+    setMode("work");
     setBusy(true);
     setError("");
+    setLegacyHint("");
     try {
       const conversationId = await ensureConversation("work");
+      const capability = capabilities.find((item) => item.kind === kind);
       const turn = await api.sendConversationTurn(conversationId, {
-        content: "确认启动已审批的 DPABI 预处理",
-        action: "start_preprocessing",
+        content: content ?? capability?.prompt ?? "打开工作卡片",
+        card_kind: kind,
         workspace_path: workspacePath.trim() || null,
         preferred_profile_id: selectedModel?.profileId ?? null,
-        project_id: workspace.projectId,
-        plan_revision_id: workspace.planRevisionId,
-        expected_plan_hash: workspace.planHash,
-        real_execution_confirmed: true,
-      });
+        project_id: workspace.projectId ?? null,
+        target_run_id: workspace.runId ?? null,
+        qc_review_id: workspace.qcReviewId ?? null,
+        plan_revision_id: workspace.planRevisionId ?? null,
+        expected_plan_hash: workspace.planHash ?? null,
+      } as Parameters<typeof api.sendConversationTurn>[1]);
       cacheConversation(turn.conversation);
       setWorkMessages(messagesFrom(turn.conversation));
       await refreshContext(conversationId);
-      if (turn.conversation.active_run_id) {
-        updateWorkspace({ runId: turn.conversation.active_run_id, runState: "queued" });
-      }
-    } catch (caught) {
-      setError(describeError(caught));
-    } finally {
-      setBusy(false);
-    }
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
   }
 
-  async function submitStructuredTask(): Promise<void> {
-    if (!workspace.projectId || !workspace.projectVersion) return;
-    setBusy(true);
-    setError("");
-    try {
-      const task = await api.createAgentTask({
-        request: {
-          task_type: taskType,
-          project_id: workspace.projectId,
-          summary: {
-            purpose:
-              taskType === "plan_explainer"
-                ? "explain_current_plan"
-                : taskType === "log_summarizer"
-                  ? "summarize_registered_run"
-                  : "draft_method_report",
-            metric_kinds: [],
-            workflow_state: "not_started",
-            issue_count: 0,
-            has_blocking_issues: false,
-          },
-          required_capabilities: ["json_object"],
-          preferred_profile_id: selectedModel?.profileId ?? null,
-        },
-        expected_project_version: workspace.projectVersion,
-      });
-      setWorkMessages((items) => [
-        ...items,
-        { id: crypto.randomUUID(), role: "assistant", text: task.result.recommendation.summary },
-      ]);
-    } catch (caught) {
-      setError(describeError(caught));
-    } finally {
-      setBusy(false);
+  function updateFromCard(result: WorkCardResult): void {
+    cacheConversation(result.conversation);
+    setWorkMessages(messagesFrom(result.conversation));
+    const binding = result.card.bindings;
+    const raw = result.result as Record<string, unknown> | null;
+    const nested = (key: string): Record<string, unknown> | null => {
+      const value = raw?.[key];
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+    };
+    const planRevision = nested("plan_revision");
+    const review = nested("review");
+    const patch: Record<string, unknown> = {};
+    const bindingKeys = {
+      project_id: "projectId", dataset_id: "datasetId", manifest_id: "manifestId",
+      plan_revision_id: "planRevisionId", run_id: "runId", qc_review_id: "qcReviewId",
+      statistical_design_id: "statisticalDesignId",
+    } as const;
+    for (const [source, target] of Object.entries(bindingKeys)) {
+      const value = binding[source as keyof typeof bindingKeys];
+      if (value != null) patch[target] = value;
     }
+    if (raw) {
+      if (raw.project_id && Array.isArray(raw.source_roots)) {
+        Object.assign(patch, {
+          datasetId: undefined, manifestId: undefined, planRevisionId: undefined,
+          runId: undefined, qcReviewId: undefined, statisticalDesignId: undefined,
+        });
+      } else if (raw.dataset_id && typeof raw.source_path === "string") {
+        Object.assign(patch, {
+          manifestId: undefined, planRevisionId: undefined, runId: undefined,
+          qcReviewId: undefined, statisticalDesignId: undefined,
+        });
+      }
+      if (typeof raw.version === "number") {
+        if (raw.run_id) patch.runVersion = raw.version;
+        else if (raw.dataset_id) patch.datasetVersion = raw.version;
+        else if (raw.project_id) patch.projectVersion = raw.version;
+      }
+      if (typeof raw.content_hash === "string" && raw.manifest_id) patch.manifestHash = raw.content_hash;
+      if (typeof raw.plan_hash === "string") patch.planHash = raw.plan_hash;
+      if (typeof raw.state === "string" && raw.run_id) patch.runState = raw.state;
+      if (planRevision) {
+        if (result.card.kind === "statistics") {
+          if (typeof planRevision.plan_revision_id === "string") patch.statisticalDesignId = planRevision.plan_revision_id;
+          if (typeof planRevision.version === "number") patch.statisticalDesignVersion = planRevision.version;
+          if (typeof planRevision.plan_hash === "string") patch.statisticalDesignHash = planRevision.plan_hash;
+        } else {
+          if (typeof planRevision.plan_revision_id === "string") patch.planRevisionId = planRevision.plan_revision_id;
+          if (typeof planRevision.version === "number") patch.planVersion = planRevision.version;
+          if (typeof planRevision.plan_hash === "string") patch.planHash = planRevision.plan_hash;
+          if (typeof planRevision.state === "string") patch.planState = planRevision.state;
+        }
+      }
+      if (review) {
+        if (typeof review.review_revision_id === "string") patch.qcReviewId = review.review_revision_id;
+        if (typeof review.version === "number") patch.qcReviewVersion = review.version;
+        if (typeof review.content_hash === "string") patch.qcReviewHash = review.content_hash;
+      }
+      const sourceRoots = raw.source_roots;
+      const sourcePath = typeof raw.source_path === "string"
+        ? raw.source_path
+        : Array.isArray(sourceRoots) && typeof sourceRoots[0] === "string" ? sourceRoots[0] : null;
+      if (sourcePath) {
+        patch.workspacePath = sourcePath;
+        setWorkspacePath(sourcePath);
+      }
+    }
+    updateWorkspace(patch);
   }
 
   const isChat = mode === "chat";
@@ -559,7 +561,7 @@ export function AgentPage() {
       <PageHeader
         eyebrow="Agent"
         title="fMRI 专项对话与工作"
-        description="Chat 结合本地 RAG 与已配置 LLM 回答 fMRI 方法问题，并可显式开启联网搜索；Work 调用受控工具完成工作区检查、预处理和结果分析。"
+        description="Chat 结合本地 RAG 与已配置 LLM 回答 fMRI 方法问题，并可显式开启联网搜索；Work 使用你准备的工作区完成预处理和结果分析。"
       />
       <div className="agent-mode-switch" role="tablist" aria-label="Agent 模式">
         <button
@@ -582,7 +584,7 @@ export function AgentPage() {
         >
           <span>Work</span>
           <strong>rs-fMRI 工作流</strong>
-          <small>检查数据、准备预处理并分析结果</small>
+          <small>选择工作区、准备预处理并分析结果</small>
         </button>
       </div>
       <Feedback message={error || message} error={Boolean(error)} />
@@ -683,63 +685,25 @@ export function AgentPage() {
           </aside>
         </div>
       ) : (
-        <>
-          <section className="workspace-bar panel">
-            <div className="workspace-bar-title">
-              <div className="assistant-icon" aria-hidden="true">⌂</div>
-              <div><span className="eyebrow">当前工作区</span><strong>{workspace.workspacePath || "尚未选择目录"}</strong><p>选择包含输入文件的目录，DPABI 结果由后续受控工作流生成。</p></div>
-            </div>
-            <div className="workspace-picker">
-              <div className="workspace-path-display" aria-label="已选择的本机目录">
-                <span>本机目录</span>
-                <strong>{workspacePath || "请通过系统窗口选择工作区"}</strong>
-              </div>
-              <button className="button button-secondary" type="button" disabled={busy} onClick={() => void pickWorkspace()}>浏览…</button>
-              <button className="button button-primary" type="button" disabled={busy || !workspacePath.trim()} onClick={() => void checkWorkspace()}>{busy ? "正在检查…" : "检查工作区"}</button>
-            </div>
-          </section>
-          <div className="conversation-layout">
-            <section className="panel conversation-panel">
-              <div className="panel-heading"><div><span className="eyebrow">Work</span><h2>告诉 Agent 下一步</h2></div><StatusPill tone={report ? (report.blocking_issues.length ? "warn" : "good") : "neutral"}>{report ? "已检查" : "等待工作区"}</StatusPill></div>
-              <MessageHistory messages={workMessages} />
-              <div className="chat-composer">
-                <textarea
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="例如：检查完成后，帮我准备一个 ALFF 预处理方案"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendWorkMessage();
-                    }
-                  }}
-                />
-                <div className="chat-actions">
-                  <label>任务类型<select aria-label="任务类型" value={taskType} onChange={(event) => setTaskType(event.target.value as TaskType)}><option value="plan_explainer">方案解释</option><option value="log_summarizer">日志总结</option><option value="report_writer">报告草稿</option></select></label>
-                  <label className="model-select">模型<select value={selectedModelKey} onChange={(event) => setSelectedModelKey(event.target.value)}><option value="">自动选择</option>{modelChoices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-                  {report && report.blocking_issues.length === 0 && workspace.planRevisionId && workspace.planHash && (
-                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => void startPreprocessing()}>启动 DPABI</button>
-                  )}
-                  <button className="button button-primary" type="button" aria-label="发送安全结构摘要" disabled={busy || (!prompt.trim() && (!workspace.projectId || !workspace.projectVersion))} onClick={prompt.trim() ? () => void sendWorkMessage() : () => void submitStructuredTask()}>{prompt.trim() ? "发送" : "发送安全结构摘要"}</button>
-                </div>
-              </div>
-            </section>
-            <aside className="panel workspace-report-panel">
-              <div className="panel-heading"><div><span className="eyebrow">检查结果</span><h2>DPABI 输入体检</h2></div>{report && <StatusPill tone={report.blocking_issues.length ? "danger" : "good"}>{report.blocking_issues.length ? "不可执行" : "可继续"}</StatusPill>}</div>
-              {!report ? (
-                <EmptyState title="等待检查" detail="选择工作区后，这里会显示目录类型、受试者配对、输入阶段和问题。" />
-              ) : (
-                <>
-                  <div className="workspace-stats"><div><strong>{kindLabel(report.kind)}</strong><span>目录类型</span></div><div><strong>{report.file_count}</strong><span>文件</span></div><div><strong>{report.subject_count}</strong><span>受试者</span></div><div><strong>{report.functional_subject_count}/{report.anatomical_subject_count}</strong><span>功能 / T1</span></div></div>
-                  {report.input_stage && <p className="report-highlight">输入阶段：<strong>{report.input_stage}</strong></p>}
-                  {report.blocking_issues.length > 0 && <div className="issue-box"><strong>阻断问题</strong><ul className="compact-list">{report.blocking_issues.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-                  {report.warnings.length > 0 && <div className="issue-box warning-box"><strong>检查提示</strong><ul className="compact-list">{report.warnings.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-                  {report.output_directories.length > 0 && <p className="muted">已发现结果目录：{report.output_directories.join("、")}</p>}
-                </>
-              )}
-            </aside>
+        <section className="panel conversation-panel work-conversation-panel">
+          <div className="panel-heading">
+            <div><span className="eyebrow">Work</span><h2>告诉 Agent 下一步</h2></div>
+            <StatusPill tone={workspace.projectId ? "good" : "neutral"}>{workspace.projectId ? "已关联项目" : "等待项目"}</StatusPill>
           </div>
-        </>
+          {legacyHint && <div className="issue-box legacy-route-hint"><strong>这个功能已经移入 Work 对话</strong><p>在这里打开对应卡片，不会自动执行任何操作。</p><button className="button button-primary" type="button" onClick={() => void openCapability(legacyHint as WorkCardKind)}>打开功能卡片</button></div>}
+          <MessageHistory messages={workMessages} />
+          {cardsFrom(workConversation).map((card) => <article className="work-message-card" key={card.card_id}>
+            <header><span className="eyebrow">操作卡片</span><h3>{card.title}</h3></header>
+            <WorkCardView card={card} conversationId={workConversation!.conversation_id} onUpdate={updateFromCard} open={(kind) => void openCapability(kind)} />
+          </article>)}
+          {activeRun && <div className="issue-box run-summary" role="status"><strong>运行 {activeRun.run_id.slice(0, 8)} · {activeRun.state}</strong><p className="muted">阶段：{activeRun.stage}{typeof activeRun.stage_progress === "number" ? ` · ${Math.round(activeRun.stage_progress * 100)}%` : ""} · 第 {activeRun.attempt} 次尝试</p>{activeRun.error && <details><summary>查看失败原因</summary><pre>{activeRun.error}</pre></details>}</div>}
+          <div className="work-capability-list" aria-label="可用功能">{capabilities.map((item) => <button className="button button-light" type="button" disabled={busy} key={item.kind} onClick={() => void openCapability(item.kind)}>{item.label}</button>)}</div>
+          <div className="chat-composer">
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：登记数据、准备 ALFF 方案、查看运行日志" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendWorkMessage(); } }} />
+            <div className="chat-actions"><label className="model-select">模型<select value={selectedModelKey} onChange={(event) => setSelectedModelKey(event.target.value)}><option value="">自动选择</option>{modelChoices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><button className="button button-primary" type="button" disabled={busy || !prompt.trim()} onClick={() => void sendWorkMessage()}>{busy ? "处理中…" : "发送"}</button></div>
+          </div>
+          <div className="work-context-summary"><span>当前工作区</span><strong>{workspacePath || "尚未选择"}</strong><span>项目</span><strong>{workspace.projectId ? `${workspace.projectId.slice(0, 8)}…` : "尚未关联"}</strong></div>
+        </section>
       )}
     </>
   );

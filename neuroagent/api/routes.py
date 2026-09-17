@@ -75,6 +75,8 @@ from neuroagent.application.contracts import (
     StatisticalResultDetailView,
     StatisticalResultView,
     StatisticsRunCreate,
+    WorkCardAction,
+    WorkCardActionView,
     WorkflowState,
     WorkspaceCheckRequest,
     WorkspaceCheckView,
@@ -87,6 +89,24 @@ from neuroagent.workflow.state import TERMINAL_WORKFLOW_STATES
 
 router = APIRouter()
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)]
+
+
+@router.get("/work/capabilities")
+def work_capabilities(request: Request) -> list[dict[str, object]]:
+    return service_from(request).work_capabilities()
+
+
+@router.post(
+    "/conversations/{conversation_id}/cards/{card_id}/actions", response_model=WorkCardActionView
+)
+def work_card_action(
+    conversation_id: str,
+    card_id: str,
+    body: WorkCardAction,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> WorkCardActionView:
+    return service_from(request).act_on_work_card(conversation_id, card_id, body, idempotency_key)
 
 
 def service_from(request: Request) -> NeuroAgentService:

@@ -131,8 +131,12 @@ class OutboundContextPolicy:
         for raw_key, value in payload.items():
             key = str(raw_key)
             normalized = key.lower()
-            if normalized in self._drop_keys or any(
-                fragment in normalized for fragment in self._drop_key_fragments
+            # Aggregate modality counts are explicitly allowlisted; raw
+            # modality payloads (paths, headers, bytes) remain dropped.
+            aggregate_count = normalized in {"nifti_count", "dicom_count"}
+            if normalized in self._drop_keys or (
+                not aggregate_count
+                and any(fragment in normalized for fragment in self._drop_key_fragments)
             ):
                 redactions += 1
                 continue

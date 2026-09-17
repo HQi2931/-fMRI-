@@ -1,6 +1,7 @@
+import { useBusinessApi } from "../work/WorkCardContext";
 import { useEffect, useMemo, useState } from "react";
 
-import { api, describeError, type Project, type Run } from "../api/client";
+import { describeError, type Project, type Run } from "../api/client";
 import { EmptyState, Feedback, MetricCard, PageHeader, ProgressBar, SafetyNotice } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { Link } from "../routing";
@@ -25,7 +26,8 @@ function toneForRun(state?: string): "neutral" | "good" | "warn" | "danger" | "i
   return "neutral";
 }
 
-export function Dashboard() {
+export function Dashboard({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
   const [projects, setProjects] = useState<Project[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -46,7 +48,7 @@ export function Dashboard() {
       }
     }).catch((caught) => setError(describeError(caught)));
     return () => controller.abort();
-  }, [workspace.projectId, workspace.projectVersion]);
+  }, [api, workspace.projectId, workspace.projectVersion]);
 
   useEffect(() => {
     if (!workspace.projectId) {
@@ -56,7 +58,7 @@ export function Dashboard() {
     const controller = new AbortController();
     api.runs(workspace.projectId, controller.signal).then(setRuns).catch((caught) => setError(describeError(caught)));
     return () => controller.abort();
-  }, [workspace.projectId]);
+  }, [api, workspace.projectId]);
 
   function chooseProject(projectId: string): void {
     if (!projectId) {
@@ -75,12 +77,12 @@ export function Dashboard() {
 
   return (
     <>
-      <PageHeader
+      {!embedded && <PageHeader
         eyebrow="工作总览"
         title="从数据到可信结果"
         description="这里仅显示后端已经持久化的项目、审批和运行状态；尚未完成的步骤不会伪装成成功。"
         action={<Link className="button button-primary" to={workspace.manifestId ? "/plan" : "/data"}>{workspace.manifestId ? "继续分析方案" : "创建或检查数据"}</Link>}
-      />
+      />}
       <Feedback message={error} error />
       {projects.length > 0 && (
         <section className="panel form-panel project-picker" aria-label="当前项目选择">

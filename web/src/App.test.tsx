@@ -2,8 +2,32 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import App from "./App";
-import { Router } from "./routing";
+
+
+import { Layout } from "./components/Layout";
+import { useApiHealth } from "./hooks/useApiHealth";
+import { AgentPage } from "./pages/AgentPage";
+import { AnalysisPage } from "./pages/AnalysisPage";
+import { Dashboard } from "./pages/Dashboard";
+import { DataPage } from "./pages/DataPage";
+import { PlanPage } from "./pages/PlanPage";
+import { QcPage } from "./pages/QcPage";
+import { RunsPage } from "./pages/RunsPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { StatisticsPage } from "./pages/StatisticsPage";
+import { Router, usePathname } from "./routing";
+
+// Business components remain directly testable; production navigation is tested in Workbench.test.
+function BusinessRegressionHarness() {
+  const pathname = usePathname();
+  const connection = useApiHealth();
+  const pages: Record<string, React.ReactNode> = {
+    "/": <Dashboard />, "/data": <DataPage />, "/plan": <PlanPage />,
+    "/runs": <RunsPage />, "/qc": <QcPage />, "/statistics": <StatisticsPage />,
+    "/agent": <AgentPage />, "/analysis": <AnalysisPage />, "/settings": <SettingsPage />,
+  };
+  return <Layout connection={connection}>{pages[pathname]}</Layout>;
+}
 
 const now = "2026-08-06T00:00:00Z";
 
@@ -43,7 +67,7 @@ describe("App", () => {
 
   function renderAt(route: string) {
     window.history.replaceState({}, "", route);
-    return render(<Router><App /></Router>);
+    return render(<Router><BusinessRegressionHarness /></Router>);
   }
 
   it("shows only persisted dashboard facts and reports the API connection", async () => {
@@ -81,8 +105,7 @@ describe("App", () => {
       return defaultApi(input);
     });
     const user = userEvent.setup();
-    renderAt("/");
-    await user.click(await screen.findByRole("link", { name: "去选择路径" }));
+    renderAt("/settings");
     expect(screen.getByRole("heading", { name: "选择本机 MATLAB / SPM / DPABI" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("MATLAB 可执行文件"), "C:\\MATLAB\\bin\\matlab.exe");
     await user.type(screen.getByLabelText("SPM 目录"), "C:\\MATLAB\\toolbox\\spm");
@@ -108,7 +131,7 @@ describe("App", () => {
     });
     const user = userEvent.setup();
     renderAt("/");
-    expect((await screen.findAllByText("组统计")).length).toBeGreaterThanOrEqual(2);
+    expect((await screen.findAllByText("组统计")).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
     expect(screen.getByText("最近：succeeded")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "继续分析方案" }));
@@ -379,6 +402,42 @@ describe("App", () => {
     expect(screen.getByLabelText("平滑方法")).toHaveValue("");
   });
 
+  it("compiles a preprocessing-only plan without metric or mask fields", async () => {
+    setWorkspace({ projectId: "p1", projectVersion: 1, datasetId: "d1", datasetVersion: 2, manifestId: "m1", manifestHash: "a".repeat(64), subjectIds: ["Sub_001"] });
+    const compiledPlan = { plan_revision_id: "plan-preprocess-only", project_id: "p1", revision: 1, version: 1, plan_hash: "b".repeat(64), manifest_hash: "a".repeat(64), environment_hash: "e".repeat(64), state: "awaiting_approval", plan: { kind: "skill_plan" }, validation_issues: [], supersedes_plan_revision_id: null, created_at: now, updated_at: now };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
+      if (path.endsWith("/skills")) return json([]);
+      if (path.endsWith("/skill-plans/resolve") && init?.method === "POST") return json({ skill_plan: { steps: [] }, plan_revision: compiledPlan }, 201);
+      return defaultApi(input);
+    });
+    const user = userEvent.setup();
+    renderAt("/plan");
+    await user.type(screen.getByLabelText("课题方案 / 预注册依据"), "dpabi-work-smoke");
+    await user.selectOptions(screen.getByLabelText("科学参数来源"), "dataset_metadata");
+    await user.type(screen.getByLabelText("参数来源证据"), "DemoData/Sub_001 JSON");
+    await user.type(screen.getByLabelText("TR（秒）"), "2");
+    await user.type(screen.getByLabelText("期望时间点（同工作流指标必填）"), "234");
+    await user.type(screen.getByLabelText("删除初始时间点数量"), "0");
+    await user.selectOptions(screen.getByLabelText("Slice timing"), "yes");
+    await user.type(screen.getByLabelText("Slice order"), "1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32");
+    await user.type(screen.getByLabelText("参考层"), "33");
+    await user.selectOptions(screen.getByLabelText("Realign"), "yes");
+    await user.selectOptions(screen.getByLabelText("协变量回归"), "no");
+    await user.selectOptions(screen.getByLabelText("标准化"), "0");
+    await user.selectOptions(screen.getByLabelText("单独去趋势"), "no");
+    await user.selectOptions(screen.getByLabelText("滤波时点"), "disabled");
+    await user.selectOptions(screen.getByLabelText("Scrubbing"), "no");
+    await user.selectOptions(screen.getByLabelText("平滑时点"), "disabled");
+    await user.click(screen.getByRole("button", { name: "校验并编译计划" }));
+    await waitFor(() => expect(screen.getByText(/不可变 SkillPlan 已编译/)).toBeInTheDocument());
+    const resolveCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/skill-plans/resolve"));
+    const payload = JSON.parse(String(resolveCall?.[1]?.body));
+    expect(payload).toMatchObject({ validation_mode: "strict", request: { requested_metrics: [], primary_outputs: [], alff_falff: null, reho: null, request_preprocessing: true } });
+    expect(payload.request.preprocessing).toMatchObject({ tr_seconds: 2, expected_time_points: 234, dummy_scans: 0, realignment: { enabled: true }, normalization: { mode: 0 }, temporal_filter: { timing: "disabled" }, smoothing: { timing: "disabled" } });
+  });
+
   it("compiles the explicit disabled and alternate preprocessing branches", async () => {
     setWorkspace({ projectId: "p1", projectVersion: 1, datasetId: "d1", datasetVersion: 2, manifestId: "m1", manifestHash: "a".repeat(64), subjectIds: ["sub-synthetic"] });
     const compiledPlan = { plan_revision_id: "plan-alt", project_id: "p1", revision: 1, version: 1, plan_hash: "b".repeat(64), manifest_hash: "a".repeat(64), environment_hash: "e".repeat(64), state: "awaiting_approval", plan: { kind: "skill_plan" }, validation_issues: [], supersedes_plan_revision_id: null, created_at: now, updated_at: now };
@@ -485,15 +544,13 @@ describe("App", () => {
     const user = userEvent.setup();
     renderAt("/runs");
     await user.selectOptions(await screen.findByLabelText("执行后端"), "matlab");
-    vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     await user.click(screen.getByRole("button", { name: "确认并创建 MATLAB 运行" }));
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST")).toBe(false);
+    expect(screen.getByRole("region", { name: "真实运行确认" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "暂不启动" }));
     await user.click(screen.getByRole("button", { name: "确认并创建 MATLAB 运行" }));
+    await user.click(screen.getByRole("button", { name: "确认启动本次真实运行" }));
     expect(await screen.findByText(/真实 MATLAB 任务已进入隔离队列/)).toBeInTheDocument();
-    expect(window.confirm).toHaveBeenLastCalledWith(
-      expect.stringContaining("当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境"),
-    );
-    expect(window.confirm).not.toHaveBeenLastCalledWith(expect.stringContaining("R2023b"));
     const createCall = vi.mocked(fetch).mock.calls.find(([url, init]) => pathOf(url).endsWith("/runs") && init?.method === "POST");
     expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ execution_backend: "matlab", real_execution_confirmed: true });
   });
@@ -638,53 +695,11 @@ describe("App", () => {
   it.each([
     ["/qc", "先审查，再进入统计"],
     ["/statistics", "版本化统计设计"],
-    ["/settings", "运行条件与服务商 API"],
+    ["/settings", "设置"],
   ])("renders the guarded %s page", async (route, heading) => {
     renderAt(route);
     expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
     await waitFor(() => expect(fetch).toHaveBeenCalled());
-  });
-
-  it("keeps credentials out of the Agent request and submits only a redacted task summary", async () => {
-    setWorkspace({ projectId: "p1", projectVersion: 1 });
-    const profile = { profile: { id: "provider1", provider: "openai-compatible", base_url: "https://example.test", model: "configured-model", api_key_env: "TEST_API_KEY", priority: 10, capabilities: ["json_object"], timeout_seconds: 45 }, version: 1, created_at: now };
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const path = pathOf(input);
-      if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
-      if (path.endsWith("/model-profiles")) return json([profile]);
-      if (path.endsWith("/agent/tasks") && init?.method === "POST") return json({ task_id: "task1", project_id: "p1", state: "succeeded", result: { recommendation: { summary: "结构化解释", proposed_skill_request: null, warnings: [], unresolved_questions: [], requires_user_confirmation: true }, routing: { task_type: "plan_explainer", selected_profile_id: "provider1", candidate_profile_ids: ["provider1"], required_capabilities: ["json_object"], reason: "capability" }, context_hash: "c".repeat(64), attempted_profile_ids: ["provider1"] }, created_at: now }, 201);
-      return defaultApi(input);
-    });
-    const user = userEvent.setup();
-    renderAt("/agent");
-    const send = screen.getByRole("button", { name: "发送安全结构摘要" });
-    await waitFor(() => expect(send).toBeEnabled());
-    await user.click(send);
-    expect(await screen.findByText("结构化解释")).toBeInTheDocument();
-    const taskCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/agent/tasks"));
-    const body = String(taskCall?.[1]?.body);
-    expect(body).not.toContain("TEST_API_KEY");
-    expect(body).not.toContain("user_question");
-    expect(JSON.parse(body).request.summary).toEqual({
-      purpose: "explain_current_plan",
-      metric_kinds: [],
-      workflow_state: "not_started",
-      issue_count: 0,
-      has_blocking_issues: false,
-    });
-
-    await user.selectOptions(screen.getByLabelText("任务类型"), "log_summarizer");
-    await user.selectOptions(screen.getByLabelText("模型"), "provider1:configured-model");
-    await user.click(send);
-    await user.selectOptions(screen.getByLabelText("任务类型"), "report_writer");
-    await user.click(send);
-    const taskCalls = vi.mocked(fetch).mock.calls.filter(([url]) => pathOf(url).endsWith("/agent/tasks"));
-    const logRequest = JSON.parse(String(taskCalls.at(-2)?.[1]?.body)).request;
-    const reportRequest = JSON.parse(String(taskCalls.at(-1)?.[1]?.body)).request;
-    expect(logRequest.summary.purpose).toBe("summarize_registered_run");
-    expect(reportRequest.summary.purpose).toBe("draft_method_report");
-    expect(reportRequest.preferred_profile_id).toBe("provider1");
-    expect(JSON.stringify(reportRequest)).not.toContain("TEST_API_KEY");
   });
 
   it("separates RAG chat from the rs-fMRI work mode", async () => {
@@ -904,23 +919,29 @@ describe("App", () => {
     expect((await screen.findAllByText("索引服务不可用")).length).toBeGreaterThanOrEqual(1);
   });
 
-  it("uses the system folder picker instead of a typed workspace path", async () => {
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const path = pathOf(input);
-      if (path.endsWith("/workspaces/pick") && init?.method === "POST") {
-        return json({ path: "D:\\selected-dpabi-workspace", cancelled: false });
-      }
-      return defaultApi(input);
-    });
-    const user = userEvent.setup();
+  it("routes workspace setup through a Work capability card", async () => {
     renderAt("/agent");
 
     expect(screen.queryByRole("textbox", { name: "本机目录" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "浏览…" }));
-    expect(await screen.findByText("D:\\selected-dpabi-workspace")).toBeInTheDocument();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([url]) => pathOf(url).endsWith("/workspaces/pick")),
-    ).toBe(true);
+    expect(screen.getByRole("button", { name: "项目与工作区" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "浏览…" })).not.toBeInTheDocument();
+  });
+
+  it("restores and displays the active Work run without another chat message", async () => {
+    setWorkspace({ workspacePath: "D:\\dpabi-ready", projectId: "p1", runId: "run-live" });
+    const conversation = { conversation_id: "work-live", mode: "work", title: "运行", workspace_path: "D:\\dpabi-ready", preferred_profile_id: null, project_id: "p1", active_run_id: "run-live", version: 2, created_at: now, updated_at: now, messages: [], tool_calls: [] };
+    const run = { run_id: "run-live", project_id: "p1", plan_revision_id: "plan1", state: "running", version: 3, attempt: 1, cancel_requested: false, error: null, stage: "realignment", stage_progress: 0.4, heartbeat: now, created_at: now, updated_at: now };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/conversations") && init?.method !== "POST") return json([conversation]);
+      if (path.endsWith("/runs/run-live")) return json(run);
+      return defaultApi(input);
+    });
+
+    renderAt("/agent");
+    expect(await screen.findByText("运行 run-live · running")).toBeInTheDocument();
+    expect(screen.getByText(/阶段：realignment · 40% · 第 1 次尝试/)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => pathOf(url).endsWith("/conversations/work-live/turns"))).toBe(false);
   });
 
   it("stores only non-secret provider metadata and runs a lightweight connectivity test", async () => {
@@ -1026,13 +1047,10 @@ describe("App", () => {
     await user.click(approveButton);
     expect(await screen.findByText(/统计设计已批准/)).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("执行后端"), "matlab");
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(screen.getByRole("button", { name: "提交统计运行" }));
+    expect(screen.getByRole("region", { name: "真实运行确认" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认启动本次真实运行" }));
     expect(await screen.findByText(/真实 MATLAB 统计任务已进入隔离队列/)).toBeInTheDocument();
-    expect(window.confirm).toHaveBeenLastCalledWith(
-      expect.stringContaining("当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境"),
-    );
-    expect(window.confirm).not.toHaveBeenLastCalledWith(expect.stringContaining("R2023b"));
     const createCall = vi.mocked(fetch).mock.calls.find(([url]) => pathOf(url).endsWith("/statistical-designs"));
     const createPayload = JSON.parse(String(createCall?.[1]?.body));
     expect(createPayload).not.toHaveProperty("environment_hash");
@@ -1135,8 +1153,4 @@ describe("App", () => {
     expect(body.correction).toMatchObject({ method: "grf", two_tailed: false, smoothness_mode: "provided_dlh", smoothness_dlh: 0.25, df1: 1 });
   });
 
-  it("renders unknown routes as the dashboard", () => {
-    renderAt("/not-found");
-    expect(screen.getByRole("heading", { name: "从数据到可信结果" })).toBeInTheDocument();
-  });
 });

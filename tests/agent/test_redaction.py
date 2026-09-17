@@ -109,6 +109,12 @@ def test_generic_chinese_method_question_remains_allowed() -> None:
     assert result.payload == {"user_question": "请解释 ReHo 的处理顺序和待确认参数"}
 
 
+def test_aggregate_modality_counts_are_safe_to_send() -> None:
+    policy = OutboundContextPolicy("a-stable-test-salt-value")
+    result = policy.redact({"nifti_count": 12, "dicom_count": 4})
+    assert result.payload == {"nifti_count": 12, "dicom_count": 4}
+
+
 def test_credential_embedded_in_free_text_fails_closed() -> None:
     policy = OutboundContextPolicy("a-stable-test-salt-value")
     with pytest.raises(OutboundPolicyError, match="sensitive text"):

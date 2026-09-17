@@ -220,7 +220,7 @@ export function SettingsPage() {
     <>
       <PageHeader
         eyebrow="本机环境"
-        title="运行条件与服务商 API"
+        title="设置"
         description="绑定模型服务商的 API Key 后，Agent 对话框会直接加载并显示该服务商提供的模型，无需逐个创建模型配置。"
         action={<button className="button button-secondary" type="button" disabled={busy} onClick={() => refresh().catch((caught) => setError(describeError(caught)))}>重新探测</button>}
       />

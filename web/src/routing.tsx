@@ -7,6 +7,21 @@ type RouterContextValue = {
 };
 
 const RouterContext = createContext<RouterContextValue | null>(null);
+const WorkRoutingContext = createContext(false);
+
+const businessPaths: Record<string, string> = {
+  "/dashboard": "project",
+  "/data": "data",
+  "/plan": "plan",
+  "/runs": "runs",
+  "/qc": "qc",
+  "/statistics": "statistics",
+  "/analysis": "analysis",
+};
+
+export function businessCapabilityForPath(pathname: string): string | undefined {
+  return businessPaths[pathname];
+}
 
 export function Router({ children }: { children: React.ReactNode }) {
   const [pathname, setPathname] = useState(window.location.pathname);
@@ -28,6 +43,10 @@ export function Router({ children }: { children: React.ReactNode }) {
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>;
 }
 
+export function WorkRoutingProvider({ children }: { children: React.ReactNode }) {
+  return <WorkRoutingContext.Provider value>{children}</WorkRoutingContext.Provider>;
+}
+
 export function usePathname() {
   const context = useContext(RouterContext);
   if (!context) throw new Error("usePathname must be used inside Router");
@@ -43,6 +62,7 @@ type LinkProps = {
 
 export function Link({ to, children, className, ...rest }: LinkProps) {
   const context = useContext(RouterContext);
+  const routeThroughWork = useContext(WorkRoutingContext);
   if (!context) throw new Error("Link must be used inside Router");
   return (
     <a
@@ -58,7 +78,12 @@ export function Link({ to, children, className, ...rest }: LinkProps) {
           !event.altKey
         ) {
           event.preventDefault();
-          context.navigate(to);
+          const capability = businessCapabilityForPath(to);
+          if (capability && routeThroughWork) {
+            window.dispatchEvent(new CustomEvent("work-capability", { detail: capability }));
+          } else {
+            context.navigate(to);
+          }
         }
       }}
     >
@@ -69,7 +94,9 @@ export function Link({ to, children, className, ...rest }: LinkProps) {
 
 export function NavLink({ to, end, children }: LinkProps & { end?: boolean }) {
   const pathname = usePathname();
-  const active = end ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
+  const active = to === "/agent"
+    ? pathname !== "/settings"
+    : end ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
   return (
     <Link
       className={active ? "active" : undefined}

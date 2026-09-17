@@ -1,7 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  api,
   describeError,
   type Artifact,
   type QcReview,
@@ -56,35 +56,37 @@ function parseCovariates(value: string, subjects: string[], test: TestType): Cov
   });
 }
 
-export function StatisticsPage() {
+export function StatisticsPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
   const [qc, setQc] = useState<QcReview | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const [test, setTest] = useState<TestType | "">("");
-  const [tail, setTail] = useState<Tail | "">("");
-  const [imageRows, setImageRows] = useState("");
-  const [groupOrder, setGroupOrder] = useState("");
-  const [conditionOrder, setConditionOrder] = useState("");
-  const [oneSampleBaseline, setOneSampleBaseline] = useState("");
-  const [covariateRows, setCovariateRows] = useState("");
-  const [missingPolicy, setMissingPolicy] = useState<"error" | "exclude_explicitly" | "">("");
-  const [maskArtifactId, setMaskArtifactId] = useState("");
-  const [correction, setCorrection] = useState<"fdr" | "grf" | "">("");
-  const [qThreshold, setQThreshold] = useState("");
-  const [voxelThreshold, setVoxelThreshold] = useState("");
-  const [clusterThreshold, setClusterThreshold] = useState("");
-  const [grfSmoothnessMode, setGrfSmoothnessMode] = useState<GrfSmoothnessMode | "">("");
-  const [grfSmoothnessDlh, setGrfSmoothnessDlh] = useState("");
-  const [executionBackend, setExecutionBackend] = useState<"mock" | "matlab">("mock");
+  const [test, setTest] = useCardState<TestType | "">("test", "");
+  const [tail, setTail] = useCardState<Tail | "">("tail", "");
+  const [imageRows, setImageRows] = useCardState("imageRows", "");
+  const [groupOrder, setGroupOrder] = useCardState("groupOrder", "");
+  const [conditionOrder, setConditionOrder] = useCardState("conditionOrder", "");
+  const [oneSampleBaseline, setOneSampleBaseline] = useCardState("oneSampleBaseline", "");
+  const [covariateRows, setCovariateRows] = useCardState("covariateRows", "");
+  const [missingPolicy, setMissingPolicy] = useCardState<"error" | "exclude_explicitly" | "">("missingPolicy", "");
+  const [maskArtifactId, setMaskArtifactId] = useCardState("maskArtifactId", "");
+  const [correction, setCorrection] = useCardState<"fdr" | "grf" | "">("correction", "");
+  const [qThreshold, setQThreshold] = useCardState("qThreshold", "");
+  const [voxelThreshold, setVoxelThreshold] = useCardState("voxelThreshold", "");
+  const [clusterThreshold, setClusterThreshold] = useCardState("clusterThreshold", "");
+  const [grfSmoothnessMode, setGrfSmoothnessMode] = useCardState<GrfSmoothnessMode | "">("grfSmoothnessMode", "");
+  const [grfSmoothnessDlh, setGrfSmoothnessDlh] = useCardState("grfSmoothnessDlh", "");
+  const [executionBackend, setExecutionBackend] = useCardState<"mock" | "matlab">("executionBackend", "mock");
   const [design, setDesign] = useState<StatisticalDesign | null>(null);
   const designIdRef = useRef<string | null>(null);
-  const [approvalActor, setApprovalActor] = useState("");
-  const [approvalReason, setApprovalReason] = useState("");
+  const [approvalActor, setApprovalActor] = useCardState("approvalActor", "");
+  const [approvalReason, setApprovalReason] = useCardState("approvalReason", "");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
   const [results, setResults] = useState<StatisticalResult[]>([]);
-  const [selectedResultId, setSelectedResultId] = useState("");
+  const [selectedResultId, setSelectedResultId] = useCardState("selectedResultId", "");
   const [resultDetail, setResultDetail] = useState<StatisticalResultDetail | null>(null);
   const [resultRefresh, setResultRefresh] = useState(0);
 
@@ -142,7 +144,7 @@ export function StatisticsPage() {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
     });
     return () => controller.abort();
-  }, [workspace.qcReviewId, workspace.runId, workspace.statisticalDesignId]);
+  }, [api, setClusterThreshold, setConditionOrder, setCorrection, setCovariateRows, setGrfSmoothnessDlh, setGrfSmoothnessMode, setGroupOrder, setImageRows, setMaskArtifactId, setMissingPolicy, setOneSampleBaseline, setQThreshold, setTail, setTest, setVoxelThreshold, workspace.qcReviewId, workspace.runId, workspace.statisticalDesignId]);
 
   useEffect(() => {
     if (!workspace.projectId) return;
@@ -156,7 +158,7 @@ export function StatisticsPage() {
         }
       });
     return () => controller.abort();
-  }, [resultRefresh, workspace.projectId]);
+  }, [api, resultRefresh, workspace.projectId]);
 
   useEffect(() => {
     if (!selectedResultId) {
@@ -173,7 +175,7 @@ export function StatisticsPage() {
         }
       });
     return () => controller.abort();
-  }, [selectedResultId]);
+  }, [api, selectedResultId]);
 
   const parsedRows = useMemo(() => lines(imageRows), [imageRows]);
   const subjects = qc?.review.included_subject_ids ?? [];
@@ -315,21 +317,17 @@ export function StatisticsPage() {
     }
   }
 
-  async function submitStatistics(): Promise<void> {
+  async function submitStatistics(confirmedHash?: string): Promise<void> {
     if (!workspace.projectId || !design) return;
+    if (executionBackend === "matlab" && confirmedHash !== design.plan_revision.plan_hash) {
+      setPendingConfirmation(design.plan_revision.plan_hash);
+      return;
+    }
+    setPendingConfirmation(null);
     setBusy(true);
     setError("");
     try {
-      const confirmed = executionBackend === "matlab"
-        ? window.confirm(
-          `确认启动真实 MATLAB/DPABI 统计？\n\n` +
-          `写入：项目配置的隔离工作目录\n` +
-          `软件：当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境\n` +
-          `计划哈希：${design.plan_revision.plan_hash}\n` +
-          `仅用于科研流程，不用于临床判断。`,
-        )
-        : false;
-      if (executionBackend === "matlab" && !confirmed) return;
+      const confirmed = executionBackend === "matlab" && confirmedHash === design.plan_revision.plan_hash;
       const run = await api.createStatisticsRun({
         project_id: workspace.projectId,
         statistical_design_revision_id: design.plan_revision.plan_revision_id,
@@ -351,8 +349,18 @@ export function StatisticsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="统计" title="版本化统计设计" description="影像、分组和协变量严格按 QC 冻结顺序对齐；校正方法与统计检验分开建模。" />
+      {!embedded && <PageHeader eyebrow="统计" title="版本化统计设计" description="影像、分组和协变量严格按 QC 冻结顺序对齐；校正方法与统计检验分开建模。" />}
       <Feedback message={error || message} error={Boolean(error)} />
+      {pendingConfirmation && <section className="panel" aria-label="真实运行确认">
+        <h3>确认本次 MATLAB / DPABI 运行</h3>
+        <p>项目：{workspace.projectId}。结果将写入项目配置的工作目录，使用设置中已探测的本机软件。</p>
+        <p>方案哈希：<code>{pendingConfirmation}</code></p>
+        <div className="button-row">
+          <button className="button button-primary" type="button" disabled={busy} onClick={() => submitStatistics(pendingConfirmation)}>确认启动本次真实运行</button>
+          <button className="button button-secondary" type="button" disabled={busy} onClick={() => setPendingConfirmation(null)}>暂不启动</button>
+        </div>
+      </section>}
+
       {!qc || qc.state !== "approved" ? <section className="panel"><EmptyState title="统计入口已锁定" detail="必须先创建并批准类型化 QC revision，不能用文件系统顺序或临时排除清单绕过。" /></section> : (
         <div className="two-column wide-left">
           <section className="panel">
@@ -380,7 +388,7 @@ export function StatisticsPage() {
               <button className="button button-secondary" type="button" disabled={busy || Boolean(design) || !test || !tail || !missingPolicy || !correction || !maskArtifactId || !imageRows.trim() || (test === "one_sample_t" && !oneSampleBaseline.trim()) || !(correction === "fdr" ? qThreshold && tail === "two_sided" : voxelThreshold && clusterThreshold && grfSmoothnessMode && (grfSmoothnessMode !== "provided_dlh" || grfSmoothnessDlh))} onClick={createDesign}>生成设计矩阵</button>
               <button className="button button-secondary" type="button" disabled={busy || design?.plan_revision.state !== "draft"} onClick={validateDesign}>验证设计</button>
               <button className="button button-primary" type="button" disabled={busy || design?.plan_revision.state !== "awaiting_approval" || !approvalActor.trim() || !approvalReason.trim()} onClick={approveDesign}>批准统计设计</button>
-              <button className="button button-primary" type="button" disabled={busy || design?.plan_revision.state !== "approved"} onClick={submitStatistics}>提交统计运行</button>
+              <button className="button button-primary" type="button" disabled={busy || design?.plan_revision.state !== "approved"} onClick={() => submitStatistics()}>提交统计运行</button>
             </div>
           </section>
           <aside className="panel matrix-panel">
