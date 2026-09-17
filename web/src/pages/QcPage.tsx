@@ -1,6 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useEffect, useMemo, useState } from "react";
 
-import { api, describeError, type Artifact, type QcReview, type Run } from "../api/client";
+import { describeError, type Artifact, type QcReview, type Run } from "../api/client";
 import { EmptyState, Feedback, MetricCard, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { updateWorkspace, useWorkspace } from "../workspace";
@@ -16,22 +17,23 @@ function toggleId(current: string[], artifactId: string, checked: boolean): stri
   return checked ? [...current, artifactId] : current.filter((item) => item !== artifactId);
 }
 
-export function QcPage() {
+export function QcPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
   const [run, setRun] = useState<Run | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [review, setReview] = useState<QcReview | null>(null);
-  const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([]);
-  const [checkCode, setCheckCode] = useState("");
-  const [checkSeverity, setCheckSeverity] = useState<"info" | "warning" | "blocking" | "">("");
-  const [checkPassed, setCheckPassed] = useState<"yes" | "no" | "">("");
-  const [checkEvidenceIds, setCheckEvidenceIds] = useState<string[]>([]);
-  const [checkMessage, setCheckMessage] = useState("");
-  const [included, setIncluded] = useState("");
-  const [exclusionDecision, setExclusionDecision] = useState<"none" | "some" | "">("");
-  const [excluded, setExcluded] = useState("");
-  const [approvalActor, setApprovalActor] = useState("");
-  const [approvalReason, setApprovalReason] = useState("");
+  const [selectedMetricIds, setSelectedMetricIds] = useCardState<string[]>("selectedMetricIds", []);
+  const [checkCode, setCheckCode] = useCardState("checkCode", "");
+  const [checkSeverity, setCheckSeverity] = useCardState<"info" | "warning" | "blocking" | "">("checkSeverity", "");
+  const [checkPassed, setCheckPassed] = useCardState<"yes" | "no" | "">("checkPassed", "");
+  const [checkEvidenceIds, setCheckEvidenceIds] = useCardState<string[]>("checkEvidenceIds", []);
+  const [checkMessage, setCheckMessage] = useCardState("checkMessage", "");
+  const [included, setIncluded] = useCardState("included", "");
+  const [exclusionDecision, setExclusionDecision] = useCardState<"none" | "some" | "">("exclusionDecision", "");
+  const [excluded, setExcluded] = useCardState("excluded", "");
+  const [approvalActor, setApprovalActor] = useCardState("approvalActor", "");
+  const [approvalReason, setApprovalReason] = useCardState("approvalReason", "");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,7 +74,7 @@ export function QcPage() {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
     });
     return () => controller.abort();
-  }, [workspace.qcReviewId, workspace.runId]);
+  }, [api, setCheckCode, setCheckEvidenceIds, setCheckMessage, setCheckPassed, setCheckSeverity, setExcluded, setExclusionDecision, setIncluded, setSelectedMetricIds, workspace.qcReviewId, workspace.runId]);
 
   const metricArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.artifact_type.startsWith("metric.")), [artifacts]);
   const exclusionRows = useMemo(() => exclusionDecision === "some" ? parseExclusions(excluded) : [], [excluded, exclusionDecision]);
@@ -169,7 +171,7 @@ export function QcPage() {
 
   return (
     <>
-      <PageHeader eyebrow="质量控制" title="先审查，再进入统计" description="自动检查只提供证据；任何纳入或排除决定都会形成新的、可追溯的人工 QC revision。" />
+      {!embedded && <PageHeader eyebrow="质量控制" title="先审查，再进入统计" description="自动检查只提供证据；任何纳入或排除决定都会形成新的、可追溯的人工 QC revision。" />}
       <Feedback message={error || message} error={Boolean(error)} />
       <section className="metric-grid three">
         <MetricCard label="待审运行" value={run ? "1" : "0"} detail={run?.state ?? "尚未选择"} tone={run?.state === "qc_review" ? "warn" : "neutral"} />

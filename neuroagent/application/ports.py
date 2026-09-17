@@ -98,9 +98,11 @@ class PathPolicyPort(Protocol):
 
     def validate_work_root(self, path: str | Path) -> Path: ...
 
+    def storage_capacity(self, path: str | Path) -> tuple[int, int]: ...
+
 
 class DatasetInspectorPort(Protocol):
-    def inspect(self, source_path: Path) -> dict[str, Any]: ...
+    def inspect(self, source_path: Path, *, report_only: bool = False) -> dict[str, Any]: ...
 
 
 class WorkspacePickerPort(Protocol):
@@ -146,6 +148,10 @@ class RepositoryPort(Protocol):
     def list_conversations(
         self, *, mode: ConversationMode | None = None
     ) -> list[ConversationView]: ...
+
+    def save_work_card_draft(
+        self, conversation_id: str, card: dict[str, Any]
+    ) -> ConversationView: ...
 
     def append_conversation_exchange(
         self,

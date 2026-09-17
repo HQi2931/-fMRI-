@@ -808,9 +808,13 @@
       "ConversationAction": {
         "enum": [
           "auto",
-          "check_workspace",
+          "setup_workspace",
+          "prepare_preprocessing_plan",
+          "preview_preprocessing_run",
           "start_preprocessing",
-          "get_progress"
+          "get_progress",
+          "get_qc_status",
+          "get_statistical_results"
         ],
         "title": "ConversationAction",
         "type": "string"
@@ -1047,6 +1051,27 @@
             "title": "Allow Remote Search",
             "type": "boolean"
           },
+          "card_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "project",
+                  "data",
+                  "plan",
+                  "runs",
+                  "qc",
+                  "statistics",
+                  "analysis",
+                  "settings"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Kind"
+          },
           "content": {
             "maxLength": 8000,
             "minLength": 1,
@@ -1065,6 +1090,18 @@
               }
             ],
             "title": "Expected Plan Hash"
+          },
+          "expected_project_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Project Version"
           },
           "model": {
             "anyOf": [
@@ -1121,15 +1158,47 @@
             ],
             "title": "Project Id"
           },
+          "qc_review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Review Id"
+          },
           "real_execution_confirmed": {
             "default": false,
             "title": "Real Execution Confirmed",
             "type": "boolean"
           },
+          "skill_plan_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillPlanIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "stream": {
             "default": false,
             "title": "Stream",
             "type": "boolean"
+          },
+          "target_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Run Id"
           },
           "workspace_path": {
             "anyOf": [
@@ -1142,6 +1211,16 @@
               }
             ],
             "title": "Workspace Path"
+          },
+          "workspace_setup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceSetupIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1405,6 +1484,13 @@
           "file_count": {
             "title": "File Count",
             "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
           },
           "kind": {
             "$ref": "#/components/schemas/DatasetKind"
@@ -2213,8 +2299,25 @@
             "title": "Context Hash",
             "type": "string"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
           "recommendation": {
             "$ref": "#/components/schemas/StructuredRecommendation"
+          },
+          "redaction_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Redaction Count",
+            "type": "integer"
           },
           "routing": {
             "$ref": "#/components/schemas/RoutingDecision"
@@ -2459,6 +2562,11 @@
             "minimum": 1.0,
             "title": "Expected Dataset Version",
             "type": "integer"
+          },
+          "report_only": {
+            "default": false,
+            "title": "Report Only",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3544,7 +3652,9 @@
             "type": "string"
           },
           "target_stage": {
-            "pattern": "^(FunRaw|FunImg)$",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,63}$",
             "title": "Target Stage",
             "type": "string"
           },
@@ -3585,7 +3695,9 @@
             "type": "object"
           },
           "target_stage": {
-            "pattern": "^(FunRaw|FunImg)$",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,63}$",
             "title": "Target Stage",
             "type": "string"
           }
@@ -5541,10 +5653,59 @@
         "additionalProperties": false,
         "description": "Allowlisted, aggregate-only context that may leave the workstation.",
         "properties": {
+          "anatomical_subject_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Anatomical Subject Count",
+            "type": "integer"
+          },
+          "dicom_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Dicom Count",
+            "type": "integer"
+          },
+          "file_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "format_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Format Issues",
+            "type": "array"
+          },
+          "functional_subject_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Functional Subject Count",
+            "type": "integer"
+          },
           "has_blocking_issues": {
             "default": false,
             "title": "Has Blocking Issues",
             "type": "boolean"
+          },
+          "input_stage": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Stage"
           },
           "issue_count": {
             "default": 0,
@@ -5567,8 +5728,43 @@
             "type": "array",
             "uniqueItems": true
           },
+          "nifti_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Nifti Count",
+            "type": "integer"
+          },
+          "output_directories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Output Directories",
+            "type": "array"
+          },
           "purpose": {
             "$ref": "#/components/schemas/AgentSummaryPurpose"
+          },
+          "subject_count": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Subject Count",
+            "type": "integer"
+          },
+          "user_question": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Question"
           },
           "workflow_state": {
             "default": "not_started",
@@ -5586,6 +5782,18 @@
             ],
             "title": "Workflow State",
             "type": "string"
+          },
+          "workspace_kind": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Kind"
           }
         },
         "required": [
@@ -5966,6 +6174,15 @@
               }
             ],
             "title": "Supersedes Plan Revision Id"
+          },
+          "validation_mode": {
+            "default": "strict",
+            "enum": [
+              "strict",
+              "report_only"
+            ],
+            "title": "Validation Mode",
+            "type": "string"
           }
         },
         "required": [
@@ -6830,6 +7047,22 @@
         "additionalProperties": false,
         "description": "The only Agent result accepted by deterministic application services.",
         "properties": {
+          "adjustment_steps": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Adjustment Steps",
+            "type": "array"
+          },
+          "expected_layout": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Expected Layout",
+            "type": "array"
+          },
           "proposed_skill_request": {
             "anyOf": [
               {
@@ -6841,6 +7074,20 @@
               }
             ],
             "title": "Proposed Skill Request"
+          },
+          "recommended_target_stage": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 2,
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Target Stage"
           },
           "requires_user_confirmation": {
             "title": "Requires User Confirmation",
@@ -7230,6 +7477,248 @@
         "title": "ValidationIssue",
         "type": "object"
       },
+      "WorkCard": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_operations": {
+            "items": {
+              "enum": [
+                "saveDraft",
+                "selectProject",
+                "createProject",
+                "createDataset",
+                "inspectDataset",
+                "importDemographics",
+                "createSplit",
+                "resolveSkillPlan",
+                "approvePlan",
+                "createRun",
+                "cancelRun",
+                "retryRun",
+                "diagnoseRun",
+                "createQcReview",
+                "approveQcReview",
+                "createStatisticalDesign",
+                "validateStatisticalDesign",
+                "createStatisticsRun",
+                "inspectMlTable",
+                "createMlTemplate",
+                "validateRoiTable",
+                "localizeClusters",
+                "answerRsFmriQuestion",
+                "organizationPreview"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Operations",
+            "type": "array"
+          },
+          "bindings": {
+            "$ref": "#/components/schemas/WorkCardBindings"
+          },
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "draft": {
+            "additionalProperties": true,
+            "title": "Draft",
+            "type": "object"
+          },
+          "draft_ref": {
+            "title": "Draft Ref",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "project",
+              "data",
+              "plan",
+              "runs",
+              "qc",
+              "statistics",
+              "analysis",
+              "settings"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "card_id",
+          "kind",
+          "title",
+          "draft_ref"
+        ],
+        "title": "WorkCard",
+        "type": "object"
+      },
+      "WorkCardAction": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "items": {},
+            "maxItems": 2,
+            "title": "Args",
+            "type": "array"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "enum": [
+              "saveDraft",
+              "selectProject",
+              "createProject",
+              "createDataset",
+              "inspectDataset",
+              "importDemographics",
+              "createSplit",
+              "resolveSkillPlan",
+              "approvePlan",
+              "createRun",
+              "cancelRun",
+              "retryRun",
+              "diagnoseRun",
+              "createQcReview",
+              "approveQcReview",
+              "createStatisticalDesign",
+              "validateStatisticalDesign",
+              "createStatisticsRun",
+              "inspectMlTable",
+              "createMlTemplate",
+              "validateRoiTable",
+              "localizeClusters",
+              "answerRsFmriQuestion",
+              "organizationPreview"
+            ],
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "operation"
+        ],
+        "title": "WorkCardAction",
+        "type": "object"
+      },
+      "WorkCardActionView": {
+        "additionalProperties": false,
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/WorkCard"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/ConversationView"
+          },
+          "result": {
+            "title": "Result"
+          }
+        },
+        "required": [
+          "card",
+          "conversation"
+        ],
+        "title": "WorkCardActionView",
+        "type": "object"
+      },
+      "WorkCardBindings": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Id"
+          },
+          "manifest_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Id"
+          },
+          "plan_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Revision Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "qc_review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Review Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "statistical_design_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistical Design Id"
+          }
+        },
+        "title": "WorkCardBindings",
+        "type": "object"
+      },
       "WorkflowState": {
         "enum": [
           "queued",
@@ -7269,13 +7758,6 @@
             "title": "Anatomical Subject Count",
             "type": "integer"
           },
-          "blocking_issues": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Blocking Issues",
-            "type": "array"
-          },
           "checked_at": {
             "format": "date-time",
             "title": "Checked At",
@@ -7287,6 +7769,11 @@
           },
           "file_count": {
             "title": "File Count",
+            "type": "integer"
+          },
+          "free_space_bytes": {
+            "minimum": 0.0,
+            "title": "Free Space Bytes",
             "type": "integer"
           },
           "functional_subject_count": {
@@ -7309,6 +7796,13 @@
               "type": "string"
             },
             "title": "Invalid Nifti Files",
+            "type": "array"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
             "type": "array"
           },
           "kind": {
@@ -7340,6 +7834,11 @@
             "title": "Subjects",
             "type": "array"
           },
+          "total_space_bytes": {
+            "minimum": 0.0,
+            "title": "Total Space Bytes",
+            "type": "integer"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -7357,6 +7856,8 @@
           "subject_count",
           "functional_subject_count",
           "anatomical_subject_count",
+          "total_space_bytes",
+          "free_space_bytes",
           "checked_at"
         ],
         "title": "WorkspaceCheckView",
@@ -7383,6 +7884,37 @@
           }
         },
         "title": "WorkspacePickView",
+        "type": "object"
+      },
+      "WorkspaceSetupIntent": {
+        "additionalProperties": false,
+        "description": "Explicit metadata needed to register a checked workspace.\n\nThe selected workspace remains the dataset source. ``work_root`` is a\nseparate application-owned directory for run metadata and isolated\nattempts; it must still pass the configured path policy.",
+        "properties": {
+          "dataset_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Dataset Name",
+            "type": "string"
+          },
+          "project_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Name",
+            "type": "string"
+          },
+          "work_root": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Work Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name",
+          "dataset_name",
+          "work_root"
+        ],
+        "title": "WorkspaceSetupIntent",
         "type": "object"
       }
     }
@@ -8184,6 +8716,125 @@
         "tags": [
           "agent"
         ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/cards/{card_id}/actions": {
+      "post": {
+        "operationId": "work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "card_id",
+            "required": true,
+            "schema": {
+              "title": "Card Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkCardAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkCardActionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Work Card Action"
       }
     },
     "/api/v1/conversations/{conversation_id}/context": {
@@ -14067,6 +14718,89 @@
         "tags": [
           "statistics"
         ]
+      }
+    },
+    "/api/v1/work/capabilities": {
+      "get": {
+        "operationId": "work_capabilities_api_v1_work_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Work Capabilities Api V1 Work Capabilities Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Work Capabilities"
       }
     },
     "/api/v1/workspaces/check": {

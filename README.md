@@ -14,11 +14,13 @@
 
 ## 当前实现状态
 
+- 前端以 Work 对话为唯一业务入口：主导航只保留“对话工作台”，MATLAB/SPM/DPABI、本机目录与模型连接集中在右上角“设置”。项目、数据、方案、审批、运行、QC、统计和扩展分析均由自然语言或能力建议打开消息内的版本化操作卡片；旧业务地址只显示对应能力提示，不会自动执行。
 - 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
 - 已实现：用户选择本机 MATLAB/SPM/DPABI 路径、入口探测、受控 DPABI `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消、预期产物完整性检查，以及真实统计结果的证据登记与确定性 Markdown/JSON 复现报告。
 - 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径均已完成小型合成 smoke；会触发 DPARSFA 交互提示的 T1 分割/DARTEL 在 headless 路径明确拒绝。
 - 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
+- Work 对话只绑定用户选择的本机工作区，目录中的 DPABI 输入文件由用户自行准备，不执行格式检查、模型格式建议或自动整理。建立项目时冻结当前文件清单用于审计，并可用完整类型化参数编译预处理计划；方案页支持不选择指标、仅编译预处理计划。真实启动前只复核计划审批、输入哈希、环境锁、路径访问和磁盘空间。活动运行由页面自动恢复并显示进度，QC revision 与统计结果可从 Work 只读查询。
 - Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。上传后点击“加入知识库”才会将脱敏文本发送到 DashScope 并建立独立索引；支持选择论文、连续追问和逐消息引用定位，旧索引缺失页码保持未知。详情见 [实施报告](docs/rsfmri-chat-phase1-implementation-report.md)。
 - 已完成一个真实 Provider 轻量 smoke（无受试者信息）。运行页默认 Mock，MATLAB 选项仍需要不可跳过的逐次确认；这些小型验证不代表所有本机配置、数据形态或 DPABI 功能均已兼容。
 
@@ -76,6 +78,7 @@ uv run python scripts\synthetic-demo.py --root tmp\synthetic-demo
 - [MVP 验证与限制](docs/development/mvp-verification.md)
 - [MVP 范围](docs/product/mvp-scope.md)
 - [ADR 0006：v0.1.0 真实执行范围](docs/adr/0006-v0.1-real-execution.md)
+- [ADR 0011：Work 对话与版本化操作卡片](docs/adr/0011-work-conversation-cards.md)
 - [计划 0005：用户选择本机科学软件环境](docs/plans/0005-user-selected-local-environment.md)
 - [本地运行与恢复](docs/operations/local-operations.md)
 - [Provider 配置与 smoke](docs/operations/provider-setup.md)

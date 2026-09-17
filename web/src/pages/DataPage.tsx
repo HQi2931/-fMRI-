@@ -1,6 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useEffect, useRef, useState } from "react";
 
-import { api, describeError, type Manifest } from "../api/client";
+import { describeError, type Manifest } from "../api/client";
 import { EmptyState, Feedback, PageHeader, SafetyNotice } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 import { resetWorkspace, updateWorkspace, useWorkspace } from "../workspace";
@@ -16,23 +17,24 @@ function parseColumnMapping(value: string): Record<string, string> {
   return mapping;
 }
 
-export function DataPage() {
+export function DataPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
-  const [projectName, setProjectName] = useState("静息态 fMRI 项目");
-  const [datasetName, setDatasetName] = useState("主数据集");
-  const [sourceRoot, setSourceRoot] = useState("");
-  const [workRoot, setWorkRoot] = useState("");
+  const [projectName, setProjectName] = useCardState("projectName", "静息态 fMRI 项目");
+  const [datasetName, setDatasetName] = useCardState("datasetName", "主数据集");
+  const [sourceRoot, setSourceRoot] = useCardState("sourceRoot", "");
+  const [workRoot, setWorkRoot] = useCardState("workRoot", "");
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const manifestIdRef = useRef<string | null>(null);
-  const [demographicsPath, setDemographicsPath] = useState("");
-  const [subjectColumn, setSubjectColumn] = useState("");
-  const [columnMapping, setColumnMapping] = useState("");
-  const [encoding, setEncoding] = useState("");
-  const [splitSeed, setSplitSeed] = useState("");
-  const [trainRatio, setTrainRatio] = useState("");
-  const [validationRatio, setValidationRatio] = useState("");
-  const [testRatio, setTestRatio] = useState("");
-  const [stratifyBy, setStratifyBy] = useState("");
+  const [demographicsPath, setDemographicsPath] = useCardState("demographicsPath", "");
+  const [subjectColumn, setSubjectColumn] = useCardState("subjectColumn", "");
+  const [columnMapping, setColumnMapping] = useCardState("columnMapping", "");
+  const [encoding, setEncoding] = useCardState("encoding", "");
+  const [splitSeed, setSplitSeed] = useCardState("splitSeed", "");
+  const [trainRatio, setTrainRatio] = useCardState("trainRatio", "");
+  const [validationRatio, setValidationRatio] = useCardState("validationRatio", "");
+  const [testRatio, setTestRatio] = useCardState("testRatio", "");
+  const [stratifyBy, setStratifyBy] = useCardState("stratifyBy", "");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,7 +49,7 @@ export function DataPage() {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
     });
     return () => controller.abort();
-  }, [workspace.manifestId]);
+  }, [api, workspace.manifestId]);
 
   useEffect(() => {
     if (!workspace.projectId || workspace.datasetId) return;
@@ -61,7 +63,7 @@ export function DataPage() {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
     });
     return () => controller.abort();
-  }, [workspace.datasetId, workspace.projectId, workspace.projectVersion]);
+  }, [api, setProjectName, setSourceRoot, setWorkRoot, workspace.datasetId, workspace.projectId, workspace.projectVersion]);
 
   async function inspect(): Promise<void> {
     setBusy(true);
@@ -96,6 +98,7 @@ export function DataPage() {
 
       const scanned = await api.inspectDataset(datasetId, {
         expected_dataset_version: datasetVersion,
+        report_only: false,
       });
       const [refreshedDataset, refreshedProject] = await Promise.all([
         api.dataset(datasetId),
@@ -104,6 +107,7 @@ export function DataPage() {
       manifestIdRef.current = scanned.manifest_id;
       setManifest(scanned);
       updateWorkspace({
+        workspacePath: sourceRoot.trim(),
         projectVersion: refreshedProject.version,
         datasetVersion: refreshedDataset.version,
         manifestId: scanned.manifest_id,
@@ -193,12 +197,12 @@ export function DataPage() {
 
   return (
     <>
-      <PageHeader
+      {!embedded && <PageHeader
         eyebrow="数据"
         title="只读检查与受试者清单"
         description="后端只读取允许范围内的源目录；整理、转换和预处理仅能进入独立工作目录。"
         action={workspace.projectId ? <button className="button button-secondary" type="button" onClick={startAnother}>切换项目</button> : undefined}
-      />
+      />}
       <Feedback message={error || message} error={Boolean(error)} />
       <section className="panel form-panel data-form">
         {!workspace.projectId && (

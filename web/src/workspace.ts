@@ -92,6 +92,13 @@ export function resetWorkspace(): void {
   listeners.forEach((listener) => listener());
 }
 
+export function restoreWorkspace(state: WorkspaceState): void {
+  memoryState = { ...state };
+  storage()?.setItem(STORAGE_KEY, JSON.stringify(memoryState));
+  if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
+  listeners.forEach((listener) => listener());
+}
+
 export function useWorkspace(): WorkspaceState {
   return JSON.parse(useSyncExternalStore(subscribe, snapshot, () => "{}")) as WorkspaceState;
 }

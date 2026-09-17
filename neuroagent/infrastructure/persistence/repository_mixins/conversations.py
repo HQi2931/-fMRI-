@@ -1,5 +1,7 @@
 """Durable Agent conversations, messages, and tool-call audit records."""
 
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -45,6 +47,31 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
 
 
 class ConversationMixin(RepositoryBaseMixin):
+    def save_work_card_draft(self, conversation_id: str, card: dict[str, Any]) -> ConversationView:
+        """Replace the newest card snapshot without adding autosave messages."""
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            messages = session.scalars(
+                select(ConversationMessageRow)
+                .where(ConversationMessageRow.conversation_id == conversation_id)
+                .order_by(ConversationMessageRow.sequence.desc())
+            ).all()
+            for message in messages:
+                payload = _load(message.payload_json)
+                cards = payload.get("work_cards", [])
+                for index, stored in enumerate(cards):
+                    if stored.get("card_id") == card["card_id"]:
+                        if stored["version"] != card["version"] - 1:
+                            raise ConflictError("work_card_stale", "卡片已经更新，请刷新。")
+                        cards[index] = card
+                        message.payload_json = canonical_json(payload)
+                        conversation.version += 1
+                        session.flush()
+                        return self._conversation_view(session, conversation)
+            raise NotFoundError("work_card", card["card_id"])
+
     def create_conversation(
         self,
         *,

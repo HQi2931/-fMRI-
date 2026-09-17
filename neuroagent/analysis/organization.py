@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
+
+DPABI_STAGE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,63}$")
 
 
 class OrganizationItem(BaseModel):
@@ -20,7 +23,11 @@ class OrganizationPreview(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     source_name: str = Field(min_length=1)
-    target_stage: str = Field(pattern=r"^(FunRaw|FunImg)$")
+    target_stage: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=DPABI_STAGE_PATTERN.pattern,
+    )
     items: tuple[OrganizationItem, ...]
     warnings: tuple[str, ...] = ()
     blocking_issues: tuple[str, ...] = ()
@@ -34,8 +41,10 @@ def build_dpabi_preview(
 ) -> OrganizationPreview:
     """Build a copy plan from manifest-relative paths without touching files."""
 
-    if target_stage not in {"FunRaw", "FunImg"}:
-        raise ValueError("target_stage must be FunRaw or FunImg")
+    if DPABI_STAGE_PATTERN.fullmatch(target_stage) is None:
+        raise ValueError(
+            "target_stage must be a single safe DPABI stage name (letters, digits, '_' or '-')"
+        )
     items: list[OrganizationItem] = []
     blockers: list[str] = []
     seen_targets: set[str] = set()
@@ -60,11 +69,18 @@ def build_dpabi_preview(
                 if role == "functional":
                     target = PurePosixPath(target_stage) / subject_id / normalized.name
                 elif role == "anatomical":
-                    t1_stage = "T1Raw" if target_stage == "FunRaw" else "T1Img"
+                    # Raw functional data conventionally pairs with T1Raw;
+                    # every processed FunImg* product pairs with T1Img.
+                    t1_stage = "T1Raw" if target_stage.lower().startswith("funraw") else "T1Img"
                     target = PurePosixPath(t1_stage) / subject_id / normalized.name
                 else:
                     target = PurePosixPath("inventory") / subject_id / normalized
                 target_text = target.as_posix()
+                target_path = source_root.joinpath(*target.parts)
+                source_file_path = source_root.joinpath(*normalized.parts)
+                if target_path.resolve() != source_file_path.resolve() and target_path.exists():
+                    blockers.append("organization_target_exists")
+                    continue
                 if target_text in seen_targets:
                     blockers.append("organization_target_collision")
                     continue

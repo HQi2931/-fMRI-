@@ -1,7 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useState } from "react";
 
 import {
-  api,
   describeError,
   type ClusterLocalization,
   type MlTableInspection,
@@ -19,15 +19,16 @@ function commaList(value: string): string[] {
     .filter(Boolean);
 }
 
-export function AnalysisPage() {
+export function AnalysisPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
-  const [question, setQuestion] = useState("ALFF 的频段和 TR 有什么关系?");
+  const [question, setQuestion] = useCardState("question", "ALFF 的频段和 TR 有什么关系?");
   const [answer, setAnswer] = useState<RsFmriAnswer | null>(null);
-  const [sourcePath, setSourcePath] = useState("");
+  const [sourcePath, setSourcePath] = useCardState("sourcePath", "");
   const [inspection, setInspection] = useState<MlTableInspection | null>(null);
-  const [target, setTarget] = useState("group");
-  const [subjectColumn, setSubjectColumn] = useState("subject_id");
-  const [features, setFeatures] = useState("roi_1, roi_2, age");
+  const [target, setTarget] = useCardState("target", "group");
+  const [subjectColumn, setSubjectColumn] = useCardState("subjectColumn", "subject_id");
+  const [features, setFeatures] = useCardState("features", "roi_1, roi_2, age");
   const [template, setTemplate] = useState<MlTemplate | null>(null);
   const [roiTable, setRoiTable] = useState<RoiTable | null>(null);
   const [localization, setLocalization] = useState<ClusterLocalization | null>(null);
@@ -169,11 +170,11 @@ export function AnalysisPage() {
 
   return (
     <>
-      <PageHeader
+      {!embedded && <PageHeader
         eyebrow="扩展分析"
         title="ROI、机器学习、脑区定位与方法学问答"
         description="先检查与设计，再由你审批。当前页面只调用本地确定性服务，不会启动 MATLAB、训练模型或联网检索。"
-      />
+      />}
       <Feedback message={error || message} error={Boolean(error)} />
       <div className="two-column wide-left">
         <section className="panel form-panel">

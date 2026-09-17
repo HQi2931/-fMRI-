@@ -18,7 +18,25 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
 from neuroagent.skills.compiler import SkillCompileError
-from neuroagent.skills.models import SkillPlan, SkillRequest, SkillSpec
+from neuroagent.skills.models import (
+    IssueSeverity,
+    SkillPlan,
+    SkillRequest,
+    SkillSpec,
+    SkillValidationIssue,
+)
+
+_REPORT_ONLY_MANIFEST_CODES = frozenset(
+    {
+        "manifest_dicom_inventory_only",
+        "manifest_dpabi_input_stage_invalid",
+        "manifest_dpabi_anatomical_stage_mixed",
+        "manifest_functional_input_missing",
+        "manifest_functional_input_ambiguous",
+        "manifest_anatomical_input_missing",
+        "manifest_anatomical_input_ambiguous",
+    }
+)
 
 
 class SkillPlanMixin(BaseServiceMixin):
@@ -265,7 +283,36 @@ class SkillPlanMixin(BaseServiceMixin):
                     expected=manifest.content_hash,
                     received=request.request.input_manifest_hash,
                 )
-            self._validate_manifest_for_skill_intent(request.request, manifest)
+            format_issues: list[SkillValidationIssue] = []
+            if request.validation_mode == "report_only":
+                format_issues.extend(
+                    SkillValidationIssue(
+                        code="MANIFEST_FORMAT_ISSUE",
+                        severity=IssueSeverity.WARNING,
+                        message=message,
+                        remediation="请在执行前根据 Work 格式建议复核工作区。",
+                    )
+                    for message in manifest.profile.issues[:100]
+                )
+            try:
+                self._validate_manifest_for_skill_intent(request.request, manifest)
+            except InputValidationError as exc:
+                if (
+                    request.validation_mode != "report_only"
+                    or exc.code not in _REPORT_ONLY_MANIFEST_CODES
+                ):
+                    raise
+                format_issues.append(
+                    SkillValidationIssue(
+                        code=exc.code.upper(),
+                        severity=IssueSeverity.WARNING,
+                        message=exc.message,
+                        remediation="请在执行前根据 Work 格式建议整理并复核功能像/T1 配对。",
+                    )
+                )
+            format_issues = list(
+                {(issue.code, issue.message): issue for issue in format_issues}.values()
+            )
             skill_request = self._materialize_skill_request(request.request, manifest)
             environment = self.environment_provider.current().snapshot
             resolution = self.skill_resolver.resolve(skill_request, environment)
@@ -291,6 +338,19 @@ class SkillPlanMixin(BaseServiceMixin):
                 )
                 for issue in report.issues
             ]
+            warnings.extend(
+                ValidationIssue(
+                    code=issue.code,
+                    message=issue.message,
+                    severity=issue.severity.value,
+                    path=issue.path,
+                )
+                for issue in format_issues
+            )
+            if format_issues:
+                skill_plan = skill_plan.model_copy(
+                    update={"warnings": tuple([*skill_plan.warnings, *format_issues])}
+                )
             return manifest.manifest_id, skill_plan, warnings
 
         def finalize(

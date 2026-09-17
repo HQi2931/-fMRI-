@@ -37,11 +37,14 @@ class ChatGatewayResult:
 
 class ModelGateway:
     _system_prompt = (
-        "You assist a research workflow. Return one JSON object with exactly these fields: "
+        "You assist a research workflow. Return one JSON object with these fields: "
         "summary (string), proposed_skill_request (object or null), warnings (string array), "
-        "unresolved_questions (string array), requires_user_confirmation (boolean). "
-        "Never emit commands, paths, tool calls, workflow transitions, or invented "
-        "scientific defaults."
+        "unresolved_questions (string array), requires_user_confirmation (boolean), and for "
+        "workspace format advice optionally expected_layout (string array), adjustment_steps "
+        "(string array), recommended_target_stage (a single safe DPABI stage name such as "
+        "FunRaw, FunImgARW, FunImgAR, or null). "
+        "Never emit commands, absolute paths, raw image content, tool calls, workflow "
+        "transitions, or invented scientific defaults."
     )
 
     def __init__(
@@ -70,7 +73,7 @@ class ModelGateway:
                 continue
             attempted.append(profile.id)
             try:
-                recommendation = await self._request_structured(
+                recommendation, response = await self._request_structured(
                     provider, profile, api_key, context.payload
                 )
             except RetryableProviderError as exc:
@@ -82,6 +85,8 @@ class ModelGateway:
                 routing=decision,
                 context_hash=context.context_hash,
                 attempted_profile_ids=tuple(attempted),
+                model=response.model,
+                redaction_count=context.redaction_count,
             )
         if last_retryable:
             raise ModelGatewayError(
@@ -225,7 +230,7 @@ class ModelGateway:
         profile: ModelProfile,
         api_key: str,
         payload: Mapping[str, object],
-    ) -> StructuredRecommendation:
+    ) -> tuple[StructuredRecommendation, ProviderResponse]:
         messages = [
             {"role": "system", "content": self._system_prompt},
             {
@@ -235,7 +240,7 @@ class ModelGateway:
         ]
         response = await provider.generate(profile, api_key, messages)
         try:
-            return StructuredRecommendation.model_validate_json(response.content)
+            return StructuredRecommendation.model_validate_json(response.content), response
         except ValidationError:
             repair_messages = [
                 *messages,
@@ -250,7 +255,7 @@ class ModelGateway:
             ]
             repaired = await provider.generate(profile, api_key, repair_messages)
             try:
-                return StructuredRecommendation.model_validate_json(repaired.content)
+                return StructuredRecommendation.model_validate_json(repaired.content), repaired
             except ValidationError as exc:
                 raise ProviderError(
                     "provider output failed schema validation after one repair"

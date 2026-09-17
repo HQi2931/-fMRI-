@@ -37,8 +37,10 @@ export type WorkspaceCheck = {
   input_stage: string | null;
   output_directories: string[];
   invalid_nifti_files: string[];
+  issues: string[];
   warnings: string[];
-  blocking_issues: string[];
+  total_space_bytes?: number;
+  free_space_bytes?: number;
   subjects: Array<{
     subject_id: string;
     session_id: string | null;
@@ -92,20 +94,19 @@ export type ConversationTurn = {
   tool_call: ConversationToolCall | null;
 };
 export type ConversationContext = Schemas["ConversationContextView"];
-export type ConversationMemory = Schemas["MemoryView"];
-export type ConversationTurnBody = {
-  content: string;
-  action?: "auto" | "check_workspace" | "start_preprocessing" | "get_progress";
-  allow_remote_search?: boolean;
-  paper_ids?: string[];
-  model?: string | null;
-  workspace_path?: string | null;
-  preferred_profile_id?: string | null;
-  project_id?: string | null;
-  plan_revision_id?: string | null;
-  expected_plan_hash?: string | null;
-  real_execution_confirmed?: boolean;
+export type WorkCardOperation = Schemas["WorkCardAction"]["operation"];
+type GeneratedWorkCard = Schemas["WorkCard"];
+export type WorkCard = Omit<GeneratedWorkCard, "draft" | "bindings" | "allowed_operations"> & {
+  draft: Record<string, unknown>;
+  bindings: NonNullable<GeneratedWorkCard["bindings"]>;
+  allowed_operations: WorkCardOperation[];
 };
+export type WorkCardKind = WorkCard["kind"];
+export type WorkCardResult = { card: WorkCard; conversation: Conversation; result: unknown };
+export type ConversationMemory = Schemas["MemoryView"];
+type ConversationTurnDefaults = "action" | "allow_remote_search" | "paper_ids" | "real_execution_confirmed" | "stream";
+export type ConversationTurnBody = Omit<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>
+  & Partial<Pick<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>>;
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
 export type StatisticalResult = Schemas["StatisticalResultView"];
 export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
@@ -344,6 +345,8 @@ export const api = {
   ) => post<Conversation>("/conversations", body, signal),
   conversation: (conversationId: string, signal?: AbortSignal) =>
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  workCardAction: (conversationId: string, cardId: string, body: Schemas["WorkCardAction"]) =>
+    post<WorkCardResult>(`/conversations/${encodeURIComponent(conversationId)}/cards/${encodeURIComponent(cardId)}/actions`, body),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>
     request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
   indexConversationMemories: (conversationId: string, signal?: AbortSignal) =>

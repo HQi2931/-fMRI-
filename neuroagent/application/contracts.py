@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from ipaddress import ip_address
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -41,6 +41,12 @@ from neuroagent.skills.models import SkillPlan
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+# A DPABI stage is a single directory name.  Keep this deliberately narrow so
+# a user-selected output can never smuggle a path or traversal component into
+# an organization preview.
+DPABI_STAGE_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]{1,63}$"
 
 
 class ErrorBody(StrictModel):
@@ -96,6 +102,7 @@ class DatasetView(StrictModel):
 
 class ManifestScanRequest(StrictModel):
     expected_dataset_version: int = Field(ge=1)
+    report_only: bool = False
 
 
 class SubjectManifestEntry(StrictModel):
@@ -112,6 +119,7 @@ class DatasetProfile(StrictModel):
     nifti_count: int
     dicom_count: int
     subject_count: int
+    issues: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -138,10 +146,25 @@ class WorkspaceCheckView(StrictModel):
     input_stage: str | None = None
     output_directories: list[str] = Field(default_factory=list)
     invalid_nifti_files: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    blocking_issues: list[str] = Field(default_factory=list)
     subjects: list[SubjectManifestEntry] = Field(default_factory=list)
+    total_space_bytes: int = Field(ge=0)
+    free_space_bytes: int = Field(ge=0)
     checked_at: datetime
+
+
+class WorkspaceSetupIntent(StrictModel):
+    """Explicit metadata needed to register a checked workspace.
+
+    The selected workspace remains the dataset source. ``work_root`` is a
+    separate application-owned directory for run metadata and isolated
+    attempts; it must still pass the configured path policy.
+    """
+
+    project_name: str = Field(min_length=1, max_length=200)
+    dataset_name: str = Field(min_length=1, max_length=200)
+    work_root: str = Field(min_length=1, max_length=4_000)
 
 
 class ManifestRevisionView(StrictModel):
@@ -540,6 +563,7 @@ class SkillPlanResolveRequest(StrictModel):
     request: SkillPlanIntent
     expected_project_version: int = Field(ge=1)
     supersedes_plan_revision_id: str | None = None
+    validation_mode: Literal["strict", "report_only"] = "strict"
 
 
 class SkillPlanResolveView(StrictModel):
@@ -815,9 +839,13 @@ class ConversationToolStatus(StrEnum):
 
 class ConversationAction(StrEnum):
     AUTO = "auto"
-    CHECK_WORKSPACE = "check_workspace"
+    SETUP_WORKSPACE = "setup_workspace"
+    PREPARE_PREPROCESSING_PLAN = "prepare_preprocessing_plan"
+    PREVIEW_PREPROCESSING_RUN = "preview_preprocessing_run"
     START_PREPROCESSING = "start_preprocessing"
     GET_PROGRESS = "get_progress"
+    GET_QC_STATUS = "get_qc_status"
+    GET_STATISTICAL_RESULTS = "get_statistical_results"
 
 
 class MemoryScope(StrEnum):
@@ -899,6 +927,10 @@ class ConversationView(StrictModel):
 
 
 class ConversationTurnCreate(StrictModel):
+    card_kind: (
+        Literal["project", "data", "plan", "runs", "qc", "statistics", "analysis", "settings"]
+        | None
+    ) = None
     paper_ids: tuple[str, ...] = ()
     content: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
     stream: bool = False
@@ -908,6 +940,11 @@ class ConversationTurnCreate(StrictModel):
     workspace_path: str | None = Field(default=None, max_length=4_000)
     preferred_profile_id: str | None = Field(default=None, max_length=63)
     project_id: str | None = None
+    target_run_id: str | None = None
+    qc_review_id: str | None = None
+    workspace_setup: WorkspaceSetupIntent | None = None
+    skill_plan_intent: SkillPlanIntent | None = None
+    expected_project_version: int | None = Field(default=None, ge=1)
     plan_revision_id: str | None = None
     expected_plan_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     real_execution_confirmed: bool = False
@@ -918,6 +955,70 @@ class ConversationTurnView(StrictModel):
     user_message: ConversationMessageView
     assistant_message: ConversationMessageView
     tool_call: ConversationToolCallView | None = None
+
+
+WorkCardKind = Literal[
+    "project", "data", "plan", "runs", "qc", "statistics", "analysis", "settings"
+]
+WorkCardOperation = Literal[
+    "saveDraft",
+    "selectProject",
+    "createProject",
+    "createDataset",
+    "inspectDataset",
+    "importDemographics",
+    "createSplit",
+    "resolveSkillPlan",
+    "approvePlan",
+    "createRun",
+    "cancelRun",
+    "retryRun",
+    "diagnoseRun",
+    "createQcReview",
+    "approveQcReview",
+    "createStatisticalDesign",
+    "validateStatisticalDesign",
+    "createStatisticsRun",
+    "inspectMlTable",
+    "createMlTemplate",
+    "validateRoiTable",
+    "localizeClusters",
+    "answerRsFmriQuestion",
+    "organizationPreview",
+]
+
+
+class WorkCardBindings(StrictModel):
+    project_id: str | None = None
+    dataset_id: str | None = None
+    manifest_id: str | None = None
+    plan_revision_id: str | None = None
+    run_id: str | None = None
+    qc_review_id: str | None = None
+    statistical_design_id: str | None = None
+
+
+class WorkCard(StrictModel):
+    card_id: str
+    kind: WorkCardKind
+    title: str
+    version: int = Field(default=1, ge=1)
+    draft_ref: str
+    draft: dict[str, Any] = Field(default_factory=dict)
+    bindings: WorkCardBindings = Field(default_factory=WorkCardBindings)
+    allowed_operations: list[WorkCardOperation] = Field(default_factory=list)
+
+
+class WorkCardAction(StrictModel):
+    expected_version: int = Field(ge=1)
+    operation: WorkCardOperation
+    args: list[Any] = Field(default_factory=list, max_length=2)
+
+
+class WorkCardActionView(StrictModel):
+    card: WorkCard
+    conversation: ConversationView
+    result: Any = None
 
 
 class MemoryCreate(StrictModel):
@@ -985,7 +1086,11 @@ class OrganizationSubjectInput(StrictModel):
 class OrganizationPreviewRequest(StrictModel):
     project_id: str
     source_path: str
-    target_stage: str = Field(pattern=r"^(FunRaw|FunImg)$")
+    target_stage: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=DPABI_STAGE_PATTERN,
+    )
     subjects: dict[str, OrganizationSubjectInput] = Field(min_length=1)
 
 

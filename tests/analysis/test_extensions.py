@@ -199,6 +199,31 @@ def test_organization_preview_is_copy_only(tmp_path: Path) -> None:
     assert not (source / "FunRaw").exists()
 
 
+def test_organization_preview_accepts_processed_dpabi_stage(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "bold.nii.gz").write_bytes(b"synthetic")
+    preview = build_dpabi_preview(
+        source,
+        target_stage="FunImgARW",
+        subjects={"sub-01": {"functional": ("bold.nii.gz",), "anatomical": ()}},
+    )
+    assert preview.target_stage == "FunImgARW"
+    assert preview.items[0].target_relative_path == "FunImgARW/sub-01/bold.nii.gz"
+
+
+def test_organization_preview_rejects_stage_path(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "bold.nii.gz").write_bytes(b"synthetic")
+    with pytest.raises(ValueError, match="single safe DPABI stage"):
+        build_dpabi_preview(
+            source,
+            target_stage="../FunImgARW",
+            subjects={"sub-01": {"functional": ("bold.nii.gz",), "anatomical": ()}},
+        )
+
+
 def test_rsfmri_rag_scope_and_evidence(tmp_path: Path) -> None:
     (tmp_path / "dpabi.md").write_text("DPABI V8.2 ALFF requires explicit TR.", encoding="utf-8")
     evidence = search_evidence((tmp_path,), "DPABI ALFF TR")

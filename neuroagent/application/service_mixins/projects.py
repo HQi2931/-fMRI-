@@ -27,23 +27,33 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class ProjectDatasetMixin(BaseServiceMixin):
+    def _inspect_source(self, source: Any, *, report_only: bool) -> dict[str, Any]:
+        try:
+            return self.dataset_inspector.inspect(source, report_only=report_only)
+        except TypeError as exc:
+            # Preserve compatibility with lightweight test/integration inspectors
+            # that implement the original one-argument port.
+            if "report_only" not in str(exc):
+                raise
+            return self.dataset_inspector.inspect(source)
+
     def check_workspace(self, request: WorkspaceCheckRequest) -> WorkspaceCheckView:
         """Inspect a selected workspace without registering or modifying it."""
 
         source = self.path_policy.validate_project_source_root(request.path)
-        content = self.dataset_inspector.inspect(source)
+        content = self._inspect_source(source, report_only=True)
         profile = content["profile"]
         subjects = content["subjects"]
         warnings = list(profile.get("warnings", []))
         functional_subject_count = sum(1 for item in subjects if item.get("functional_files"))
         anatomical_subject_count = sum(1 for item in subjects if item.get("anatomical_files"))
-        blocking: list[str] = []
+        issues = list(profile.get("issues", content.get("issues", [])))
         if profile["kind"] == "unknown":
-            blocking.append("未识别到可供 DPABI 使用的影像输入。")
+            issues.append("未识别到可供 DPABI 使用的影像输入。")
         if functional_subject_count == 0:
-            blocking.append("未识别到明确的功能 BOLD 输入。")
+            issues.append("未识别到明确的功能 BOLD 输入。")
         if any(len(item.get("functional_files", [])) > 1 for item in subjects):
-            blocking.append("存在多个功能候选, 必须先明确每个受试者使用的 run。")
+            issues.append("存在多个功能候选, 必须先明确每个受试者使用的 run。")
         invalid_nifti_files = list(content.get("invalid_nifti_files", []))
         if invalid_nifti_files:
             warnings.append(f"{len(invalid_nifti_files)} 个 NIfTI 文件的头标记无法读取。")
@@ -51,7 +61,8 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 file_path for item in subjects for file_path in item.get("functional_files", [])
             }
             if functional_files.intersection(invalid_nifti_files):
-                blocking.append("功能输入不是可读取的 NIfTI 文件, 不能交给 DPABI。")
+                issues.append("功能输入不是可读取的 NIfTI 文件, 不能交给 DPABI。")
+        total_space_bytes, free_space_bytes = self.path_policy.storage_capacity(source)
         return WorkspaceCheckView(
             path=str(source),
             kind=profile["kind"],
@@ -65,8 +76,10 @@ class ProjectDatasetMixin(BaseServiceMixin):
             output_directories=content.get("output_directories", []),
             invalid_nifti_files=invalid_nifti_files,
             warnings=warnings,
-            blocking_issues=blocking,
+            issues=sorted(set(issues)),
             subjects=subjects,
+            total_space_bytes=total_space_bytes,
+            free_space_bytes=free_space_bytes,
             checked_at=datetime.now(UTC),
         )
 
@@ -157,7 +170,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 project_roots=project.source_roots,
                 expect_directory=True,
             )
-            content = self.dataset_inspector.inspect(source)
+            content = self._inspect_source(source, report_only=request.report_only)
             return dataset.project_id, content
 
         def finalize(prepared: tuple[str, dict[str, Any]]) -> ManifestRevisionView:
@@ -171,13 +184,14 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 project_id=project_id,
                 run_id=None,
                 event_type="DatasetInspected",
-                severity="warning" if result.profile.warnings else "info",
+                severity="warning" if result.profile.warnings or result.profile.issues else "info",
                 payload={
                     "dataset_id": dataset_id,
                     "manifest_id": result.manifest_id,
                     "manifest_hash": result.content_hash,
                     "subject_count": result.profile.subject_count,
                     "warnings": result.profile.warnings,
+                    "issues": result.profile.issues,
                 },
             )
             return result

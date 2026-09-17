@@ -1,7 +1,7 @@
+import { useBusinessApi, useCardState } from "../work/WorkCardContext";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
-  api,
   describeError,
   type Artifact,
   type Run,
@@ -28,20 +28,22 @@ function shouldPoll(state: string): boolean {
   return ["queued", "running", "cancelling"].includes(state);
 }
 
-export function RunsPage() {
+export function RunsPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const api = useBusinessApi();
   const workspace = useWorkspace();
   const [runs, setRuns] = useState<Run[]>([]);
-  const [selectedId, setSelectedId] = useState(workspace.runId ?? "");
+  const [selectedId, setSelectedId] = useCardState("selectedId", workspace.runId ?? "");
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const [outcome, setOutcome] = useState<"succeed" | "fail_retryable" | "fail_terminal" | "timeout">("succeed");
-  const [executionBackend, setExecutionBackend] = useState<"mock" | "matlab">("mock");
-  const [operationReason, setOperationReason] = useState("");
+  const [outcome, setOutcome] = useCardState<"succeed" | "fail_retryable" | "fail_terminal" | "timeout">("outcome", "succeed");
+  const [executionBackend, setExecutionBackend] = useCardState<"mock" | "matlab">("executionBackend", "mock");
+  const [operationReason, setOperationReason] = useCardState("operationReason", "");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [logExcerpt, setLogExcerpt] = useState("");
+  const [logExcerpt, setLogExcerpt] = useCardState("logExcerpt", "");
   const [diagnosis, setDiagnosis] = useState<RunDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
   const [pollGeneration, setPollGeneration] = useState(0);
 
   const selected = useMemo(() => runs.find((run) => run.run_id === selectedId) ?? null, [runs, selectedId]);
@@ -65,7 +67,7 @@ export function RunsPage() {
     const items = await api.runs(workspace.projectId, signal);
     setRuns(items);
     if (!selectedId && items.length) setSelectedId(items[0].run_id);
-  }, [selectedId, workspace.projectId]);
+  }, [api, selectedId, setSelectedId, workspace.projectId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -125,23 +127,19 @@ export function RunsPage() {
       controller?.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [pollGeneration, selectedId, workspace.projectId]);
+  }, [api, pollGeneration, selectedId, workspace.projectId]);
 
-  async function createRun(): Promise<void> {
+  async function createRun(confirmedHash?: string): Promise<void> {
     if (!workspace.projectId || !workspace.planRevisionId || !workspace.planHash) return;
+    if (executionBackend === "matlab" && confirmedHash !== workspace.planHash) {
+      setPendingConfirmation(workspace.planHash);
+      return;
+    }
+    setPendingConfirmation(null);
     setBusy(true);
     setError("");
     try {
-      const confirmed = executionBackend === "matlab"
-        ? window.confirm(
-          `确认启动真实 MATLAB/DPABI 运行？\n\n` +
-          `写入：项目配置的隔离工作目录\n` +
-          `软件：当前已配置并通过探测的本机 MATLAB / SPM / DPABI 环境\n` +
-          `计划哈希：${workspace.planHash}\n` +
-          `仅用于科研流程，不用于临床判断。`,
-        )
-        : false;
-      if (executionBackend === "matlab" && !confirmed) return;
+      const confirmed = executionBackend === "matlab" && confirmedHash === workspace.planHash;
       const created = await api.createRun({
         project_id: workspace.projectId,
         plan_revision_id: workspace.planRevisionId,
@@ -202,13 +200,23 @@ export function RunsPage() {
 
   return (
     <>
-      <PageHeader
+      {!embedded && <PageHeader
         eyebrow="运行"
         title="任务进度与恢复"
         description="API 与 Worker 分离；状态、事件和产物均来自 SQLite。部分产物不会被误报为完整成功。"
         action={<button className="button button-secondary" type="button" onClick={() => refresh().catch((caught) => setError(describeError(caught)))}>刷新</button>}
-      />
+      />}
       <Feedback message={error || message} error={Boolean(error)} />
+      {pendingConfirmation && <section className="panel" aria-label="真实运行确认">
+        <h3>确认本次 MATLAB / DPABI 运行</h3>
+        <p>项目：{workspace.projectId}。结果将写入项目配置的工作目录，使用设置中已探测的本机软件。</p>
+        <p>方案哈希：<code>{pendingConfirmation}</code></p>
+        <div className="button-row">
+          <button className="button button-primary" type="button" disabled={busy} onClick={() => createRun(pendingConfirmation)}>确认启动本次真实运行</button>
+          <button className="button button-secondary" type="button" disabled={busy} onClick={() => setPendingConfirmation(null)}>暂不启动</button>
+        </div>
+      </section>}
+
       <section className="panel form-panel">
         <label>执行后端
           <select value={executionBackend} onChange={(event) => setExecutionBackend(event.target.value as typeof executionBackend)}>
@@ -224,7 +232,7 @@ export function RunsPage() {
             <option value="timeout">超时</option>
           </select>
         </label>
-        <button className="button button-primary" type="button" disabled={busy || workspace.planState !== "approved"} onClick={createRun}>{executionBackend === "mock" ? "创建已审批计划的 Mock 运行" : "确认并创建 MATLAB 运行"}</button>
+        <button className="button button-primary" type="button" disabled={busy || workspace.planState !== "approved"} onClick={() => createRun()}>{executionBackend === "mock" ? "创建已审批计划的 Mock 运行" : "确认并创建 MATLAB 运行"}</button>
       </section>
       <div className="two-column wide-left">
         <section className="panel run-card">

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from shutil import disk_usage
 
 from neuroagent.application.errors import PathPolicyError
 
@@ -71,6 +72,13 @@ class PathPolicy:
         if not _within(resolved, (self.work_root,)):
             raise PathPolicyError("工作目录不在应用允许的派生产物根目录中。", path=str(path))
         return resolved
+
+    def storage_capacity(self, path: str | Path) -> tuple[int, int]:
+        """Return total and free bytes for a previously validated filesystem path."""
+
+        resolved = _resolved(path, must_exist=True)
+        usage = disk_usage(resolved)
+        return usage.total, usage.free
 
     def relative_source_path(self, path: Path, dataset_root: Path) -> str:
         resolved = _resolved(path, must_exist=True)

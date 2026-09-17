@@ -53,6 +53,17 @@ class SafeAgentSummary(BaseModel):
     ] = "not_started"
     issue_count: int = Field(default=0, ge=0, le=100_000)
     has_blocking_issues: bool = False
+    format_issues: tuple[str, ...] = Field(default=(), max_length=50)
+    workspace_kind: str | None = Field(default=None, max_length=32)
+    input_stage: str | None = Field(default=None, max_length=32)
+    file_count: int = Field(default=0, ge=0, le=100_000)
+    nifti_count: int = Field(default=0, ge=0, le=100_000)
+    dicom_count: int = Field(default=0, ge=0, le=100_000)
+    subject_count: int = Field(default=0, ge=0, le=100_000)
+    functional_subject_count: int = Field(default=0, ge=0, le=100_000)
+    anatomical_subject_count: int = Field(default=0, ge=0, le=100_000)
+    output_directories: tuple[str, ...] = Field(default=(), max_length=100)
+    user_question: str | None = Field(default=None, max_length=2_000)
 
 
 class ModelProfile(BaseModel):
@@ -135,16 +146,29 @@ class RoutingDecision(BaseModel):
     reason: str
 
 
-class StructuredRecommendation(BaseModel):
-    """The only Agent result accepted by deterministic application services."""
+class WorkspaceFormatAdvice(BaseModel):
+    """Bounded, non-operational advice for a Work workspace format review."""
 
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=1, max_length=8_000)
-    proposed_skill_request: dict[str, Any] | None = None
+    expected_layout: list[str] = Field(default_factory=list, max_length=100)
+    adjustment_steps: list[str] = Field(default_factory=list, max_length=100)
+    recommended_target_stage: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=64,
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]{1,63}$",
+    )
     warnings: list[str] = Field(default_factory=list, max_length=100)
     unresolved_questions: list[str] = Field(default_factory=list, max_length=100)
     requires_user_confirmation: bool
+
+
+class StructuredRecommendation(WorkspaceFormatAdvice):
+    """The only Agent result accepted by deterministic application services."""
+
+    proposed_skill_request: dict[str, Any] | None = None
 
 
 class ProviderResponse(BaseModel):
@@ -171,3 +195,5 @@ class GatewayResult(BaseModel):
     routing: RoutingDecision
     context_hash: str
     attempted_profile_ids: tuple[str, ...]
+    model: str | None = None
+    redaction_count: int = Field(default=0, ge=0)

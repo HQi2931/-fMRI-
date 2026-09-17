@@ -42,14 +42,37 @@
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
+| `GET` | `/work/capabilities` | 读取服务端允许的 Work 卡片、所需上下文和操作目录 |
+| `POST` | `/conversations/{conversation_id}/cards/{card_id}/actions` | 保存卡片草稿或执行卡片目录内的一个类型化业务操作 |
 
 `chat` 先调用本地 `rag_rsfmri_question`；存在模型配置时，将限定范围的问题和本地证据通过
 `OutboundContextPolicy` 脱敏后交给所选 LLM。请求中的 `allow_remote_search=true` 只会路由到
 声明 `web_search` 能力的 Profile，并将 URL 引用、模型 Profile、上下文哈希和用量摘要保存到
-`rsfmri_chat_llm` 工具记录。没有模型配置且未要求联网时保留纯本地 RAG 回退。`work` 当前可编排
-`check_workspace`、`get_run_progress` 和 `start_dpabi_preprocessing`。每次工具调用都会保存
-输入摘要、状态、输出或安全错误。启动预处理必须提交已审批计划 ID、计划哈希和
-`real_execution_confirmed=true`；服务只负责排队，实际 MATLAB 仍由现有 Worker 执行。
+`rsfmri_chat_llm` 工具记录。没有模型配置且未要求联网时保留纯本地 RAG 回退。
+
+`work` 回合默认先路由为类型化操作卡片，而不直接执行。客户端可在
+`POST /conversations/{conversation_id}/turns` 中提交 `card_kind` 明确打开
+`project`、`data`、`plan`、`runs`、`qc`、`statistics`、`analysis` 或 `settings` 卡片；省略时由服务端根据
+自然语言和可选模型路由。解释性问题只返回回答，缺少或含糊的操作请求返回能力建议。模型只生成结构化路由草案，不能指定组件名、脚本或任意代码。
+
+卡片包含稳定 `card_id`、`kind`、`version`、`draft_ref`、对象 `bindings` 和闭集
+`allowed_operations`。操作请求必须提交 `expected_version`、目录内 `operation` 和参数数组；服务端重新用既有 Pydantic 契约验证参数，并检查对话项目、目标对象和计划版本。`saveDraft` 只替换最新卡片快照，不新增对话消息；过期版本返回 `409 work_card_stale`。其余成功操作会将结果与新卡片快照写回会话，刷新后可恢复。相同幂等 key 不会重复执行。
+
+既有显式 Work `action` 仍作为 API 兼容层保留，其行为如下；新前端不再用独立业务页面调用这些 action：
+
+| action | 行为与边界 |
+| --- | --- |
+| `setup_workspace` | 在用户选择的目录上显式创建项目、数据集并冻结当前文件清单；Work 不检查或整理目录格式，路径/权限等技术错误仍失败；要求项目名、数据集名和工作根目录，不使用隐式名称 |
+| `prepare_preprocessing_plan` | 使用完整 `skill_plan_intent` 和 `expected_project_version` 调用现有 Skill Resolver；缺少会改变科研含义的参数时返回待确认，不猜测默认值 |
+| `preview_preprocessing_run` | 在启动前重新校验计划哈希与审批状态、冻结输入、环境锁、工作区访问和磁盘余量；只返回技术预检结果，不做目录格式判断或排队 |
+| `start_preprocessing` | 从已审批且当前有效的计划排队 MATLAB 预处理；要求精确计划 ID/哈希和 `real_execution_confirmed=true`；持久化工具名为 `start_dpabi_preprocessing` |
+| `get_run_progress` | 读取目标或活动运行的服务端状态 |
+| `get_qc_status` | 按 `qc_review_id` 只读查询 QC revision，并校验其项目/运行上下文 |
+| `get_statistical_results` | 按当前项目及可选目标运行列出已登记统计结果 |
+
+项目/数据集/manifest 建立、计划编译和预检都复用既有应用服务及其路径、版本和谱系校验。真实启动服务只负责排队，实际 MATLAB 仍由现有 Worker 执行。浏览器在存在活动运行时定期读取 `/runs/{run_id}` 并显示阶段、进度和 attempt；轮询不创建额外对话消息或工具调用。
+
+Work 只绑定用户选择的工作区，目录中的 DPABI 输入由用户自行准备。方案请求可以只包含预处理参数并将 `requested_metrics`/`primary_outputs` 留空；此时不需要指标脑掩膜。通用 `/workspaces/check` 与 `/organization/previews` 仍供数据管理等独立功能使用，但不会由 Work 对话自动调用。
 
 前端把 Model Profile 作为服务商 API 连接使用。绑定时调用 `/providers/models` 验证密钥并获取模型；
 Agent 页面再次读取该连接的模型列表，并在每个对话回合用 `model` 字段提交用户实际选择的模型。

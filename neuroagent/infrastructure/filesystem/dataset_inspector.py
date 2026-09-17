@@ -207,7 +207,7 @@ class DatasetInspector:
         self._path_policy = path_policy
         self._max_files = max_files
 
-    def inspect(self, source_path: Path) -> dict[str, Any]:
+    def inspect(self, source_path: Path, *, report_only: bool = False) -> dict[str, Any]:
         all_files = sorted((item for item in source_path.rglob("*") if item.is_file()), key=str)
         if len(all_files) > self._max_files:
             raise InputValidationError(
@@ -221,6 +221,7 @@ class DatasetInspector:
 
         nifti = [path for path in all_files if _is_nifti(path)]
         dicom = [path for path in all_files if _is_dicom(path)]
+        issues: list[str] = []
         top_directories = sorted(
             (item.name for item in source_path.iterdir() if item.is_dir()), key=str.lower
         )
@@ -240,12 +241,15 @@ class DatasetInspector:
                 and not _is_known_dpabi_inventory_stage(name)
             )
             if unsupported_stages:
-                raise InputValidationError(
-                    "dpabi_input_stage_unsupported",
-                    "DPABI-ready 目录包含当前扫描契约不支持的 stage root。",
-                    unsupported_stage_roots=unsupported_stages,
-                    supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
-                )
+                if report_only:
+                    issues.append("DPABI-ready 目录包含当前扫描契约不支持的 stage root。")
+                else:
+                    raise InputValidationError(
+                        "dpabi_input_stage_unsupported",
+                        "DPABI-ready 目录包含当前扫描契约不支持的 stage root。",
+                        unsupported_stage_roots=unsupported_stages,
+                        supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
+                    )
             available_input_stages = sorted(
                 name for name in dpabi_stage_roots if name.lower() in DPABI_FUNCTIONAL_INPUT_STAGES
             )
@@ -255,13 +259,19 @@ class DatasetInspector:
                     if not available_input_stages
                     else "dpabi_input_stage_ambiguous"
                 )
-                raise InputValidationError(
-                    code,
-                    "DPABI-ready 科学输入必须精确锁定一个 FunRaw 或 FunImg stage root。",
-                    candidate_input_stage_roots=available_input_stages,
-                    supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
-                )
-            selected_dpabi_stage = available_input_stages[0].lower()
+                if report_only:
+                    issues.append(
+                        "DPABI-ready 科学输入必须精确锁定一个 FunRaw 或 FunImg stage root。"
+                    )
+                else:
+                    raise InputValidationError(
+                        code,
+                        "DPABI-ready 科学输入必须精确锁定一个 FunRaw 或 FunImg stage root。",
+                        candidate_input_stage_roots=available_input_stages,
+                        supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
+                    )
+            else:
+                selected_dpabi_stage = available_input_stages[0].lower()
         elif dicom and nifti:
             kind = DatasetKind.MIXED
         elif dicom:
@@ -293,13 +303,20 @@ class DatasetInspector:
                 invalid_nifti_files.append(relative)
         for path in nifti + dicom:
             relative = self._path_policy.relative_source_path(path, source_path)
-            if kind is DatasetKind.DPABI_READY:
-                assert selected_dpabi_stage is not None
-                candidate = _dpabi_scientific_candidate(
-                    path,
-                    source_path,
-                    selected_dpabi_stage,
-                )
+            if kind is DatasetKind.DPABI_READY and selected_dpabi_stage is not None:
+                try:
+                    candidate = _dpabi_scientific_candidate(
+                        path,
+                        source_path,
+                        selected_dpabi_stage,
+                    )
+                except InputValidationError as exc:
+                    if not report_only:
+                        raise
+                    issues.append(exc.message)
+                    if path in nifti:
+                        inventory_only_dpabi_nifti += 1
+                    continue
                 if candidate is None:
                     if path in nifti:
                         inventory_only_dpabi_nifti += 1
@@ -309,24 +326,45 @@ class DatasetInspector:
                     dpabi_bucket = "dicom"
                 subject_files[(subject_id, None)][dpabi_bucket].append(relative)
                 continue
+            if kind is DatasetKind.DPABI_READY:
+                if path in nifti:
+                    inventory_only_dpabi_nifti += 1
+                continue
             plain_role: str | None = None
             if kind in {DatasetKind.NIFTI, DatasetKind.MIXED} and path not in dicom:
                 plain_role = _plain_nifti_role(path, source_path)
                 if plain_role is None:
                     inventory_only_plain_nifti += 1
                     continue
-            subject_id, session_id, source_subject_id = _subject_session(path, source_path, kind)
+            try:
+                subject_id, session_id, source_subject_id = _subject_session(
+                    path, source_path, kind
+                )
+            except InputValidationError as exc:
+                if not report_only:
+                    raise
+                issues.append(exc.message)
+                continue
             subject_key = (subject_id, session_id)
             if kind not in {DatasetKind.BIDS, DatasetKind.DPABI_READY}:
                 previous_source_id = normalized_subject_sources.get(subject_key)
                 if previous_source_id is not None and previous_source_id != source_subject_id:
-                    raise InputValidationError(
-                        "subject_identity_collision",
-                        "普通影像目录中的受试者标识清洗后发生碰撞, 请提供显式且唯一的受试者目录。",
-                        normalized_subject_id=subject_id,
-                        source_subject_ids=sorted({previous_source_id, source_subject_id}),
-                        candidate_relative_path=relative,
-                    )
+                    if report_only:
+                        issues.append("普通影像目录中的受试者标识清洗后发生碰撞。")
+                        collision_hash = hashlib.sha256(source_subject_id.encode()).hexdigest()[:8]
+                        subject_id = f"{subject_id}__collision_{collision_hash}"
+                        subject_key = (subject_id, session_id)
+                    else:
+                        raise InputValidationError(
+                            "subject_identity_collision",
+                            (
+                                "普通影像目录中的受试者标识清洗后发生碰撞, "
+                                "请提供显式且唯一的受试者目录。"
+                            ),
+                            normalized_subject_id=subject_id,
+                            source_subject_ids=sorted({previous_source_id, source_subject_id}),
+                            candidate_relative_path=relative,
+                        )
                 normalized_subject_sources[subject_key] = source_subject_id
             lowered = path.name.lower()
             candidate_bucket: str | None
@@ -367,12 +405,15 @@ class DatasetInspector:
                     key for key in session_keys if not subject_files[key]["anatomical"]
                 ]
                 if missing_session_anatomy and len(subject_level["anatomical"]) != 1:
-                    raise InputValidationError(
-                        "bids_anatomy_inheritance_ambiguous",
-                        "会话级功能像只能继承唯一的 subject-level T1, 请先显式整理配对。",
-                        subject_id=subject_id,
-                        anatomical_files=sorted(subject_level["anatomical"]),
-                    )
+                    if report_only:
+                        issues.append("会话级功能像只能继承唯一的 subject-level T1。")
+                    else:
+                        raise InputValidationError(
+                            "bids_anatomy_inheritance_ambiguous",
+                            "会话级功能像只能继承唯一的 subject-level T1, 请先显式整理配对。",
+                            subject_id=subject_id,
+                            anatomical_files=sorted(subject_level["anatomical"]),
+                        )
                 for session_key in session_keys:
                     if not subject_files[session_key]["anatomical"]:
                         subject_files[session_key]["anatomical"].extend(subject_level["anatomical"])
@@ -392,6 +433,20 @@ class DatasetInspector:
             )
         ]
         warnings: list[str] = []
+        if invalid_nifti_files:
+            issues.append(f"{len(invalid_nifti_files)} 个 NIfTI 文件无法读取有效 header。")
+        if any(not entry.functional_files for entry in subjects) and kind not in {
+            DatasetKind.DICOM,
+            DatasetKind.UNKNOWN,
+        }:
+            issues.append("部分受试者未识别到明确的功能 BOLD 输入。")
+        if any(len(entry.functional_files) > 1 for entry in subjects):
+            issues.append("部分受试者/会话存在多个功能候选。")
+        if any(not entry.anatomical_files for entry in subjects) and kind not in {
+            DatasetKind.DICOM,
+            DatasetKind.UNKNOWN,
+        }:
+            issues.append("部分受试者未识别到 T1 结构像。")
         if kind is DatasetKind.UNKNOWN:
             warnings.append("未识别到 DICOM、NIfTI、BIDS 或 DPABI-ready 数据。")
         if unclassified_bids_nifti:
@@ -433,12 +488,14 @@ class DatasetInspector:
             nifti_count=len(nifti),
             dicom_count=len(dicom),
             subject_count=len({entry.subject_id for entry in subjects}),
+            issues=issues,
             warnings=warnings,
         )
         return {
             "profile": profile.model_dump(mode="json"),
             "subjects": [entry.model_dump(mode="json") for entry in subjects],
             "input_stage": selected_dpabi_stage,
+            "issues": list(issues),
             "output_directories": sorted(
                 name
                 for name in top_directories
