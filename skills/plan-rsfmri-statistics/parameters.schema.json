@@ -3,7 +3,7 @@
   "title": "rs-fMRI statistical design",
   "type": "object",
   "additionalProperties": false,
-  "required": ["revision_id", "test", "subject_order", "images", "group_order", "condition_order", "covariates", "contrast", "one_sample_baseline", "mask_artifact_id", "tail", "missing_value_policy", "qc_review_revision_id", "qc_review_hash", "correction"],
+  "required": ["revision_id", "test", "subject_order", "images", "group_order", "condition_order", "covariates", "contrast", "one_sample_baseline", "mask_artifact_id", "tail", "missing_value_policy", "qc_source", "qc_review_revision_id", "qc_review_hash", "qc_skip_id", "qc_skip_hash", "qc_source_run_id", "correction"],
   "properties": {
     "revision_id": {"type": "string", "minLength": 1},
     "test": {"enum": ["one_sample_t", "independent_two_sample_t", "paired_t", "correlation", "regression"]},
@@ -17,8 +17,12 @@
     "mask_artifact_id": {"type": "string", "minLength": 1},
     "tail": {"enum": ["one_sided_positive", "one_sided_negative", "two_sided"]},
     "missing_value_policy": {"enum": ["error", "exclude_explicitly"]},
-    "qc_review_revision_id": {"type": "string", "minLength": 1},
-    "qc_review_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "qc_source": {"enum": ["approved_review", "skipped"]},
+    "qc_review_revision_id": {"type": ["string", "null"], "minLength": 1},
+    "qc_review_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "qc_skip_id": {"type": ["string", "null"], "minLength": 1},
+    "qc_skip_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "qc_source_run_id": {"type": ["string", "null"], "minLength": 1},
     "correction": {
       "oneOf": [
         {"type": "null"},

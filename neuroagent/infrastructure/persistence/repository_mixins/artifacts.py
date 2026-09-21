@@ -70,10 +70,13 @@ class ArtifactEventMixin(RepositoryBaseMixin):
         if plan is None:
             raise NotFoundError("plan_revision", run.plan_revision_id)
 
+        identities = [
+            (_validate_artifact_relative_path(artifact["relative_path"]), _id())
+            for artifact in artifacts
+        ]
+        generated_ids = {relative_path: artifact_id for relative_path, artifact_id in identities}
         prepared: list[ArtifactRow] = []
-        for artifact in artifacts:
-            relative_path = _validate_artifact_relative_path(artifact["relative_path"])
-            artifact_id = _id()
+        for artifact, (relative_path, artifact_id) in zip(artifacts, identities, strict=True):
             provenance = dict(artifact.get("provenance", {}))
             lineage_data = provenance.get("lineage")
             if lineage_data is not None:
@@ -83,6 +86,18 @@ class ArtifactEventMixin(RepositoryBaseMixin):
                         "Artifact lineage 必须是结构化对象。",
                     )
                 bound_lineage = {**lineage_data, "artifact_id": artifact_id}
+                mask_id = bound_lineage.get("mask_artifact_id")
+                if isinstance(mask_id, str) and mask_id.startswith("generated-output:"):
+                    mask_path = _validate_artifact_relative_path(
+                        mask_id.removeprefix("generated-output:")
+                    )
+                    try:
+                        bound_lineage["mask_artifact_id"] = generated_ids[mask_path]
+                    except KeyError as exc:
+                        raise InputValidationError(
+                            "generated_mask_artifact_missing",
+                            "指标产物引用的自动掩膜未在同一运行中登记。",
+                        ) from exc
                 try:
                     lineage = ArtifactLineage.model_validate(bound_lineage)
                 except ValidationError as exc:

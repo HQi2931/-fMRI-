@@ -29,6 +29,11 @@ class MissingValuePolicy(StrEnum):
     EXCLUDE_EXPLICITLY = "exclude_explicitly"
 
 
+class StatisticalQcSource(StrEnum):
+    APPROVED_REVIEW = "approved_review"
+    SKIPPED = "skipped"
+
+
 class Centering(StrEnum):
     NONE = "none"
     GRAND_MEAN = "grand_mean"
@@ -80,8 +85,12 @@ class StatisticalDesignRevision(FrozenModel):
     mask_artifact_id: str = Field(min_length=1)
     tail: Tail
     missing_value_policy: MissingValuePolicy
-    qc_review_revision_id: str = Field(min_length=1)
-    qc_review_hash: str = Field(min_length=64, max_length=64)
+    qc_source: StatisticalQcSource = StatisticalQcSource.APPROVED_REVIEW
+    qc_review_revision_id: str | None = Field(default=None, min_length=1)
+    qc_review_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    qc_skip_id: str | None = Field(default=None, min_length=1)
+    qc_skip_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    qc_source_run_id: str | None = Field(default=None, min_length=1)
 
     @field_validator("contrast")
     @classmethod
@@ -92,6 +101,15 @@ class StatisticalDesignRevision(FrozenModel):
 
     @model_validator(mode="after")
     def explicit_alignment(self) -> StatisticalDesignRevision:
+        if self.qc_source is StatisticalQcSource.APPROVED_REVIEW:
+            if not self.qc_review_revision_id or not self.qc_review_hash:
+                raise ValueError("approved-review statistics require QC review ID and hash")
+            if any((self.qc_skip_id, self.qc_skip_hash, self.qc_source_run_id)):
+                raise ValueError("approved-review statistics cannot carry QC skip bindings")
+        elif not (self.qc_skip_id and self.qc_skip_hash and self.qc_source_run_id):
+            raise ValueError("QC-skipped statistics require skip ID, hash, and source run")
+        elif any((self.qc_review_revision_id, self.qc_review_hash)):
+            raise ValueError("QC-skipped statistics cannot carry an approved QC binding")
         if not self.subject_order or len(set(self.subject_order)) != len(self.subject_order):
             raise ValueError("subject_order must be non-empty and unique")
         image_subjects = tuple(image.subject_id for image in self.images)

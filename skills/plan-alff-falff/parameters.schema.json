@@ -3,7 +3,7 @@
   "title": "ALFF/fALFF request",
   "type": "object",
   "additionalProperties": false,
-  "required": ["tr_seconds", "frequency_band", "requested_metrics", "requested_scalings", "mask_artifact_id", "filter_timing", "result_smoothing", "result_smoothing_fwhm_mm", "provenance"],
+  "required": ["tr_seconds", "frequency_band", "requested_metrics", "requested_scalings", "mask_source", "mask_artifact_id", "filter_timing", "result_smoothing", "result_smoothing_fwhm_mm", "provenance"],
   "properties": {
     "tr_seconds": {"type": "number", "exclusiveMinimum": 0},
     "frequency_band": {
@@ -17,7 +17,8 @@
     },
     "requested_metrics": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["alff", "falff"]}},
     "requested_scalings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["raw", "global_mean", "z_score"]}},
-    "mask_artifact_id": {"type": "string", "minLength": 1},
+    "mask_source": {"enum": ["registered_artifact", "dpabi_auto"]},
+    "mask_artifact_id": {"type": ["string", "null"], "minLength": 1},
     "filter_timing": {"enum": ["disabled", "before_normalize", "after_normalize"]},
     "result_smoothing": {"type": "boolean"},
     "result_smoothing_fwhm_mm": {

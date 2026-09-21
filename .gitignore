@@ -23,6 +23,7 @@ dist/
 
 # Node / Vite
 node_modules/
+.playwright-cli/
 .pnpm-store/
 .vite/
 coverage/

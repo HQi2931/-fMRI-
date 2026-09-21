@@ -4,7 +4,15 @@
 
 ## Unreleased
 
-- 前端收敛为单一 Work 对话工作台，环境与模型配置移入右上角设置；项目、数据、方案、运行、QC、统计和扩展分析改为消息内操作卡片。新增服务端能力目录、类型化卡片操作、草稿持久化、版本/项目绑定及旧业务地址的安全提示跳转；保留既有 REST 业务服务和 Chat 专项问答。
+- QC 改为 Work 启动时由用户明确选择。选择跳过时，DPABI 成功产物直接完成运行并可作为统计来源；新增 `/runs/{run_id}/qc-skip` 记录版本、操作者、原因和哈希。头动检测失败保留计算产物与失败证据，用户可随后显式跳过 QC；统计报告会标记 QC 跳过决定。
+
+- 前端进一步收敛为 Chat/Work 双模式对话工作台，环境与模型配置保留在右上角设置；删除独立业务页面、消息操作卡片、卡片能力目录、草稿状态和卡片动作接口。旧业务地址统一显示同一工作台，既有底层 REST 业务服务继续保留。
+
+- Work 新增受控的 DemoData 单受试者 ALFF 自然语言闭环：冻结独立工作副本，生成明确的 TR/时间点/Slice Timing/Realign/频段与 DPABI 自动掩膜计划，展示哈希并等待精确确认，再自动审批并排队真实 MATLAB。DPABI 自动掩膜作为生成型 Artifact 参与时序和 ALFF 谱系，不需要预先登记掩膜。
+
+- DPABI 运行完成钩子新增自动头动 QC：成功登记产物后解析 `RealignParameter`，生成 `qc.head_motion_report` Artifact，并自动创建人工待审 QC 草稿；含指标图的运行进入 `pre_statistics` QC，纯预处理进入不可用于统计的 `head_motion` QC。新增 `/runs/{run_id}/head-motion-qc` 补跑接口，Work 可展示、补建并批准精确 QC hash。
+
+- 2026-09-18 完成一次授权的真实 Work→Worker→MATLAB→DPABI 冒烟：单受试者 234 volume、TR 2.0 秒，完成 Slice Timing、Realign、自动掩膜和 raw ALFF，运行进入 `qc_review`；时序、脑掩膜、ALFF、执行日志和 metadata evidence 均登记 SHA-256，源 DemoData 哈希保持不变。该结果只证明技术闭环，不作为科研结论。
 
 - Work 对话补齐可审计的项目建立与运行前闭环：可从用户选择的工作区显式创建项目、数据集和冻结 manifest，可用完整科研参数编译预处理计划，并在真实启动前重新校验审批、输入、环境、路径访问和磁盘空间。Agent 页面会自动恢复并轮询活动运行，也可通过 Work 查询 QC revision 与统计结果；多步 Work 准备阶段不再占用长 SQLite 写事务。
 

@@ -21,6 +21,7 @@ from neuroagent.application.contracts import (
     PlanRevisionView,
     PlanState,
     ProjectView,
+    QcExecutionMode,
     QcReviewState,
     QcReviewView,
     RunView,
@@ -229,6 +230,16 @@ class SqliteRepository(
 
     @staticmethod
     def _run(row: WorkflowRunRow) -> RunView:
+        qc_mode = QcExecutionMode(row.qc_mode or "require")
+        qc_status = row.qc_status or (
+            "skipped"
+            if qc_mode is QcExecutionMode.SKIP
+            else (
+                "awaiting_review"
+                if WorkflowState(row.state) is WorkflowState.QC_REVIEW
+                else "pending"
+            )
+        )
         return RunView(
             run_id=row.run_id,
             project_id=row.project_id,
@@ -238,6 +249,8 @@ class SqliteRepository(
             attempt=row.attempt,
             cancel_requested=row.cancel_requested,
             error=row.error,
+            qc_mode=qc_mode,
+            qc_status=qc_status,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
         )
@@ -248,6 +261,7 @@ class SqliteRepository(
         approved = QcReviewState(row.state) is QcReviewState.APPROVED
         review = QcReviewRevision(
             review_revision_id=row.review_revision_id,
+            review_scope=content.get("review_scope", "pre_statistics"),
             input_manifest_hash=content["input_manifest_hash"],
             metric_artifact_ids=tuple(content["metric_artifact_ids"]),
             checks=tuple(QcCheck.model_validate(item) for item in content["checks"]),

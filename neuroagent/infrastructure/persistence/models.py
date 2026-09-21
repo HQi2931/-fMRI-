@@ -126,11 +126,28 @@ class WorkflowRunRow(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    qc_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    qc_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+class QcSkipRow(Base):
+    __tablename__ = "qc_skip_records"
+    qc_skip_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workflow_runs.run_id", ondelete="RESTRICT"), unique=True, index=True
+    )
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    run_version: Mapped[int] = mapped_column(Integer)
+    decision_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    actor: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str] = mapped_column(Text)
+    qc_review_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class JobRow(Base):

@@ -94,15 +94,6 @@ export type ConversationTurn = {
   tool_call: ConversationToolCall | null;
 };
 export type ConversationContext = Schemas["ConversationContextView"];
-export type WorkCardOperation = Schemas["WorkCardAction"]["operation"];
-type GeneratedWorkCard = Schemas["WorkCard"];
-export type WorkCard = Omit<GeneratedWorkCard, "draft" | "bindings" | "allowed_operations"> & {
-  draft: Record<string, unknown>;
-  bindings: NonNullable<GeneratedWorkCard["bindings"]>;
-  allowed_operations: WorkCardOperation[];
-};
-export type WorkCardKind = WorkCard["kind"];
-export type WorkCardResult = { card: WorkCard; conversation: Conversation; result: unknown };
 export type ConversationMemory = Schemas["MemoryView"];
 type ConversationTurnDefaults = "action" | "allow_remote_search" | "paper_ids" | "real_execution_confirmed" | "stream";
 export type ConversationTurnBody = Omit<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>
@@ -345,8 +336,6 @@ export const api = {
   ) => post<Conversation>("/conversations", body, signal),
   conversation: (conversationId: string, signal?: AbortSignal) =>
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
-  workCardAction: (conversationId: string, cardId: string, body: Schemas["WorkCardAction"]) =>
-    post<WorkCardResult>(`/conversations/${encodeURIComponent(conversationId)}/cards/${encodeURIComponent(cardId)}/actions`, body),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>
     request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
   indexConversationMemories: (conversationId: string, signal?: AbortSignal) =>
@@ -413,6 +402,11 @@ export const api = {
   },
   createRun: (body: Schemas["RunCreate"], signal?: AbortSignal) => post<Run>("/runs", body, signal),
   run: (runId: string, signal?: AbortSignal) => request<Run>(`/runs/${runId}`, { signal }),
+  skipQc: (
+    runId: string,
+    body: Schemas["QcSkipCreate"],
+    signal?: AbortSignal,
+  ) => post<Schemas["QcSkipView"]>(`/runs/${runId}/qc-skip`, body, signal),
   cancelRun: (runId: string, body: Schemas["RunAction"], signal?: AbortSignal) =>
     post<Run>(`/runs/${runId}/cancel`, body, signal),
   retryRun: (runId: string, body: Schemas["RunAction"], signal?: AbortSignal) =>
@@ -421,6 +415,11 @@ export const api = {
     post<RunDiagnosis>(`/runs/${runId}/diagnosis`, body, signal),
   artifacts: (runId: string, signal?: AbortSignal) =>
     request<Artifact[]>(`/runs/${runId}/artifacts`, { signal }),
+  createHeadMotionQc: (
+    runId: string,
+    body: Schemas["HeadMotionQcCreate"],
+    signal?: AbortSignal,
+  ) => post<QcReview>(`/runs/${runId}/head-motion-qc`, body, signal),
   createQcReview: (body: Schemas["QcReviewCreate"], signal?: AbortSignal) =>
     post<QcReview>("/qc-reviews", body, signal),
   qcReview: (reviewId: string, signal?: AbortSignal) =>

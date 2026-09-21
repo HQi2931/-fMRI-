@@ -31,7 +31,12 @@ from neuroagent.analysis.models import (
 from neuroagent.analysis.organization import OrganizationPreview
 from neuroagent.domain.fmri.metrics import AlffFalffParameters, MetricKind, RehoParameters
 from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
-from neuroagent.domain.fmri.qc import QcCheck, QcReviewRevision
+from neuroagent.domain.fmri.qc import (
+    HeadMotionQcCriteria,
+    QcCheck,
+    QcReviewRevision,
+    QcReviewScope,
+)
 from neuroagent.domain.fmri.statistics import (
     CorrectionSpec,
     StatisticalDesignRevision,
@@ -366,6 +371,13 @@ class ExecutionWorkspaceMode(StrEnum):
     IN_PLACE = "in_place"
 
 
+class QcExecutionMode(StrEnum):
+    """User's explicit choice for the post-processing QC gate."""
+
+    REQUIRE = "require"
+    SKIP = "skip"
+
+
 class RunCreate(StrictModel):
     project_id: str
     plan_revision_id: str
@@ -374,6 +386,9 @@ class RunCreate(StrictModel):
     execution_backend: ExecutionBackend = ExecutionBackend.MOCK
     workspace_mode: ExecutionWorkspaceMode = ExecutionWorkspaceMode.ISOLATED
     real_execution_confirmed: bool = False
+    # Existing API clients retain the historical behavior; Work itself requires
+    # an explicit choice before it constructs this request.
+    qc_mode: QcExecutionMode = QcExecutionMode.REQUIRE
     mock_outcome: MockOutcome = MockOutcome.SUCCEED
     mock_delay_ms: int = Field(default=0, ge=0, le=10_000)
 
@@ -402,11 +417,23 @@ class QcReviewState(StrEnum):
 class QcReviewCreate(StrictModel):
     run_id: str
     expected_run_version: int = Field(ge=1)
-    metric_artifact_ids: tuple[str, ...] = Field(min_length=1)
+    review_scope: QcReviewScope = QcReviewScope.PRE_STATISTICS
+    metric_artifact_ids: tuple[str, ...] = ()
     checks: tuple[QcCheck, ...] = Field(min_length=1)
     included_subject_ids: tuple[str, ...]
     excluded_subject_ids: tuple[str, ...]
     exclusion_reasons: tuple[tuple[str, str], ...]
+
+    @model_validator(mode="after")
+    def scope_matches_inputs(self) -> QcReviewCreate:
+        if self.review_scope is QcReviewScope.PRE_STATISTICS and not self.metric_artifact_ids:
+            raise ValueError("pre-statistics QC requires at least one metric Artifact ID")
+        return self
+
+
+class HeadMotionQcCreate(StrictModel):
+    expected_run_version: int = Field(ge=1)
+    criteria: HeadMotionQcCriteria = Field(default_factory=HeadMotionQcCriteria)
 
 
 class QcReviewApprove(StrictModel):
@@ -416,6 +443,24 @@ class QcReviewApprove(StrictModel):
     actor: str = Field(min_length=1, max_length=200)
     approved: bool
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class QcSkipCreate(StrictModel):
+    expected_run_version: int = Field(ge=1)
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class QcSkipView(StrictModel):
+    qc_skip_id: str
+    run_id: str
+    project_id: str
+    run_version: int = Field(ge=1)
+    decision_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    actor: str
+    reason: str
+    qc_review_revision_id: str | None = None
+    created_at: datetime
 
 
 class QcReviewView(StrictModel):
@@ -456,6 +501,8 @@ class RunView(StrictModel):
     log_cursor: int = Field(default=0, ge=0)
     eta_seconds: int | None = Field(default=None, ge=0)
     diagnosis_available: bool = False
+    qc_mode: QcExecutionMode = QcExecutionMode.REQUIRE
+    qc_status: str = "pending"
     created_at: datetime
     updated_at: datetime
 
@@ -843,8 +890,11 @@ class ConversationAction(StrEnum):
     PREPARE_PREPROCESSING_PLAN = "prepare_preprocessing_plan"
     PREVIEW_PREPROCESSING_RUN = "preview_preprocessing_run"
     START_PREPROCESSING = "start_preprocessing"
+    CREATE_HEAD_MOTION_QC = "create_head_motion_qc"
     GET_PROGRESS = "get_progress"
     GET_QC_STATUS = "get_qc_status"
+    APPROVE_QC_REVIEW = "approve_qc_review"
+    SKIP_QC = "skip_qc"
     GET_STATISTICAL_RESULTS = "get_statistical_results"
 
 
@@ -927,10 +977,6 @@ class ConversationView(StrictModel):
 
 
 class ConversationTurnCreate(StrictModel):
-    card_kind: (
-        Literal["project", "data", "plan", "runs", "qc", "statistics", "analysis", "settings"]
-        | None
-    ) = None
     paper_ids: tuple[str, ...] = ()
     content: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
     stream: bool = False
@@ -948,6 +994,7 @@ class ConversationTurnCreate(StrictModel):
     plan_revision_id: str | None = None
     expected_plan_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     real_execution_confirmed: bool = False
+    qc_mode: QcExecutionMode | None = None
 
 
 class ConversationTurnView(StrictModel):
@@ -955,70 +1002,6 @@ class ConversationTurnView(StrictModel):
     user_message: ConversationMessageView
     assistant_message: ConversationMessageView
     tool_call: ConversationToolCallView | None = None
-
-
-WorkCardKind = Literal[
-    "project", "data", "plan", "runs", "qc", "statistics", "analysis", "settings"
-]
-WorkCardOperation = Literal[
-    "saveDraft",
-    "selectProject",
-    "createProject",
-    "createDataset",
-    "inspectDataset",
-    "importDemographics",
-    "createSplit",
-    "resolveSkillPlan",
-    "approvePlan",
-    "createRun",
-    "cancelRun",
-    "retryRun",
-    "diagnoseRun",
-    "createQcReview",
-    "approveQcReview",
-    "createStatisticalDesign",
-    "validateStatisticalDesign",
-    "createStatisticsRun",
-    "inspectMlTable",
-    "createMlTemplate",
-    "validateRoiTable",
-    "localizeClusters",
-    "answerRsFmriQuestion",
-    "organizationPreview",
-]
-
-
-class WorkCardBindings(StrictModel):
-    project_id: str | None = None
-    dataset_id: str | None = None
-    manifest_id: str | None = None
-    plan_revision_id: str | None = None
-    run_id: str | None = None
-    qc_review_id: str | None = None
-    statistical_design_id: str | None = None
-
-
-class WorkCard(StrictModel):
-    card_id: str
-    kind: WorkCardKind
-    title: str
-    version: int = Field(default=1, ge=1)
-    draft_ref: str
-    draft: dict[str, Any] = Field(default_factory=dict)
-    bindings: WorkCardBindings = Field(default_factory=WorkCardBindings)
-    allowed_operations: list[WorkCardOperation] = Field(default_factory=list)
-
-
-class WorkCardAction(StrictModel):
-    expected_version: int = Field(ge=1)
-    operation: WorkCardOperation
-    args: list[Any] = Field(default_factory=list, max_length=2)
-
-
-class WorkCardActionView(StrictModel):
-    card: WorkCard
-    conversation: ConversationView
-    result: Any = None
 
 
 class MemoryCreate(StrictModel):

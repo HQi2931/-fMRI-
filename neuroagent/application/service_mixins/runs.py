@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from neuroagent.application.contracts import (
     ClusterLocalizationRequest,
     ClusterLocalizationView,
     ExecutionBackend,
+    HeadMotionQcCreate,
     MlTableInspectRequest,
     MlTableInspectView,
     MlTemplateCreateRequest,
@@ -27,6 +30,8 @@ from neuroagent.application.contracts import (
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
+    QcSkipCreate,
+    QcSkipView,
     RoiTableCreateRequest,
     RoiTableView,
     RsFmriAnswerView,
@@ -47,12 +52,15 @@ from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.reporting import build_statistical_reproducibility_report
 from neuroagent.application.service_mixins._base import BaseServiceMixin
+from neuroagent.domain.fmri.qc import QcReviewScope
 from neuroagent.domain.fmri.results import StatisticalResultManifest
 from neuroagent.domain.fmri.statistics import (
     CorrectionSpec,
     StatisticalDesignRevision,
+    StatisticalQcSource,
     StatisticalTest,
 )
+from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 
 
 class RunMixin(BaseServiceMixin):
@@ -105,6 +113,7 @@ class RunMixin(BaseServiceMixin):
                     else "workflow_mock"
                 ),
                 "real_execution_confirmed": request.real_execution_confirmed,
+                "qc_mode": request.qc_mode.value,
                 "plan_hash": request.expected_plan_hash,
                 "input_manifest_hash": plan.manifest_hash,
                 "environment_hash": plan.environment_hash,
@@ -137,6 +146,7 @@ class RunMixin(BaseServiceMixin):
                         else "workflow_mock"
                     ),
                     "real_execution_confirmed": request.real_execution_confirmed,
+                    "qc_mode": request.qc_mode.value,
                     "plan_hash": request.expected_plan_hash,
                     "environment_hash": plan.environment_hash,
                     "approval_record_id": payload.get("approval_record_id"),
@@ -156,6 +166,32 @@ class RunMixin(BaseServiceMixin):
 
     def get_run(self, run_id: str) -> RunView:
         return self.repository.get_run(run_id)
+
+    def skip_qc(self, run_id: str, request: QcSkipCreate, idempotency_key: str) -> QcSkipView:
+        def action() -> QcSkipView:
+            skip, run = self.repository.skip_qc(run_id, request)
+            self.repository.append_event(
+                project_id=run.project_id,
+                run_id=run.run_id,
+                event_type="QcSkipRecorded",
+                severity="warning",
+                payload={
+                    "qc_skip_id": skip.qc_skip_id,
+                    "decision_hash": skip.decision_hash,
+                    "actor": skip.actor,
+                    "reason": skip.reason,
+                    "qc_review_revision_id": skip.qc_review_revision_id,
+                },
+            )
+            return skip
+
+        return self._idempotent(
+            scope=f"runs:{run_id}:qc:skip",
+            key=idempotency_key,
+            request=request,
+            response_type=QcSkipView,
+            action=action,
+        )
 
     def diagnose_run(self, run_id: str, request: RunDiagnosisRequest) -> RunDiagnosisView:
         """Classify a bounded log excerpt without invoking a model or executor."""
@@ -286,14 +322,7 @@ class RunMixin(BaseServiceMixin):
                     "v0.1 真实统计仅支持单样本、两独立样本和配对 t 检验。",
                     test=design_view.design.test.value,
                 )
-            approved_qc = self.repository.get_approved_qc_review(
-                design_view.design.qc_review_revision_id
-            )
-            if approved_qc.review.content_hash != design_view.design.qc_review_hash:
-                raise ConflictError(
-                    "qc_review_hash_mismatch",
-                    "统计运行引用的 QC review 已失配。",
-                )
+            self._validate_statistics_qc_binding(design_view.design)
             if plan.plan_hash != request.expected_plan_hash:
                 raise ConflictError(
                     "run_plan_hash_mismatch",
@@ -311,14 +340,7 @@ class RunMixin(BaseServiceMixin):
             # source-file scan just completed outside this writer transaction.
             plan = self.repository.get_plan(request.statistical_design_revision_id)
             design_view = self._statistics_view(plan)
-            approved_qc = self.repository.get_approved_qc_review(
-                design_view.design.qc_review_revision_id
-            )
-            if approved_qc.review.content_hash != design_view.design.qc_review_hash:
-                raise ConflictError(
-                    "qc_review_hash_mismatch",
-                    "统计运行引用的 QC review 已失配。",
-                )
+            self._validate_statistics_qc_binding(design_view.design)
             if plan.plan_hash != request.expected_plan_hash:
                 raise ConflictError(
                     "run_plan_hash_mismatch",
@@ -393,6 +415,26 @@ class RunMixin(BaseServiceMixin):
             finalize=finalize,
         )
 
+    def _validate_statistics_qc_binding(self, design: StatisticalDesignRevision) -> None:
+        if design.qc_source is StatisticalQcSource.APPROVED_REVIEW:
+            assert design.qc_review_revision_id is not None and design.qc_review_hash is not None
+            approved_qc = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+            if approved_qc.review.content_hash != design.qc_review_hash:
+                raise ConflictError("qc_review_hash_mismatch", "统计运行引用的 QC review 已失配。")
+            return
+        assert (
+            design.qc_source_run_id is not None
+            and design.qc_skip_id is not None
+            and design.qc_skip_hash is not None
+        )
+        skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+        if (
+            skip is None
+            or skip.qc_skip_id != design.qc_skip_id
+            or skip.decision_hash != design.qc_skip_hash
+        ):
+            raise ConflictError("qc_skip_binding_mismatch", "统计运行引用的 QC 跳过记录已失配。")
+
     def _validate_execution_backend(
         self, backend: ExecutionBackend, real_execution_confirmed: bool
     ) -> None:
@@ -423,7 +465,7 @@ class RunMixin(BaseServiceMixin):
         manifest: StatisticalResultManifest,
         design: StatisticalDesignRevision,
         correction: CorrectionSpec | None,
-        qc_review_hash: str,
+        qc_review_hash: str | None,
         environment_hash: str,
         plan_hash: str,
         actor: str,
@@ -517,20 +559,21 @@ class RunMixin(BaseServiceMixin):
 
     def create_qc_review(self, request: QcReviewCreate, idempotency_key: str) -> QcReviewView:
         def action() -> QcReviewView:
-            self._require_skill_parameter_schema(
-                "review-rsfmri-qc",
-                {
-                    "input_manifest_hash": self.repository.get_plan(
-                        self.repository.get_run(request.run_id).plan_revision_id
-                    ).manifest_hash,
-                    "subject_order": [
-                        *request.included_subject_ids,
-                        *request.excluded_subject_ids,
-                    ],
-                    "metric_artifact_ids": list(request.metric_artifact_ids),
-                    "checks": [check.model_dump(mode="json") for check in request.checks],
-                },
-            )
+            if request.review_scope is QcReviewScope.PRE_STATISTICS:
+                self._require_skill_parameter_schema(
+                    "review-rsfmri-qc",
+                    {
+                        "input_manifest_hash": self.repository.get_plan(
+                            self.repository.get_run(request.run_id).plan_revision_id
+                        ).manifest_hash,
+                        "subject_order": [
+                            *request.included_subject_ids,
+                            *request.excluded_subject_ids,
+                        ],
+                        "metric_artifact_ids": list(request.metric_artifact_ids),
+                        "checks": [check.model_dump(mode="json") for check in request.checks],
+                    },
+                )
             review = self.repository.create_qc_review(request)
             self.repository.append_event(
                 project_id=review.project_id,
@@ -554,6 +597,207 @@ class RunMixin(BaseServiceMixin):
             response_type=QcReviewView,
             action=action,
         )
+
+    def create_head_motion_qc_review(
+        self, run_id: str, request: HeadMotionQcCreate, idempotency_key: str
+    ) -> QcReviewView:
+        def action() -> QcReviewView:
+            self._ensure_head_motion_qc_report(run_id, request)
+            review = self.repository.create_head_motion_qc_review(run_id, request)
+            self.repository.append_event(
+                project_id=review.project_id,
+                run_id=review.run_id,
+                event_type="QcReviewRevisionCreated",
+                severity="info",
+                payload={
+                    "review_revision_id": review.review.review_revision_id,
+                    "review_hash": review.review.content_hash,
+                    "review_scope": review.review.review_scope.value,
+                    "included_count": len(review.review.included_subject_ids),
+                    "excluded_count": len(review.review.excluded_subject_ids),
+                    "artifact_count": len(review.review.metric_artifact_ids),
+                    "automatic": False,
+                },
+            )
+            return review
+
+        return self._idempotent(
+            scope=f"runs:{run_id}:head-motion-qc:create",
+            key=idempotency_key,
+            request=request,
+            response_type=QcReviewView,
+            action=action,
+        )
+
+    def _ensure_head_motion_qc_report(self, run_id: str, request: HeadMotionQcCreate) -> None:
+        if any(
+            artifact.artifact_type == "qc.head_motion_report"
+            for artifact in self.repository.list_artifacts(run_id)
+        ):
+            return
+        run = self.repository.get_run(run_id)
+        if run.version != request.expected_run_version:
+            raise ConflictError(
+                "run_version_mismatch",
+                "运行版本与请求不一致, 请刷新后重试。",
+                expected=run.version,
+                received=request.expected_run_version,
+            )
+        if run.state is not WorkflowState.QC_REVIEW:
+            return
+        plan = self.repository.get_plan(run.plan_revision_id)
+        skill_plan = plan.plan.get("skill_plan")
+        if not isinstance(skill_plan, dict):
+            raise ConflictError("head_motion_qc_plan_missing", "运行计划缺少 SkillPlan。")
+        resolved_parameters = skill_plan.get("resolved_parameters")
+        if not isinstance(resolved_parameters, list | tuple):
+            raise ConflictError(
+                "head_motion_qc_plan_parameters_missing",
+                "运行计划缺少预处理参数。",
+            )
+        parameters = dict(resolved_parameters)
+        preprocessing = parameters.get("preprocessing")
+        if not isinstance(preprocessing, dict):
+            return
+        realignment = preprocessing.get("realignment")
+        if not isinstance(realignment, dict) or not realignment.get("enabled"):
+            return
+        manifest_id = plan.plan.get("dataset_manifest_id")
+        if not isinstance(manifest_id, str) or not manifest_id:
+            raise ConflictError(
+                "head_motion_qc_manifest_missing",
+                "运行计划缺少冻结 manifest 引用。",
+            )
+        manifest = self.repository.get_manifest(manifest_id)
+        if manifest.content_hash != plan.manifest_hash:
+            raise ConflictError(
+                "head_motion_qc_manifest_mismatch",
+                "冻结 manifest 与计划哈希不一致。",
+            )
+        attempt_root = self._latest_attempt_root(run)
+        realign_root = self._find_realign_parameter_root(attempt_root, skill_plan)
+        evidence_path = attempt_root / "output" / "preprocessing-evidence.json"
+        try:
+            expected_counts = self._expected_volume_counts(evidence_path)
+            report = parse_dpabi_head_motion_qc(
+                realign_root,
+                input_manifest_hash=plan.manifest_hash,
+                subject_ids=tuple(subject.subject_id for subject in manifest.subjects),
+                criteria=request.criteria,
+                expected_volume_counts=expected_counts,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise InputValidationError(
+                "head_motion_qc_parse_failed",
+                f"头动 QC 证据解析失败: {exc}",
+            ) from exc
+        report_payload = report.model_dump(mode="json")
+        report_json = (
+            json.dumps(report_payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        )
+        relative_path = f"attempts/{attempt_root.name}/output/qc/head-motion-qc.json"
+        output_path = attempt_root / "output" / "qc" / "head-motion-qc.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report_json, encoding="utf-8")
+        digest = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
+        self.repository.register_artifacts(
+            run.project_id,
+            run.run_id,
+            (
+                {
+                    "artifact_type": "qc.head_motion_report",
+                    "relative_path": relative_path,
+                    "checksum": digest,
+                    "size_bytes": len(report_json.encode("utf-8")),
+                    "provenance": {
+                        "executor": "head_motion_qc_service",
+                        "plan_hash": plan.plan_hash,
+                        "head_motion_qc": report_payload,
+                    },
+                },
+            ),
+        )
+        self.repository.append_event(
+            project_id=run.project_id,
+            run_id=run.run_id,
+            event_type="HeadMotionQcReportRegistered",
+            severity="info",
+            payload={
+                "artifact_type": "qc.head_motion_report",
+                "relative_path": relative_path,
+                "included_count": len(report.included_subject_ids),
+                "excluded_count": len(report.excluded_subject_ids),
+            },
+        )
+
+    def _latest_attempt_root(self, run: RunView) -> Path:
+        project = self.repository.get_project(run.project_id)
+        work_root = Path(project.work_root).resolve()
+        attempts_root = (work_root / run.run_id / "attempts").resolve()
+        try:
+            attempts_root.relative_to(work_root)
+        except ValueError as exc:
+            raise ConflictError(
+                "head_motion_qc_attempt_path_invalid",
+                "运行 attempt 目录越过项目工作区边界。",
+            ) from exc
+        if not attempts_root.is_dir():
+            raise ConflictError(
+                "head_motion_qc_attempt_missing",
+                "当前运行没有可用于补跑头动 QC 的 attempt 目录。",
+            )
+        attempts = tuple(path for path in attempts_root.iterdir() if path.is_dir())
+        if not attempts:
+            raise ConflictError(
+                "head_motion_qc_attempt_missing",
+                "当前运行没有可用于补跑头动 QC 的 attempt 目录。",
+            )
+        return max(attempts, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+    def _find_realign_parameter_root(
+        self, attempt_root: Path, skill_plan: dict[str, object]
+    ) -> Path:
+        candidates = [
+            attempt_root / "staging" / "RealignParameter",
+            attempt_root / "RealignParameter",
+        ]
+        dataset_ref = skill_plan.get("dataset_ref")
+        if isinstance(dataset_ref, str) and dataset_ref:
+            dataset = self.repository.get_dataset(dataset_ref)
+            project = self.repository.get_project(dataset.project_id)
+            dataset_root = self.path_policy.validate_read_path(
+                dataset.source_path,
+                project_roots=project.source_roots,
+                expect_directory=True,
+            )
+            candidates.append(dataset_root / "RealignParameter")
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+        raise ConflictError(
+            "head_motion_qc_realign_parameter_missing",
+            "未找到 DPABI RealignParameter 目录, 不能补跑头动 QC。",
+        )
+
+    @staticmethod
+    def _expected_volume_counts(evidence_path: Path) -> dict[str, int]:
+        if not evidence_path.is_file():
+            return {}
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        rows = evidence.get("outputs") if isinstance(evidence, dict) else None
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            return {}
+        counts: dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("metric") != "timeseries":
+                continue
+            subject_id = row.get("subject_id")
+            volume_count = row.get("volume_count")
+            if isinstance(subject_id, str) and isinstance(volume_count, int):
+                counts[subject_id] = volume_count
+        return counts
 
     def get_qc_review(self, review_revision_id: str) -> QcReviewView:
         return self.repository.get_qc_review(review_revision_id)

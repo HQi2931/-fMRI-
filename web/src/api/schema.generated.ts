@@ -124,23 +124,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/conversations/{conversation_id}/cards/{card_id}/actions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Work Card Action */
-        post: operations["work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/conversations/{conversation_id}/context": {
         parameters: {
             query?: never;
@@ -861,6 +844,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/head-motion-qc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Head Motion Qc Review */
+        post: operations["create_head_motion_qc_review_api_v1_runs__run_id__head_motion_qc_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/qc-skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Skip Qc */
+        post: operations["skip_qc_api_v1_runs__run_id__qc_skip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/retry": {
         parameters: {
             query?: never;
@@ -1048,23 +1065,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/work/capabilities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Work Capabilities */
-        get: operations["work_capabilities_api_v1_work_capabilities_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/workspaces/check": {
         parameters: {
             query?: never;
@@ -1161,7 +1161,9 @@ export interface components {
             filter_timing: components["schemas"]["TemporalFilterTiming"];
             frequency_band: components["schemas"]["FrequencyBand"];
             /** Mask Artifact Id */
-            mask_artifact_id: string;
+            mask_artifact_id?: string | null;
+            /** @default registered_artifact */
+            mask_source: components["schemas"]["MetricMaskSource"];
             /** Provenance */
             provenance: components["schemas"]["ParameterProvenance"][];
             /** Requested Metrics */
@@ -1435,7 +1437,7 @@ export interface components {
          * ConversationAction
          * @enum {string}
          */
-        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "get_progress" | "get_qc_status" | "get_statistical_results";
+        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "create_head_motion_qc" | "get_progress" | "get_qc_status" | "approve_qc_review" | "skip_qc" | "get_statistical_results";
         /** ConversationContextView */
         ConversationContextView: {
             /** Memories */
@@ -1531,8 +1533,6 @@ export interface components {
              * @default false
              */
             allow_remote_search: boolean;
-            /** Card Kind */
-            card_kind?: ("project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings") | null;
             /** Content */
             content: string;
             /** Expected Plan Hash */
@@ -1552,6 +1552,7 @@ export interface components {
             preferred_profile_id?: string | null;
             /** Project Id */
             project_id?: string | null;
+            qc_mode?: components["schemas"]["QcExecutionMode"] | null;
             /** Qc Review Id */
             qc_review_id?: string | null;
             /**
@@ -2016,6 +2017,35 @@ export interface components {
          * @enum {integer}
          */
         HeadMotionModel: 0 | 1 | 2 | 3 | 4;
+        /** HeadMotionQcCreate */
+        HeadMotionQcCreate: {
+            criteria?: components["schemas"]["HeadMotionQcCriteria"];
+            /** Expected Run Version */
+            expected_run_version: number;
+        };
+        /** HeadMotionQcCriteria */
+        HeadMotionQcCriteria: {
+            /**
+             * Fd Power Gt 0 5 Fraction
+             * @default 0.2
+             */
+            fd_power_gt_0_5_fraction: number;
+            /**
+             * Max Rotation Deg
+             * @default 2
+             */
+            max_rotation_deg: number;
+            /**
+             * Max Translation Mm
+             * @default 2
+             */
+            max_translation_mm: number;
+            /**
+             * Mean Fd Power
+             * @default 0.2
+             */
+            mean_fd_power: number;
+        };
         /** HealthView */
         HealthView: {
             /**
@@ -2174,6 +2204,12 @@ export interface components {
          * @enum {string}
          */
         MetricKind: "alff" | "falff" | "reho";
+        /**
+         * MetricMaskSource
+         * @description Reviewed source for the metric brain mask.
+         * @enum {string}
+         */
+        MetricMaskSource: "registered_artifact" | "dpabi_auto";
         /**
          * MetricScaling
          * @enum {string}
@@ -2742,6 +2778,12 @@ export interface components {
             passed: boolean;
             severity: components["schemas"]["QcSeverity"];
         };
+        /**
+         * QcExecutionMode
+         * @description User's explicit choice for the post-processing QC gate.
+         * @enum {string}
+         */
+        QcExecutionMode: "require" | "skip";
         /** QcReviewApprove */
         QcReviewApprove: {
             /** Actor */
@@ -2772,8 +2814,13 @@ export interface components {
             expected_run_version: number;
             /** Included Subject Ids */
             included_subject_ids: string[];
-            /** Metric Artifact Ids */
+            /**
+             * Metric Artifact Ids
+             * @default []
+             */
             metric_artifact_ids: string[];
+            /** @default pre_statistics */
+            review_scope: components["schemas"]["QcReviewScope"];
             /** Run Id */
             run_id: string;
         };
@@ -2804,7 +2851,14 @@ export interface components {
             metric_artifact_ids: string[];
             /** Review Revision Id */
             review_revision_id: string;
+            /** @default pre_statistics */
+            review_scope: components["schemas"]["QcReviewScope"];
         };
+        /**
+         * QcReviewScope
+         * @enum {string}
+         */
+        QcReviewScope: "head_motion" | "pre_statistics";
         /**
          * QcReviewState
          * @enum {string}
@@ -2838,6 +2892,39 @@ export interface components {
          * @enum {string}
          */
         QcSeverity: "info" | "warning" | "blocking";
+        /** QcSkipCreate */
+        QcSkipCreate: {
+            /** Actor */
+            actor: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            /** Reason */
+            reason: string;
+        };
+        /** QcSkipView */
+        QcSkipView: {
+            /** Actor */
+            actor: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decision Hash */
+            decision_hash: string;
+            /** Project Id */
+            project_id: string;
+            /** Qc Review Revision Id */
+            qc_review_revision_id?: string | null;
+            /** Qc Skip Id */
+            qc_skip_id: string;
+            /** Reason */
+            reason: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+        };
         /**
          * RealignmentOptionsSource
          * @enum {string}
@@ -2865,7 +2952,9 @@ export interface components {
                 number
             ] | null;
             /** Mask Artifact Id */
-            mask_artifact_id: string;
+            mask_artifact_id?: string | null;
+            /** @default registered_artifact */
+            mask_source: components["schemas"]["MetricMaskSource"];
             /** Provenance */
             provenance: components["schemas"]["ParameterProvenance"][];
             /** Requested Scalings */
@@ -3070,6 +3159,8 @@ export interface components {
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
             /**
              * Real Execution Confirmed
              * @default false
@@ -3123,6 +3214,13 @@ export interface components {
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Qc Status
+             * @default pending
+             */
+            qc_status: string;
             /** Run Id */
             run_id: string;
             /**
@@ -3514,9 +3612,17 @@ export interface components {
             /** One Sample Baseline */
             one_sample_baseline: number | null;
             /** Qc Review Hash */
-            qc_review_hash: string;
+            qc_review_hash?: string | null;
             /** Qc Review Revision Id */
-            qc_review_revision_id: string;
+            qc_review_revision_id?: string | null;
+            /** Qc Skip Hash */
+            qc_skip_hash?: string | null;
+            /** Qc Skip Id */
+            qc_skip_id?: string | null;
+            /** @default approved_review */
+            qc_source: components["schemas"]["StatisticalQcSource"];
+            /** Qc Source Run Id */
+            qc_source_run_id?: string | null;
             /** Revision Id */
             revision_id: string;
             /** Subject Order */
@@ -3543,6 +3649,11 @@ export interface components {
          * @enum {string}
          */
         StatisticalMapType: "T" | "F" | "Z" | "R";
+        /**
+         * StatisticalQcSource
+         * @enum {string}
+         */
+        StatisticalQcSource: "approved_review" | "skipped";
         /**
          * StatisticalResultDetailView
          * @description Full registered result including the frozen manifest and both report renderings.
@@ -3789,68 +3900,6 @@ export interface components {
             path?: string | null;
             /** Severity */
             severity: string;
-        };
-        /** WorkCard */
-        WorkCard: {
-            /** Allowed Operations */
-            allowed_operations?: ("saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview")[];
-            bindings?: components["schemas"]["WorkCardBindings"];
-            /** Card Id */
-            card_id: string;
-            /** Draft */
-            draft?: {
-                [key: string]: unknown;
-            };
-            /** Draft Ref */
-            draft_ref: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings";
-            /** Title */
-            title: string;
-            /**
-             * Version
-             * @default 1
-             */
-            version: number;
-        };
-        /** WorkCardAction */
-        WorkCardAction: {
-            /** Args */
-            args?: unknown[];
-            /** Expected Version */
-            expected_version: number;
-            /**
-             * Operation
-             * @enum {string}
-             */
-            operation: "saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview";
-        };
-        /** WorkCardActionView */
-        WorkCardActionView: {
-            card: components["schemas"]["WorkCard"];
-            conversation: components["schemas"]["ConversationView"];
-            /** Result */
-            result?: unknown;
-        };
-        /** WorkCardBindings */
-        WorkCardBindings: {
-            /** Dataset Id */
-            dataset_id?: string | null;
-            /** Manifest Id */
-            manifest_id?: string | null;
-            /** Plan Revision Id */
-            plan_revision_id?: string | null;
-            /** Project Id */
-            project_id?: string | null;
-            /** Qc Review Id */
-            qc_review_id?: string | null;
-            /** Run Id */
-            run_id?: string | null;
-            /** Statistical Design Id */
-            statistical_design_id?: string | null;
         };
         /**
          * WorkflowState
@@ -4505,89 +4554,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationView"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                conversation_id: string;
-                card_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WorkCardAction"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkCardActionView"];
                 };
             };
             /** @description Bad Request */
@@ -8395,6 +8361,170 @@ export interface operations {
             };
         };
     };
+    create_head_motion_qc_review_api_v1_runs__run_id__head_motion_qc_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HeadMotionQcCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcReviewView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    skip_qc_api_v1_runs__run_id__qc_skip_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QcSkipCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcSkipView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     retry_run_api_v1_runs__run_id__retry_post: {
         parameters: {
             query?: never;
@@ -9202,82 +9332,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    work_capabilities_api_v1_work_capabilities_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
                 };
             };
             /** @description Bad Request */

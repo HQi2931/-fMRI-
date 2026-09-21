@@ -38,7 +38,6 @@ from neuroagent.application.service_mixins import (
     StatisticsMixin,
 )
 from neuroagent.application.settings import Settings
-from neuroagent.application.work_cards import WorkCardsMixin
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.chat.services import (
@@ -68,7 +67,6 @@ from neuroagent.tools.registry import build_default_tool_registry
 
 
 class NeuroAgentService(
-    WorkCardsMixin,
     ConversationMixin,
     ProjectDatasetMixin,
     PlanApprovalMixin,
@@ -140,10 +138,16 @@ class NeuroAgentService(
             resolve_skill_plan=self.resolve_skill_plan,
             validate_plan_current=self._require_plan_current,
             get_qc_review=self.get_qc_review,
+            get_latest_qc_review_for_run=repository.get_latest_qc_review_for_run,
+            create_head_motion_qc_review=self.create_head_motion_qc_review,
+            approve_qc_review=self.approve_qc_review,
+            skip_qc=self.skip_qc,
             list_statistical_results=self.list_statistical_results,
             get_run=self.get_run,
             create_run=self.create_run,
+            approve_plan=self.approve_plan,
             tool_result=self._tool_result,
+            work_root=settings.allowed_work_root,
         )
         uploaded_index = UploadedLiteratureIndex(
             work_root=settings.allowed_work_root,

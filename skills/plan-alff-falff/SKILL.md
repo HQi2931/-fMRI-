@@ -6,9 +6,9 @@ description: Validate and compile an ALFF/fALFF metric plan for DPABI V8.2. Use 
 # Plan ALFF/fALFF
 
 1. Read `skill.yaml` and validate the request with `parameters.schema.json`.
-2. Require explicit TR, frequency band, requested ALFF/fALFF endpoints, scaling, mask choice, smoothing choice, and provenance.
+2. Require explicit TR, frequency band, requested ALFF/fALFF endpoints, scaling, mask choice, smoothing choice, and provenance. A single-subject preprocessing plan may explicitly select DPABI auto-mask generation; metric-only plans still require a registered typed mask.
 3. Enforce `0 <= low < high <= 1/(2*TR)`. Block standard fALFF when input lineage is already temporally filtered.
 4. Block `BeforeNormalize` filtering for this reviewed protocol. DPABI V8.2 calculates ALFF and fALFF together before `AfterNormalize` filtering.
-5. Require a grid-compatible mask for global-mean or z-score outputs. Do not infer a mask from filenames.
+5. Require a grid-compatible mask for every metric output. For DPABI auto masks, register the generated mask from the same run and bind metric lineage to that artifact; do not infer a mask from filenames.
 6. Compile an immutable plan containing both companion products when `IsCalALFF=1`, while marking only the user-selected outputs as primary endpoints.
 7. Return blockers and confirmation items; never start a Tool, Workflow, or MATLAB process.

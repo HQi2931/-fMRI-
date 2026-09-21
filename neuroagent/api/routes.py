@@ -33,6 +33,7 @@ from neuroagent.application.contracts import (
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
     EnvironmentProbeView,
+    HeadMotionQcCreate,
     HealthView,
     ManifestRevisionView,
     ManifestScanRequest,
@@ -57,6 +58,8 @@ from neuroagent.application.contracts import (
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
+    QcSkipCreate,
+    QcSkipView,
     RoiTableCreateRequest,
     RoiTableView,
     RsFmriAnswerView,
@@ -75,8 +78,6 @@ from neuroagent.application.contracts import (
     StatisticalResultDetailView,
     StatisticalResultView,
     StatisticsRunCreate,
-    WorkCardAction,
-    WorkCardActionView,
     WorkflowState,
     WorkspaceCheckRequest,
     WorkspaceCheckView,
@@ -89,24 +90,6 @@ from neuroagent.workflow.state import TERMINAL_WORKFLOW_STATES
 
 router = APIRouter()
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)]
-
-
-@router.get("/work/capabilities")
-def work_capabilities(request: Request) -> list[dict[str, object]]:
-    return service_from(request).work_capabilities()
-
-
-@router.post(
-    "/conversations/{conversation_id}/cards/{card_id}/actions", response_model=WorkCardActionView
-)
-def work_card_action(
-    conversation_id: str,
-    card_id: str,
-    body: WorkCardAction,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> WorkCardActionView:
-    return service_from(request).act_on_work_card(conversation_id, card_id, body, idempotency_key)
 
 
 def service_from(request: Request) -> NeuroAgentService:
@@ -577,6 +560,21 @@ def get_run(run_id: str, request: Request) -> RunView:
     return service_from(request).get_run(run_id)
 
 
+@router.post(
+    "/runs/{run_id}/qc-skip",
+    response_model=QcSkipView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["runs", "qc"],
+)
+def skip_qc(
+    run_id: str,
+    body: QcSkipCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> QcSkipView:
+    return service_from(request).skip_qc(run_id, body, idempotency_key)
+
+
 @router.post("/runs/{run_id}/diagnosis", response_model=RunDiagnosisView, tags=["runs"])
 def diagnose_run(
     run_id: str, body: RunDiagnosisRequest, request: Request, idempotency_key: IdempotencyKey
@@ -667,6 +665,21 @@ def create_qc_review(
     idempotency_key: IdempotencyKey,
 ) -> QcReviewView:
     return service_from(request).create_qc_review(body, idempotency_key)
+
+
+@router.post(
+    "/runs/{run_id}/head-motion-qc",
+    response_model=QcReviewView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["qc"],
+)
+def create_head_motion_qc_review(
+    run_id: str,
+    body: HeadMotionQcCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> QcReviewView:
+    return service_from(request).create_head_motion_qc_review(run_id, body, idempotency_key)
 
 
 @router.get("/qc-reviews/{review_revision_id}", response_model=QcReviewView, tags=["qc"])

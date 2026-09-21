@@ -9,12 +9,13 @@ from sqlalchemy import CursorResult, func, select, update
 
 from neuroagent.application.contracts import ApprovalDecision, PlanState, RunView, WorkflowState
 from neuroagent.application.errors import ConflictError, NotFoundError
-from neuroagent.application.hashing import canonical_json
+from neuroagent.application.hashing import canonical_json, content_hash
 from neuroagent.infrastructure.persistence.models import (
     ApprovalRow,
     JobRow,
     PlanRevisionRow,
     ProjectRow,
+    QcSkipRow,
     WorkflowRunRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
@@ -80,9 +81,32 @@ class RunMixin(RepositoryBaseMixin):
                 project_id=project_id,
                 plan_revision_id=plan_revision_id,
                 state=WorkflowState.QUEUED.value,
+                qc_mode=str(payload.get("qc_mode", "require")),
+                qc_status=(
+                    "skipped" if str(payload.get("qc_mode", "require")) == "skip" else "pending"
+                ),
             )
             session.add(run)
             session.flush()
+            if run.qc_mode == "skip":
+                decision_payload = {
+                    "run_id": run.run_id,
+                    "project_id": project_id,
+                    "run_version": run.version,
+                    "actor": "run_request",
+                    "reason": "用户在启动前明确选择跳过 QC。",
+                }
+                session.add(
+                    QcSkipRow(
+                        qc_skip_id=_id(),
+                        run_id=run.run_id,
+                        project_id=project_id,
+                        run_version=run.version,
+                        decision_hash=content_hash(decision_payload),
+                        actor="run_request",
+                        reason="用户在启动前明确选择跳过 QC。",
+                    )
+                )
             session.add(
                 JobRow(
                     job_id=_id(),

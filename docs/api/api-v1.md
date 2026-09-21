@@ -42,23 +42,17 @@
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
-| `GET` | `/work/capabilities` | 读取服务端允许的 Work 卡片、所需上下文和操作目录 |
-| `POST` | `/conversations/{conversation_id}/cards/{card_id}/actions` | 保存卡片草稿或执行卡片目录内的一个类型化业务操作 |
 
 `chat` 先调用本地 `rag_rsfmri_question`；存在模型配置时，将限定范围的问题和本地证据通过
 `OutboundContextPolicy` 脱敏后交给所选 LLM。请求中的 `allow_remote_search=true` 只会路由到
 声明 `web_search` 能力的 Profile，并将 URL 引用、模型 Profile、上下文哈希和用量摘要保存到
 `rsfmri_chat_llm` 工具记录。没有模型配置且未要求联网时保留纯本地 RAG 回退。
 
-`work` 回合默认先路由为类型化操作卡片，而不直接执行。客户端可在
-`POST /conversations/{conversation_id}/turns` 中提交 `card_kind` 明确打开
-`project`、`data`、`plan`、`runs`、`qc`、`statistics`、`analysis` 或 `settings` 卡片；省略时由服务端根据
-自然语言和可选模型路由。解释性问题只返回回答，缺少或含糊的操作请求返回能力建议。模型只生成结构化路由草案，不能指定组件名、脚本或任意代码。
+`work` 回合由服务端确定性协调器解析为闭集 `ConversationAction`，再调用既有应用服务。客户端不再提交 `card_kind`，服务端也不暴露卡片能力目录、任意组件名、脚本或执行代码。缺少参数的请求返回待确认工具记录和明确缺项；解释或未知请求只返回说明，不产生业务写入。
 
-卡片包含稳定 `card_id`、`kind`、`version`、`draft_ref`、对象 `bindings` 和闭集
-`allowed_operations`。操作请求必须提交 `expected_version`、目录内 `operation` 和参数数组；服务端重新用既有 Pydantic 契约验证参数，并检查对话项目、目标对象和计划版本。`saveDraft` 只替换最新卡片快照，不新增对话消息；过期版本返回 `409 work_card_stale`。其余成功操作会将结果与新卡片快照写回会话，刷新后可恢复。相同幂等 key 不会重复执行。
+当前自然语言捷径识别同时包含 DemoData、Sub_001 和 ALFF 的请求。它只接受已选择的独立工作副本，冻结单受试者 manifest，并创建固定的兼容性冒烟计划：TR 2.0 秒、234 时间点、Slice Timing 奇数层后偶数层且参考层 33、Realign、0.01–0.08 Hz raw ALFF 与 DPABI 自动掩膜，其余处理关闭。响应保存 Project、Dataset、Manifest、SkillPlan 和 PlanRevision；只有随后携带精确计划 ID/哈希及 `real_execution_confirmed=true` 的确认回合才会批准并排队 MATLAB 作业。
 
-既有显式 Work `action` 仍作为 API 兼容层保留，其行为如下；新前端不再用独立业务页面调用这些 action：
+显式 Work `action` 仍作为类型化 API 层保留，其行为如下：
 
 | action | 行为与边界 |
 | --- | --- |
@@ -67,7 +61,10 @@
 | `preview_preprocessing_run` | 在启动前重新校验计划哈希与审批状态、冻结输入、环境锁、工作区访问和磁盘余量；只返回技术预检结果，不做目录格式判断或排队 |
 | `start_preprocessing` | 从已审批且当前有效的计划排队 MATLAB 预处理；要求精确计划 ID/哈希和 `real_execution_confirmed=true`；持久化工具名为 `start_dpabi_preprocessing` |
 | `get_run_progress` | 读取目标或活动运行的服务端状态 |
-| `get_qc_status` | 按 `qc_review_id` 只读查询 QC revision，并校验其项目/运行上下文 |
+| `create_head_motion_qc` | 对已完成且处于 `qc_review` 的运行补建或重建头动 QC 草稿；正常路径由 Worker 成功钩子自动触发 |
+| `get_qc_status` | 按 `qc_review_id` 或活动运行只读查询 QC revision，并校验其项目/运行上下文 |
+| `approve_qc_review` | 在用户明确批准时提交精确 QC revision version、run version 和 review hash |
+| `skip_qc` | 在已完成计算且等待 QC 的运行上记录用户明确的跳过决定，并继续后续流程 |
 | `get_statistical_results` | 按当前项目及可选目标运行列出已登记统计结果 |
 
 项目/数据集/manifest 建立、计划编译和预检都复用既有应用服务及其路径、版本和谱系校验。真实启动服务只负责排队，实际 MATLAB 仍由现有 Worker 执行。浏览器在存在活动运行时定期读取 `/runs/{run_id}` 并显示阶段、进度和 attempt；轮询不创建额外对话消息或工具调用。
@@ -174,6 +171,8 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `POST` | `/qc-reviews` | 从类型化指标 Artifact 创建不可变 QC revision |
+| `POST` | `/runs/{run_id}/head-motion-qc` | 复用已登记报告或从本次 attempt/原位工作区的 `RealignParameter` 重新解析并登记 `qc.head_motion_report`，再幂等生成头动 QC 草稿 |
+| `POST` | `/runs/{run_id}/qc-skip` | 记录带 run version、操作者和原因的 QC 跳过决定；完成计算的运行进入 succeeded |
 | `GET` | `/qc-reviews/{review_revision_id}` | 读取 QC revision |
 | `POST` | `/qc-reviews/{review_revision_id}/approve` | 批准精确 QC hash 和冻结受试者顺序 |
 | `POST` | `/statistical-designs` | 创建统计设计 revision |
@@ -186,6 +185,8 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | `GET` | `/statistics/results/{result_id}` | 读取冻结结果清单与 Markdown/JSON 复现报告 |
 
 `/statistics/runs` 当前只排队 `statistics_mock`。它不调用 DPABI 统计函数，不产生统计图、效应量、簇表或可复现报告。统计运行完成后，明确标记为合成的复现报告可经 `/statistics/results` 查询；真实执行器产物登记仍待接入。
+
+运行请求携带 `qc_mode=require|skip`。`require` 时，MATLAB/DPABI 预处理或指标运行成功并登记 Artifact 后，若本次计划启用了 Realign 且存在 `RealignParameter`，Worker 会解析 `HeadMotion.tsv`、FD 文件、`rp_*.txt` 和 DPABI 排除文件，登记 `qc.head_motion_report`，并自动创建 QC 草稿。含指标图的运行生成 `pre_statistics` scope，可在人工批准后作为统计来源；无指标图的纯预处理生成 `head_motion` scope。`skip` 时运行在产物登记完成后进入 `succeeded`，不解析头动文件或创建 QC 草稿。统计设计可绑定已批准 QC review，或绑定同一来源运行的 `qc_skip` 审计记录；后者会在报告中明确标记 QC 已跳过。默认阈值为最大平移/旋转 `≤2mm/2°`、mean FD Power `≤0.2`、FD Power > 0.5 比例 `≤20%`。
 
 ## Provider 和 Agent
 

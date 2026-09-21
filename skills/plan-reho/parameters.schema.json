@@ -3,7 +3,7 @@
   "title": "ReHo request",
   "type": "object",
   "additionalProperties": false,
-  "required": ["tr_seconds", "temporal_filter_band", "temporal_filter_add_mean_back", "cluster_voxels", "mask_artifact_id", "requested_scalings", "smooth_reho", "smooth_reho_fwhm_mm", "global_result_smoothing", "global_result_smoothing_fwhm_mm", "provenance"],
+  "required": ["tr_seconds", "temporal_filter_band", "temporal_filter_add_mean_back", "cluster_voxels", "mask_source", "mask_artifact_id", "requested_scalings", "smooth_reho", "smooth_reho_fwhm_mm", "global_result_smoothing", "global_result_smoothing_fwhm_mm", "provenance"],
   "properties": {
     "tr_seconds": {"type": "number", "exclusiveMinimum": 0},
     "temporal_filter_band": {
@@ -14,7 +14,8 @@
     },
     "temporal_filter_add_mean_back": {"type": ["boolean", "null"]},
     "cluster_voxels": {"enum": [7, 19, 27]},
-    "mask_artifact_id": {"type": "string", "minLength": 1},
+    "mask_source": {"enum": ["registered_artifact", "dpabi_auto"]},
+    "mask_artifact_id": {"type": ["string", "null"], "minLength": 1},
     "requested_scalings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["raw", "global_mean", "z_score"]}},
     "smooth_reho": {"type": "boolean"},
     "smooth_reho_fwhm_mm": {"$ref": "#/$defs/fwhm"},

@@ -12,7 +12,12 @@ from neuroagent.application.contracts import (
     ManifestRevisionView,
     SubjectManifestEntry,
 )
-from neuroagent.domain.fmri.metrics import AlffFalffParameters, RehoParameters, SmoothingTiming
+from neuroagent.domain.fmri.metrics import (
+    AlffFalffParameters,
+    MetricMaskSource,
+    RehoParameters,
+    SmoothingTiming,
+)
 from neuroagent.domain.fmri.preprocessing import (
     NormalizationMode,
     NormalizationTiming,
@@ -113,18 +118,31 @@ def compile_preprocessing(
         )
     ]
     metrics_requested = alff is not None or reho is not None
+    metric_parameters = tuple(item for item in (alff, reho) if item is not None)
+    auto_mask = bool(metric_parameters) and all(
+        item.mask_source is MetricMaskSource.DPABI_AUTO for item in metric_parameters
+    )
     if metrics_requested:
-        mask_ids = {item.mask_artifact_id for item in (alff, reho) if item is not None}
-        if mask_binding is None or mask_ids != {mask_binding.artifact_id}:
-            raise ValueError("all requested metrics require the same registered mask binding")
-        mask_name = _nifti_name(mask_binding.relative_path)
-        bindings.append(
-            ArtifactPathBinding(
-                artifact_id=mask_binding.artifact_id,
-                relative_path=f"staging/mask/{mask_name}",
-                read_only=mask_binding.read_only,
+        sources = {item.mask_source for item in metric_parameters}
+        if len(sources) != 1:
+            raise ValueError("all requested metrics require the same mask source")
+        if auto_mask:
+            if parameters is None or len(subjects) != 1 or mask_binding is not None:
+                raise ValueError(
+                    "DPABI auto mask is supported only for single-subject preprocessing runs"
+                )
+        else:
+            mask_ids = {item.mask_artifact_id for item in metric_parameters}
+            if mask_binding is None or mask_ids != {mask_binding.artifact_id}:
+                raise ValueError("all requested metrics require the same registered mask binding")
+            mask_name = _nifti_name(mask_binding.relative_path)
+            bindings.append(
+                ArtifactPathBinding(
+                    artifact_id=mask_binding.artifact_id,
+                    relative_path=f"staging/mask/{mask_name}",
+                    read_only=mask_binding.read_only,
+                )
             )
-        )
     elif mask_binding is not None:
         raise ValueError("a mask binding requires a requested metric")
     metric_request = (
@@ -133,9 +151,12 @@ def compile_preprocessing(
             functional_session_number=1,
             starting_dir_name="FunImg",
             input_manifest_hash=manifest.content_hash,
-            mask_relative_path=PurePosixPath(bindings[-1].relative_path)
-            .relative_to("staging")
-            .as_posix(),
+            mask_relative_path=(
+                None
+                if auto_mask
+                else PurePosixPath(bindings[-1].relative_path).relative_to("staging").as_posix()
+            ),
+            auto_mask=auto_mask,
             alff_falff=alff,
             reho=reho,
         )
@@ -201,13 +222,15 @@ def compile_preprocessing(
             cfg=cfg,
             cfg_hash=stable_hash(cfg),
         )
-    outputs = _outputs(subject_ids, alff, reho)
+    outputs = _outputs(subject_ids, alff, reho, auto_mask=auto_mask)
     expected_artifacts = (
         *(
             ExpectedArtifact(
                 artifact_type=(
                     "preprocessing.functional_timeseries"
                     if output.metric == "timeseries"
+                    else "preprocessing.brain_mask"
+                    if output.metric == "brain_mask"
                     else f"metric.{output.metric}.{output.scaling}"
                 ),
                 relative_pattern=output.relative_path,
@@ -362,7 +385,11 @@ def _staging_plan(
 
 
 def _outputs(
-    subjects: tuple[str, ...], alff: AlffFalffParameters | None, reho: RehoParameters | None
+    subjects: tuple[str, ...],
+    alff: AlffFalffParameters | None,
+    reho: RehoParameters | None,
+    *,
+    auto_mask: bool = False,
 ) -> tuple[PreprocessingOutput, ...]:
     result: list[PreprocessingOutput] = []
     for subject in subjects:
@@ -374,6 +401,15 @@ def _outputs(
                 relative_path=f"output/{subject}/timeseries.nii",
             )
         )
+        if auto_mask:
+            result.append(
+                PreprocessingOutput(
+                    subject_id=subject,
+                    metric="brain_mask",
+                    scaling=None,
+                    relative_path=f"output/{subject}/brain_mask.nii",
+                )
+            )
         for parameters in (alff, reho):
             if parameters is None:
                 continue

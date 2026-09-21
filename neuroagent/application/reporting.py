@@ -46,17 +46,22 @@ def build_statistical_reproducibility_report(
     manifest: StatisticalResultManifest,
     design: StatisticalDesignRevision,
     correction: CorrectionSpec | None,
-    qc_review_hash: str,
+    qc_review_hash: str | None,
     environment_hash: str,
     plan_hash: str,
 ) -> StatisticalReproducibilityReport:
     """Build a stable Markdown and JSON report from frozen, registered evidence."""
 
-    _require_sha256("QC review", qc_review_hash)
+    if design.qc_source.value == "approved_review":
+        if qc_review_hash is None:
+            raise ValueError("approved QC statistics require a QC review hash")
+        _require_sha256("QC review", qc_review_hash)
+        if design.qc_review_hash != qc_review_hash:
+            raise ValueError("report QC hash does not match the frozen statistical design")
+    elif qc_review_hash is not None:
+        raise ValueError("QC-skipped statistics must not carry a QC review hash")
     _require_sha256("environment", environment_hash)
     _require_sha256("plan", plan_hash)
-    if design.qc_review_hash != qc_review_hash:
-        raise ValueError("report QC hash does not match the frozen statistical design")
     if manifest.design_revision_id != design.revision_id:
         raise ValueError("result manifest does not reference the frozen design revision")
     if not _same_correction(manifest.correction, correction):
@@ -87,8 +92,12 @@ def build_statistical_reproducibility_report(
         "frozen_bindings": {
             "design_revision_id": design.revision_id,
             "design_hash": content_hash(design_payload),
+            "qc_source": design.qc_source.value,
             "qc_review_revision_id": design.qc_review_revision_id,
             "qc_review_hash": qc_review_hash,
+            "qc_skip_id": design.qc_skip_id,
+            "qc_skip_hash": design.qc_skip_hash,
+            "qc_source_run_id": design.qc_source_run_id,
             "environment_hash": environment_hash,
             "plan_hash": plan_hash,
         },

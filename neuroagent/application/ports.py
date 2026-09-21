@@ -25,6 +25,7 @@ from neuroagent.application.contracts import (
     DatasetSplitView,
     DatasetView,
     DemographicsRevisionView,
+    HeadMotionQcCreate,
     ManifestRevisionView,
     MemoryCreate,
     MemoryKind,
@@ -39,6 +40,8 @@ from neuroagent.application.contracts import (
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
+    QcSkipCreate,
+    QcSkipView,
     RuntimeEventView,
     RunView,
     StatisticalResultDetailView,
@@ -148,10 +151,6 @@ class RepositoryPort(Protocol):
     def list_conversations(
         self, *, mode: ConversationMode | None = None
     ) -> list[ConversationView]: ...
-
-    def save_work_card_draft(
-        self, conversation_id: str, card: dict[str, Any]
-    ) -> ConversationView: ...
 
     def append_conversation_exchange(
         self,
@@ -367,6 +366,10 @@ class RepositoryPort(Protocol):
 
     def create_qc_review(self, request: QcReviewCreate) -> QcReviewView: ...
 
+    def create_head_motion_qc_review(
+        self, run_id: str, request: HeadMotionQcCreate
+    ) -> QcReviewView: ...
+
     def get_qc_review(self, review_revision_id: str) -> QcReviewView: ...
 
     def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None: ...
@@ -375,7 +378,15 @@ class RepositoryPort(Protocol):
         self, review_revision_id: str, request: QcReviewApprove
     ) -> tuple[QcReviewView, RunView]: ...
 
+    def get_qc_skip_for_run(self, run_id: str) -> QcSkipView | None: ...
+
+    def skip_qc(self, run_id: str, request: QcSkipCreate) -> tuple[QcSkipView, RunView]: ...
+
     def get_approved_qc_review(self, review_revision_id: str) -> QcReviewView: ...
+
+    def register_artifacts(
+        self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
+    ) -> None: ...
 
     def list_artifacts(self, run_id: str) -> list[ArtifactView]: ...
 

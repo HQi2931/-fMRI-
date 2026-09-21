@@ -18,8 +18,12 @@ from neuroagent.application.contracts import (
     DatasetCreate,
     ExecutionBackend,
     ExecutionWorkspaceMode,
+    HeadMotionQcCreate,
     ManifestScanRequest,
     ProjectCreate,
+    QcExecutionMode,
+    QcReviewApprove,
+    QcSkipCreate,
     RunCreate,
     SkillPlanIntent,
     SkillPlanResolveRequest,
@@ -58,7 +62,14 @@ def _write_synthetic_series(path: Path) -> None:
             stream.write(struct.pack("<729f", *values))
 
 
-def _prepare(root: Path, *, real: bool = False, in_place: bool = False):
+def _prepare(
+    root: Path,
+    *,
+    real: bool = False,
+    in_place: bool = False,
+    realign: bool = False,
+    qc_mode: QcExecutionMode = QcExecutionMode.REQUIRE,
+):
     source = root / "source"
     source.mkdir(parents=True)
     image = (
@@ -107,6 +118,8 @@ def _prepare(root: Path, *, real: bool = False, in_place: bool = False):
     )
     params = _minimal_preprocessing_payload()
     params.update(expected_time_points=124, dummy_scans=4, detrend=True)
+    if realign:
+        params["realignment"] = {"enabled": True, "options_source": "dpabi_v82_jobmat"}
     resolved = service.resolve_skill_plan(
         SkillPlanResolveRequest(
             request=SkillPlanIntent(
@@ -145,6 +158,7 @@ def _prepare(root: Path, *, real: bool = False, in_place: bool = False):
                 ExecutionWorkspaceMode.IN_PLACE if in_place else ExecutionWorkspaceMode.ISOLATED
             ),
             real_execution_confirmed=True,
+            qc_mode=qc_mode,
         ),
         "run",
     )
@@ -156,7 +170,9 @@ def _fake_execute(self, job, *, is_cancelled):
     root = rendered.run_directory
     assert root.name == job.run_id and root.parent.name == "attempts"
     assert root.parents[2].name == "project"
-    assert (root / "staging/FunImg/sub-01/rest.nii").is_file()
+    assert (root / "staging/FunImg/sub-01/rest.nii").is_file() or (
+        root / "staging/FunImg/sub-01/input.nii"
+    ).is_file()
     rows = []
     artifacts = []
     for output in job.payload.outputs:
@@ -189,6 +205,10 @@ def _fake_execute(self, job, *, is_cancelled):
                 sha256=hashlib.sha256(data).hexdigest(),
             )
         )
+    if job.payload.metric_projection.cfg.get("IsRealign"):
+        _write_realign_parameter(
+            root / "staging" / "RealignParameter", job.payload.subject_ids, 120
+        )
     return MatlabJobResult(
         status=MatlabJobStatus.SUCCEEDED,
         job_hash=job.job_hash,
@@ -200,8 +220,46 @@ def _fake_execute(self, job, *, is_cancelled):
     )
 
 
+def _write_realign_parameter(root: Path, subjects: tuple[str, ...], volume_count: int) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    header = (
+        "Subject ID\tmax(abs(Tx))\tmax(abs(Ty))\tmax(abs(Tz))\t"
+        "max(abs(Rx))\tmax(abs(Ry))\tmax(abs(Rz))\t"
+        "mean(abs(Tx))\tmean(abs(Ty))\tmean(abs(Tz))\t"
+        "mean(abs(Rx))\tmean(abs(Ry))\tmean(abs(Rz))\t"
+        "mean RMS\tmean relative RMS (mean FD_VanDijk)\tmean FD_Power\t"
+        "Number of FD_Power>0.5\tPercent of FD_Power>0.5\t"
+        "Number of FD_Power>0.2\tPercent of FD_Power>0.2\tmean FD_Jenkinson\n"
+    )
+    lines = [header]
+    for subject in subjects:
+        subject_dir = root / subject
+        subject_dir.mkdir(parents=True, exist_ok=True)
+        fd_values = [0.0] + [0.05] * (volume_count - 1)
+        fd_text = "\n".join(f"{value:.8f}" for value in fd_values) + "\n"
+        (subject_dir / f"FD_Power_{subject}.txt").write_text(fd_text, encoding="utf-8")
+        (subject_dir / f"FD_Jenkinson_{subject}.txt").write_text(fd_text, encoding="utf-8")
+        (subject_dir / f"FD_VanDijk_{subject}.txt").write_text(fd_text, encoding="utf-8")
+        rp_text = "\n".join("0 0 0 0 0 0" for _ in range(volume_count)) + "\n"
+        (subject_dir / f"rp_{subject}.txt").write_text(rp_text, encoding="utf-8")
+        lines.append(
+            f"{subject}\t0.1\t0.1\t0.1\t0.1\t0.1\t0.1\t"
+            "0.01\t0.01\t0.01\t0.01\t0.01\t0.01\t0.01\t0.05\t"
+            "0.05\t0\t0\t0\t0\t0.05\n"
+        )
+    (root / "HeadMotion.tsv").write_text("".join(lines), encoding="utf-8")
+    blocks = []
+    for threshold in ("3.0", "2.5", "2.0", "1.5", "1.0", "0.5"):
+        blocks.append(
+            f"Excluding Criteria: {threshold}mm and {threshold} degree in max head motion\nNone\n\n"
+        )
+    (root / "ExcludeSubjectsAccordingToMaxHeadMotion.txt").write_text(
+        "\n".join(blocks), encoding="utf-8"
+    )
+
+
 def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, monkeypatch):
-    service, run, source = _prepare(tmp_path)
+    service, run, source = _prepare(tmp_path, realign=True)
     before = source.read_bytes()
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
     try:
@@ -216,13 +274,64 @@ def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, mon
         assert lineage["volume_count"] == 120 and lineage["metadata_verified"]
         assert lineage["subject_id"] == "sub-01"
         assert lineage["artifact_id"] == image.artifact_id
+        report = next(item for item in outputs if item.artifact_type == "qc.head_motion_report")
+        assert report.provenance["head_motion_qc"]["included_subject_ids"] == ["sub-01"]
+        qc = service.repository.get_latest_qc_review_for_run(run.run_id)
+        assert qc is not None
+        assert qc.review.review_scope.value == "head_motion"
+        assert qc.review.included_subject_ids == ("sub-01",)
+        rebuilt = service.create_head_motion_qc_review(
+            run.run_id,
+            HeadMotionQcCreate(expected_run_version=result.version),
+            "rebuild-head-motion-qc",
+        )
+        assert rebuilt.review.review_revision_id == qc.review.review_revision_id
         assert source.read_bytes() == before
     finally:
         service.close()
 
 
+def test_preprocessing_can_skip_qc_at_start_and_reach_succeeded(tmp_path, monkeypatch):
+    service, run, _ = _prepare(tmp_path, qc_mode=QcExecutionMode.SKIP)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
+    try:
+        assert build_worker(service).run_once()
+        result = service.get_run(run.run_id)
+        assert result.state.value == "succeeded"
+        assert result.qc_mode is QcExecutionMode.SKIP
+        assert result.qc_status == "skipped"
+        assert service.repository.get_latest_qc_review_for_run(run.run_id) is None
+        skip = service.repository.get_qc_skip_for_run(run.run_id)
+        assert skip is not None
+        assert skip.reason == "用户在启动前明确选择跳过 QC。"
+    finally:
+        service.close()
+
+
+def test_waiting_qc_can_be_explicitly_skipped(tmp_path, monkeypatch):
+    service, run, _ = _prepare(tmp_path, realign=True)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
+    try:
+        assert build_worker(service).run_once()
+        waiting = service.get_run(run.run_id)
+        skipped = service.skip_qc(
+            run.run_id,
+            QcSkipCreate(
+                expected_run_version=waiting.version,
+                actor="test researcher",
+                reason="Proceed without head-motion QC.",
+            ),
+            "skip-after-qc",
+        )
+        assert skipped.run_id == run.run_id
+        assert service.get_run(run.run_id).state.value == "succeeded"
+        assert service.get_run(run.run_id).qc_status == "skipped"
+    finally:
+        service.close()
+
+
 def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path, monkeypatch):
-    service, run, source = _prepare(tmp_path, in_place=True)
+    service, run, source = _prepare(tmp_path, in_place=True, realign=True)
     before = source.read_bytes()
 
     def fake_in_place_execute(self, job, *, is_cancelled):
@@ -234,6 +343,7 @@ def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path
         assert not staged.exists()
         staged.parent.mkdir(parents=True)
         staged.write_bytes(before)
+        _write_realign_parameter(source.parents[2] / "RealignParameter", ("sub-01",), 120)
         return _fake_execute(self, job, is_cancelled=is_cancelled)
 
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", fake_in_place_execute)
@@ -241,7 +351,138 @@ def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path
         assert build_worker(service).run_once()
         result = service.get_run(run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
+        qc = service.repository.get_latest_qc_review_for_run(run.run_id)
+        assert qc is not None
+        assert qc.review.review_scope.value == "head_motion"
         assert source.read_bytes() == before
+    finally:
+        service.close()
+
+
+def test_metric_run_auto_creates_pre_statistics_head_motion_qc(tmp_path, monkeypatch):
+    service, run, source = _prepare(tmp_path, realign=True)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
+    try:
+        assert build_worker(service).run_once()
+        _run_combined_smoke(service, run, source)
+    finally:
+        service.close()
+
+
+def test_metric_only_run_reuses_approved_source_head_motion_qc(tmp_path, monkeypatch):
+    service, preprocessing_run, source = _prepare(tmp_path, realign=True)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
+    try:
+        assert build_worker(service).run_once()
+        source_run = _run_combined_smoke(service, preprocessing_run, source)
+        source_result = service.get_run(source_run.run_id)
+        source_qc = service.repository.get_latest_qc_review_for_run(source_run.run_id)
+        assert source_qc is not None
+
+        project = service.get_project(source_run.project_id)
+        source_plan = service.repository.get_plan(source_run.plan_revision_id)
+        manifest = service.get_manifest(source_plan.plan["dataset_manifest_id"])
+        registered = service.list_artifacts(source_run.run_id)
+        timeseries = next(
+            item for item in registered if item.artifact_type.endswith("functional_timeseries")
+        )
+        mask_artifact_id = timeseries.provenance["lineage"]["mask_artifact_id"]
+        assert isinstance(mask_artifact_id, str)
+        service.approve_qc_review(
+            source_qc.review.review_revision_id,
+            QcReviewApprove(
+                expected_review_version=source_qc.version,
+                expected_run_version=source_result.version,
+                review_hash=source_qc.review.content_hash,
+                actor="test researcher",
+                approved=True,
+                reason="source head-motion QC reviewed",
+            ),
+            "approve-source-head-motion-qc",
+        )
+
+        intent = _skill_request(
+            project.project_id, manifest.dataset_id, manifest.content_hash, timeseries.artifact_id
+        ).model_dump(mode="json")
+        intent["alff_falff"]["mask_artifact_id"] = mask_artifact_id
+        intent["reho"]["mask_artifact_id"] = mask_artifact_id
+        resolved = service.resolve_skill_plan(
+            SkillPlanResolveRequest(
+                request=SkillPlanIntent.model_validate(intent),
+                expected_project_version=service.get_project(project.project_id).version,
+            ),
+            "metric-only-resolve",
+        )
+        plan = resolved.plan_revision
+        service.approve_plan(
+            plan.plan_revision_id,
+            ApprovalCreate(
+                expected_version=plan.version,
+                plan_hash=plan.plan_hash,
+                actor="synthetic-smoke",
+                decision=ApprovalDecision.APPROVED,
+                reason="Metric-only source QC reuse smoke",
+            ),
+            "metric-only-approve",
+        )
+        metric_run = service.create_run(
+            RunCreate(
+                project_id=project.project_id,
+                plan_revision_id=plan.plan_revision_id,
+                expected_plan_hash=plan.plan_hash,
+                execution_backend=ExecutionBackend.MATLAB,
+                real_execution_confirmed=True,
+            ),
+            "metric-only-run",
+        )
+        assert build_worker(service).run_once()
+        result = service.get_run(metric_run.run_id)
+        assert result.state.value == "qc_review", result.model_dump_json()
+        qc = service.repository.get_latest_qc_review_for_run(metric_run.run_id)
+        assert qc is not None
+        assert qc.review.review_scope.value == "pre_statistics"
+        assert qc.review.included_subject_ids == source_qc.review.included_subject_ids
+        assert len(qc.review.metric_artifact_ids) == 3
+    finally:
+        service.close()
+
+
+def test_head_motion_qc_endpoint_rebuilds_missing_report_from_realign_parameter(
+    tmp_path,
+    monkeypatch,
+):
+    service, run, source = _prepare(tmp_path, realign=True)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
+    monkeypatch.setattr(
+        matlab_executor.MatlabJobExecutor,
+        "_head_motion_qc_artifacts",
+        staticmethod(lambda *args, **kwargs: ()),
+    )
+    try:
+        assert build_worker(service).run_once()
+        result = service.get_run(run.run_id)
+        assert result.state.value == "qc_review", result.model_dump_json()
+        assert not any(
+            item.artifact_type == "qc.head_motion_report"
+            for item in service.list_artifacts(run.run_id)
+        )
+        assert service.repository.get_latest_qc_review_for_run(run.run_id) is None
+
+        rebuilt = service.create_head_motion_qc_review(
+            run.run_id,
+            HeadMotionQcCreate(expected_run_version=result.version),
+            "rebuild-missing-head-motion-qc",
+        )
+
+        report = next(
+            item
+            for item in service.list_artifacts(run.run_id)
+            if item.artifact_type == "qc.head_motion_report"
+        )
+        assert report.provenance["head_motion_qc"]["included_subject_ids"] == ["sub-01"]
+        assert rebuilt.review.review_scope.value == "head_motion"
+        assert rebuilt.review.included_subject_ids == ("sub-01",)
+        assert source.exists()
     finally:
         service.close()
 
@@ -349,6 +590,7 @@ def _run_combined_smoke(service, source_run, source):
     ).model_dump(mode="json")
     params = _minimal_preprocessing_payload()
     params.update(expected_time_points=124, dummy_scans=4, detrend=True)
+    params["realignment"] = {"enabled": True, "options_source": "dpabi_v82_jobmat"}
     params["temporal_filter"] = {
         "timing": "after_normalize",
         "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
@@ -396,4 +638,10 @@ def _run_combined_smoke(service, source_run, source):
         )
         assert artifact.provenance["lineage"]["volume_count"] == 120
         assert artifact.provenance["lineage"]["mask_artifact_id"] == mask.artifact_id
+    qc = service.repository.get_latest_qc_review_for_run(run.run_id)
+    assert qc is not None
+    assert qc.review.review_scope.value == "pre_statistics"
+    assert len(qc.review.metric_artifact_ids) == 3
+    assert qc.review.included_subject_ids == ("sub-01",)
     print(json.dumps({"combined_metrics": "pass", "artifact_count": len(artifacts)}))
+    return run

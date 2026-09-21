@@ -23,6 +23,7 @@ from neuroagent.domain.fmri.statistics import (
     FdrCorrection,
     GrfCorrection,
     StatisticalDesignRevision,
+    StatisticalQcSource,
     StatisticalTest,
     design_matrix,
     validate_correction_for_design,
@@ -315,45 +316,16 @@ class StatisticsMixin(BaseServiceMixin):
         def prepare() -> tuple[tuple[tuple[float, ...], ...], dict[str, Any], str]:
             self._require_project_version(request.project_id, request.expected_project_version)
             environment = self.environment_provider.current().snapshot
-            qc_review = self.repository.get_approved_qc_review(request.design.qc_review_revision_id)
-            if qc_review.project_id != request.project_id:
-                raise ConflictError(
-                    "cross_project_qc_review",
-                    "QC review 不属于当前项目。",
-                )
-            if qc_review.review.content_hash != request.design.qc_review_hash:
-                raise ConflictError(
-                    "qc_review_hash_mismatch",
-                    "统计设计引用的 QC review hash 与已批准版本不一致。",
-                    expected=qc_review.review.content_hash,
-                    received=request.design.qc_review_hash,
-                )
-            if qc_review.review.input_manifest_hash != request.input_manifest_hash:
-                raise ConflictError(
-                    "qc_manifest_hash_mismatch",
-                    "统计设计输入清单与已批准 QC review 不一致。",
-                )
-            try:
-                assert_statistics_ready(qc_review.review, request.design.subject_order)
-            except ValueError as exc:
-                raise InputValidationError(
-                    "statistics_qc_alignment_failed",
-                    "统计受试者顺序必须精确等于 QC 冻结纳入顺序。",
-                ) from exc
             image_artifact_ids = tuple(image.artifact_id for image in request.design.images)
-            if not set(image_artifact_ids).issubset(qc_review.review.metric_artifact_ids):
-                raise InputValidationError(
-                    "statistics_artifact_not_qc_approved",
-                    "统计影像必须全部来自 QC review 冻结的指标 Artifact 清单。",
-                )
+            source_run_id = self._validate_statistics_qc_source(request, image_artifact_ids)
             self.repository.assert_artifacts_belong_to_run(
                 (*image_artifact_ids, request.design.mask_artifact_id),
-                qc_review.run_id,
+                source_run_id,
             )
             self._validate_statistical_artifact_lineage(
                 request.design,
                 manifest_hash=request.input_manifest_hash,
-                source_run_id=qc_review.run_id,
+                source_run_id=source_run_id,
             )
             self._validate_correction(request.design, request.correction)
             self._require_skill_parameter_schema(
@@ -430,6 +402,64 @@ class StatisticsMixin(BaseServiceMixin):
             prepare=prepare,
             finalize=finalize,
         )
+
+    def _validate_statistics_qc_source(
+        self,
+        request: StatisticalDesignCreate,
+        image_artifact_ids: tuple[str, ...],
+    ) -> str:
+        design = request.design
+        if design.qc_source is StatisticalQcSource.APPROVED_REVIEW:
+            assert design.qc_review_revision_id is not None and design.qc_review_hash is not None
+            qc_review = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+            if qc_review.project_id != request.project_id:
+                raise ConflictError("cross_project_qc_review", "QC review 不属于当前项目。")
+            if qc_review.review.content_hash != design.qc_review_hash:
+                raise ConflictError(
+                    "qc_review_hash_mismatch", "统计设计引用的 QC review hash 与已批准版本不一致。"
+                )
+            if qc_review.review.input_manifest_hash != request.input_manifest_hash:
+                raise ConflictError(
+                    "qc_manifest_hash_mismatch", "统计设计输入清单与已批准 QC review 不一致。"
+                )
+            try:
+                assert_statistics_ready(qc_review.review, design.subject_order)
+            except ValueError as exc:
+                raise InputValidationError(
+                    "statistics_qc_alignment_failed", "统计受试者顺序必须精确等于 QC 冻结纳入顺序。"
+                ) from exc
+            if not set(image_artifact_ids).issubset(qc_review.review.metric_artifact_ids):
+                raise InputValidationError(
+                    "statistics_artifact_not_qc_approved",
+                    "统计影像必须全部来自 QC review 冻结的指标 Artifact 清单。",
+                )
+            return qc_review.run_id
+
+        assert (
+            design.qc_source_run_id is not None
+            and design.qc_skip_id is not None
+            and design.qc_skip_hash is not None
+        )
+        skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+        if (
+            skip is None
+            or skip.qc_skip_id != design.qc_skip_id
+            or skip.decision_hash != design.qc_skip_hash
+        ):
+            raise ConflictError(
+                "qc_skip_binding_mismatch", "统计设计引用的 QC 跳过记录无效或已失配。"
+            )
+        source_run = self.repository.get_run(design.qc_source_run_id)
+        if source_run.project_id != request.project_id or source_run.state.value != "succeeded":
+            raise ConflictError(
+                "qc_skip_source_run_invalid", "QC 跳过来源运行不属于当前项目或尚未成功完成。"
+            )
+        source_plan = self.repository.get_plan(source_run.plan_revision_id)
+        if source_plan.manifest_hash != request.input_manifest_hash:
+            raise ConflictError(
+                "qc_skip_manifest_hash_mismatch", "QC 跳过来源运行的输入清单不匹配。"
+            )
+        return source_run.run_id
 
     def get_statistical_design(self, plan_revision_id: str) -> StatisticalDesignView:
         return self._statistics_view(self.repository.get_plan(plan_revision_id))
@@ -629,22 +659,40 @@ class StatisticsMixin(BaseServiceMixin):
         _validate_statistical_locks(self, plan, reasons)
         try:
             design_view = self._statistics_view(plan)
-            qc_review = self.repository.get_approved_qc_review(
-                design_view.design.qc_review_revision_id
-            )
-            if (
-                qc_review.project_id != plan.project_id
-                or qc_review.review.content_hash != design_view.design.qc_review_hash
-                or qc_review.review.input_manifest_hash != plan.manifest_hash
-            ):
-                reasons.append(
-                    {
-                        "code": "qc_lock_changed",
-                        "message": "approved QC review no longer matches the statistical design",
-                    }
+            design = design_view.design
+            if design.qc_source is StatisticalQcSource.APPROVED_REVIEW:
+                assert (
+                    design.qc_review_revision_id is not None and design.qc_review_hash is not None
                 )
-            assert_statistics_ready(qc_review.review, design_view.design.subject_order)
-            source_run = self.repository.get_run(qc_review.run_id)
+                qc_review = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+                if (
+                    qc_review.project_id != plan.project_id
+                    or qc_review.review.content_hash != design.qc_review_hash
+                    or qc_review.review.input_manifest_hash != plan.manifest_hash
+                ):
+                    reasons.append(
+                        {
+                            "code": "qc_lock_changed",
+                            "message": "approved QC review no longer matches design",
+                        }
+                    )
+                assert_statistics_ready(qc_review.review, design.subject_order)
+                source_run = self.repository.get_run(qc_review.run_id)
+            else:
+                assert design.qc_source_run_id and design.qc_skip_id and design.qc_skip_hash
+                skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+                if (
+                    skip is None
+                    or skip.qc_skip_id != design.qc_skip_id
+                    or skip.decision_hash != design.qc_skip_hash
+                ):
+                    reasons.append(
+                        {
+                            "code": "qc_skip_lock_changed",
+                            "message": "QC skip record no longer matches the statistical design",
+                        }
+                    )
+                source_run = self.repository.get_run(design.qc_source_run_id)
             source_plan = self.repository.get_plan(source_run.plan_revision_id)
             if source_plan.manifest_hash != plan.manifest_hash:
                 reasons.append(

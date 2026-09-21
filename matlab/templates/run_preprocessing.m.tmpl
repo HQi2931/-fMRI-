@@ -18,7 +18,10 @@ Cfg = select_base_cfg(loaded.Cfg, request.base_cfg_allowed_fields);
 Cfg = merge_struct(Cfg, request.overrides);
 Cfg.DataProcessDir = staging_directory;
 Cfg.ParallelWorkersNumber = 0;
-if isfield(Cfg, 'MaskFile') && ~strcmp(Cfg.MaskFile, 'Default')
+auto_mask_requested = isfield(Cfg, 'MaskFile') && strcmp(Cfg.MaskFile, '__DPABI_AUTO_MASK__');
+if auto_mask_requested
+    Cfg.MaskFile = 'Default';
+elseif isfield(Cfg, 'MaskFile') && ~strcmp(Cfg.MaskFile, 'Default')
     Cfg.MaskFile = fullfile(staging_directory, Cfg.MaskFile);
 end
 Cfg.SubjectID = cellstr(Cfg.SubjectID);
@@ -54,6 +57,14 @@ save(cfg_mat_path, 'Cfg');
 save(fullfile(run_directory, 'config', 'EffectiveCfg.mat'), 'EffectiveCfg');
 if ~isempty(Error)
     error('rsfmri:dpabi:DPARSFAFailed', 'DPARSFA_run returned an error result.');
+end
+if auto_mask_requested
+    assert(numel(Cfg.SubjectID) == 1, 'rsfmri:mask:AutoMaskSubjectCount', ...
+        'DPABI auto mask currently requires one subject per run.');
+    metric_cfg.MaskFile = fullfile(staging_directory, 'Masks', 'AutoMasks', ...
+        ['AutoMask_', Cfg.SubjectID{1}, '.nii']);
+    assert(isfile(metric_cfg.MaskFile), 'rsfmri:mask:AutoMaskMissing', ...
+        'DPABI did not produce the declared auto mask.');
 end
 checkpoints = struct([]);
 for index = 1:numel(Cfg.SubjectID)
@@ -102,7 +113,9 @@ for index = 1:numel(request.outputs)
     destination = fullfile(run_directory, output.relative_path);
     checkpoint = checkpoints(strcmp({checkpoints.subject_id}, output.subject_id));
     temporal = checkpoint.metadata;
-    if ~strcmp(output.metric, 'timeseries')
+    if strcmp(output.metric, 'brain_mask')
+        copyfile(metric_cfg.MaskFile, destination);
+    elseif ~strcmp(output.metric, 'timeseries')
         switch output.metric
             case 'alff', name = 'ALFFMap';
             case 'falff', name = 'fALFFMap';
@@ -132,18 +145,17 @@ for index = 1:numel(request.outputs)
         end
     end
     headers = spm_vol(destination);
-    for volume = 1:numel(headers)
-        values = spm_read_vols(headers(volume));
-        assert(all(isfinite(values), 'all'), 'rsfmri:output:NonfiniteImage', ...
-            'Output contains nonfinite voxel values.');
-    end
     if has_metrics, check_mask_grid(headers(1), metric_cfg.MaskFile); end
+    finite_evidence = validate_output_values(headers, output.metric, ...
+        has_metrics, metric_cfg.MaskFile);
     records(index).relative_path = output.relative_path;
     records(index).subject_id = output.subject_id;
     records(index).metric = output.metric;
     records(index).metadata = header_evidence(headers);
     records(index).tr_seconds = temporal.tr_seconds;
     records(index).volume_count = temporal.volume_count;
+    records(index).finite_fraction = finite_evidence.finite_fraction;
+    records(index).nonfinite_voxel_count = finite_evidence.nonfinite_voxel_count;
 end
 evidence = struct('outputs', records, 'checkpoints', checkpoints, ...
     'matlab', version, 'matlab_release', version('-release'), 'spm', spm('Ver'), ...
@@ -220,6 +232,44 @@ resolution = 1 / (tr * count);
 assert(high <= 1 / (2 * tr) && high >= resolution && ...
     (low == 0 || low >= resolution), 'rsfmri:metadata:FrequencyResolution', ...
     'Approved frequency band is incompatible with actual TR and volume count.');
+end
+
+function evidence = validate_output_values(headers, metric, has_metrics, mask_path)
+finite_count = 0;
+value_count = 0;
+nonfinite_count = 0;
+if strcmp(metric, 'timeseries')
+    for volume = 1:numel(headers)
+        values = spm_read_vols(headers(volume));
+        assert(~any(isinf(values), 'all') && any(isfinite(values), 'all'), ...
+            'rsfmri:output:InvalidTimeseries', ...
+            'Each time-series volume requires finite support and no infinite values.');
+        finite_count = finite_count + nnz(isfinite(values));
+        value_count = value_count + numel(values);
+        nonfinite_count = nonfinite_count + nnz(~isfinite(values));
+    end
+elseif strcmp(metric, 'brain_mask')
+    values = spm_read_vols(headers(1));
+    assert(all(isfinite(values), 'all') && any(values ~= 0, 'all'), ...
+        'rsfmri:output:InvalidMask', 'Auto mask must be finite and nonempty.');
+    finite_count = nnz(isfinite(values));
+    value_count = numel(values);
+else
+    assert(has_metrics, 'rsfmri:output:MetricWithoutMask', ...
+        'Metric output requires a declared mask.');
+    [values, ~, image_rpi] = y_ReadRPI(headers(1).fname, headers(1).n(1));
+    [mask_values, ~, mask_rpi] = y_ReadRPI(mask_path);
+    check_grid(image_rpi, mask_rpi);
+    inside = mask_values ~= 0;
+    assert(any(inside, 'all') && all(isfinite(values(inside))), ...
+        'rsfmri:output:NonfiniteMetricInMask', ...
+        'Metric output contains nonfinite values inside the approved mask.');
+    finite_count = nnz(isfinite(values));
+    value_count = numel(values);
+    nonfinite_count = nnz(~isfinite(values));
+end
+evidence = struct('finite_fraction', finite_count / value_count, ...
+    'nonfinite_voxel_count', nonfinite_count);
 end
 
 function selected = select_base_cfg(source, allowed_fields)

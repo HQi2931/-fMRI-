@@ -20,7 +20,13 @@ from neuroagent.domain.fmri import (
     residual_degrees_of_freedom,
     validate_correction_for_design,
 )
-from neuroagent.domain.fmri.qc import QcCheck, QcReviewRevision, QcSeverity, assert_statistics_ready
+from neuroagent.domain.fmri.qc import (
+    QcCheck,
+    QcReviewRevision,
+    QcReviewScope,
+    QcSeverity,
+    assert_statistics_ready,
+)
 
 
 def covariate(name: str, values: tuple[float, ...]) -> CovariateColumn:
@@ -210,6 +216,33 @@ def test_statistics_require_exact_approved_qc_order() -> None:
     assert_statistics_ready(review, one_sample().subject_order)
     with pytest.raises(ValueError, match="frozen QC inclusion order"):
         assert_statistics_ready(review, tuple(reversed(one_sample().subject_order)))
+
+
+def test_head_motion_only_qc_cannot_enter_statistics() -> None:
+    review = QcReviewRevision(
+        review_revision_id="qc-head-motion",
+        review_scope=QcReviewScope.HEAD_MOTION,
+        input_manifest_hash="a" * 64,
+        metric_artifact_ids=(),
+        checks=(
+            QcCheck(
+                code="HEAD_MOTION_INCLUDED_SUBJECTS_PASS",
+                severity=QcSeverity.BLOCKING,
+                passed=True,
+                evidence_artifact_ids=("qc-head-motion-report",),
+                message="subjects pass",
+            ),
+        ),
+        included_subject_ids=("sub-01", "sub-02", "sub-03"),
+        excluded_subject_ids=(),
+        exclusion_reasons=(),
+        approved=True,
+        approved_by="researcher",
+        approval_reason="head-motion reviewed",
+        content_hash="c" * 64,
+    )
+    with pytest.raises(ValueError, match="pre-statistics QC"):
+        assert_statistics_ready(review, one_sample().subject_order)
 
 
 def test_t_test_helpers_reject_noncanonical_contrast() -> None:

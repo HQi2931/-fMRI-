@@ -9,7 +9,6 @@ from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.contracts import (
-    ConversationAction,
     ConversationContextView,
     ConversationCreate,
     ConversationMode,
@@ -184,18 +183,13 @@ class ConversationMixin(BaseServiceMixin):
                     "context_input_too_large", "当前消息超过所选模型的上下文预算。"
                 ) from exc
 
-            if request.action is ConversationAction.AUTO:
-                action_result = await self.route_work_card(  # type: ignore[attr-defined]
-                    conversation, request
-                )
-            else:
-                action_result = self.conversation_work.execute(
-                    request,
-                    workspace_path=workspace_path,
-                    active_run_id=active_run_id,
-                    project_id=project_id,
-                    idempotency_key=idempotency_key,
-                )
+            action_result = self.conversation_work.execute(
+                request,
+                workspace_path=workspace_path,
+                active_run_id=active_run_id,
+                project_id=project_id,
+                idempotency_key=idempotency_key,
+            )
             model_metadata: dict[str, Any] | None = None
             return (
                 conversation.version,

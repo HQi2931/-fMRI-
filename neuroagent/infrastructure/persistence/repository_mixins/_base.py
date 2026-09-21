@@ -180,3 +180,13 @@ class RepositoryBaseMixin(ABC):
         run: WorkflowRunRow,
         artifacts: tuple[dict[str, Any], ...],
     ) -> list[ArtifactRow]: ...
+
+    @abstractmethod
+    def _auto_create_head_motion_qc_review_in_session(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        registered_rows: list[ArtifactRow],
+    ) -> QcReviewView | None: ...

@@ -50,6 +50,21 @@ describe("API client", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({ expected_version: 3 });
   });
 
+  it("posts an explicit QC skip decision", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ qc_skip_id: "skip-1" }), { status: 201 }),
+    );
+    await api.skipQc("run-1", {
+      expected_run_version: 3,
+      actor: "local-user",
+      reason: "Proceed without QC.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs/run-1/qc-skip",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("reuses one logical mutation key after an indeterminate network failure", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -237,6 +252,7 @@ describe("API client", () => {
     await api.cancelRun("r", {} as never);
     await api.retryRun("r", {} as never);
     await api.artifacts("r");
+    await api.createHeadMotionQc("r", {} as never);
     await api.createQcReview({} as never);
     await api.qcReview("q");
     await api.approveQcReview("q", {} as never);

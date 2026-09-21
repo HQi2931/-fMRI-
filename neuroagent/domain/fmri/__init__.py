@@ -10,6 +10,7 @@ from neuroagent.domain.fmri.artifacts import (
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
     MetricKind,
+    MetricMaskSource,
     ParameterProvenance,
     ParameterSource,
     RehoParameters,
@@ -45,7 +46,15 @@ from neuroagent.domain.fmri.preprocessing import (
     TissueRegressor,
     TissueRegressorMethod,
 )
-from neuroagent.domain.fmri.qc import QcCheck, QcReviewRevision, QcSeverity
+from neuroagent.domain.fmri.qc import (
+    HeadMotionQcCriteria,
+    HeadMotionQcReport,
+    QcCheck,
+    QcReviewRevision,
+    QcReviewScope,
+    QcSeverity,
+    SubjectHeadMotionQcResult,
+)
 from neuroagent.domain.fmri.results import (
     ClusterRecord,
     RegisteredArtifactMetadata,
@@ -93,8 +102,11 @@ __all__ = [
     "GrfCorrection",
     "GrfSmoothnessMode",
     "HeadMotionModel",
+    "HeadMotionQcCriteria",
+    "HeadMotionQcReport",
     "MetricArtifactExpectation",
     "MetricKind",
+    "MetricMaskSource",
     "MetricScaling",
     "MissingValuePolicy",
     "MotionCensoringParameters",
@@ -108,6 +120,7 @@ __all__ = [
     "PreprocessingParameters",
     "QcCheck",
     "QcReviewRevision",
+    "QcReviewScope",
     "QcSeverity",
     "RealignmentOptionsSource",
     "RealignmentParameters",
@@ -126,6 +139,7 @@ __all__ = [
     "StatisticalResultManifest",
     "StatisticalResultMode",
     "StatisticalTest",
+    "SubjectHeadMotionQcResult",
     "Tail",
     "TemporalFilterTiming",
     "TemporalFilteringParameters",

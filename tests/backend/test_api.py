@@ -478,11 +478,9 @@ def test_work_conversation_plan_request_waits_for_explicit_scientific_parameters
 
     assert response.status_code == 201
     body = response.json()
-    assert body["tool_call"] is None
-    card = body["assistant_message"]["payload"]["work_cards"][0]
-    assert card["kind"] == "plan"
-    assert card["allowed_operations"] == ["saveDraft", "resolveSkillPlan", "approvePlan"]
-    assert "填写和确认" in body["assistant_message"]["content"]
+    assert body["tool_call"]["status"] == "awaiting_confirmation"
+    assert "科研参数" in body["assistant_message"]["content"]
+    assert "work_cards" not in body["assistant_message"]["payload"]
 
 
 def test_work_conversation_routes_qc_and_statistical_result_queries(
@@ -507,14 +505,15 @@ def test_work_conversation_routes_qc_and_statistical_result_queries(
         )
 
     assert qc.status_code == 201
-    assert qc.json()["tool_call"] is None
-    assert qc.json()["assistant_message"]["payload"]["work_cards"][0]["kind"] == "qc"
+    assert qc.json()["tool_call"]["status"] == "awaiting_confirmation"
+    assert "QC review" in qc.json()["assistant_message"]["content"]
     assert results.status_code == 201
-    assert results.json()["tool_call"] is None
-    assert results.json()["assistant_message"]["payload"]["work_cards"][0]["kind"] == "statistics"
+    assert results.json()["tool_call"]["status"] == "succeeded"
+    assert results.json()["assistant_message"]["payload"]["statistical_results"] == []
+    assert "work_cards" not in results.json()["assistant_message"]["payload"]
 
 
-def test_work_capability_catalog_clarifies_unknown_requests_and_routes_settings(
+def test_removed_work_card_endpoints_are_not_exposed(
     service: NeuroAgentService,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
@@ -529,260 +528,57 @@ def test_work_capability_catalog_clarifies_unknown_requests_and_routes_settings(
             json={"content": "帮我处理一下"},
             headers={"Idempotency-Key": "work-catalog-clarify"},
         )
-        settings = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
-            json={"content": "配置环境和模型"},
-            headers={"Idempotency-Key": "work-catalog-settings"},
-        )
-
-    assert capabilities.status_code == 200
-    assert {item["kind"] for item in capabilities.json()} == {
-        "project",
-        "data",
-        "plan",
-        "runs",
-        "qc",
-        "statistics",
-        "analysis",
-        "settings",
-    }
-    assert unclear.status_code == 201
-    assert unclear.json()["assistant_message"]["payload"]["route_intent"] == "clarify"
-    assert unclear.json()["assistant_message"]["payload"]["work_cards"] == []
-    assert settings.status_code == 201
-    settings_card = settings.json()["assistant_message"]["payload"]["work_cards"][0]
-    assert settings_card["kind"] == "settings"
-    assert settings_card["allowed_operations"] == ["saveDraft"]
-
-
-def test_work_card_draft_is_versioned_and_restored_without_extra_messages(
-    service: NeuroAgentService,
-) -> None:
-    with TestClient(create_app(service=service)) as client:
-        conversation = client.post(
-            "/api/v1/conversations",
-            json={"mode": "work"},
-            headers={"Idempotency-Key": "card-draft-conversation"},
-        ).json()
-        routed = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
-            json={"content": "准备数据登记", "card_kind": "data"},
-            headers={"Idempotency-Key": "card-draft-route"},
-        ).json()
-        card = routed["assistant_message"]["payload"]["work_cards"][0]
-        message_count = len(routed["conversation"]["messages"])
-        saved = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{card['card_id']}/actions",
-            json={
-                "expected_version": 1,
-                "operation": "saveDraft",
-                "args": [{"projectName": "研究 A"}],
-            },
-            headers={"Idempotency-Key": "card-draft-save"},
-        )
-        stale = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{card['card_id']}/actions",
-            json={
-                "expected_version": 1,
-                "operation": "saveDraft",
-                "args": [{"projectName": "过期"}],
-            },
-            headers={"Idempotency-Key": "card-draft-stale"},
-        )
-
-    assert saved.status_code == 200, saved.text
-    assert saved.json()["card"]["version"] == 2
-    assert saved.json()["card"]["draft"] == {"projectName": "研究 A"}
-    assert len(saved.json()["conversation"]["messages"]) == message_count
-    assert stale.status_code == 409
-    assert stale.json()["error"]["code"] == "work_card_stale"
-
-
-def test_work_card_executes_registered_service_and_binds_created_project(
-    service: NeuroAgentService, source_root: Path, work_root: Path
-) -> None:
-    with TestClient(create_app(service=service)) as client:
-        conversation = client.post(
-            "/api/v1/conversations",
-            json={"mode": "work"},
-            headers={"Idempotency-Key": "card-project-conversation"},
-        ).json()
-        routed = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
-            json={"content": "登记数据", "card_kind": "data"},
-            headers={"Idempotency-Key": "card-project-route"},
-        ).json()
-        card = routed["assistant_message"]["payload"]["work_cards"][0]
-        created = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{card['card_id']}/actions",
-            json={
-                "expected_version": 1,
-                "operation": "createProject",
-                "args": [
-                    {
-                        "name": "卡片项目",
-                        "source_roots": [str(source_root)],
-                        "work_root": str(work_root / "card-project"),
-                    }
-                ],
-            },
-            headers={"Idempotency-Key": "card-project-create"},
-        )
-        duplicate = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{card['card_id']}/actions",
-            json={
-                "expected_version": 1,
-                "operation": "createProject",
-                "args": [
-                    {
-                        "name": "卡片项目",
-                        "source_roots": [str(source_root)],
-                        "work_root": str(work_root / "card-project"),
-                    }
-                ],
-            },
-            headers={"Idempotency-Key": "card-project-create"},
-        )
-
-    assert created.status_code == 200, created.text
-    body = created.json()
-    assert body["result"]["name"] == "卡片项目"
-    assert body["card"]["bindings"]["project_id"] == body["result"]["project_id"]
-    assert body["conversation"]["project_id"] == body["result"]["project_id"]
-    assert duplicate.status_code == 200
-    assert duplicate.json()["result"]["project_id"] == body["result"]["project_id"]
-
-
-def test_work_card_selection_dataset_binding_and_failure_guards(
-    service: NeuroAgentService, source_root: Path, work_root: Path
-) -> None:
-    first = make_project(service, source_root, work_root / "first", key="card-guard-first")
-    second = make_project(service, source_root, work_root / "second", key="card-guard-second")
-    dataset_body = {
-        "name": "卡片数据集",
-        "source_path": str(source_root),
-        "expected_project_version": second.version,
-    }
-    with TestClient(create_app(service=service)) as client:
-        conversation = client.post(
-            "/api/v1/conversations",
-            json={"mode": "work", "project_id": first.project_id},
-            headers={"Idempotency-Key": "card-guard-conversation"},
-        ).json()
-        project_turn = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
-            json={"content": "选择项目", "card_kind": "project"},
-            headers={"Idempotency-Key": "card-guard-project-route"},
-        ).json()
-        project_card = project_turn["assistant_message"]["payload"]["work_cards"][0]
-        selected = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{project_card['card_id']}/actions",
-            json={"expected_version": 1, "operation": "selectProject", "args": [second.project_id]},
-            headers={"Idempotency-Key": "card-guard-select"},
-        )
-        rejected_operation = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{project_card['card_id']}/actions",
-            json={"expected_version": 2, "operation": "createRun", "args": [{}]},
-            headers={"Idempotency-Key": "card-guard-rejected-operation"},
-        )
-        invalid_selection = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{project_card['card_id']}/actions",
-            json={"expected_version": 2, "operation": "selectProject", "args": [7]},
-            headers={"Idempotency-Key": "card-guard-invalid-selection"},
-        )
-        missing_card = client.post(
+        card_action = client.post(
             f"/api/v1/conversations/{conversation['conversation_id']}/cards/missing/actions",
             json={"expected_version": 1, "operation": "saveDraft", "args": [{}]},
-            headers={"Idempotency-Key": "card-guard-missing"},
-        )
-        data_turn = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
-            json={"content": "登记数据", "card_kind": "data"},
-            headers={"Idempotency-Key": "card-guard-data-route"},
-        ).json()
-        data_card = data_turn["assistant_message"]["payload"]["work_cards"][0]
-        dataset = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={
-                "expected_version": 1,
-                "operation": "createDataset",
-                "args": [second.project_id, dataset_body],
-            },
-            headers={"Idempotency-Key": "card-guard-dataset"},
-        )
-        invalid_draft = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={"expected_version": 2, "operation": "saveDraft", "args": ["invalid"]},
-            headers={"Idempotency-Key": "card-guard-invalid-draft"},
-        )
-        oversized_draft = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={
-                "expected_version": 2,
-                "operation": "saveDraft",
-                "args": [{"value": "x" * 100_001}],
-            },
-            headers={"Idempotency-Key": "card-guard-large-draft"},
-        )
-        wrong_count = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={"expected_version": 2, "operation": "createDataset", "args": []},
-            headers={"Idempotency-Key": "card-guard-wrong-count"},
-        )
-        invalid_schema = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={
-                "expected_version": 2,
-                "operation": "createDataset",
-                "args": [second.project_id, {}],
-            },
-            headers={"Idempotency-Key": "card-guard-invalid-schema"},
-        )
-        invalid_target = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={"expected_version": 2, "operation": "createDataset", "args": [7, dataset_body]},
-            headers={"Idempotency-Key": "card-guard-invalid-target"},
-        )
-        cross_project = client.post(
-            f"/api/v1/conversations/{conversation['conversation_id']}/cards/{data_card['card_id']}/actions",
-            json={
-                "expected_version": 2,
-                "operation": "createDataset",
-                "args": [first.project_id, dataset_body],
-            },
-            headers={"Idempotency-Key": "card-guard-cross-project"},
-        )
-        chat = client.post(
-            "/api/v1/conversations",
-            json={"mode": "chat"},
-            headers={"Idempotency-Key": "card-guard-chat"},
-        ).json()
-        wrong_mode = client.post(
-            f"/api/v1/conversations/{chat['conversation_id']}/cards/missing/actions",
-            json={"expected_version": 1, "operation": "saveDraft", "args": [{}]},
-            headers={"Idempotency-Key": "card-guard-wrong-mode"},
+            headers={"Idempotency-Key": "removed-card-action"},
         )
 
-    assert selected.status_code == 200
-    assert selected.json()["conversation"]["project_id"] == second.project_id
-    assert rejected_operation.status_code == 422
-    assert rejected_operation.json()["error"]["code"] == "work_card_operation_rejected"
-    assert invalid_selection.status_code == 422
-    assert invalid_selection.json()["error"]["code"] == "invalid_card_arguments"
-    assert missing_card.status_code == 422
-    assert missing_card.json()["error"]["code"] == "work_card_not_found"
-    assert dataset.status_code == 200
-    assert (
-        dataset.json()["card"]["bindings"]["dataset_id"] == dataset.json()["result"]["dataset_id"]
-    )
-    assert invalid_draft.json()["error"]["code"] == "invalid_card_draft"
-    assert oversized_draft.json()["error"]["code"] == "card_draft_too_large"
-    assert wrong_count.json()["error"]["code"] == "invalid_card_arguments"
-    assert invalid_schema.json()["error"]["code"] == "invalid_card_arguments"
-    assert invalid_target.json()["error"]["code"] == "invalid_card_target"
-    assert cross_project.status_code == 409
-    assert cross_project.json()["error"]["code"] == "work_card_cross_project"
-    assert wrong_mode.json()["error"]["code"] == "work_mode_required"
+    assert capabilities.status_code == 404
+    assert card_action.status_code == 404
+    assert unclear.status_code == 201
+    assert "工作要求" in unclear.json()["assistant_message"]["content"]
+    assert "work_cards" not in unclear.json()["assistant_message"]["payload"]
+
+
+def test_work_conversation_naturally_prepares_demo_alff_plan_without_cards(
+    service: NeuroAgentService,
+    source_root: Path,
+) -> None:
+    subject = source_root / "FunImg" / "Sub_001"
+    subject.mkdir(parents=True)
+    (subject / "rest.nii").write_bytes((348).to_bytes(4, "little") + b"\0" * 344)
+    (subject / "rest.json").write_text('{"RepetitionTime":2.0}', encoding="utf-8")
+
+    with TestClient(create_app(service=service)) as client:
+        conversation = client.post(
+            "/api/v1/conversations",
+            json={"mode": "work", "workspace_path": str(source_root)},
+            headers={"Idempotency-Key": "demo-alff-conversation"},
+        ).json()
+        response = client.post(
+            f"/api/v1/conversations/{conversation['conversation_id']}/turns",
+            json={
+                "content": "使用当前 DemoData 的 Sub_001 完成 ALFF 预处理, 先准备并展示方案",
+                "workspace_path": str(source_root),
+            },
+            headers={"Idempotency-Key": "demo-alff-prepare"},
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    payload = body["assistant_message"]["payload"]
+    plan = payload["plan_revision"]
+    skill_plan = payload["skill_plan"]
+    parameters = dict(skill_plan["resolved_parameters"])
+    assert body["tool_call"]["tool_name"] == "prepare_demo_alff"
+    assert plan["state"] == "awaiting_approval"
+    assert parameters["alff_falff"]["requested_metrics"] == ["alff"]
+    assert parameters["alff_falff"]["mask_source"] == "dpabi_auto"
+    assert parameters["alff_falff"]["mask_artifact_id"] is None
+    assert parameters["preprocessing"]["tr_seconds"] == 2.0
+    assert parameters["preprocessing"]["expected_time_points"] == 234
+    assert "work_cards" not in payload
 
 
 def test_work_conversation_requires_approved_plan_and_run_confirmation(
@@ -834,6 +630,7 @@ def test_work_conversation_rejects_non_preprocessing_plan_as_a_recorded_tool_fai
                 "plan_revision_id": plan.plan_revision_id,
                 "expected_plan_hash": plan.plan_hash,
                 "real_execution_confirmed": True,
+                "qc_mode": "require",
             },
             headers={"Idempotency-Key": "invalid-plan-start"},
         )
@@ -963,6 +760,7 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
                     "plan_revision_id": plan.plan_revision_id,
                     "expected_plan_hash": plan.plan_hash,
                     "real_execution_confirmed": True,
+                    "qc_mode": "require",
                 },
                 headers={"Idempotency-Key": "conversation-run-start"},
             )

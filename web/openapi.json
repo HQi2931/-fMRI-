@@ -129,9 +129,19 @@
             "$ref": "#/components/schemas/FrequencyBand"
           },
           "mask_artifact_id": {
-            "minLength": 1,
-            "title": "Mask Artifact Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Artifact Id"
+          },
+          "mask_source": {
+            "$ref": "#/components/schemas/MetricMaskSource",
+            "default": "registered_artifact"
           },
           "provenance": {
             "items": {
@@ -193,7 +203,6 @@
           "frequency_band",
           "requested_metrics",
           "requested_scalings",
-          "mask_artifact_id",
           "filter_timing",
           "result_smoothing",
           "result_smoothing_fwhm_mm",
@@ -812,8 +821,11 @@
           "prepare_preprocessing_plan",
           "preview_preprocessing_run",
           "start_preprocessing",
+          "create_head_motion_qc",
           "get_progress",
           "get_qc_status",
+          "approve_qc_review",
+          "skip_qc",
           "get_statistical_results"
         ],
         "title": "ConversationAction",
@@ -1051,27 +1063,6 @@
             "title": "Allow Remote Search",
             "type": "boolean"
           },
-          "card_kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "project",
-                  "data",
-                  "plan",
-                  "runs",
-                  "qc",
-                  "statistics",
-                  "analysis",
-                  "settings"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Card Kind"
-          },
           "content": {
             "maxLength": 8000,
             "minLength": 1,
@@ -1157,6 +1148,16 @@
               }
             ],
             "title": "Project Id"
+          },
+          "qc_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QcExecutionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "qc_review_id": {
             "anyOf": [
@@ -2482,6 +2483,56 @@
         "title": "HeadMotionModel",
         "type": "integer"
       },
+      "HeadMotionQcCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "criteria": {
+            "$ref": "#/components/schemas/HeadMotionQcCriteria"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_run_version"
+        ],
+        "title": "HeadMotionQcCreate",
+        "type": "object"
+      },
+      "HeadMotionQcCriteria": {
+        "additionalProperties": false,
+        "properties": {
+          "fd_power_gt_0_5_fraction": {
+            "default": 0.2,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Fd Power Gt 0 5 Fraction",
+            "type": "number"
+          },
+          "max_rotation_deg": {
+            "default": 2.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Max Rotation Deg",
+            "type": "number"
+          },
+          "max_translation_mm": {
+            "default": 2.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Max Translation Mm",
+            "type": "number"
+          },
+          "mean_fd_power": {
+            "default": 0.2,
+            "exclusiveMinimum": 0.0,
+            "title": "Mean Fd Power",
+            "type": "number"
+          }
+        },
+        "title": "HeadMotionQcCriteria",
+        "type": "object"
+      },
       "HealthView": {
         "additionalProperties": false,
         "properties": {
@@ -2888,6 +2939,15 @@
           "reho"
         ],
         "title": "MetricKind",
+        "type": "string"
+      },
+      "MetricMaskSource": {
+        "description": "Reviewed source for the metric brain mask.",
+        "enum": [
+          "registered_artifact",
+          "dpabi_auto"
+        ],
+        "title": "MetricMaskSource",
         "type": "string"
       },
       "MetricScaling": {
@@ -4485,6 +4545,15 @@
         "title": "QcCheck",
         "type": "object"
       },
+      "QcExecutionMode": {
+        "description": "User's explicit choice for the post-processing QC gate.",
+        "enum": [
+          "require",
+          "skip"
+        ],
+        "title": "QcExecutionMode",
+        "type": "string"
+      },
       "QcReviewApprove": {
         "additionalProperties": false,
         "properties": {
@@ -4579,12 +4648,16 @@
             "type": "array"
           },
           "metric_artifact_ids": {
+            "default": [],
             "items": {
               "type": "string"
             },
-            "minItems": 1,
             "title": "Metric Artifact Ids",
             "type": "array"
+          },
+          "review_scope": {
+            "$ref": "#/components/schemas/QcReviewScope",
+            "default": "pre_statistics"
           },
           "run_id": {
             "title": "Run Id",
@@ -4594,7 +4667,6 @@
         "required": [
           "run_id",
           "expected_run_version",
-          "metric_artifact_ids",
           "checks",
           "included_subject_ids",
           "excluded_subject_ids",
@@ -4693,6 +4765,10 @@
             "minLength": 1,
             "title": "Review Revision Id",
             "type": "string"
+          },
+          "review_scope": {
+            "$ref": "#/components/schemas/QcReviewScope",
+            "default": "pre_statistics"
           }
         },
         "required": [
@@ -4710,6 +4786,14 @@
         ],
         "title": "QcReviewRevision",
         "type": "object"
+      },
+      "QcReviewScope": {
+        "enum": [
+          "head_motion",
+          "pre_statistics"
+        ],
+        "title": "QcReviewScope",
+        "type": "string"
       },
       "QcReviewState": {
         "enum": [
@@ -4777,6 +4861,98 @@
         ],
         "title": "QcSeverity",
         "type": "string"
+      },
+      "QcSkipCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_run_version",
+          "actor",
+          "reason"
+        ],
+        "title": "QcSkipCreate",
+        "type": "object"
+      },
+      "QcSkipView": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Decision Hash",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "qc_review_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Review Revision Id"
+          },
+          "qc_skip_id": {
+            "title": "Qc Skip Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_version": {
+            "minimum": 1.0,
+            "title": "Run Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "qc_skip_id",
+          "run_id",
+          "project_id",
+          "run_version",
+          "decision_hash",
+          "actor",
+          "reason",
+          "created_at"
+        ],
+        "title": "QcSkipView",
+        "type": "object"
       },
       "RealignmentOptionsSource": {
         "enum": [
@@ -4847,9 +5023,19 @@
             "title": "Global Result Smoothing Fwhm Mm"
           },
           "mask_artifact_id": {
-            "minLength": 1,
-            "title": "Mask Artifact Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Artifact Id"
+          },
+          "mask_source": {
+            "$ref": "#/components/schemas/MetricMaskSource",
+            "default": "registered_artifact"
           },
           "provenance": {
             "items": {
@@ -4925,7 +5111,6 @@
           "temporal_filter_band",
           "temporal_filter_add_mean_back",
           "cluster_voxels",
-          "mask_artifact_id",
           "requested_scalings",
           "smooth_reho",
           "smooth_reho_fwhm_mm",
@@ -5408,6 +5593,10 @@
             "title": "Project Id",
             "type": "string"
           },
+          "qc_mode": {
+            "$ref": "#/components/schemas/QcExecutionMode",
+            "default": "require"
+          },
           "real_execution_confirmed": {
             "default": false,
             "title": "Real Execution Confirmed",
@@ -5535,6 +5724,15 @@
           },
           "project_id": {
             "title": "Project Id",
+            "type": "string"
+          },
+          "qc_mode": {
+            "$ref": "#/components/schemas/QcExecutionMode",
+            "default": "require"
+          },
+          "qc_status": {
+            "default": "pending",
+            "title": "Qc Status",
             "type": "string"
           },
           "run_id": {
@@ -6695,15 +6893,70 @@
             "title": "One Sample Baseline"
           },
           "qc_review_hash": {
-            "maxLength": 64,
-            "minLength": 64,
-            "title": "Qc Review Hash",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Review Hash"
           },
           "qc_review_revision_id": {
-            "minLength": 1,
-            "title": "Qc Review Revision Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Review Revision Id"
+          },
+          "qc_skip_hash": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Skip Hash"
+          },
+          "qc_skip_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Skip Id"
+          },
+          "qc_source": {
+            "$ref": "#/components/schemas/StatisticalQcSource",
+            "default": "approved_review"
+          },
+          "qc_source_run_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Source Run Id"
           },
           "revision_id": {
             "minLength": 1,
@@ -6736,9 +6989,7 @@
           "one_sample_baseline",
           "mask_artifact_id",
           "tail",
-          "missing_value_policy",
-          "qc_review_revision_id",
-          "qc_review_hash"
+          "missing_value_policy"
         ],
         "title": "StatisticalDesignRevision",
         "type": "object"
@@ -6809,6 +7060,14 @@
           "R"
         ],
         "title": "StatisticalMapType",
+        "type": "string"
+      },
+      "StatisticalQcSource": {
+        "enum": [
+          "approved_review",
+          "skipped"
+        ],
+        "title": "StatisticalQcSource",
         "type": "string"
       },
       "StatisticalResultDetailView": {
@@ -7475,248 +7734,6 @@
           "severity"
         ],
         "title": "ValidationIssue",
-        "type": "object"
-      },
-      "WorkCard": {
-        "additionalProperties": false,
-        "properties": {
-          "allowed_operations": {
-            "items": {
-              "enum": [
-                "saveDraft",
-                "selectProject",
-                "createProject",
-                "createDataset",
-                "inspectDataset",
-                "importDemographics",
-                "createSplit",
-                "resolveSkillPlan",
-                "approvePlan",
-                "createRun",
-                "cancelRun",
-                "retryRun",
-                "diagnoseRun",
-                "createQcReview",
-                "approveQcReview",
-                "createStatisticalDesign",
-                "validateStatisticalDesign",
-                "createStatisticsRun",
-                "inspectMlTable",
-                "createMlTemplate",
-                "validateRoiTable",
-                "localizeClusters",
-                "answerRsFmriQuestion",
-                "organizationPreview"
-              ],
-              "type": "string"
-            },
-            "title": "Allowed Operations",
-            "type": "array"
-          },
-          "bindings": {
-            "$ref": "#/components/schemas/WorkCardBindings"
-          },
-          "card_id": {
-            "title": "Card Id",
-            "type": "string"
-          },
-          "draft": {
-            "additionalProperties": true,
-            "title": "Draft",
-            "type": "object"
-          },
-          "draft_ref": {
-            "title": "Draft Ref",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "project",
-              "data",
-              "plan",
-              "runs",
-              "qc",
-              "statistics",
-              "analysis",
-              "settings"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "version": {
-            "default": 1,
-            "minimum": 1.0,
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "card_id",
-          "kind",
-          "title",
-          "draft_ref"
-        ],
-        "title": "WorkCard",
-        "type": "object"
-      },
-      "WorkCardAction": {
-        "additionalProperties": false,
-        "properties": {
-          "args": {
-            "items": {},
-            "maxItems": 2,
-            "title": "Args",
-            "type": "array"
-          },
-          "expected_version": {
-            "minimum": 1.0,
-            "title": "Expected Version",
-            "type": "integer"
-          },
-          "operation": {
-            "enum": [
-              "saveDraft",
-              "selectProject",
-              "createProject",
-              "createDataset",
-              "inspectDataset",
-              "importDemographics",
-              "createSplit",
-              "resolveSkillPlan",
-              "approvePlan",
-              "createRun",
-              "cancelRun",
-              "retryRun",
-              "diagnoseRun",
-              "createQcReview",
-              "approveQcReview",
-              "createStatisticalDesign",
-              "validateStatisticalDesign",
-              "createStatisticsRun",
-              "inspectMlTable",
-              "createMlTemplate",
-              "validateRoiTable",
-              "localizeClusters",
-              "answerRsFmriQuestion",
-              "organizationPreview"
-            ],
-            "title": "Operation",
-            "type": "string"
-          }
-        },
-        "required": [
-          "expected_version",
-          "operation"
-        ],
-        "title": "WorkCardAction",
-        "type": "object"
-      },
-      "WorkCardActionView": {
-        "additionalProperties": false,
-        "properties": {
-          "card": {
-            "$ref": "#/components/schemas/WorkCard"
-          },
-          "conversation": {
-            "$ref": "#/components/schemas/ConversationView"
-          },
-          "result": {
-            "title": "Result"
-          }
-        },
-        "required": [
-          "card",
-          "conversation"
-        ],
-        "title": "WorkCardActionView",
-        "type": "object"
-      },
-      "WorkCardBindings": {
-        "additionalProperties": false,
-        "properties": {
-          "dataset_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dataset Id"
-          },
-          "manifest_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Manifest Id"
-          },
-          "plan_revision_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan Revision Id"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id"
-          },
-          "qc_review_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Qc Review Id"
-          },
-          "run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Run Id"
-          },
-          "statistical_design_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Statistical Design Id"
-          }
-        },
-        "title": "WorkCardBindings",
         "type": "object"
       },
       "WorkflowState": {
@@ -8716,125 +8733,6 @@
         "tags": [
           "agent"
         ]
-      }
-    },
-    "/api/v1/conversations/{conversation_id}/cards/{card_id}/actions": {
-      "post": {
-        "operationId": "work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "conversation_id",
-            "required": true,
-            "schema": {
-              "title": "Conversation Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "card_id",
-            "required": true,
-            "schema": {
-              "title": "Card Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 8,
-              "title": "Idempotency-Key",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkCardAction"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkCardActionView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Bad Request"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "summary": "Work Card Action"
       }
     },
     "/api/v1/conversations/{conversation_id}/context": {
@@ -13596,6 +13494,233 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/head-motion-qc": {
+      "post": {
+        "operationId": "create_head_motion_qc_review_api_v1_runs__run_id__head_motion_qc_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeadMotionQcCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QcReviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Create Head Motion Qc Review",
+        "tags": [
+          "qc"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/qc-skip": {
+      "post": {
+        "operationId": "skip_qc_api_v1_runs__run_id__qc_skip_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QcSkipCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QcSkipView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Skip Qc",
+        "tags": [
+          "runs",
+          "qc"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/retry": {
       "post": {
         "operationId": "retry_run_api_v1_runs__run_id__retry_post",
@@ -14718,89 +14843,6 @@
         "tags": [
           "statistics"
         ]
-      }
-    },
-    "/api/v1/work/capabilities": {
-      "get": {
-        "operationId": "work_capabilities_api_v1_work_capabilities_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response Work Capabilities Api V1 Work Capabilities Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Bad Request"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "summary": "Work Capabilities"
       }
     },
     "/api/v1/workspaces/check": {

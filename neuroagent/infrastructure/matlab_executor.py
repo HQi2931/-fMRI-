@@ -18,8 +18,9 @@ from neuroagent.application.environment_lock import (
 from neuroagent.application.ports import ExecutionResult, RepositoryPort
 from neuroagent.application.settings import Settings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage, MetricScaling
-from neuroagent.domain.fmri.metrics import SmoothingTiming, TemporalFilterTiming
+from neuroagent.domain.fmri.metrics import MetricMaskSource, SmoothingTiming, TemporalFilterTiming
 from neuroagent.domain.fmri.preprocessing import NormalizationTiming
+from neuroagent.domain.fmri.qc import HeadMotionQcCriteria
 from neuroagent.domain.fmri.statistics import CorrectionSpec, StatisticalDesignRevision
 from neuroagent.execution.compiler import MatlabJobCompiler
 from neuroagent.execution.matlab import ControlledMatlabExecutor, MatlabTemplateRenderer
@@ -31,6 +32,7 @@ from neuroagent.execution.models import (
     PreprocessingJobPayload,
 )
 from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
+from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.skills.models import SkillPlan, stable_hash
 from neuroagent.tools.input_staging import (
@@ -179,7 +181,10 @@ class MatlabJobExecutor:
                     cfg = dict(compiled_payload.metric_projection.cfg)
                     cfg["StartingDirName"] = next(iter(stages))
                     mask_file = cfg.get("MaskFile")
-                    if isinstance(mask_file, str) and mask_file != "Default":
+                    if isinstance(mask_file, str) and mask_file not in {
+                        "Default",
+                        "__DPABI_AUTO_MASK__",
+                    }:
                         cfg["MaskFile"] = (
                             PurePosixPath(".neuroagent") / attempt.name / mask_file
                         ).as_posix()
@@ -254,6 +259,27 @@ class MatlabJobExecutor:
                 artifacts = self._preprocessing_lineage(
                     artifacts, compilation, result.rendered.run_directory
                 )
+                if str(run.qc_mode or "require") != "skip":
+                    try:
+                        artifacts = (
+                            *artifacts,
+                            *self._head_motion_qc_artifacts(
+                                compilation,
+                                result.rendered.run_directory,
+                                preprocessing_workspace=preprocessing_workspace,
+                                job_hash=result.job_hash,
+                            ),
+                        )
+                    except (ValueError, KeyError, OSError, TypeError) as exc:
+                        artifacts = (
+                            *artifacts,
+                            *self._head_motion_qc_failure_artifact(
+                                result.rendered.run_directory,
+                                job_hash=result.job_hash,
+                                plan_hash=compilation.spec.plan_hash,
+                                error_type=type(exc).__name__,
+                            ),
+                        )
             except (ValueError, KeyError, OSError, TypeError) as exc:
                 return ExecutionResult(
                     status="failed_terminal",
@@ -271,6 +297,93 @@ class MatlabJobExecutor:
                 "exit_code": result.exit_code,
             },
             artifacts=artifacts,
+        )
+
+    @staticmethod
+    def _head_motion_qc_artifacts(
+        compilation: PreprocessingCompilation,
+        root: Path,
+        *,
+        preprocessing_workspace: Path | None,
+        job_hash: str,
+    ) -> tuple[dict[str, Any], ...]:
+        if compilation.parameters is None or not compilation.parameters.realignment.enabled:
+            return ()
+        evidence = json.loads((root / "output/preprocessing-evidence.json").read_text())
+        rows = evidence["outputs"]
+        if isinstance(rows, dict):
+            rows = [rows]
+        expected_counts = {
+            str(row["subject_id"]): int(row["volume_count"])
+            for row in rows
+            if row.get("metric") == "timeseries"
+        }
+        realign_root = (
+            preprocessing_workspace if preprocessing_workspace is not None else root / "staging"
+        ) / "RealignParameter"
+        report = parse_dpabi_head_motion_qc(
+            realign_root,
+            input_manifest_hash=compilation.spec.input_manifest_hash,
+            subject_ids=tuple(subject.subject_id for subject in compilation.subjects),
+            criteria=HeadMotionQcCriteria(),
+            expected_volume_counts=expected_counts,
+        )
+        report_payload = report.model_dump(mode="json")
+        report_json = (
+            json.dumps(report_payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        )
+        relative_path = "output/qc/head-motion-qc.json"
+        output_path = root / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report_json, encoding="utf-8")
+        digest = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
+        return (
+            {
+                "artifact_type": "qc.head_motion_report",
+                "relative_path": relative_path,
+                "checksum": digest,
+                "size_bytes": len(report_json.encode("utf-8")),
+                "provenance": {
+                    "executor": "controlled_matlab",
+                    "job_hash": job_hash,
+                    "plan_hash": compilation.spec.plan_hash,
+                    "head_motion_qc": report_payload,
+                },
+            },
+        )
+
+    @staticmethod
+    def _head_motion_qc_failure_artifact(
+        root: Path,
+        *,
+        job_hash: str,
+        plan_hash: str,
+        error_type: str,
+    ) -> tuple[dict[str, Any], ...]:
+        payload = {
+            "status": "failed",
+            "reason": "head_motion_qc_parse_failed",
+            "error_type": error_type,
+        }
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        relative_path = "output/qc/head-motion-qc-failure.json"
+        output_path = root / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+        encoded = text.encode("utf-8")
+        return (
+            {
+                "artifact_type": "qc.head_motion_failure",
+                "relative_path": relative_path,
+                "checksum": hashlib.sha256(encoded).hexdigest(),
+                "size_bytes": len(encoded),
+                "provenance": {
+                    "executor": "controlled_matlab",
+                    "job_hash": job_hash,
+                    "plan_hash": plan_hash,
+                    "head_motion_qc_failure": payload,
+                },
+            },
         )
 
     @staticmethod
@@ -294,7 +407,10 @@ class MatlabJobExecutor:
         if not isinstance(spec.payload, PreprocessingJobPayload):
             return
         mask_file = spec.payload.metric_projection.cfg.get("MaskFile")
-        if not isinstance(mask_file, str) or mask_file == "Default":
+        if not isinstance(mask_file, str) or mask_file in {
+            "Default",
+            "__DPABI_AUTO_MASK__",
+        }:
             return
         bindings = [
             binding
@@ -369,7 +485,7 @@ class MatlabJobExecutor:
         masks = {
             str(parameters[name]["mask_artifact_id"])
             for name in ("alff_falff", "reho")
-            if name in parameters
+            if name in parameters and parameters[name].get("mask_artifact_id")
         }
         if len(masks) > 1:
             raise ValueError("combined metrics require one frozen mask")
@@ -454,8 +570,16 @@ class MatlabJobExecutor:
             metric_parameters = (
                 compilation.reho if metric == "reho" else compilation.alff or compilation.reho
             )
-            if metric_parameters is not None:
-                mask_id = metric_parameters.mask_artifact_id
+            if metric_parameters is not None and metric != "brain_mask":
+                if metric_parameters.mask_source is MetricMaskSource.REGISTERED_ARTIFACT:
+                    mask_id = metric_parameters.mask_artifact_id
+                else:
+                    generated_mask = (
+                        PurePosixPath("attempts")
+                        / root.name
+                        / f"output/{output.subject_id}/brain_mask.nii"
+                    ).as_posix()
+                    mask_id = f"generated-output:{generated_mask}"
                 # The fixed template compares actual output and staged mask grids.
                 # Persist the grid observed in this run, never a producer's opaque label.
                 mask_grid = grid
@@ -480,6 +604,7 @@ class MatlabJobExecutor:
                 smoothing = compilation.alff.result_smoothing_fwhm_mm
             kind = {
                 "timeseries": ArtifactKind.FUNCTIONAL_TIMESERIES,
+                "brain_mask": ArtifactKind.BRAIN_MASK,
                 "alff": ArtifactKind.ALFF_MAP,
                 "falff": ArtifactKind.FALFF_MAP,
                 "reho": ArtifactKind.REHO_MAP,
@@ -505,6 +630,7 @@ class MatlabJobExecutor:
                 source_producer_hash = source_lineage.producer_step_hash
             step_id = {
                 "timeseries": "verify_preprocessed_metadata",
+                "brain_mask": "calculate_alff_falff",
                 "alff": "calculate_alff_falff",
                 "falff": "calculate_alff_falff",
                 "reho": "calculate_reho",

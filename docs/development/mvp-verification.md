@@ -1,7 +1,7 @@
 # MVP 验证与已知限制
 
 状态：v0.1.0 发布验证记录
-更新日期：2026-09-06
+更新日期：2026-09-21
 
 ## 最终树必须通过的自动门禁
 
@@ -9,7 +9,7 @@
 
 - Python：Ruff 格式/规则、strict mypy、依赖审计、pytest 与不低于 85% 覆盖率。
 - Web：ESLint、TypeScript、Vitest 与不低于 80% 覆盖率、生产构建、Playwright Mock E2E 和依赖审计。
-- 科研契约：Skill schema、稳定计划哈希、DPABI 稳定参数字段快照、ALFF/fALFF 与 ReHo 顺序、Nyquist/频段/ReHo 邻域、受试者与协变量对齐、统计方向和 QC 门禁。
+- 科研契约：Skill schema、稳定计划哈希、DPABI 稳定参数字段快照、ALFF/fALFF 与 ReHo 顺序、Nyquist/频段/ReHo 邻域、受试者与协变量对齐、统计方向，以及可审计的 QC 选择。
 - 执行：SQLite 原子领取、租约心跳、失败/超时/取消/恢复、运行进程标记与原子恢复锁、带所有者和 Provider 等待心跳的请求幂等租约、固定 MATLAB 模板、Windows 空格路径、进程树终止、按 attempt 保留的大输出日志，以及仅登记本次执行新建或变化的非空普通文件（含 SHA-256/大小）。
 - Web 恢复：多项目 `localStorage` 指针切换、Plan/QC/统计冻结内容重载、待确认幂等 key 的 `sessionStorage` 恢复，以及基于 `after_event_id` 的事件续传。
 - 安全：源目录只读、工作目录边界、外发摘要去标识化、结构化模型输出、仓库敏感信息/科研二进制/大文件扫描。
@@ -22,7 +22,7 @@
 
 - 项目、数据集、只读扫描、manifest、人口学对齐和数据集划分。
 - Skill 解析/校验/编译、批准计划 `WorkflowFactory`/`ToolRuntime` DAG 排队、步骤事件与 Artifact 元数据登记。
-- 在测试中注册类型化指标 Artifact 后的 QC revision、人工审批和统计设计校验。
+- 在测试中注册类型化指标 Artifact 后的 QC revision、人工审批和统计设计校验；DPABI RealignParameter 头动证据可自动生成 QC 草稿。
 - 真实 SQLite、应用服务和 Mock Worker 组成的纯合成后端闭环：BIDS 扫描、ALFF Skill、审批、人工 QC、单样本 t + FDR、统计 Mock 与确定性 Markdown/JSON 报告。
 - 前端对上述流程的 Mock API 交互。
 
@@ -38,7 +38,7 @@
 4. 真实 MATLAB 统计运行按冻结设计生成未校正统计图、可选校正图、效应量图、簇表、日志和软件版本证据，并由应用层组装确定性报告；任一角色缺失、哈希漂移或设计不一致都会失败关闭。下述小型合成 smoke 已验证三类 t 检验及报告合同，不代表全部数据集或统计配置已验证。
 5. Artifact API 只提供元数据，不提供文件下载。
 6. Playwright 端到端测试使用 Mock API，不是真实 FastAPI—Worker—MATLAB 端到端运行。
-7. `matlab_preprocessing` 已从冻结 SkillPlan/manifest 编译 DPARSFA 输入和 typed JobSpec，实际读取产物元数据并登记 lineage。当前范围是单会话 4D 输入；metric-only 路径限单主体。OnResults normalization 与组合指标若需不同阶段掩膜，以及没有指标输出的纯预处理 OnResults 操作，当前合同明确拒绝。T1 分割和 DARTEL 在当前 DPARSFA 非交互入口仍可能调用 GUI，因此 headless 编译器失败关闭；EPI template normalization 要求先 realign 产生 mean image，仍未包含在本次真实 smoke 中。
+7. `matlab_preprocessing` 已从冻结 SkillPlan/manifest 编译 DPARSFA 输入和 typed JobSpec，实际读取产物元数据并登记 lineage。当前范围是单会话 4D 输入；metric-only 路径限单主体。启用 Realign 的运行成功后会解析 `RealignParameter` 并登记 `qc.head_motion_report`；有指标图时自动生成 `pre_statistics` QC 草稿，无指标时生成仅供头动筛选记录的 `head_motion` 草稿。OnResults normalization 与组合指标若需不同阶段掩膜，以及没有指标输出的纯预处理 OnResults 操作，当前合同明确拒绝。T1 分割和 DARTEL 在当前 DPARSFA 非交互入口仍可能调用 GUI，因此 headless 编译器失败关闭；EPI template normalization 要求先 realign 产生 mean image，仍未包含在本次真实 smoke 中。
 8. 指标输入与已验证掩膜两端都通过 DPABI `y_ReadRPI` 做一致的轴翻转规范化，再严格比较维度和物理网格；这一步不重采样，不接受物理空间不匹配的掩膜。新产物的网格签名从本次实际输出计算，不复用掩膜 Artifact 的自报标签。
 
 ## 2026-09-04 已执行的授权 smoke
@@ -52,6 +52,18 @@
 - Provider：`zhipu / glm-5.3-flash` 的一次真实轻量调用成功，未发送受试者信息；发送上下文哈希为 `efaaa8c1639d09562745f1c9ac78758265d357005825b84515e8fb71459460ea`。
 
 统计 opt-in 测试使用 `RSFMRI_RUN_MATLAB_STATISTICS_TESTS=1`；软件路径来自 `RSFMRI_MATLAB_EXECUTABLE`、`RSFMRI_SPM_DIR` 和 `RSFMRI_DPABI_DIR`。默认 CI 跳过真实 MATLAB 测试。以上结果不代替最终暂存树的质量门禁、多角色终审或远程 CI。
+
+## 2026-09-18 Work 对话真实 DemoData ALFF 冒烟
+
+本次由用户明确授权，仅使用仓库外 DemoData `Sub_001` 的独立可写副本。Work 对话自然语言创建项目、数据集、冻结 manifest 和待审批计划；用户复核参数后用精确确认语句批准并排队真实 MATLAB 作业。执行器记录为 `controlled_matlab`，Worker 最终将运行推进到 `qc_review`。
+
+- 参数：TR 2.0 秒、234 个时间点、dummy 0、33 层奇偶 Slice Timing（参考层 33）、Realign、0.01–0.08 Hz raw ALFF；协变量回归、标准化、去趋势、滤波、Scrubbing 与平滑关闭。
+- 实际步骤：DPARSFA 完成 Slice Timing、Realign 和自动掩膜，随后计算 ALFF。Docker Desktop 未运行的探测信息没有阻断 DPABI 自带的本地自动掩膜路径。
+- 产物：登记 `timeseries.nii`、`brain_mask.nii`、`raw_alff.nii`、`preprocessing-evidence.json` 和 MATLAB 日志。时序证据为 TR 2.0 秒、234 volume；脑掩膜和 ALFF 的非有限体素数为 0。ALFF Artifact SHA-256 为 `55bd1a3ac3ca1caf9e7e8998e1c87bb50508f756a81cfcd6b5b3a7c02d8fa1f9`。
+- 谱系：时序与 ALFF 都绑定本次生成并登记的脑掩膜 Artifact，网格签名一致；计划哈希为 `8087a71c59d4171a4be610c4930e3925093522564da663661ab73f9becb4c7d5`。
+- 只读性：运行前后原始 NIfTI 与 JSON 的 SHA-256 一致；实际运行目录、日志和大型 NIfTI 保留在本机工作区，不提交仓库。
+
+该冒烟只证明当前机器上的 Work→应用服务→Worker→MATLAB/DPABI→Artifact 登记闭环，以及此次参数组合能够生成 raw ALFF；不验证完整科研方案，也不把单受试者输出解释为科研结论。
 
 ## 人工或外部验证项
 

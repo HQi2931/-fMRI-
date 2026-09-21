@@ -7,6 +7,7 @@ from typing import Any
 
 from neuroagent.domain.fmri.metrics import (
     MetricKind,
+    MetricMaskSource,
     SmoothingTiming,
     TemporalFilterTiming,
     validate_alff_falff_input,
@@ -300,6 +301,11 @@ def _validate_preprocessing_checkpoint(request: Any) -> list[SkillValidationIssu
         if item is not None
     }
     if len(mask_ids) > 1:
+        issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
+    mask_sources = {item.mask_source for item in (alff, reho) if item is not None}
+    if len(mask_sources) > 1:
+        issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
+    if MetricMaskSource.DPABI_AUTO in mask_sources and not request.request_preprocessing:
         issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
     return issues
 

@@ -67,7 +67,7 @@ class VerifiedArtifact(FrozenExecutionModel):
 
 class PreprocessingOutput(FrozenExecutionModel):
     subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-    metric: str = Field(pattern=r"^(timeseries|alff|falff|reho)$")
+    metric: str = Field(pattern=r"^(timeseries|brain_mask|alff|falff|reho)$")
     scaling: str | None = None
     relative_path: str
 
