@@ -1,15 +1,20 @@
 # rs-fMRI Chat Mode Phase 1 实施报告
 
+- 状态：Implemented
+- 文档类型：Development
+- 维护者：backend_service_engineer
+- 创建日期：2026-09-07
+- 更新日期：2026-09-23
+- 关联：[Phase 1 设计](rsfmri-chat-module-design.md)、[API v1 契约](../api/api-v1.md)
+
 > 2026-09-08 更新：下文保留 Phase 1 历史设计／验证记录。当前已接通最近消息、固定上下文及摘要的脱敏模型输入；
 > 意图判断与追问改写合并一次调用，明确寒暄免检索；上传 PDF 可手动加入独立 Chroma collection，
 > 支持状态、重试与论文筛选；逐消息引用按正文编号校验，可定位原 PDF 物理页。
-> 当前接口与操作以 [API 文档](api/api-v1.md) 为准。仍无流式输出、OCR 或后台索引队列；
+> 当前接口与操作以 [API 文档](../api/api-v1.md) 为准。仍无流式输出、OCR 或后台索引队列；
 > 本轮仅作离线定向验证，未调用真实 DashScope／回答模型，不将离线通过视为在线质量验证。
 
-
-- 日期：2026-09-07
 - 范围：Milestone 1～3
-- 结果：Chat Skeleton、Literature Management、PDF 结构化解析、section-aware chunking 和 chunk traceability 已完成。按用户后续要求，额外直接移植并优化 fMRIAnalysis 的 RAG；本历史阶段未开发 Work Mode，后续版本已经接入，现行能力以 API 文档为准。
+- 结果：Chat Skeleton、Literature Management、PDF 结构化解析、section-aware chunking 和 chunk traceability 已完成。按用户后续要求，额外直接移植并优化 fMRIAnalysis 的 RAG；本历史阶段未开发 Work Mode，后续阶段已经接入，现行能力以 API 文档为准。
 
 ## 最新范围调整：复用 fMRIAnalysis RAG
 
@@ -49,7 +54,7 @@ Chat 意图现在先调用现有模型网关，要求返回 `knowledge_query`、
 完整盘点了仓库文件树和 Git 状态，并重点阅读：
 
 - 根约束与入口：`AGENTS.md`、`README.md`、`pyproject.toml`、`.env.example`。
-- 架构：`docs/architecture/project-structure.md`、`system-design.md`、`mvp-1.0-target-architecture.md`，以及 ADR 0008/0009。
+- 架构：`docs/architecture/project-structure.md`、`system-design.md`、`target-architecture.md`，以及 ADR 0008/0009。
 - API：`neuroagent/api/app.py`、`routes.py`、`main.py`、`docs/api/api-v1.md`。
 - Agent/LLM：`neuroagent/agent/models.py`、`gateway.py`、`providers.py`、`router.py`、`redaction.py`、`config.py`。
 - Application：`contracts.py`、`ports.py`、`services.py`、`settings.py`、`errors.py`、`service_mixins/_base.py`、`conversations.py`、`models.py`。
@@ -70,9 +75,9 @@ API 和前端，但 Chat 的 scope gate、本地文档关键词检索、LLM 调�
 
 ### 文档
 
-- `docs/rsfmri-chat-module-analysis.md`
-- `docs/rsfmri-chat-module-design.md`
-- `docs/rsfmri-chat-phase1-implementation-report.md`
+- `docs/archive/development/rsfmri-chat-module-analysis.md`（已归档）
+- `docs/development/rsfmri-chat-module-design.md`
+- `docs/development/rsfmri-chat-phase1-implementation-report.md`
 
 ### Chat / RAG / Context / Memory
 

@@ -5,7 +5,7 @@ description: Render an approved classical Python table-model template in an isol
 
 # Run tabular ML
 
-> 状态：契约/预览包，未注册运行时；本 MVP 只渲染固定模板，真实执行与产物登记待 v0.2.0 单独接线与批准。
+> 状态：契约/预览包，未注册运行时；本阶段只渲染固定模板，真实执行与产物登记待单独接线与批准。
 
 1. Accept only an approved immutable ML design and registered table Artifact IDs.
 2. Render the fixed Python template; never accept free Python or shell text from a model.

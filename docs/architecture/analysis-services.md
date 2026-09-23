@@ -1,5 +1,11 @@
 # 扩展分析服务设计
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[系统设计](system-design.md)
+
 ```text
 React / SSE
     ↓

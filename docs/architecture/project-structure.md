@@ -1,5 +1,11 @@
 # 项目结构
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[系统设计](system-design.md)、[目标架构](target-architecture.md)
+
 本仓库采用模块化单体：FastAPI、独立 SQLite Worker、React 前端和受控 MATLAB 适配器共享一套领域契约，但依赖方向保持单向。当前主要目录如下。
 
 ```text
@@ -8,14 +14,16 @@ rs_fMRI_Agent/
 ├─ .github/workflows/          Windows CI、安全审计与质量汇总门禁
 ├─ config/                     可提交的非敏感配置与仓库文件白名单
 ├─ docs/
+│  ├─ README.md                文档索引、权威文档表与归档清单
 │  ├─ adr/                     重要架构决策记录
 │  ├─ api/                     REST / SSE 公共协议说明
-│  ├─ architecture/            系统、Skill 层和目录结构设计
-│  ├─ development/             安装、验证、审查与发布流程
+│  ├─ architecture/            系统、Skill 层、目标架构和目录结构设计
+│  ├─ archive/                 已归档文档，仅作历史参考
+│  ├─ development/             安装、验证、审查、文档规范与阶段关门流程
 │  ├─ domain/                  数据集、QC、统计等科研契约
 │  ├─ operations/              本地运行、诊断、备份恢复与外部 Provider 手册
 │  ├─ plans/                   分阶段开发计划和验收标准
-│  ├─ product/                 产品范围、发布条件和非目标
+│  ├─ product/                 产品范围、能力边界和非目标
 │  ├─ reviews/                 实际阶段终审记录；未审查前不得创建通过报告
 │  └─ security/                数据边界与模型外发策略
 ├─ matlab/templates/           固定 MATLAB 模板；不接收任意脚本文本

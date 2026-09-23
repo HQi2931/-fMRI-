@@ -1,5 +1,11 @@
 # domain
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：fmri_methodologist
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `domain` 保存具体科研领域的模型、约束和内置能力。通用 Agent、Skill、Workflow、Tool 与 Execution 机制保留在各自顶层模块，领域包通过明确接口贡献 Artifact 类型、校验规则、SkillSpec、工作流模板和工具适配。

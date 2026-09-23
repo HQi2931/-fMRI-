@@ -1,5 +1,11 @@
 # 长任务等待、恢复与错误诊断
 
+- 状态：Implementing
+- 文档类型：Operations
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[本地运行、诊断与恢复](local-operations.md)
+
 前端不阻塞浏览器：创建运行后立即返回 `RunView`，通过 `/runs/{id}/events` 的 SSE 接收事件；刷新页面时带上最后事件 ID 继续回放。无法可靠估计的 MATLAB 阶段显示“正在运行”，不伪造百分比或 ETA。
 
 Worker 的生命周期是：

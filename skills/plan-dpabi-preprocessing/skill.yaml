@@ -69,12 +69,12 @@ qc_requirements:
   - "executor_header_metadata_verified"
   - "manual_plan_approval"
 compatibility:
-  matlab: "R2023b"
-  spm: "SPM12"
-  dpabi: "V8.2_240510"
+  matlab: "R2024b"
+  spm: "SPM25"
+  dpabi: "V9.0_250415"
   adapter: "1.0.0"
 evidence_refs:
-  - "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:1-192"
+  - "DPABI_V9.0_250415/DPARSF/DPARSFA_run.m:1-192"
 known_limitations:
   - "Study-specific preprocessing parameters remain mandatory"
 reviewed_by:

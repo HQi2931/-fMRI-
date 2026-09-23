@@ -1,5 +1,11 @@
 # multi_agent
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `multi_agent` 负责 Agent 注册、Supervisor 协调、Sequential Handoff 和结构化交接信息，支持多 Agent 在权限隔离下协作。

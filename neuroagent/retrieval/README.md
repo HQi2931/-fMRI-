@@ -1,5 +1,11 @@
 # retrieval
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `retrieval` 负责知识文档摄取、解析、分块、索引、关键词搜索、向量搜索、融合检索、重排和证据片段返回。

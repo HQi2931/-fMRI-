@@ -6,13 +6,18 @@
 
 ## 核心边界
 
-- Agent 负责理解、解释和生成结构化建议，不能直接执行任意命令。
+- Agent 是一个**受限的科研助手**，不是自主执行体。它可以多跳检索、读取状态、生成结构化建议与方案草稿，但**没有工具调用循环之外的行动能力**，也不能直接执行任意命令。工具按 `READ`/`PROPOSE`/`EXECUTE` 三级声明权威，其中 `EXECUTE` 工具不会出现在发给模型的工具列表中，模型因此连"提出执行"的入口都不存在。设计见 [ADR 0014](docs/adr/0014-bounded-tool-loop.md)。
+- MATLAB 脚本由**确定性模板渲染器**根据经过校验的结构化参数生成，**不由模型撰写** `.m` 文本。这是模板版本化、参数哈希与 provenance 三条审计链成立的前提。
 - Skill 声明科研能力并编译不可变计划，不能直接执行 Tool。
 - Workflow 是运行状态唯一真源；只有获批且未失效的计划可以启动。
 - MATLAB/DPABI 只在独立 staging 工作目录运行，真实长任务必须由用户明确批准。
-- 外部模型只能接收经过策略校验的去标识化摘要。
+- 外部模型只能接收经过策略校验的去标识化摘要；工具结果回注模型前同样经过脱敏并标记为不可信数据。
 
 ## 当前实现状态
+
+- Chat 的非寒暄消息使用已配置模型判断语义和理解追问；方法查询不再被“预处理”关键词提前拦截。声明 `tool_use` 能力的模型在 Chat 中可多跳检索：连续调用文献/项目证据检索与 Skill 清单工具，工具给出的证据编号与最终引用编号一致。Work 接入模型问答与多轮参数草稿，保留已明确的参数并提示缺项。完整草稿经用户回复页面提供的“确认方案参数”版本指令后，登记工作区并进入既有 Skill 校验编译；启动计算仍需单独回复包含当前方案版本和 QC 选择的确认指令。模型不可提供执行授权；未配置或暂不可用时会明确提示。实现与验证范围见 [对话改进计划](docs/plans/conversation-model-understanding.md)。
+
+- 工具调用循环是有界的：步数、墙钟、token 三重预算与重复失败熔断，停止原因是显式枚举；循环未产出答案时回退单次路径。每次工具调用的名称、层级、状态与耗时随会话在同一事务内落库，并在前端按执行顺序展示。
 
 - 前端只保留 Chat 与 Work 两种对话模式：主导航只有“对话工作台”，MATLAB/SPM/DPABI、本机目录与模型连接集中在右上角“设置”。所有业务请求都从 Work 自然语言进入类型化应用服务，不再渲染项目、数据、方案、运行、QC、统计、扩展分析页面或消息操作卡片；旧业务地址统一回到工作台且不会自动执行。
 - 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
@@ -22,12 +27,14 @@
 - 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
 - Work 对话只绑定用户选择的本机工作区，目录中的 DPABI 输入文件由用户自行准备。建立项目时冻结当前文件清单用于审计，并可用完整类型化参数编译纯预处理或指标计划。当前提供一个受控的 DemoData 单受试者 ALFF 自然语言路径：先展示固定冒烟参数和计划哈希，用户按精确语句确认后才批准并排队真实 MATLAB/DPABI。活动运行由页面自动恢复并显示进度，QC revision 与统计结果可从 Work 只读查询。
-- Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。上传后点击“加入知识库”才会将脱敏文本发送到 DashScope 并建立独立索引；支持选择论文、连续追问和逐消息引用定位，旧索引缺失页码保持未知。详情见 [实施报告](docs/rsfmri-chat-phase1-implementation-report.md)。
+- Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。上传后点击“加入知识库”才会将脱敏文本发送到 DashScope 并建立独立索引；支持选择论文、连续追问和逐消息引用定位，旧索引缺失页码保持未知。详情见 [实施报告](docs/development/rsfmri-chat-phase1-implementation-report.md)。
 - 已完成一个真实 Provider 轻量 smoke（无受试者信息）。运行页默认 Mock，MATLAB 选项仍需要不可跳过的逐次确认；这些小型验证不代表所有本机配置、数据形态或 DPABI 功能均已兼容。
 
-`v0.1.0` 尚未发布。当前是待审候选基线，详细范围和未完成项见 [MVP 范围](docs/product/mvp-scope.md)。
+当前范围和未完成项见 [MVP 范围](docs/product/mvp-scope.md)，已核实的能力与已知限制见 [验证记录](docs/development/mvp-verification.md)。
 
 ## 本地开发
+
+前端视觉样式在 `web/src/styles.css` 定义通用组件，在 `web/src/workbench.css` 维护工作台与设置页的主题。工作台采用深绿侧栏、浅色会话面板与响应式工具栏，支持键盘焦点提示及消息换行展示。
 
 ```powershell
 if (-not (Test-Path -LiteralPath '.env')) {
@@ -67,18 +74,21 @@ uv run python scripts\synthetic-demo.py --root tmp\synthetic-demo
 
 ## 文档入口
 
+完整索引、权威文档表和归档清单见 [文档索引](docs/README.md)。
+
+- [文档索引](docs/README.md)
 - [开发代理规则](AGENTS.md)
+- [文档规范](docs/development/documentation-standard.md)
 - [项目结构](docs/architecture/project-structure.md)
-- [MVP1.0 目标架构](docs/architecture/mvp-1.0-target-architecture.md)
+- [目标架构](docs/architecture/target-architecture.md)
 - [Skill 层设计](docs/architecture/fmri-skill-layer.md)
 - [系统设计](docs/architecture/system-design.md)
-- [开发路线图](docs/plans/0002-full-mvp-roadmap.md)
-- [MVP1.0 开发路线图](docs/plans/0007-mvp-1.0-roadmap.md)
-- [开发与发布](docs/development/release-process.md)
+- [演进路线](docs/plans/0007-capability-modularization-roadmap.md)
+- [开发与阶段流程](docs/development/release-process.md)
 - [API v1 契约](docs/api/api-v1.md)
-- [MVP 验证与限制](docs/development/mvp-verification.md)
+- [验证与已知限制](docs/development/mvp-verification.md)
 - [MVP 范围](docs/product/mvp-scope.md)
-- [ADR 0006：v0.1.0 真实执行范围](docs/adr/0006-v0.1-real-execution.md)
+- [ADR 0006：真实执行范围](docs/adr/0006-v0.1-real-execution.md)
 - [ADR 0012：移除 Work 操作卡片](docs/adr/0012-chat-work-only.md)
 - [计划 0005：用户选择本机科学软件环境](docs/plans/0005-user-selected-local-environment.md)
 - [本地运行与恢复](docs/operations/local-operations.md)

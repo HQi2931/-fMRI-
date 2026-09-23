@@ -1,5 +1,7 @@
 # rs-fMRI Chat Mode 模块分析
 
+> 已归档（2026-09-23）。原因：编码前的原始分析，其阶段范围已被后续更新替代，且对 retrieval、context、memory 状态的描述与现状不符。替代文档：[Phase 1 设计](../../development/rsfmri-chat-module-design.md)。内容仅作历史参考，不得作为当前实现依据。
+
 > 后续需求更新：用户要求直接复用 `D:/Project_for_agent/fMRIAnalysis` 的 RAG 并减少低价值测试。
 > 下文为编码前的原始分析；“只预留 RAG / 不引入 Chroma”的阶段范围已被本更新替代。
 > 已检查源项目的 retriever、DashScope embedding/reranker、chunk_indexer、MinerU pipeline 和 Chroma 索引。

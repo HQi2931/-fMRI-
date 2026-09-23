@@ -1,4 +1,10 @@
-# 阶段审查与自动发布
+# 阶段审查与阶段关门
+
+- 状态：Accepted
+- 文档类型：Development
+- 维护者：documentation_maintainer
+- 更新日期：2026-09-23
+- 关联：[文档规范](documentation-standard.md)
 
 ## 一次性准备
 

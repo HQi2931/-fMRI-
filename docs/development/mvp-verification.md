@@ -1,11 +1,14 @@
 # MVP 验证与已知限制
 
-状态：v0.1.0 发布验证记录
-更新日期：2026-09-21
+- 状态：Implementing
+- 文档类型：Development
+- 维护者：qa_reviewer
+- 更新日期：2026-09-23
+- 关联：[MVP 产品范围](../product/mvp-scope.md)
 
 ## 最终树必须通过的自动门禁
 
-`scripts/quality-gate.ps1` 定义当前候选树的本地汇总门禁：
+`scripts/quality-gate.ps1` 定义当前工作树的本地汇总门禁：
 
 - Python：Ruff 格式/规则、strict mypy、依赖审计、pytest 与不低于 85% 覆盖率。
 - Web：ESLint、TypeScript、Vitest 与不低于 80% 覆盖率、生产构建、Playwright Mock E2E 和依赖审计。
@@ -14,7 +17,7 @@
 - Web 恢复：多项目 `localStorage` 指针切换、Plan/QC/统计冻结内容重载、待确认幂等 key 的 `sessionStorage` 恢复，以及基于 `after_event_id` 的事件续传。
 - 安全：源目录只读、工作目录边界、外发摘要去标识化、结构化模型输出、仓库敏感信息/科研二进制/大文件扫描。
 
-本文不把历史子集测试替代最终门禁。发布证据必须记录最终暂存树哈希、执行日期、门禁结果和未执行项；在该记录存在前，不声称当前树已全绿。
+本文不把历史子集测试替代最终门禁。验证证据必须记录最终暂存树哈希、执行日期、门禁结果和未执行项；在该记录存在前，不声称当前树已全绿。
 
 对应风险回归主要位于 `tests/backend/test_database_runtime_lease.py`、`tests/backend/test_release_scripts.py`、`tests/backend/test_dataset_services.py`、`tests/science/test_execution_edges.py`、`web/src/api/client.test.ts` 和 `web/src/App.test.tsx`。
 
@@ -63,15 +66,60 @@
 - 谱系：时序与 ALFF 都绑定本次生成并登记的脑掩膜 Artifact，网格签名一致；计划哈希为 `8087a71c59d4171a4be610c4930e3925093522564da663661ab73f9becb4c7d5`。
 - 只读性：运行前后原始 NIfTI 与 JSON 的 SHA-256 一致；实际运行目录、日志和大型 NIfTI 保留在本机工作区，不提交仓库。
 
+> 上述计划哈希**已被本轮真实验收取代**。2026-09 的版本证据修正把 Skill 兼容性标签与 `evidence_refs` 从 `V8.2_240510` 更正为实际安装并核验的 `V9.0_250415`，本地 `.env` 的 MATLAB/SPM/DPABI 版本标签同步更正。Skill `content_hash` 与 `environment_hash` 都参与 `plan_hash` 计算，因此修正后同一参数组合得到**不同**的计划哈希（见下一节的 `a94c3dd1…`）。旧哈希不再用于批准绑定，仅作历史记录。
+
 该冒烟只证明当前机器上的 Work→应用服务→Worker→MATLAB/DPABI→Artifact 登记闭环，以及此次参数组合能够生成 raw ALFF；不验证完整科研方案，也不把单受试者输出解释为科研结论。
+
+## 2026-09-23 授权真实验收：DemoData Sub_001 完整 DPABI 预处理
+
+本次由用户明确授权，使用仓库外 DemoData `Sub_001` 的独立可写副本（`FunImg/Sub_001/` 单受试者 DPABI 工作区），经 **Work 对话自然语言**路径驱动，包含服务端签发的精确确认口令，因此验证的是真实授权门而不是绕过服务直接调用。测试为 `tests/science/test_demodata_acceptance.py::test_demodata_real_dpabi_preprocessing_reaches_qc`，实测耗时 7 分 19 秒（含环境探测与数据集普查）。
+
+- **运行结果**：状态 `qc_review`，QC 状态 `awaiting_review`，attempt 1，`run_error` 为空。运行 ID `57be4cd7-e2cb-4892-bd34-1100471f9766`。
+- **计划与作业**：计划哈希 `a94c3dd1a6f2541455ccdc92da0efc3df3905d4c94d6ac2b6aa42fca513442de`；job hash `1e6d1a0bd5d1477a43b95457866c5a985e7a3c740f74d23d2f011c03c5b9eb36`；执行器 `controlled_matlab`。
+- **登记的 6 个 Artifact**（均以 SHA-256 登记）：
+
+  | 类型 | 相对路径 | SHA-256（前 16 位） | 字节数 |
+  | --- | --- | --- | --- |
+  | `preprocessing.functional_timeseries` | `…/output/Sub_001/timeseries.nii` | `9549e14c6375d8db` | 126 517 600 |
+  | `preprocessing.brain_mask` | `…/output/Sub_001/brain_mask.nii` | `b947834abc0a4f7d` | 541 024 |
+  | `metric.alff.raw` | `…/output/Sub_001/raw_alff.nii` | `55bd1a3ac3ca1caf` | 541 024 |
+  | `preprocessing.metadata_evidence` | `…/output/preprocessing-evidence.json` | `3bd89bcf2a736010` | 1 779 |
+  | `preprocessing.execution_log` | `…/logs/matlab.log` | `676b6e3facd51358` | 6 595 |
+  | `qc.head_motion_report` | `…/output/qc/head-motion-qc.json` | `a791f95825594254` | 1 253 |
+
+- **几何一致性**：时序、脑掩膜与 ALFF 三者共享同一 `grid_signature` `05d55877776288daa665f1d59d5cae4a2520179e993a9dad69c414a9fb84b64c`，且 ALFF 的 `mask_grid_signature` 与之相等；时序登记的 `volume_count` 为 **234**、TR 2.0 秒、体素 3.125 × 3.125 × 3.6 mm —— 与 NIfTI 头实测一致。
+- **头动 QC 证据**：解析真实 DPABI `RealignParameter`，`realignment_parameter_count` 与 `fd_power_sample_count` 均为 **234**（与头部时间点数一致）；Sub_001 判定通过：max translation 0.579 mm、max rotation 0.506°、mean FD_Power 0.126、FD_Power > 0.2 比例 0.141、FD_Power > 0.5 计数 0。
+- **只读性**：运行前后原始 DemoData NIfTI 的 SHA-256 一致，验收只读取源数据。
+
+**可复现性结论**：本次 `raw_alff.nii` 的 SHA-256 为 `55bd1a3ac3ca1caf9e7e8998e1c87bb50508f756a81cfcd6b5b3a7c02d8fa1f9`，与 2026-09-18 冒烟记录的 ALFF Artifact 哈希**逐字节相同**。两次运行的 `plan_hash` 不同（版本证据修正所致），但输出影像完全一致——这同时证明：(1) 版本标签修正只影响元数据与哈希链，没有改变任何计算；(2) 同一输入与参数在本机的计算是确定性的。
+
+该验收只覆盖单受试者、纯预处理加 raw ALFF 的参数组合；不验证三受试者组合指标（D-2）、组统计（D-3），也不把单受试者输出解释为科研结论。
+
+
+## 已实测的 DemoData 数据集事实
+
+以下数值来自直接读取 NIfTI 头（`neuroagent/infrastructure/filesystem/nifti_header.py`），不是文件名推断：
+
+| 受试者 | 功能像 dim | TR | 体素大小 | 类型 | T1 dim |
+| --- | --- | --- | --- | --- | --- |
+| Sub_001 | 64 × 64 × 33 × **234** | 2.0 s | 3.125 × 3.125 × 3.6 mm | float32 | 128 × 256 × 170 |
+| Sub_002 | 64 × 64 × 33 × **239** | 2.0 s | 3.125 × 3.125 × 3.6 mm | float32 | 128 × 256 × 170 |
+| Sub_003 | 64 × 64 × 33 × **239** | 2.0 s | 3.125 × 3.125 × 3.6 mm | float32 | 128 × 256 × 170 |
+
+两个必须记住的结论：
+
+1. **文件名里的 `240`（`Sub_001_ge_func_31x31x30_240_RS_...`）不是真实几何**：它是扫描仪描述符，真实网格是 64 × 64 × 33，时间点数是 234/239。任何按文件名推断维度的代码都是错的，参数必须来自头部。
+2. **三个受试者的时间点数不一致（234 vs 239 vs 239）**。因此单一 `expected_time_points` **无法**描述一个三受试者计划，D-2/D-3 级别必须先通过逐受试者 `dummy_scans` 把保留时间点数归一化。该归一化是**本测试的软件夹具决定，不是科研默认值**，不得复制进研究方案。
+
+验收工具位于 `tests/science/test_demodata_acceptance.py`，标记为 `demodata_smoke`，默认整体跳过：无 `RSFMRI_DEMODATA_ROOT` 时数据集普查跳过，无 `RSFMRI_RUN_DEMODATA_SMOKE=1` 时真实 MATLAB 运行跳过。CI 不设置这两个变量。
 
 ## 人工或外部验证项
 
 以下检查不能在无人值守门禁中伪造为成功：
 
-1. GitHub CLI 已安装且登录成功。`main` 分支已通过 API 回读确认 strict status checks（`agent-review`、`quality-gate`）、enforce admins、linear history、required conversation resolution 及禁止 force-push/delete；最终 Actions 状态和正式 tag 仍必须从对应发布提交核验。
+1. GitHub CLI 已安装且登录成功。`main` 分支已通过 API 回读确认 strict status checks（`agent-review`、`quality-gate`）、enforce admins、linear history、required conversation resolution 及禁止 force-push/delete；最终 Actions 状态和 tag 仍必须从对应提交核验。
 2. Provider 和真实统计 smoke 已有上述成功记录；新的 Provider、环境或真实数据作业仍遵守相应授权与去标识化规则。
-3. 组合指标 smoke 已完成。常规测试仍不启动 MATLAB；最终树门禁、远程 CI 和 tag 的结果以对应发布提交及 GitHub 检查为准。
+3. 组合指标 smoke 已完成。常规测试仍不启动 MATLAB；最终树门禁、远程 CI 和 tag 的结果以对应提交及 GitHub 检查为准。
 4. 小型统计 smoke 覆盖受控 Executor、真实产物和报告构建合同；不把 Mock Playwright 测试表述为真实 Web—API—Worker—MATLAB 端到端验证。
 
 ## 非目标

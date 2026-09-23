@@ -1,13 +1,15 @@
-# MVP1.0 目标架构
+# 目标架构
 
 - 状态：Draft
+- 文档类型：Architecture
+- 维护者：system_architect
 - 日期：2026-09-07
-- 适用范围：MVP0.1 之后到 `v1.0.0` 的渐进式演进
+- 适用范围：当前架构之后按能力切分的渐进式演进
 - 相关决策：[ADR 0009](../adr/0009-capability-oriented-modular-monolith.md)
 
 ## 结论
 
-MVP1.0 继续采用 Windows 本地优先的模块化单体、SQLite 和独立 Worker，不拆微服务，也不引入 Redis、消息队列或对象存储。优化重点从“继续添加能力”转为“稳定模块边界、完成真实科研主路径、降低前后端状态复杂度、形成可恢复和可交付的本地产品”。
+目标架构继续采用 Windows 本地优先的模块化单体、SQLite 和独立 Worker，不拆微服务，也不引入 Redis、消息队列或对象存储。优化重点从“继续添加能力”转为“稳定模块边界、完成真实科研主路径、降低前后端状态复杂度、形成可恢复和可交付的本地产品”。
 
 目标架构按业务能力切分应用服务、端口、API 路由和前端功能，但保留纯领域规则、Skill 编译、受控执行和审批门禁。迁移期间公共 REST/SSE 路径、数据库内容和已批准计划哈希保持兼容。
 
@@ -21,7 +23,7 @@ MVP1.0 继续采用 Windows 本地优先的模块化单体、SQLite 和独立 Wo
 - 领域层包含较完整的预处理、指标、QC 和统计规则，真实 MATLAB 路径由固定模板和结构化 JobSpec 约束。
 - 单机、单用户、本地数据的产品定位清楚，没有为尚不存在的分布式需求过度设计。
 
-### MVP1.0 前需要消除的结构压力
+### 目标架构前需要消除的结构压力
 
 | 现象 | 当前证据 | 影响 |
 | --- | --- | --- |
@@ -156,7 +158,7 @@ ApplicationServices
 
 - `PlanState`、`WorkflowState`、Artifact 引用和执行结果属于领域/Workflow 内部类型，不放在 HTTP contracts 中。
 - API schema 负责序列化和向后兼容；应用命令与查询结果负责用例边界；两者通过显式 mapper 转换。
-- `contracts.py` 在迁移期保留重导出，MVP1.0 前删除内部调用对总模块的依赖。
+- `contracts.py` 在迁移期保留重导出，迁移完成前删除内部调用对总模块的依赖。
 - 所有公共请求继续 `extra="forbid"`，OpenAPI 作为前端类型的唯一来源，不再手写重复的 Conversation/Workspace 类型。
 
 ## 控制面与运行面
@@ -190,7 +192,7 @@ ApplicationServices
 
 ### Artifact 服务
 
-MVP1.0 增加受控 Artifact 内容访问层：
+目标架构增加受控 Artifact 内容访问层：
 
 - 客户端只提交 Artifact ID，不提交文件路径。
 - 服务端校验项目、运行、允许根目录、文件类型、大小和 checksum 后再预览或下载。
@@ -238,7 +240,7 @@ Agent 可以在每个节点读取允许的摘要、解释阻断和提出结构�
 
 ## 质量目标
 
-MVP1.0 的架构验收至少满足：
+目标架构的验收至少满足：
 
 - 不存在 Application 对 Infrastructure、SQLAlchemy、FastAPI 或 subprocess 的导入。
 - 不存在 Workflow 状态机对 API/Application DTO 的反向依赖。
@@ -250,7 +252,7 @@ MVP1.0 的架构验收至少满足：
 
 ## 迁移顺序
 
-1. 冻结 MVP0.1 行为和 OpenAPI 快照，修复当前门禁，不改变科学语义。
+1. 冻结当前行为和 OpenAPI 快照，修复当前门禁，不改变科学语义。
 2. 抽出内部状态/ID/Artifact 类型和窄端口，增加兼容重导出。
 3. 拆分显式应用服务和 API routers，保留 URL 与响应兼容。
 4. 拆分 SQLite adapters 和 mapper，引入 `JobEnvelope v1`。
@@ -264,4 +266,4 @@ MVP1.0 的架构验收至少满足：
 - 微服务、云部署、多租户权限、PACS 集成和分布式调度。
 - 通用 Agent 平台、任意插件执行或模型直接生成并运行代码。
 - 自动选择受试者排除、统计方向、阈值、频段或“最显著”结果。
-- 在 MVP1.0 内承诺所有 DPABI 版本、所有数据布局或所有多会话协议兼容。
+- 在目标架构内承诺所有 DPABI 版本、所有数据布局或所有多会话协议兼容。

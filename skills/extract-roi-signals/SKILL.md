@@ -5,7 +5,7 @@ description: Design and validate DPABI ROI signal extraction and deterministic l
 
 # Extract ROI signals
 
-> 状态：契约/预览包，未注册运行时；本 MVP 只校验与导出已登记记录，真实 `y_ExtractROISignal` 执行待 v0.2.0 单独接线与批准。
+> 状态：契约/预览包，未注册运行时；本阶段只校验与导出已登记记录，真实 `y_ExtractROISignal` 执行待单独接线与批准。
 
 1. Require registered functional and atlas or mask Artifact IDs, TR, frequency band (band_low_hz / band_high_hz), labels, and scrubbing policy.
 2. Validate Nyquist and frequency-band consistency, scrubbing timing, and ROI-index de-duplication; grid, time-point, and label contracts are declared lineage and not yet enforced in the deterministic preview.

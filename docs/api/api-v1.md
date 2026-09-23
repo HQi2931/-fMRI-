@@ -1,5 +1,11 @@
 # API v1 契约
 
+- 状态：Implementing
+- 文档类型：API
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[系统设计](../architecture/system-design.md)
+
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
 
 ## 通用规则
@@ -48,6 +54,27 @@
 声明 `web_search` 能力的 Profile，并将 URL 引用、模型 Profile、上下文哈希和用量摘要保存到
 `rsfmri_chat_llm` 工具记录。没有模型配置且未要求联网时保留纯本地 RAG 回退。
 
+当所选 Profile 声明 `tool_use` 时，`chat` 知识问答改走**有界工具调用循环**：模型可连续调用
+`search_evidence`（文献与项目文档检索）与 `list_skills`，服务端逐步返回工具结果，最多受步数、
+墙钟与 token 三重预算约束。循环产出的回答仍经过与单次路径相同的引用校验；循环未产出答案
+（预算耗尽或 Provider 失败）时自动回退单次路径，因此响应不会因循环未完成而变空。回复元数据
+中的 `chat.metadata.tool_loop` 记录 `enabled`、`stop_reason`、`steps`、`tool_names` 与逐步审计记录。
+
+## 工具调用审计记录
+
+`ConversationToolCallView` 在单次工具调用之外还承载有界 Tool Loop 的步进信息：
+
+| 字段 | 含义 |
+| --- | --- |
+| `tool_name` / `status` / `input` / `output` / `error` | 与既有单次记录相同 |
+| `step_index` | 循环内的步序号，从 1 开始；单次工具调用与循环前写入的历史行为 `null` |
+| `risk_tier` | 工具权威层级：`read` / `propose`；`execute` 只可能来自服务端动作，绝不会是模型发起的工具调用 |
+| `duration_ms` | 本次工具调用耗时 |
+
+`GET /conversations/{id}` 的 `tool_calls` 按 `created_at`、`step_index`、`tool_call_id` 排序，因此
+循环步进的展示顺序等于执行顺序。`POST .../turns` 的响应同时提供 `tool_call`（单次记录）与
+`tool_calls`（本次循环步进，可能为空）。
+
 `work` 回合由服务端确定性协调器解析为闭集 `ConversationAction`，再调用既有应用服务。客户端不再提交 `card_kind`，服务端也不暴露卡片能力目录、任意组件名、脚本或执行代码。缺少参数的请求返回待确认工具记录和明确缺项；解释或未知请求只返回说明，不产生业务写入。
 
 当前自然语言捷径识别同时包含 DemoData、Sub_001 和 ALFF 的请求。它只接受已选择的独立工作副本，冻结单受试者 manifest，并创建固定的兼容性冒烟计划：TR 2.0 秒、234 时间点、Slice Timing 奇数层后偶数层且参考层 33、Realign、0.01–0.08 Hz raw ALFF 与 DPABI 自动掩膜，其余处理关闭。响应保存 Project、Dataset、Manifest、SkillPlan 和 PlanRevision；只有随后携带精确计划 ID/哈希及 `real_execution_confirmed=true` 的确认回合才会批准并排队 MATLAB 作业。
@@ -68,6 +95,45 @@
 | `get_statistical_results` | 按当前项目及可选目标运行列出已登记统计结果 |
 
 项目/数据集/manifest 建立、计划编译和预检都复用既有应用服务及其路径、版本和谱系校验。真实启动服务只负责排队，实际 MATLAB 仍由现有 Worker 执行。浏览器在存在活动运行时定期读取 `/runs/{run_id}` 并显示阶段、进度和 attempt；轮询不创建额外对话消息或工具调用。
+
+### 模型可选择的 Work 动作是上表的严格子集
+
+上表的 `action` 是**服务端与 UI 的入口**，不等于模型可以选择的动作。模型可选项的唯一事实来源是
+`neuroagent/application/work_actions.py`，且只包含只读与提案两类：
+
+| 模型动作 | 层级 | 含义 |
+| --- | --- | --- |
+| `conversation` | read | 纯对话回答，不触发任何操作 |
+| `get_progress` | read | 读取运行状态 |
+| `get_qc_status` | read | 读取 QC 状态 |
+| `get_statistical_results` | read | 读取已登记统计结果 |
+| `prepare_preprocessing_plan` | propose | 合并本轮参数草稿并展示审阅 |
+| `propose_run_confirmation` | propose | 仅展示需要用户本人回复的启动确认指令 |
+
+`setup_workspace`、`start_preprocessing`、`create_head_motion_qc`、`approve_qc_review`、`skip_qc`
+属于服务端专用动作：它们只能由显式 REST/UI 请求或用户手打的精确确认指令触发。模型输出这些名字
+会**直接通不过 `WorkInterpretation` 的结构校验**，即模型在词汇层面就不具备提出执行的能力。
+未连接模型时的关键词回退路径 `resolve_action()` 同样只能返回只读或提案动作。
+
+### Work 的只读工具
+
+声明 `tool_use` 的 Profile 在 Work 中可先读取服务端状态再作答。`work_context` 已携带运行/QC/方案
+状态，因此这里只补充它没有的内容，且全部为只读层级：
+
+| 工具 | 返回 |
+| --- | --- |
+| `get_run_status` | 运行状态、阶段、attempt、QC 状态、是否请求取消（不含工作区路径） |
+| `list_run_artifacts` | 运行已登记产物的类型汇总与总数 |
+| `get_statistical_results` | 该运行已登记的统计结果摘要 |
+| `describe_statistical_capabilities` | 本安装实际支持的多重比较校正方法及其必需参数 |
+| `list_skills` | 已评审 Skill 的标识、标题与状态 |
+
+统计设计的取值来源与装配规则见 [统计设计的取值来源与装配](../architecture/statistical-design-assembly.md)。
+
+循环的最终文本就是 Work 原有的 JSON 契约，因此回复内容与 `action` 的解析、校验和授权路径与
+单次路径完全一致。回复 payload 中的 `tool_loop` 记录 `enabled`、`stop_reason`、`steps`、
+`tool_names` 与 `usage`，逐步审计记录与 Chat 相同（见下一节）。若循环产出的文本不是合法 JSON，
+服务端会回退到单次调用重试一次，因此启用循环不会降低回答的结构保证。
 
 Work 只绑定用户选择的工作区，目录中的 DPABI 输入由用户自行准备。方案请求可以只包含预处理参数并将 `requested_metrics`/`primary_outputs` 留空；此时不需要指标脑掩膜。通用 `/workspaces/check` 与 `/organization/previews` 仍供数据管理等独立功能使用，但不会由 Work 对话自动调用。
 

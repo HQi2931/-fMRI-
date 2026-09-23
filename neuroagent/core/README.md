@@ -1,5 +1,11 @@
 # core
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `core` 定义框架最稳定的 Agent 抽象，包括 Agent 身份、请求响应、消息协议、任务对象、模型网关接口、推理策略接口和 AgentRuntime 边界。

@@ -1,5 +1,11 @@
 # 数据集输入与只读契约
 
+- 状态：Implementing
+- 文档类型：Domain
+- 维护者：fmri_methodologist
+- 更新日期：2026-09-23
+- 关联：[组统计设计](statistics.md)
+
 ## 支持的检查对象
 
 - DICOM 目录（当前仅建立只读 inventory，不推断序列角色）。

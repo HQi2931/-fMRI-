@@ -1,10 +1,17 @@
 # NeuroAgent Framework Architecture
 
-> 本文是早期通用框架草案，关于“先完成通用框架、后接入 fMRI”的路线已被当前产品方向部分替代。当前实现以根目录 `AGENTS.md`、[静息态 fMRI Skill 层架构](fmri-skill-layer.md) 和相关 ADR 为准；本文仅作历史背景与通用概念参考。
+> 已归档（2026-09-23）。原因：早期通用框架草案，关于「先完成通用框架、后接入 fMRI」的路线已被当前产品方向部分替代。替代文档：[静息态 fMRI Skill 层架构](../../architecture/fmri-skill-layer.md)。内容仅作历史参考，不得作为当前实现依据。
 
-状态：历史设计草案（部分被替代）
+- 状态：Historical
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[Skill 层架构](../../architecture/fmri-skill-layer.md)
+
+> 本文是早期通用框架草案，关于“先完成通用框架、后接入 fMRI”的路线已被当前产品方向部分替代。当前实现以根目录 `AGENTS.md`、[静息态 fMRI Skill 层架构](../../architecture/fmri-skill-layer.md) 和相关 ADR 为准；本文仅作历史背景与通用概念参考。
+
 范围：通用科研 Agent 框架骨架与架构设计
-代码位置：[neuroagent](../../neuroagent/README.md)
+代码位置：[neuroagent](../../../neuroagent/README.md)
 
 本文档描述一个受 [Datawhale Hello-Agents](https://datawhalechina.github.io/hello-agents/#/) 设计思想启发、但由本项目自主实现的通用科研 Agent 框架。本文不定义任何领域实现，不实现真实模型请求、真实 RAG、真实数据库、真实工具执行或生产级 Agent 循环。
 
@@ -225,7 +232,7 @@ Application
 
 ### SkillManager（历史定义，已被 ADR 0001 替代）
 
-> 本小节的“上下文提示型 Skill”不再是当前运行时 Skill 定义。当前实现不得依据以下接口开发；请使用 [fMRI Skill 层架构](fmri-skill-layer.md) 和 [ADR 0001](../adr/0001-skill-compiles-to-workflow.md) 中的 SkillSpec、Resolver、Validator、Compiler 与 SkillPlan。
+> 本小节的“上下文提示型 Skill”不再是当前运行时 Skill 定义。当前实现不得依据以下接口开发；请使用 [fMRI Skill 层架构](../../architecture/fmri-skill-layer.md) 和 [ADR 0001](../../adr/0001-skill-compiles-to-workflow.md) 中的 SkillSpec、Resolver、Validator、Compiler 与 SkillPlan。
 
 解决问题：加载任务相关技能，包括专业知识、行为规范、提示片段、检查清单和约束说明。
 
@@ -550,7 +557,7 @@ ContextEngine 参考 Gather-Select-Structure-Compress 思路。
 
 ## 14. Skills 与插件系统（历史方案）
 
-> 本节关于 Skill 和“先插件化 fMRI”的定义已被 [ADR 0001](../adr/0001-skill-compiles-to-workflow.md) 替代，仅保留为历史背景。当前 fMRI Skill 是内置的声明式科研协议，不是提示词上下文包，通用插件系统也不是其前置条件。
+> 本节关于 Skill 和“先插件化 fMRI”的定义已被 [ADR 0001](../../adr/0001-skill-compiles-to-workflow.md) 替代，仅保留为历史背景。当前 fMRI Skill 是内置的声明式科研协议，不是提示词上下文包，通用插件系统也不是其前置条件。
 
 Skill 和 Plugin 必须区分：
 

@@ -1,5 +1,7 @@
 # Service and Repository Refactor Implementation Plan
 
+> 已归档（2026-09-23）。原因：该重构已完成，`SecretWriterPort` 与导入边界测试已落地并由 `tests/backend/test_application_import_boundaries.py` 守护。替代文档：[项目结构](../../architecture/project-structure.md)。内容仅作历史参考，不得作为当前实现依据。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with review checkpoints.
 
 **Goal:** Finish the current service/repository split, remove application-to-infrastructure coupling, and standardize the directly related long modules without changing public behavior.

@@ -1,6 +1,8 @@
 # 计划 0002：rs-fMRI Agent 全量 MVP
 
-- 状态：候选基线；纯合成垂直闭环与报告合同已实现，真实执行、真实结果登记与首次发布尚未完成
+> 已归档（2026-09-23）。原因：阶段编号进度与当时环境（MATLAB R2023b / SPM12 / DPABI V8.2）已成历史，被后续真实 smoke 证据取代。替代文档：[计划 0006](../../plans/0006-release-blockers.md)、[验证记录](../../development/mvp-verification.md)。内容仅作历史参考，不得作为当前实现依据。
+
+- 状态：Historical
 - 目标版本：v0.1.0
 - 环境：Windows、MATLAB R2023b、SPM12、DPABI V8.2
 

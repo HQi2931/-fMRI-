@@ -1,9 +1,13 @@
 # 静息态 fMRI Skill 层架构
 
-- 状态：Skill Registry、Resolver、Validator、Compiler、`WorkflowFactory`/`ToolRuntime`、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包）；公共 Worker 默认 Mock，并提供受控 MATLAB 路由
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：skill_workflow_engineer
 - 决策日期：2026-08-06
-- 关联 ADR：[0001：Skill 编译为受控 Workflow](../adr/0001-skill-compiles-to-workflow.md)
-- 实施计划：[0001：fMRI Skill 层 MVP](../plans/0001-skill-layer-mvp.md)
+- 更新日期：2026-09-23
+- 关联：[ADR 0001](../adr/0001-skill-compiles-to-workflow.md)、[计划 0001](../plans/0001-skill-layer-mvp.md)
+
+实现现状：Skill Registry、Resolver、Validator、Compiler、`WorkflowFactory`/`ToolRuntime`、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包）；公共 Worker 默认 Mock，并提供受控 MATLAB 路由。
 
 ## 1. 定义与目标
 

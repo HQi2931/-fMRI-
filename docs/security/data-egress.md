@@ -1,5 +1,11 @@
 # 模型数据外发策略
 
+- 状态：Accepted
+- 文档类型：Security
+- 维护者：qa_reviewer
+- 更新日期：2026-09-23
+- 关联：[Provider 配置与 smoke](../operations/provider-setup.md)
+
 外部模型只能接收完成当前解释或计划任务所需的去标识化结构摘要。
 
 ## 禁止外发

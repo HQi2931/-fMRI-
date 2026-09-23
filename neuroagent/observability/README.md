@@ -1,5 +1,11 @@
 # Observability 层
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.observability` 提供运行事件脱敏和 trace 上下文。事件由 SQLite 持久化，可按 `event_id` 游标查询并由 SSE 断线续传。
 
 当前记录项目、计划、审批、任务、QC、统计设计、模型路由与状态转换事件。事件 payload 在写入前移除常见密钥和敏感字段；原始影像、人口学明细、绝对路径和 Provider 密钥不得进入审计记录。

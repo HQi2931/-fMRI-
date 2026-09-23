@@ -1,5 +1,11 @@
 # ROI、机器学习与脑区定位领域合同
 
+- 状态：Implementing
+- 文档类型：Domain
+- 维护者：fmri_methodologist
+- 更新日期：2026-09-23
+- 关联：[组统计设计](statistics.md)
+
 ## ROI
 
 DPABI V8.2 的 `y_ExtractROISignal` 接受 4D 功能像、ROI mask/多标签 atlas、去趋势、频带、TR、时间掩码和 scrubbing 参数。系统先校验 Nyquist、频带一致性、scrubbing 时序和 ROI 索引去重；网格、时间点和标签作为合同声明（`required_lineage`），当前确定性预览尚未逐项校验。校验通过后生成：

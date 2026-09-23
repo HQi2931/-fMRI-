@@ -1,5 +1,11 @@
 # 分析辅助模块（analysis）
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：fmri_methodologist
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.analysis` 是纯领域辅助模块：提供确定性的分析预览、诊断、模板与合同，**不启动进程、不修改原始数据、不读取密钥、不联网**。
 
 服务层（`neuroagent.application`）负责把项目根目录转换为允许的只读路径，再调用本模块；输出模型包含内容哈希、证据或 lineage 所需字段。
@@ -20,5 +26,5 @@
 ## 边界
 
 - 本模块当前为**本地确定性预览**：不启动 MATLAB、不训练模型、不联网检索。
-- 真实 `y_ExtractROISignal`、隔离 ML Runner、cluster NIfTI 网格采样与脱敏联网 RAG 均待 v0.2.0 单独接线与授权。
+- 真实 `y_ExtractROISignal`、隔离 ML Runner、cluster NIfTI 网格采样与脱敏联网 RAG 均待单独接线与授权。
 - `write_roi_exports` 与 `parse_cluster_table` 目前仅被测试调用，未接入任何 service/API 路径；若未来接线，必须先经过 PathPolicy 与批准 Artifact Tool 门控。

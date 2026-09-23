@@ -1,5 +1,11 @@
 # Execution 层
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：matlab_dpabi_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.execution` 负责结构化 Job、固定模板、受控进程和产物边界。它不决定科研参数、不修改工作流状态，也不接受 Agent 生成的任意 Shell 或 MATLAB 文本。
 
 当前实现包括：

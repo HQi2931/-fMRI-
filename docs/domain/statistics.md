@@ -1,5 +1,11 @@
 # 组统计设计
 
+- 状态：Implementing
+- 文档类型：Domain
+- 维护者：fmri_methodologist
+- 更新日期：2026-09-23
+- 关联：[统计设计的取值来源与装配](../architecture/statistical-design-assembly.md)
+
 ## 目标能力
 
 MVP 目标支持单样本 t 检验、两独立样本 t 检验、配对 t 检验和显式协变量。每次分析保存不可变 `StatisticalDesignRevision`。
@@ -15,7 +21,7 @@ MVP 目标支持单样本 t 检验、两独立样本 t 检验、配对 t 检验�
 
 ## 当前已接线能力
 
-当前候选基线已经接线统计设计 revision 的创建、结构校验、显式审批和审批失效规则，也能列出并校验 FDR/GRF 参数合同。受试者顺序、组方向、配对关系、协变量列和 contrast 由领域测试覆盖。
+当前实现已经接线统计设计 revision 的创建、结构校验、显式审批和审批失效规则，也能列出并校验 FDR/GRF 参数合同。受试者顺序、组方向、配对关系、协变量列和 contrast 由领域测试覆盖。
 
 公共 `POST /api/v1/statistics/runs` 当前只创建 `statistics_mock` 作业。Worker 不调用 DPABI 统计函数，也不生成未校正统计图、校正结果、效应量或簇表。
 

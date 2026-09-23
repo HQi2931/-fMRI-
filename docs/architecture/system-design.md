@@ -1,15 +1,20 @@
 # rs-fMRI Agent 系统设计
 
-状态：v0.1.0 候选架构；公共运行路径默认 Mock，真实 MATLAB 受授权门保护
-版本：0.1
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[目标架构](target-architecture.md)、[计划 0007](../plans/0007-capability-modularization-roadmap.md)
 
 ## 目标
 
 目标系统在本机完成静息态 fMRI 数据检查、方案编译、人工审批、MATLAB/DPABI 执行、QC 和组统计。Agent 用于解释和补全结构化请求，所有科学规则、状态变更和外部执行由确定性组件控制。
 
-当前候选基线已经完成元数据、Skill、审批、SQLite 队列、统一 ToolRuntime Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 Worker 已提供受控 MATLAB/DPABI 路由；真实执行仍必须通过配置、环境和逐次确认三重门，并以 smoke 证据作为发布验收。
+当前实现已完成元数据、Skill、审批、SQLite 队列、统一 ToolRuntime Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 Worker 已提供受控 MATLAB/DPABI 路由；真实执行仍必须通过配置、环境和逐次确认三重门，并以 smoke 证据作为验证依据。
 
 ## 运行拓扑
+
+Chat 与 Work 的自然语言输入先经已配置模型理解。Chat 输出知识回答或不可执行的任务草案；Work 仅接受受限动作枚举和未批准的增量参数草稿。服务端持久化草稿、检查完整性，并展示确定性的全量审阅文本。参数确认与执行确认分开：前者绑定用户审阅的草稿版本并编译 Skill，后者必须匹配当前方案版本及明确 QC 选择。模型输出不能提供批准、路径、项目身份或执行确认字段。模型调用在数据库写事务外进行；编译和启动的提交回调在会话版本校验之后、同一事务内执行，记录与业务变更一起提交。Repository 的事务内读取复用活动 Session，避免查询看不到本次写入。Work 外发预算包含字段 schema 和完整草稿，容量不足时保留草稿并拒绝外发。
 
 ```text
 React Web (localhost)
@@ -52,7 +57,7 @@ Web/API 默认创建 Mock 作业，也可在不可跳过确认后选择 MATLAB�
 - Skills：加载、解析、校验和编译声明式协议；输出不可变 SkillPlan。
 - Workflow/Tools：Workflow 状态机与 `ToolRuntime` 已接入 Mock 闭环；Tool 合同、Registry、能力锁和步骤级事件共同形成执行边界。
 - Execution/Infrastructure：SQLite、文件、模型 Provider 和 MATLAB 适配器。
-- Agent：只生成结构化建议；不能直接推进 PlanRevision 或 WorkflowInstance。
+- Agent：运行**有界工具调用循环**，可读取状态与生成草稿，但不能推进 PlanRevision 或 WorkflowInstance。工具按 `read`/`propose`/`execute` 三级声明权威，`execute` 工具在目录构建阶段即被排除，不进入 Provider 请求；循环自带步数、墙钟、token 预算与重复失败熔断，工步随会话在同一事务内落库。设计见 [ADR 0014](../adr/0014-bounded-tool-loop.md)。
 
 目标依赖方向为 API/Application -> Domain/Ports，Infrastructure 实现 Ports。领域层不得导入 FastAPI、SQLAlchemy、httpx 或 subprocess；候选树必须通过架构检查并在发布审查中确认没有反向依赖。
 

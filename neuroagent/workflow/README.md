@@ -1,5 +1,11 @@
 # Workflow 层
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.workflow` 实现审批后运行的状态机与独立 Worker。运行只能从仍有效的已批准 `PlanRevision` 创建；计划审批前状态不属于 Workflow。
 
 当前能力包括：

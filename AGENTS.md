@@ -15,14 +15,15 @@
 
 ## 2. 当前状态
 
-- v0.1.0 候选基线已实现 FastAPI/SQLite/Worker、React 前端、数据清单、Skill 编译与审批、Mock 执行、QC、统计设计和多 Provider Agent 的本地闭环；只有最终审查、CI、外部 smoke 与发布条件全部满足后才能标记 v0.1.0。
+- 已实现 FastAPI/SQLite/Worker、React 前端、数据清单、Skill 编译与审批、Mock 执行、QC、统计设计和多 Provider Agent 的本地闭环；文档用能力状态而非版本发布框架描述成熟度，实际能力与限制以 `docs/development/mvp-verification.md` 为准。
 - 公共运行接口默认且明确使用 Mock Executor；显式选择 MATLAB 时还需本机配置、入口探测、执行开关和逐次确认。受控预处理与统计已经接入公共 Worker，包含固定模板、稳定 DPABI 参数投影、超时/取消、独立 attempt 工作目录和实际产物完整性检查。
 - 纯合成后端 E2E 与确定性统计复现报告合同已实现；其中 typed 指标和统计结果角色是醒目标记的测试占位，不得冒充真实科研产物。
 - 真实 Provider 轻量调用取决于本机 API Key；CI 只使用 Mock Provider。真实 MATLAB smoke、真实 Provider smoke 和任何真实数据处理都必须单独授权并记录验证结果。
-- 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及最终发布门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于已发布。
-- `docs/architecture/neuroagent-framework-architecture.md` 是已标记为部分被替代的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
+- 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及当前门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于全面验证。
+- `docs/archive/architecture/neuroagent-framework-architecture.md` 是已归档的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
 - `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖。
+- Agent 已具备**有界工具调用循环**（ADR 0014）：Chat 可多跳检索；Work 只提供只读工具（运行状态、产物类型汇总、统计结果、校正能力、Skill 清单），且循环的最终文本即 Work 原有 JSON 契约，解析与授权路径未变，非法 JSON 会回退单次路径。Work 的动作集合由 `work_actions.py` 单一维护并只允许 READ/PROPOSE；EXECUTE 动作在目录构建阶段即被丢弃。未声明 `ModelCapability.TOOL_USE` 的模型仍走原有单次路径，行为不变。
 - 优先建立最小垂直闭环：数据检查 → Skill 解析与方案校验 → 人工确认 → Workflow/MATLAB/DPABI 执行 → QC → 统计分析 → 报告。
 
 ## 3. 已确认的本机科研软件环境
@@ -133,6 +134,16 @@ Web Frontend
 - Agent 不能直接执行任意代码、覆盖文件、排除受试者、改变统计方法或推进工作流。
 - 所有科学参数必须经过 schema 验证；关键预处理和统计方案必须由用户确认。
 - Agent 只能推荐、解释和补全 SkillRequest，不能自由排列 Skill 步骤或覆盖 SkillValidator 的阻断问题。
+- Agent 通过**有界工具调用循环**获取信息。工具按权威层级分三级，详见 [ADR 0014](docs/adr/0014-bounded-tool-loop.md)：
+  - `READ`：只观察状态，模型可自由调用，结果回灌上下文。
+  - `PROPOSE`：只写草稿、修订与提案，绝不启动计算。
+  - `EXECUTE`：启动或批准真实工作，**永不出现在发给 provider 的 tools 数组与系统提示词中**。
+- 硬约束：**EXECUTE 工具必须在目录构建阶段被丢弃**，不能只在派发时拒绝；`ToolDispatcher` 仍要二次校验层级作为纵深防御。新增工具必须先声明层级，越权工具会让导入期与测试期的检查失败。
+- 循环必须有界：步数、墙钟、token 三重量与「连续同名同错误码失败」熔断均为强制项；停止原因使用 `AgentLoopStopReason` 显式枚举，不得用空回答表示失败。
+- 工具结果视为不可信数据：注入模型前必须经 `redact_tool_result()` 处理并标记 `untrusted_content`；系统提示词必须声明其为数据而非指令。
+- 工具必须自行限制输出规模（列表不超过 100 项、字符串不超过 20k 字符），超出即失败关闭。
+- Work 模式模型可选择动作的唯一事实来源是 `neuroagent/application/work_actions.py`；`WorkInterpretation.action` 必须校验该集合，提示词中的动作清单必须与集合一致（由测试守护）；关键词回退路径 `ConversationWorkCoordinator.resolve_action()` 只允许返回 READ/PROPOSE 动作。
+- 循环步进必须与消息在同一事务内落库，并按 `step_index` 排序，保证审计顺序等于执行顺序。
 
 ## 6. 数据与科研安全
 
@@ -206,6 +217,7 @@ runs/{run_id}/
 - `docs/plans/` 为每个里程碑记录目标、范围、任务、风险和完成标准。
 - `CHANGELOG.md` 记录用户可见变化。
 - 不复制大段第三方文档；记录版本、入口和原始来源。
+- 文档必须遵循 [`docs/development/documentation-standard.md`](docs/development/documentation-standard.md)：统一状态块与状态枚举、禁止发布版本包装、按 `docs/README.md` 索引登记，并通过 `scripts/check-docs.ps1` 校验。
 
 任何架构、公共接口、数据模型、DPABI 参数映射、工作流状态或安全边界的改变，都必须在同一变更中更新文档。若文档暂时无法同步，该功能不算完成。
 

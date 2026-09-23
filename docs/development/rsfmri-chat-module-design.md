@@ -1,10 +1,19 @@
 # rs-fMRI Chat Mode Phase 1 设计
 
+- 状态：Implemented
+- 文档类型：Development
+- 维护者：backend_service_engineer
+- 创建日期：2026-09-07
+- 更新日期：2026-09-23
+- 关联：[Phase 1 实施报告](rsfmri-chat-phase1-implementation-report.md)、[API v1 契约](../api/api-v1.md)
+
 > 2026-09-08 更新：下文保留 Phase 1 历史设计／验证记录。当前已接通最近消息、固定上下文及摘要的脱敏模型输入；
 > 意图判断与追问改写合并一次调用，明确寒暄免检索；上传 PDF 可手动加入独立 Chroma collection，
 > 支持状态、重试与论文筛选；逐消息引用按正文编号校验，可定位原 PDF 物理页。
-> 当前接口与操作以 [API 文档](api/api-v1.md) 为准。仍无流式输出、OCR、长期记忆或后台索引队列；
+> 当前接口与操作以 [API 文档](../api/api-v1.md) 为准。仍无流式输出、OCR、长期记忆或后台索引队列；
 > 本轮仅作离线定向验证，未调用真实 DashScope／回答模型，不将离线通过视为在线质量验证。
+
+范围：Milestone 1 Chat Skeleton、Milestone 2 Literature Management、Milestone 3 Scientific Chunking。
 
 
 ## 用户后续要求：直接复用已有 RAG
@@ -20,10 +29,6 @@
 索引与模型维度保持兼容，不使用未经校准的固定分数作为证据真实性阈值。
 
 仅做 RRF/去重/来源和适配器关键回归、真实索引离线向量查询，避免扩大测试矩阵。
-
-- 日期：2026-09-07
-- 状态：Implementation-ready
-- 范围：Milestone 1 Chat Skeleton、Milestone 2 Literature Management、Milestone 3 Scientific Chunking
 
 ## 1. 总体架构
 

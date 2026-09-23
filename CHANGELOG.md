@@ -4,6 +4,36 @@
 
 ## Unreleased
 
+### 文档
+
+- 新增 [文档规范](docs/development/documentation-standard.md) 与 [文档索引](docs/README.md)：统一状态块与状态枚举、目录与命名规则、权威文档表、归档规则和禁用的发布版本包装。
+- 新增 `scripts/check-docs.ps1` 并接入 `scripts/quality-gate.ps1`：校验链接与锚点、状态块与枚举、归档入链、索引覆盖和禁用版本标签。
+- 归档 6 个已完成或被取代的文档到 `docs/archive/`（计划 0002、计划 0004、早期框架草案、Chat 模块分析、两次服务/仓储重构文档），并加归档横幅、修正全部入链；移除 `docs/superpowers/` 目录。
+- 3 个 Chat 文档从 `docs/` 根目录归位到 `docs/development/`。
+- 从现行文档移除 `v0.1.0`/`v0.2.0`/`v1.0.0`/`MVP1.0` 发布版本框架，改为按能力状态与阶段描述：计划 0007 重命名为 `0007-capability-modularization-roadmap.md`，目标架构重命名为 `target-architecture.md`，`README.md`、`AGENTS.md`、产品范围、验证记录、系统设计与相关 ADR 同步更新。ADR 0006 作为历史决策记录保持原样。
+- 全部 `docs/` 现行文档与模块 README 补齐统一状态块；新增 `neuroagent/{agent,api,application,chat,literature}` 五个缺失的模块 README。
+
+- 完成一次由用户授权的 **DemoData Sub_001 真实 DPABI 预处理验收**：经 Work 对话自然语言路径与服务端精确确认口令驱动，公共 Worker 调用本机 MATLAB R2024b / SPM25 / DPABI V9.0_250415，运行进入 `qc_review`，登记 6 个带 SHA-256 的 Artifact（时序、脑掩膜、raw ALFF、执行日志、metadata evidence、头动 QC 报告），源数据 SHA-256 不变。`raw_alff.nii` 的哈希与 2026-09-18 冒烟**逐字节相同**，证明版本证据修正只影响元数据与哈希链、没有改变计算，且本机计算可复现。证据见[验证记录](docs/development/mvp-verification.md)。
+- 新增 `tests/science/test_demodata_acceptance.py`（标记 `demodata_smoke`，默认跳过，CI 不启用）与 `neuroagent/infrastructure/filesystem/nifti_header.py`：验收参数一律从 NIfTI 头推导而不是文件名。据此实测 DemoData 三受试者时间点数**不一致**（Sub_001 为 234、Sub_002/003 为 239），文件名中的 `240` 只是扫描仪描述符；三受试者计划因此必须先做逐受试者归一化，且该归一化属于测试夹具而非科研默认值。
+- 修复 `scripts/docs-policy.ps1` 在工作树存在未暂存重命名时崩溃的问题（`git ls-files --cached` 仍返回旧路径），并修正 `docs/development/documentation-standard.md` 归档横幅示例中被误认为真实链接的占位符。
+
+- 新增有界工具调用循环（[ADR 0014](docs/adr/0014-bounded-tool-loop.md)）：工具按 `READ`/`PROPOSE`/`EXECUTE` 三级声明权威，**EXECUTE 工具在目录构建阶段即被丢弃**，不进入发给模型的 tools 数组；循环有步数、墙钟、token 三重预算与重复失败熔断，停止原因是显式枚举。声明 `tool_use` 能力的模型走循环，未声明的模型保持原有单次路径不变。
+- Chat 由此支持多跳检索：模型可连续调用 `search_evidence` 与 `list_skills`，工具分配的证据编号与最终引用编号一致；既有引用校验（无效 `[Cn]` 剔除）继续生效。循环未产出答案时自动回退单次路径。
+- Work 接入同一循环，但只提供**只读**工具（运行状态、运行产物类型、已登记统计结果、多重比较校正能力、Skill 清单）——这些正是 `work_context` 未携带的状态。循环的最终文本就是 Work 原有的 JSON 契约，因此解析、校验与全部授权路径未变；若循环产出不是合法 JSON，则回退单次路径重试，保证 JSON 模式仍然有效。工具轮次不再同时要求 JSON 输出模式（二者组合会被多数 OpenAI 兼容网关拒绝）。
+- Work 的模型可选用动作改由 `neuroagent/application/work_actions.py` 单一维护，`WorkInterpretation.action` 校验集合成员。原 `start_preprocessing` 更名为 `propose_run_confirmation` 并降为提案层级：它只渲染需要用户本人回复的确认指令。关键词回退路径不再能返回启动、批准、跳过 QC 或建立工作区等动作。
+- 新增统计设计装配器 `neuroagent/application/statistics_draft.py`（对话式统计设计的第一步，尚未接入对话）：把「方法选择」与「数据来源」显式分开——模型/用户只能指定检验类型、分组列名、协变量列名与中心化、尾部和校正参数，**受试者顺序、各受试者产物 ID、掩膜产物 ID 与协变量取值全部由服务端提供**。装配器不重复领域层已有的科学校验（对齐、配对顺序、分组数、规范对比向量、设计矩阵满秩、残差自由度），只负责取值来源与顺序，并把领域拒绝翻译成可展示的阻断项而不是抛异常。设计说明见 [统计设计的取值来源与装配](docs/architecture/statistical-design-assembly.md)。
+- 同模块的 `collect_design_sources()` 从运行的已登记产物与 QC 决定解析设计来源：**受试者顺序取自 QC 决定而非文件系统**；每个受试者必须恰好一个指定类型指标产物，掩膜必须恰好一个，缺失或歧义一律阻断而不擅自选择。
+- 统计设计草稿 `StatisticsDraft` 支持多轮累积，并**剥离模型提交的服务端独占字段**（运行 ID、QC revision 与哈希、输入清单哈希、确认哈希），因此模型无法自行把设计绑定到某个运行或 QC 决定，也无法预先封印确认。草稿渲染会明确标注哪些值由服务端在确认时冻结登记。
+- 新增 `0014_agent_tool_loop` 迁移：`conversation_tool_calls` 增加 `step_index`、`risk_tier`、`provider_call_id`、`duration_ms` 与 `(conversation_id, step_index)` 索引；循环步进与会话消息在同一事务内落库，并按 `step_index` 排序。Chat 与 Work 共用同一份步进收口逻辑。
+- 工具循环的预算改为可配置并默认保守：`RSFMRI_AGENT_TOOL_LOOP_ENABLED`、`RSFMRI_AGENT_MAX_TOOL_STEPS`、`RSFMRI_AGENT_MAX_TOOL_SECONDS`、`RSFMRI_AGENT_MAX_TOOL_TOKENS`、`RSFMRI_AGENT_MAX_REPEAT_TOOL_FAILURES`、`RSFMRI_AGENT_TOOL_RESULT_MAX_BYTES`。关闭开关后即使模型声明 `tool_use` 也不会收到任何工具，行为回到循环之前。
+- 前端在回复气泡下按执行顺序展示工具步骤（名称、层级、状态、耗时），刷新后可从会话记录恢复；`ConversationToolCallView` 与 `ConversationTurnView.tool_calls` 已同步到 OpenAPI 与生成类型。
+- 修正 DPABI 版本证据：`evidence_refs` 与 Skill 兼容性标签从 `V8.2_240510` 更正为实际安装并核验的 **V9.0_250415**（MATLAB R2024b、SPM25 25.01.02）。此前每次编译都会产生三条不成立的版本不兼容告警。
+- 修复一个真实缺陷：Alembic `fileConfig()` 默认 `disable_existing_loggers=True`，迁移一旦在进程内运行就会静默关闭全部 `neuroagent.*` logger，导致 API 未处理错误日志与 Worker 执行器故障日志在生产环境丢失。现已保留既有 logger。
+- Worker 失败诊断改进：执行器异常在本地记录完整 traceback，落库原因改为经过脱敏的可定位摘要（例如 `executor_error:MatlabExecutionError: MATLAB executable not found: [REDACTED-PATH]`），并绑定同一次尝试的 trace id 以便事件关联。
+- Chat 接入完整语义路由，修复 ALFF 方案查询误判为执行请求；Work 接入模型回答、多轮参数草稿、完整参数审阅与显式确认后的 Skill 编译。草稿变更使旧确认失效，启动需要当前方案版本与 QC 选择，模型不能授予执行权限。确认产生的数据库变更与会话记录在版本检查后的同一事务中提交，事务内查询可读取本次写入；模型上下文预算包含草稿及字段结构。
+
+- 对话工作台视觉更新：采用森林绿侧栏与浅色内容区，统一模式切换、会话工具栏、消息、输入框与设置表单；优化窄屏排版、键盘焦点和多行消息阅读。
+
 - QC 改为 Work 启动时由用户明确选择。选择跳过时，DPABI 成功产物直接完成运行并可作为统计来源；新增 `/runs/{run_id}/qc-skip` 记录版本、操作者、原因和哈希。头动检测失败保留计算产物与失败证据，用户可随后显式跳过 QC；统计报告会标记 QC 跳过决定。
 
 - 前端进一步收敛为 Chat/Work 双模式对话工作台，环境与模型配置保留在右上角设置；删除独立业务页面、消息操作卡片、卡片能力目录、草稿状态和卡片动作接口。旧业务地址统一显示同一工作台，既有底层 REST 业务服务继续保留。
@@ -23,7 +53,7 @@
 - Chat 科研问答闭环：最近 12 条消息接入脱敏模型上下文，寒暄免检索，意图与追问改写合并一次调用；PDF 可手动加入独立知识库，支持索引状态、失败重试和论文筛选；回答按证据编号保存引用，可逐消息展开并定位原 PDF 物理页。新增索引状态迁移，旧论文不自动建索引。
 
 - 新增 rs-fMRI Chat Mode Phase 1：独立 `ChatAgent`、窄接口、PDF 文献管理、科研 section 识别、section-aware chunking 和逐页 traceability；按后续要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG，修复融合去重并减少重复重排。上传 chunks 由显式“加入知识库”操作向量化，旧库缺失页码保持未知。
-- 新增 MVP1.0 目标架构、能力化模块单体 ADR 和 10–12 周开发路线图，明确以显式应用服务、窄端口、版本化 JobEnvelope、服务端状态真源和前端 feature 分片渐进演进，不拆微服务。
+- 新增目标架构、能力化模块单体 ADR 和阶段性演进路线图，明确以显式应用服务、窄端口、版本化 JobEnvelope、服务端状态真源和前端 feature 分片渐进演进，不拆微服务。
 - 新增 Agent 对话工作台：可选择本机 fMRI 工作区，调用只读检查并在右侧展示 DPABI 输入阶段、受试者配对、NIfTI 头标记问题和已有结果目录。
 - Agent 工作台新增 `Chat`/`Work` 分类：Chat 调用本地 rs-fMRI RAG 并展示证据，Work 承载工作区检查、预处理和结果分析入口。
 - Chat 现可把本地 RAG 证据交给用户选择的 LLM 生成回答；显式开启联网搜索时，仅路由到声明 `web_search` 能力的模型，并保存模型、脱敏上下文哈希和 URL 引用。
@@ -33,13 +63,13 @@
 - Work 对话已编排工作区检查、运行进度和 DPABI 启动；真实启动继续要求已审批计划和逐次确认，并进入现有 Workflow/Worker。
 - 工作区目录只能通过系统文件夹选择器选取；新增显式 `in_place` DPABI 模式，在复核冻结输入哈希后把所选 DPABI-ready 工作副本作为 `WorkingDir`，结果 stage 写回该工作区，运行脚本、日志和登记产物保持 attempt 隔离。
 
-### v0.1.0 release work
+### 真实执行与证据闭环
 
 - 新增 `ExecutionBackend` 控制面：Mock 默认；MATLAB 必须逐次确认、配置开关和环境探测同时通过。
 - 新增批准计划专用 `WorkflowFactory`/`ToolRuntime`：Mock 逐节点执行 DAG；MATLAB 适配器校验冻结计划并编译受控分段作业，不逐节点经过 `ToolRuntime`。
 - Worker 已注册 `matlab_preprocessing`/`matlab_statistics` 路由；统计模板覆盖三类 t 检验、FDR/GRF、效应量、26 邻接簇表和结构化版本证据。
 - 恢复脚本改用内置 .NET SHA-256，兼容无 Profile 的 Windows PowerShell 5.1/7。
-- ADR 0006 取代原 0004 的延期策略；真实统计、小型预处理、组合指标和 Provider smoke 已完成，最终发布状态以 GitHub Release 与对应 tag 为准。
+- ADR 0006 取代原 0004 的延期策略；真实统计、小型预处理、组合指标和 Provider smoke 已完成，最终状态以 GitHub Release 与对应 tag 为准。
 - 环境配置改为前端首次使用时由用户选择 MATLAB 可执行文件、SPM 目录和 DPABI 目录；版本标签仅作本机证据，不再硬编码为通用兼容条件。
 - 补齐冻结 SkillPlan/manifest 到真实预处理的公共路径；每次执行使用独立 attempt/staging，校验源文件哈希，并从实际 NIfTI 登记元数据与谱系。
 - 修正带协变量的独立组效应量：根据冻结设计矩阵的对比方差计算调整后标准化组差；保存效应定义与比例，正负效应分别提取 26 邻接簇，未校正簇明确标为描述性结果。
@@ -49,10 +79,10 @@
 ### Added
 
 - 扩展 Phase 10–17 的确定性基础：长任务阶段事件、DPABI/MATLAB 失败诊断、ROI 长宽表导出、CSV/XLSX 检查、subject-level ML 模板、cluster 坐标匹配、DPABI 整理预览和本地 rs-fMRI 证据问答。
-- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills（部分仍为契约/预览包，不属于 v0.1 真实执行范围）。
+- 新增 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、ML、cluster 和方法学问答 Skills（部分仍为契约/预览包，不在当前真实执行范围内）。
 
-- 本地 FastAPI、SQLite Worker、React/TypeScript 前端与 MATLAB/DPABI 静态适配的 MVP 候选基线。
-- 仓库安全策略、依赖锁定、Windows 质量门禁、GitHub Actions 和阶段自动发布脚本。
+- 本地 FastAPI、SQLite Worker、React/TypeScript 前端与 MATLAB/DPABI 静态适配的首个可运行基线。
+- 仓库安全策略、依赖锁定、Windows 质量门禁、GitHub Actions 和阶段关门脚本。
 - 多 Provider ModelGateway、自动能力路由、结构化模型输出和数据外发去标识化策略。
 - 数据检查、人口学对齐、受试者级数据集划分、QC、t 检验、FDR 和 GRF 设计文档。
 - 静息态 fMRI 运行时 Skill 层架构，覆盖 SkillSpec、解析、校验、编译、审批、Workflow 调用与 provenance。
