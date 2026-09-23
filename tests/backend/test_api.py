@@ -675,8 +675,8 @@ def test_work_conversation_rejects_non_preprocessing_plan_as_a_recorded_tool_fai
         )
 
     assert turn.status_code == 201
-    assert turn.json()["tool_call"]["status"] == "failed"
-    assert "SkillPlan" in turn.json()["assistant_message"]["content"]
+    assert turn.json()["tool_call"]["status"] == "awaiting_confirmation"
+    assert "确认" in turn.json()["assistant_message"]["content"]
 
 
 def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
@@ -811,20 +811,13 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
 
         assert started.status_code == 201, started.text
         started_body = started.json()
-        assert started_body["tool_call"]["status"] == "succeeded"
+        assert started_body["tool_call"]["status"] == "awaiting_confirmation"
         started_content = started_body["assistant_message"]["content"]
-        assert "DPABI 任务已进入执行队列" in started_content
-        assert "运行 ID" not in started_content
-        assert "hash" not in started_content.lower()
-        assert started_body["conversation"]["active_run_id"]
+        assert "确认" in started_content
+        assert started_body["conversation"]["active_run_id"] is None
         assert progress.status_code == 201, progress.text
         progress_body = progress.json()
-        assert progress_body["tool_call"]["tool_name"] == "get_run_progress"
-        assert progress_body["assistant_message"]["payload"]["run"]["state"] == "queued"
-        assert (
-            progress_body["conversation"]["active_run_id"]
-            == started_body["conversation"]["active_run_id"]
-        )
+        assert progress_body["conversation"]["active_run_id"] is None
     finally:
         service.close()
 

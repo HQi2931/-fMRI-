@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,6 +30,7 @@ from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.tool_result import ToolCallOutcome
 from neuroagent.agent.tool_spec import LlmTool, ToolTier
 from neuroagent.application.agent_tools import AuditSink, ToolBinding, ToolDispatcher
+from neuroagent.application.errors import NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,23 @@ ListArtifactsCall = Callable[[str], Sequence[Mapping[str, Any]]]
 ListResultsCall = Callable[[str], Sequence[Mapping[str, Any]]]
 CorrectionCapabilitiesCall = Callable[[], Sequence[Mapping[str, Any]]]
 ListSkillsCall = Callable[[], Sequence[Mapping[str, Any]]]
+
+
+@dataclass(frozen=True)
+class AgentExecutionContext:
+    """Request-scoped authority passed to model-visible Work tools.
+
+    The model may name any run-shaped identifier, but the server decides which
+    identifiers are actually readable for this turn.  Keeping this object
+    immutable makes it safe to hand to a dispatcher created for one request.
+    """
+
+    conversation_id: str | None = None
+    project_id: str | None = None
+    allowed_run_ids: frozenset[str] = frozenset()
+    selected_profile_id: str | None = None
+    context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 GET_RUN_STATUS_TOOL = LlmTool(
     name="get_run_status",
@@ -112,11 +131,33 @@ def build_work_tool_bindings(
     list_results: ListResultsCall | None = None,
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
+    project_id: str | None = None,
+    allowed_run_ids: frozenset[str] | None = None,
 ) -> list[ToolBinding]:
     """Bind the Work read catalog to injected application-service callables."""
 
+    def scoped_run(arguments: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]] | None:
+        run_id = str(arguments["run_id"])
+        # A missing scope is retained for direct library callers and migration
+        # compatibility.  Request-created dispatchers always provide both.
+        if allowed_run_ids is not None and run_id not in allowed_run_ids:
+            return None
+        try:
+            view = dict(get_run(run_id))
+        except NotFoundError:
+            return None
+        if project_id is not None and str(view.get("project_id", "")) != project_id:
+            return None
+        return run_id, view
+
     def get_run_status(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-        view = dict(get_run(str(arguments["run_id"])))
+        scoped = scoped_run(arguments)
+        if scoped is None:
+            return {
+                "run_id": str(arguments["run_id"]),
+                "status": "not_available_in_scope",
+            }
+        _, view = scoped
         # Path-free, aggregate-only projection.
         return {
             "run_id": view.get("run_id"),
@@ -128,9 +169,18 @@ def build_work_tool_bindings(
         }
 
     def list_run_artifacts(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        scoped = scoped_run(arguments)
+        if scoped is None:
+            return {
+                "run_id": str(arguments["run_id"]),
+                "status": "not_available_in_scope",
+                "total": 0,
+                "artifact_types": [],
+            }
+        run_id, _ = scoped
         if list_artifacts is None:
             return {"total": 0, "artifacts": []}
-        items = list(list_artifacts(str(arguments["run_id"])))
+        items = list(list_artifacts(run_id))
         counts: dict[str, int] = {}
         for item in items:
             artifact_type = str(item.get("artifact_type", ""))
@@ -144,9 +194,18 @@ def build_work_tool_bindings(
         }
 
     def get_statistical_results(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        scoped = scoped_run(arguments)
+        if scoped is None:
+            return {
+                "run_id": str(arguments["run_id"]),
+                "status": "not_available_in_scope",
+                "total": 0,
+                "results": [],
+            }
+        run_id, _ = scoped
         if list_results is None:
             return {"total": 0, "results": []}
-        items = list(list_results(str(arguments["run_id"])))
+        items = list(list_results(run_id))
         return {
             "total": len(items),
             "results": [
@@ -212,6 +271,8 @@ def build_work_dispatcher(
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
     audit: AuditSink | None = None,
+    project_id: str | None = None,
+    allowed_run_ids: frozenset[str] | None = None,
 ) -> ToolDispatcher:
     return ToolDispatcher(
         build_work_tool_bindings(
@@ -220,6 +281,8 @@ def build_work_dispatcher(
             list_results=list_results,
             correction_capabilities=correction_capabilities,
             list_skills=list_skills,
+            project_id=project_id,
+            allowed_run_ids=allowed_run_ids,
         ),
         policy=policy,
         audit=audit,
@@ -244,7 +307,7 @@ class WorkToolLoopResult(BaseModel):
 
 BuildMessages = Callable[..., ChatMessages]
 CallTurn = Callable[..., Awaitable[ToolTurnResult]]
-DispatcherFactory = Callable[[], ToolInvoker]
+DispatcherFactory = Callable[[AgentExecutionContext], ToolInvoker]
 CapabilityProbe = Callable[[str | None], Awaitable[bool]]
 
 
@@ -283,6 +346,9 @@ class WorkToolRunner:
         work_context: Mapping[str, Any],
         preferred_profile_id: str | None,
         model: str | None,
+        execution_context: AgentExecutionContext | None = None,
+        context_window_tokens: int = 16_384,
+        max_output_tokens: int = 2_048,
     ) -> WorkToolLoopResult:
         rendered = self._build_messages(
             question=question,
@@ -294,7 +360,7 @@ class WorkToolRunner:
             allow_web_search=False,
             work_mode=True,
         )
-        dispatcher = self._dispatcher_factory()
+        dispatcher = self._dispatcher_factory(execution_context or AgentExecutionContext())
         tools: tuple[LlmTool, ...] = dispatcher.catalog
 
         messages: list[dict[str, Any]] = [dict(message) for message in rendered.messages]
@@ -307,18 +373,26 @@ class WorkToolRunner:
 
         captured: dict[str, Any] = {}
 
-        async def call_model(transcript: list[dict[str, Any]]) -> ProviderResponse:
+        async def call_model(
+            transcript: list[dict[str, Any]], *, remaining_seconds: float | None = None
+        ) -> ProviderResponse:
             turn = await self._call_turn(
                 messages=transcript,
                 tools=tools,
                 preferred_profile_id=preferred_profile_id,
                 model=model,
+                remaining_seconds=remaining_seconds,
             )
             captured["profile_id"] = turn.selected_profile_id
             captured["attempted"] = turn.attempted_profile_ids
             return turn.response
 
-        result = await AgentLoop(dispatcher, budget=self._budget).run(
+        budget = replace(
+            self._budget,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_output_tokens,
+        )
+        result = await AgentLoop(dispatcher, budget=budget).run(
             messages=messages,
             call_model=call_model,
         )

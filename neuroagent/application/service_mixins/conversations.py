@@ -206,6 +206,7 @@ class ConversationMixin(BaseServiceMixin):
                     active_run_id=active_run_id,
                     project_id=project_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
                 )
             model_metadata = action_result.payload.get("model")
             return (

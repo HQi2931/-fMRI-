@@ -16,6 +16,7 @@ from neuroagent.application.contracts import (
     ApprovalCreate,
     ApprovalView,
     ArtifactView,
+    ConfirmationChallengeView,
     ContextSummaryView,
     ConversationContextView,
     ConversationMessageView,
@@ -37,6 +38,7 @@ from neuroagent.application.contracts import (
     ModelProfileView,
     PlanRevisionView,
     ProjectView,
+    QcExecutionMode,
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
@@ -166,6 +168,29 @@ class RepositoryPort(Protocol):
     ) -> ConversationView: ...
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
+
+    def create_confirmation_challenge(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: QcExecutionMode,
+        ttl_seconds: int = 600,
+    ) -> ConfirmationChallengeView: ...
+
+    def consume_confirmation_challenge(
+        self,
+        *,
+        confirmation_id: str,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: QcExecutionMode,
+        run_id: str,
+    ) -> ConfirmationChallengeView: ...
 
     def list_conversations(
         self, *, mode: ConversationMode | None = None

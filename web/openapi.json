@@ -1098,6 +1098,19 @@
             "title": "Allow Remote Search",
             "type": "boolean"
           },
+          "confirmation_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Id"
+          },
           "content": {
             "maxLength": 8000,
             "minLength": 1,

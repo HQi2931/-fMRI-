@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -270,12 +271,18 @@ def test_demodata_real_dpabi_preprocessing_reaches_qc() -> None:
                     headers={"Idempotency-Key": "demodata-dpabi-prepare"},
                 )
                 assert prepared.status_code == 201, prepared.text
-                plan = prepared.json()["assistant_message"]["payload"]["plan_revision"]
+                prepared_body = prepared.json()
+                plan = prepared_body["assistant_message"]["payload"]["plan_revision"]
+                confirmation_match = re.search(
+                    rf"批准并启动 {plan['plan_hash'][:12]} 做头动QC [a-f0-9-]+",
+                    prepared_body["assistant_message"]["content"],
+                )
+                assert confirmation_match, prepared_body["assistant_message"]["content"]
 
                 confirmed = client.post(
                     f"/api/v1/conversations/{conversation_id}/turns",
                     json={
-                        "content": f"批准并启动 {plan['plan_hash'][:12]} 做头动QC",
+                        "content": confirmation_match.group(0),
                         "workspace_path": str(workspace),
                     },
                     headers={"Idempotency-Key": "demodata-dpabi-confirm"},

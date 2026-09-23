@@ -33,7 +33,7 @@ from neuroagent.application.work_draft import (
     merge_work_draft,
     render_draft_review,
 )
-from neuroagent.application.work_tools import WorkToolRunner
+from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
 
@@ -69,14 +69,43 @@ def latest_payload(conversation: ConversationView, key: str) -> dict[str, Any] |
     return None
 
 
-def execution_command(plan_hash: str, qc: str) -> str:
-    return f"批准并启动 {plan_hash[:12]} {qc}"
+def execution_command(plan_hash: str, qc: str, confirmation_id: str | None = None) -> str:
+    suffix = f" {confirmation_id}" if confirmation_id else ""
+    return f"批准并启动 {plan_hash[:12]} {qc}{suffix}"
+
+
+def _work_loop_metadata(looped: Any) -> dict[str, Any]:
+    """Persist loop outcomes even when the final answer requires fallback."""
+
+    return {
+        "enabled": True,
+        "stop_reason": looped.stop_reason,
+        "steps": looped.steps,
+        "tool_names": list(looped.tool_names),
+        "usage": looped.usage,
+        "fallback_candidate": not bool(looped.final_text.strip()),
+        "fallback_used": False,
+        "calls": [
+            {
+                "tool_name": outcome.name,
+                "status": outcome.status.value,
+                "risk_tier": outcome.tier.value if outcome.tier is not None else None,
+                "step_index": index,
+                "provider_call_id": outcome.call_id,
+                "duration_ms": outcome.duration_ms,
+                "input": outcome.arguments,
+                "output": outcome.result,
+                "error": outcome.error_code or outcome.message,
+            }
+            for index, outcome in enumerate(looped.outcomes, start=1)
+        ],
+    }
 
 
 # The user echoes this exact, server-issued command; a model cannot forge it
 # because authorization is never taken from model output.  The pattern and
 # ``execution_command`` must stay in step.
-EXECUTION_COMMAND_PATTERN = r"批准并启动 ([a-f0-9]{12}) (做头动QC|跳过QC)"
+EXECUTION_COMMAND_PATTERN = r"批准并启动 ([a-f0-9]{12}) (做头动QC|跳过QC) ([a-f0-9-]{36})"
 
 
 class WorkDialogue:
@@ -143,6 +172,12 @@ class WorkDialogue:
         plan_data = latest_payload(conversation, "plan_revision")
         # Authorization is an exact, server-issued command, never a model or UI boolean.
         start = re.fullmatch(EXECUTION_COMMAND_PATTERN, text)
+        legacy_start = re.fullmatch(r"批准并启动 ([a-f0-9]{12}) (做头动QC|跳过QC)", text)
+        if legacy_start:
+            return reply(
+                "这条启动指令缺少当前方案对应的一次性确认标识。"
+                "请先让系统签发最新确认指令，再原样回复。"
+            )
         if start:
             if start_confirmation_used:
                 return reply(
@@ -161,6 +196,7 @@ class WorkDialogue:
                     "plan_revision_id": plan_data["plan_revision_id"],
                     "expected_plan_hash": plan_data["plan_hash"],
                     "real_execution_confirmed": True,
+                    "confirmation_id": start[3],
                     "qc_mode": QcExecutionMode.REQUIRE
                     if start[2] == "做头动QC"
                     else QcExecutionMode.SKIP,
@@ -174,6 +210,7 @@ class WorkDialogue:
                     project_id=project_id,
                     active_run_id=conversation.active_run_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation.conversation_id,
                 )
                 if result.active_run_id is None:
                     # Nothing was queued, so the confirmation stays unused.
@@ -227,6 +264,7 @@ class WorkDialogue:
                     project_id=project_id,
                     active_run_id=conversation.active_run_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation.conversation_id,
                 ),
             )
 
@@ -243,6 +281,8 @@ class WorkDialogue:
                     "parameter_draft": draft.model_dump(mode="json", exclude={"confirmed_hash"}),
                     "draft_schema": draft_schema(),
                 },
+                "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
+                "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
             }
             counter = RegexTokenCounter()
             budget = int(packet.metadata.get("token_budget", 0))
@@ -263,6 +303,20 @@ class WorkDialogue:
                 model_context,
                 preferred_profile_id=preferred_profile_id,
                 model=request.model,
+                execution_context=AgentExecutionContext(
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    allowed_run_ids=frozenset(
+                        run_id
+                        for run_id in (request.target_run_id, conversation.active_run_id)
+                        if run_id
+                    ),
+                    selected_profile_id=preferred_profile_id,
+                    context_window_tokens=int(
+                        packet.metadata.get("context_window_tokens", 16_384)
+                    ),
+                    max_output_tokens=int(packet.metadata.get("max_output_tokens", 2_048)),
+                ),
             )
             interpreted = WorkInterpretation.model_validate_json(raw_content)
             if interpreted.draft_patch and interpreted.action != "prepare_preprocessing_plan":
@@ -291,11 +345,29 @@ class WorkDialogue:
             if interpreted.action == "propose_run_confirmation":
                 if not plan_data or (saved and not saved.get("compiled")):
                     return reply("请先补全并确认参数草稿，生成可审查的方案后再启动。", payload)
+                if not project_id:
+                    return reply("当前对话尚未绑定项目，无法签发启动确认。", payload)
+                plan_revision_id = str(plan_data["plan_revision_id"])
+                plan_hash = str(plan_data["plan_hash"])
+                require_id = self.coordinator.create_confirmation_challenge(
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    plan_revision_id=plan_revision_id,
+                    plan_hash=plan_hash,
+                    qc_mode=QcExecutionMode.REQUIRE,
+                )
+                skip_id = self.coordinator.create_confirmation_challenge(
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    plan_revision_id=plan_revision_id,
+                    plan_hash=plan_hash,
+                    qc_mode=QcExecutionMode.SKIP,
+                )
                 return reply(
                     "启动计算需要单独确认当前方案及 QC 选择。请审查方案后回复以下一种：\n"
-                    + execution_command(str(plan_data["plan_hash"]), "做头动QC")
+                    + execution_command(plan_hash, "做头动QC", require_id)
                     + "\n"
-                    + execution_command(str(plan_data["plan_hash"]), "跳过QC"),
+                    + execution_command(plan_hash, "跳过QC", skip_id),
                     payload,
                 )
             target = dispatch_target(interpreted.action)
@@ -312,6 +384,7 @@ class WorkDialogue:
                     project_id=project_id,
                     active_run_id=conversation.active_run_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation.conversation_id,
                 )
                 return replace(
                     result, payload={**result.payload, **payload}, workspace_path=workspace_path
@@ -329,6 +402,7 @@ class WorkDialogue:
         *,
         preferred_profile_id: str | None,
         model: str | None,
+        execution_context: AgentExecutionContext | None = None,
     ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
         """Produce the Work JSON contract, preferring the bounded tool loop.
 
@@ -338,6 +412,7 @@ class WorkDialogue:
         call, which is the path that guarantees JSON mode today.
         """
 
+        loop_metadata: dict[str, Any] | None = None
         if self.tool_runner is not None and await self.tool_runner.available(preferred_profile_id):
             looped = await self.tool_runner.run(
                 question=str(model_context["question"]),
@@ -347,7 +422,11 @@ class WorkDialogue:
                 work_context=model_context["work_context"],
                 preferred_profile_id=preferred_profile_id,
                 model=model,
+                execution_context=execution_context,
+                context_window_tokens=int(model_context.get("context_window_tokens", 16_384)),
+                max_output_tokens=int(model_context.get("max_output_tokens", 2_048)),
             )
+            loop_metadata = _work_loop_metadata(looped)
             if looped.final_text.strip():
                 metadata = {
                     "profile_id": looped.profile_id,
@@ -355,36 +434,19 @@ class WorkDialogue:
                     "context_hash": looped.context_hash,
                     "redaction_count": looped.redaction_count,
                 }
-                loop_metadata = {
-                    "enabled": True,
-                    "stop_reason": looped.stop_reason,
-                    "steps": looped.steps,
-                    "tool_names": list(looped.tool_names),
-                    "usage": looped.usage,
-                    # Complete, already-redacted audit records for the loop steps.
-                    "calls": [
-                        {
-                            "tool_name": outcome.name,
-                            "status": outcome.status.value,
-                            "risk_tier": outcome.tier.value if outcome.tier is not None else None,
-                            "step_index": index,
-                            "provider_call_id": outcome.call_id,
-                            "duration_ms": outcome.duration_ms,
-                            "input": outcome.arguments,
-                            "output": outcome.result,
-                            "error": outcome.error_code or outcome.message,
-                        }
-                        for index, outcome in enumerate(looped.outcomes, start=1)
-                    ],
-                }
                 if self._parses(looped.final_text):
                     return looped.final_text, metadata, loop_metadata
                 # The model answered but not in the required structure; keep the
                 # tool evidence recorded and let the single-shot path retry.
                 logger.warning("Work tool loop answer failed the JSON contract; retrying once")
 
+        fallback_context = {
+            key: value
+            for key, value in model_context.items()
+            if key not in {"context_window_tokens", "max_output_tokens"}
+        }
         generated = await self.generate(
-            **model_context,
+            **fallback_context,
             evidence=[],
             preferred_profile_id=preferred_profile_id,
             model=model,
@@ -397,7 +459,13 @@ class WorkDialogue:
             "context_hash": generated.context_hash,
             "redaction_count": generated.redaction_count,
         }
-        return generated.response.content, metadata, None
+        if loop_metadata is not None:
+            loop_metadata = {
+                **loop_metadata,
+                "fallback_used": True,
+                "fallback_reason": "tool_loop_unusable_or_incomplete",
+            }
+        return generated.response.content, metadata, loop_metadata
 
     @staticmethod
     def _parses(content: str) -> bool:
@@ -458,7 +526,6 @@ class WorkDialogue:
                 workspace_path=workspace_path,
                 active_run_id=conversation.active_run_id,
             )
-        plan_hash = str(payload["plan_revision"]["plan_hash"])
         return replace(
             result,
             payload=payload,
@@ -468,7 +535,5 @@ class WorkDialogue:
             + "\n\n"
             + render_draft_review(draft)
             + "\n\n本次仅生成方案。确认启动时请单独回复：\n"
-            + execution_command(plan_hash, "做头动QC")
-            + "\n或："
-            + execution_command(plan_hash, "跳过QC"),
+            + "请先让系统签发一次性确认指令，再原样回复该指令。",
         )

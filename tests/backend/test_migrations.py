@@ -61,6 +61,7 @@ def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> No
         "conversations",
         "conversation_messages",
         "conversation_tool_calls",
+        "confirmation_challenges",
         "papers",
         "paper_sections",
         "literature_chunks",

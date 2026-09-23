@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select, update
 
 from neuroagent.application.contracts import (
+    ConfirmationChallengeView,
     ContextSummaryView,
     ConversationContextView,
     ConversationMessageView,
@@ -28,6 +29,7 @@ from neuroagent.application.contracts import (
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json
 from neuroagent.infrastructure.persistence.models import (
+    ConfirmationChallengeRow,
     ContextSnapshotRow,
     ContextSummaryRow,
     ConversationMessageRow,
@@ -46,6 +48,88 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
 
 
 class ConversationMixin(RepositoryBaseMixin):
+    @staticmethod
+    def _confirmation_challenge(row: ConfirmationChallengeRow) -> ConfirmationChallengeView:
+        from neuroagent.application.contracts import QcExecutionMode
+
+        return ConfirmationChallengeView(
+            confirmation_id=row.confirmation_id,
+            conversation_id=row.conversation_id,
+            project_id=row.project_id,
+            plan_revision_id=row.plan_revision_id,
+            plan_hash=row.plan_hash,
+            qc_mode=QcExecutionMode(row.qc_mode),
+            issued_at=_as_utc(row.issued_at),
+            expires_at=_as_utc(row.expires_at),
+            consumed_at=_as_utc(row.consumed_at) if row.consumed_at else None,
+            consumed_run_id=row.consumed_run_id,
+        )
+
+    def create_confirmation_challenge(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: Any,
+        ttl_seconds: int = 600,
+    ) -> ConfirmationChallengeView:
+        with self._write_session() as session:
+            conversation = session.get(ConversationRow, conversation_id)
+            if conversation is None:
+                raise NotFoundError("conversation", conversation_id)
+            if conversation.project_id is not None and conversation.project_id != project_id:
+                raise ConflictError("confirmation_project_mismatch", "确认挑战与当前项目不匹配。")
+            now = datetime.now(UTC)
+            row = ConfirmationChallengeRow(
+                confirmation_id=_id(),
+                conversation_id=conversation_id,
+                project_id=project_id,
+                plan_revision_id=plan_revision_id,
+                plan_hash=plan_hash,
+                qc_mode=str(getattr(qc_mode, "value", qc_mode)),
+                issued_at=now,
+                expires_at=now + timedelta(seconds=max(30, min(ttl_seconds, 3600))),
+            )
+            session.add(row)
+            session.flush()
+            return self._confirmation_challenge(row)
+
+    def consume_confirmation_challenge(
+        self,
+        *,
+        confirmation_id: str,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: Any,
+        run_id: str,
+    ) -> ConfirmationChallengeView:
+        with self._write_session() as session:
+            row = session.get(ConfirmationChallengeRow, confirmation_id)
+            expected_qc = str(getattr(qc_mode, "value", qc_mode))
+            now = datetime.now(UTC)
+            if (
+                row is None
+                or row.conversation_id != conversation_id
+                or row.project_id != project_id
+                or row.plan_revision_id != plan_revision_id
+                or row.plan_hash != plan_hash
+                or row.qc_mode != expected_qc
+                or row.consumed_at is not None
+                or _as_utc(row.expires_at) <= now
+            ):
+                raise ConflictError(
+                    "confirmation_challenge_invalid",
+                    "启动确认无效、已使用、已过期或与当前方案不匹配。",
+                )
+            row.consumed_at = now
+            row.consumed_run_id = run_id
+            session.flush()
+            return self._confirmation_challenge(row)
+
     def create_conversation(
         self,
         *,

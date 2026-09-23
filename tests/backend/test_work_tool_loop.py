@@ -127,6 +127,35 @@ def test_work_catalog_handlers_project_only_aggregates() -> None:
     assert {"artifact_type": "metric.alff", "count": 2} in artifacts["artifact_types"]
 
 
+def test_work_catalog_hides_runs_outside_request_scope() -> None:
+    from neuroagent.application.work_tools import build_work_tool_bindings
+
+    calls: list[str] = []
+
+    def get_run(run_id: str) -> dict[str, Any]:
+        calls.append(run_id)
+        return {"run_id": run_id, "project_id": "project-a", "state": "running"}
+
+    bindings = {
+        binding.tool.name: binding.handler
+        for binding in build_work_tool_bindings(
+            get_run=get_run,
+            list_artifacts=lambda run_id: [{"artifact_type": "secret"}],
+            project_id="project-a",
+            allowed_run_ids=frozenset({"run-a"}),
+        )
+    }
+
+    hidden = dict(bindings["get_run_status"]({"run_id": "run-b"}))
+    assert hidden == {"run_id": "run-b", "status": "not_available_in_scope"}
+    assert dict(bindings["list_run_artifacts"]({"run_id": "run-b"}))["total"] == 0
+    assert calls == []
+
+    visible = dict(bindings["get_run_status"]({"run_id": "run-a"}))
+    assert visible["state"] == "running"
+    assert calls == ["run-a"]
+
+
 def test_work_tool_loop_answers_in_the_json_contract(
     tmp_path: Path,
     source_root: Path,
@@ -250,8 +279,9 @@ def test_work_loop_falls_back_when_the_answer_is_not_json(
 
     assert fallback.await_count == 1
     assert body["assistant_message"]["content"] == "回退回答。"
-    # The fallback is the documented single-shot path, so no loop payload exists.
-    assert "tool_loop" not in body["assistant_message"]["payload"]
+    # The fallback is single-shot, but the attempted loop remains auditable.
+    assert body["assistant_message"]["payload"]["tool_loop"]["fallback_candidate"] is False
+    assert body["assistant_message"]["payload"]["tool_loop"]["calls"] == []
 
 
 def test_work_uses_single_shot_when_the_profile_lacks_tool_use(

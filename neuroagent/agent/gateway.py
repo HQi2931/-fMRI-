@@ -29,6 +29,10 @@ class ModelGatewayError(RuntimeError):
     pass
 
 
+class ModelGatewayTimeoutError(ModelGatewayError):
+    timeout = True
+
+
 @dataclass(frozen=True)
 class ToolTurnResult:
     """One provider turn taken inside the bounded tool loop."""
@@ -188,6 +192,10 @@ class ModelGateway:
                 redaction_count=context.redaction_count,
             )
         if last_retryable:
+            if getattr(last_retryable, "timeout", False):
+                raise ModelGatewayTimeoutError(
+                    "all providers exceeded their request deadlines"
+                ) from last_retryable
             raise ModelGatewayError(
                 "all available providers were temporarily unavailable"
             ) from last_retryable
@@ -373,6 +381,7 @@ class ModelGateway:
         tools: Sequence[LlmTool],
         preferred_profile_id: str | None,
         model: str | None,
+        remaining_seconds: float | None = None,
     ) -> ToolTurnResult:
         """One raw tool-calling turn, used by the bounded Agent loop.
 
@@ -405,6 +414,11 @@ class ModelGateway:
                     # object, and several OpenAI-compatible gateways reject the
                     # combination outright.
                     json_object=False,
+                    timeout_seconds=(
+                        min(profile.timeout_seconds, remaining_seconds)
+                        if remaining_seconds is not None
+                        else None
+                    ),
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
@@ -415,6 +429,10 @@ class ModelGateway:
                 attempted_profile_ids=tuple(attempted),
             )
         if last_retryable:
+            if getattr(last_retryable, "timeout", False):
+                raise ModelGatewayTimeoutError(
+                    "all tool-use providers exceeded their request deadlines"
+                ) from last_retryable
             raise ModelGatewayError(
                 "all available tool-use providers were temporarily unavailable"
             ) from last_retryable

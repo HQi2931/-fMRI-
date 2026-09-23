@@ -4,8 +4,15 @@
 
 ## Unreleased
 
+### Agent 控制面加固
+
+- 落地计划 0009：Provider/工具硬 deadline、profile 感知上下文预算、回退工具轨迹审计、Work conversation/project/run 作用域隔离，以及持久化一次性 ConfirmationChallenge；真实 MATLAB 运行不再由客户端布尔值单独授权。
+- 新增 `0015_confirmation_challenges` 迁移并同步 API/OpenAPI/前端生成类型；确认挑战在运行创建事务内消费，过期、篡改、跨项目和重放均失败关闭。
+
 ### 文档
 
+- 新增 [计划 0009](docs/plans/0009-agent-control-plane-hardening.md)：设计 Agent 真实超时、profile 感知上下文预算、回退审计保留、项目作用域工具和一次性执行确认挑战的分阶段加固方案。
+- 新增 [ADR 0015](docs/adr/0015-agent-control-plane-hardening.md)：接受 Agent 控制面预算、项目作用域、回退审计和一次性执行授权的约束。
 - 新增 [文档规范](docs/development/documentation-standard.md) 与 [文档索引](docs/README.md)：统一状态块与状态枚举、目录与命名规则、权威文档表、归档规则和禁用的发布版本包装。
 - 新增 `scripts/check-docs.ps1` 并接入 `scripts/quality-gate.ps1`：校验链接与锚点、状态块与枚举、归档入链、索引覆盖和禁用版本标签。
 - 归档 6 个已完成或被取代的文档到 `docs/archive/`（计划 0002、计划 0004、早期框架草案、Chat 模块分析、两次服务/仓储重构文档），并加归档横幅、修正全部入链；移除 `docs/superpowers/` 目录。

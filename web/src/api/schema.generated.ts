@@ -1539,6 +1539,8 @@ export interface components {
              * @default false
              */
             allow_remote_search: boolean;
+            /** Confirmation Id */
+            confirmation_id?: string | null;
             /** Content */
             content: string;
             /** Expected Plan Hash */

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -195,6 +196,24 @@ async def test_repeated_identical_failure_trips_the_breaker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_timeout_stops_before_the_next_model_turn() -> None:
+    call = _tool_call("c1", "get_run_status")
+    dispatcher = ScriptedDispatcher([_outcome(call, ToolCallStatus.FAILED, "tool_timeout")])
+    model_calls = 0
+
+    async def call_model(messages: list[dict[str, Any]]) -> ProviderResponse:
+        nonlocal model_calls
+        model_calls += 1
+        del messages
+        return _response(tool_calls=(call,))
+
+    result = await AgentLoop(dispatcher).run(messages=_messages(), call_model=call_model)
+
+    assert result.stop_reason is AgentLoopStopReason.TOOL_TIMEOUT
+    assert model_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_alternating_failures_do_not_trip_the_breaker_early() -> None:
     first = _tool_call("c1", "get_run_status")
     second = _tool_call("c2", "list_run_artifacts")
@@ -230,6 +249,48 @@ async def test_provider_failure_stops_without_leaking_details() -> None:
     assert result.stop_reason is AgentLoopStopReason.PROVIDER_ERROR
     assert result.final_text == ""
     assert "private" not in json.dumps(result.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
+async def test_provider_deadline_is_enforced() -> None:
+    async def call_model(
+        messages: list[dict[str, Any]], *, remaining_seconds: float
+    ) -> ProviderResponse:
+        del messages, remaining_seconds
+        await asyncio.sleep(0.05)
+        return _response(content="too late")
+
+    result = await AgentLoop(
+        ScriptedDispatcher([]), budget=AgentLoopBudget(max_seconds=0.01)
+    ).run(messages=_messages(), call_model=call_model)
+
+    assert result.stop_reason is AgentLoopStopReason.PROVIDER_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_context_budget_stops_before_provider_call() -> None:
+    calls = 0
+
+    async def call_model(messages: list[dict[str, Any]]) -> ProviderResponse:
+        nonlocal calls
+        calls += 1
+        del messages
+        return _response(content="should not run")
+
+    result = await AgentLoop(
+        ScriptedDispatcher([]),
+        budget=AgentLoopBudget(
+            max_total_tokens=10_000,
+            context_window_tokens=32,
+            max_output_tokens=8,
+        ),
+    ).run(
+        messages=[{"role": "user", "content": "x" * 200}],
+        call_model=call_model,
+    )
+
+    assert result.stop_reason is AgentLoopStopReason.BUDGET_CONTEXT
+    assert calls == 0
 
 
 @pytest.mark.asyncio

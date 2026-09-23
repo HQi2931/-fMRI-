@@ -77,7 +77,7 @@
 
 `work` 回合由服务端确定性协调器解析为闭集 `ConversationAction`，再调用既有应用服务。客户端不再提交 `card_kind`，服务端也不暴露卡片能力目录、任意组件名、脚本或执行代码。缺少参数的请求返回待确认工具记录和明确缺项；解释或未知请求只返回说明，不产生业务写入。
 
-当前自然语言捷径识别同时包含 DemoData、Sub_001 和 ALFF 的请求。它只接受已选择的独立工作副本，冻结单受试者 manifest，并创建固定的兼容性冒烟计划：TR 2.0 秒、234 时间点、Slice Timing 奇数层后偶数层且参考层 33、Realign、0.01–0.08 Hz raw ALFF 与 DPABI 自动掩膜，其余处理关闭。响应保存 Project、Dataset、Manifest、SkillPlan 和 PlanRevision；只有随后携带精确计划 ID/哈希及 `real_execution_confirmed=true` 的确认回合才会批准并排队 MATLAB 作业。
+当前自然语言捷径识别同时包含 DemoData、Sub_001 和 ALFF 的请求。它只接受已选择的独立工作副本，冻结单受试者 manifest，并创建固定的兼容性冒烟计划：TR 2.0 秒、234 时间点、Slice Timing 奇数层后偶数层且参考层 33、Realign、0.01–0.08 Hz raw ALFF 与 DPABI 自动掩膜，其余处理关闭。响应保存 Project、Dataset、Manifest、SkillPlan 和 PlanRevision；服务端随后为每个 QC 选择签发短时一次性的 `confirmation_id`，只有原样回传并通过方案/项目/对话绑定校验的挑战才会批准并排队 MATLAB 作业。`real_execution_confirmed` 仅作为兼容字段，不能单独授权。
 
 显式 Work `action` 仍作为类型化 API 层保留，其行为如下：
 
@@ -86,7 +86,7 @@
 | `setup_workspace` | 在用户选择的目录上显式创建项目、数据集并冻结当前文件清单；Work 不检查或整理目录格式，路径/权限等技术错误仍失败；要求项目名、数据集名和工作根目录，不使用隐式名称 |
 | `prepare_preprocessing_plan` | 使用完整 `skill_plan_intent` 和 `expected_project_version` 调用现有 Skill Resolver；缺少会改变科研含义的参数时返回待确认，不猜测默认值 |
 | `preview_preprocessing_run` | 在启动前重新校验计划哈希与审批状态、冻结输入、环境锁、工作区访问和磁盘余量；只返回技术预检结果，不做目录格式判断或排队 |
-| `start_preprocessing` | 从已审批且当前有效的计划排队 MATLAB 预处理；要求精确计划 ID/哈希和 `real_execution_confirmed=true`；持久化工具名为 `start_dpabi_preprocessing` |
+| `start_preprocessing` | 从已审批且当前有效的计划排队 MATLAB 预处理；要求当前对话签发且未消费的 `confirmation_id`、精确计划 ID/哈希和 QC 绑定；持久化工具名为 `start_dpabi_preprocessing` |
 | `get_run_progress` | 读取目标或活动运行的服务端状态 |
 | `create_head_motion_qc` | 对已完成且处于 `qc_review` 的运行补建或重建头动 QC 草稿；正常路径由 Worker 成功钩子自动触发 |
 | `get_qc_status` | 按 `qc_review_id` 或活动运行只读查询 QC revision，并校验其项目/运行上下文 |
@@ -111,7 +111,7 @@
 | `propose_run_confirmation` | propose | 仅展示需要用户本人回复的启动确认指令 |
 
 `setup_workspace`、`start_preprocessing`、`create_head_motion_qc`、`approve_qc_review`、`skip_qc`
-属于服务端专用动作：它们只能由显式 REST/UI 请求或用户手打的精确确认指令触发。模型输出这些名字
+属于服务端专用动作：它们只能由服务端校验的请求或用户原样回传一次性精确确认指令触发。模型输出这些名字
 会**直接通不过 `WorkInterpretation` 的结构校验**，即模型在词汇层面就不具备提出执行的能力。
 未连接模型时的关键词回退路径 `resolve_action()` 同样只能返回只读或提案动作。
 

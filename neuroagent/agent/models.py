@@ -29,6 +29,9 @@ class AgentLoopStopReason(StrEnum):
     NO_TOOL_SUPPORT = "no_tool_support"
     PROVIDER_ERROR = "provider_error"
     CANCELLED = "cancelled"
+    BUDGET_CONTEXT = "budget_context"
+    TOOL_TIMEOUT = "tool_timeout"
+    PROVIDER_TIMEOUT = "provider_timeout"
 
 
 #: Bounded size for model-supplied tool arguments, which are untrusted input.

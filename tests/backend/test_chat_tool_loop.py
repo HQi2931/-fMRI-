@@ -245,7 +245,8 @@ async def test_chat_loop_falls_back_when_it_produces_no_answer() -> None:
     # single-shot path supplied the reply.
     assert client.generate_calls == 1
     assert response.answer == "单次检索回答。"
-    assert "tool_loop" not in response.metadata
+    assert response.metadata["tool_loop"]["fallback_candidate"] is True
+    assert response.metadata["tool_loop"]["calls"]
 
 
 def test_evidence_collector_assigns_stable_citation_ids() -> None:

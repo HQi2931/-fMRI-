@@ -86,6 +86,7 @@
 - [计划 0006：真实执行阻断收口](plans/0006-release-blockers.md)
 - [计划 0007：能力化模块单体演进路线](plans/0007-capability-modularization-roadmap.md)
 - [计划 0008：语义长期记忆](plans/0008-semantic-long-term-memory.md)
+- [计划 0009：Agent 控制面与执行授权加固](plans/0009-agent-control-plane-hardening.md)
 - [Chat / Work 模型理解与参数补全](plans/conversation-model-understanding.md)
 
 ### 决策记录（ADR）
@@ -100,6 +101,7 @@
 - [ADR 0012：前端只保留 Chat 与 Work 对话](adr/0012-chat-work-only.md)
 - [ADR 0013：QC 由运行请求显式选择](adr/0013-optional-qc-gate.md)
 - [ADR 0014：有界工具调用循环与三级工具契约](adr/0014-bounded-tool-loop.md)
+- [ADR 0015：Agent 控制面预算、作用域与一次性执行授权](adr/0015-agent-control-plane-hardening.md)
 
 ### 审查记录
 

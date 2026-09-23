@@ -165,6 +165,53 @@ def test_model_cannot_even_name_a_server_only_action(service, monkeypatch):
     execute.assert_not_called()
 
 
+def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work_root):
+    from neuroagent.application.contracts import QcExecutionMode, RunCreate
+    from tests.backend.conftest import make_approved_plan, make_project
+
+    project = make_project(service, source_root, work_root, key="challenge-project")
+    plan = make_approved_plan(service, project.project_id, manifest_hash="d" * 64)
+    conversation = service.create_conversation(
+        ConversationCreate(mode="work", project_id=project.project_id),
+        "challenge-conversation",
+    )
+    challenge = service.repository.create_confirmation_challenge(
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+        plan_revision_id=plan.plan_revision_id,
+        plan_hash=plan.plan_hash,
+        qc_mode=QcExecutionMode.SKIP,
+    )
+    run = service.create_run(
+        RunCreate(
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            expected_plan_hash=plan.plan_hash,
+        ),
+        "challenge-run",
+    )
+    consumed = service.repository.consume_confirmation_challenge(
+        confirmation_id=challenge.confirmation_id,
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+        plan_revision_id=plan.plan_revision_id,
+        plan_hash=plan.plan_hash,
+        qc_mode=QcExecutionMode.SKIP,
+        run_id=run.run_id,
+    )
+    assert consumed.consumed_run_id == run.run_id
+    with pytest.raises(ConflictError, match="启动确认"):
+        service.repository.consume_confirmation_challenge(
+            confirmation_id=challenge.confirmation_id,
+            conversation_id=conversation.conversation_id,
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            plan_hash=plan.plan_hash,
+            qc_mode=QcExecutionMode.SKIP,
+            run_id=run.run_id,
+        )
+
+
 @pytest.mark.asyncio
 async def test_exact_server_command_defers_and_binds_execution(service, monkeypatch):
     from neuroagent.application.work_dialogue import WorkDialogue
@@ -202,13 +249,8 @@ async def test_exact_server_command_defers_and_binds_execution(service, monkeypa
         has_profiles=True,
     )
     execute.assert_not_called()
-    assert result.commit is not None
-    result.commit()
-    request = execute.call_args.args[0]
-    assert request.real_execution_confirmed is True
-    assert request.expected_plan_hash == "b" * 64
-    assert request.plan_revision_id == "server-plan"
-    assert request.qc_mode.value == "skip"
+    assert result.commit is None
+    assert "确认" in result.assistant_content
 
 
 def test_work_uses_redacted_gateway_json_protocol(service, monkeypatch):
@@ -529,9 +571,9 @@ async def test_used_start_confirmation_cannot_be_replayed(service, monkeypatch):
 
     execute.assert_not_called()
     assert result.commit is None
-    # Must be the used-confirmation refusal, not the "not compiled yet" message.
-    assert "已经使用过" in result.assistant_content
-    assert "尚未编译" not in result.assistant_content
+    # Legacy commands without a server-issued challenge are refused before any
+    # coordinator dispatch, regardless of the old conversation marker.
+    assert "确认" in result.assistant_content
 
 
 @pytest.mark.asyncio
@@ -550,15 +592,9 @@ async def test_queued_start_records_single_use_confirmation(service, monkeypatch
     monkeypatch.setattr(service.conversation_work, "execute", execute)
 
     result = await _send_confirmation(service, session, "consume-confirm")
-    assert result.commit is not None
-    committed = result.commit()
-
-    marker = committed.payload["work_draft"]
-    assert marker["consumed"] is True
-    assert marker["consumed_run_id"] == "run-7"
-    # Falls back to False so a deliberate re-run can re-review and re-compile.
-    assert marker["compiled"] is False
-    assert "draft" in marker
+    assert result.commit is None
+    assert execute.call_count == 0
+    assert "确认" in result.assistant_content
 
 
 @pytest.mark.asyncio
@@ -579,10 +615,9 @@ async def test_confirmation_stays_unused_when_nothing_was_queued(service, monkey
     monkeypatch.setattr(service.conversation_work, "execute", execute)
 
     result = await _send_confirmation(service, session, "unused-confirm")
-    assert result.commit is not None
-    committed = result.commit()
-
-    assert "work_draft" not in committed.payload
+    assert result.commit is None
+    assert execute.call_count == 0
+    assert "确认" in result.assistant_content
 
 
 def test_prepare_plan_from_draft_requires_a_workspace(service):

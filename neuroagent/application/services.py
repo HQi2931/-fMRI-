@@ -42,7 +42,10 @@ from neuroagent.application.service_mixins import (
 )
 from neuroagent.application.settings import Settings
 from neuroagent.application.work_dialogue import WorkDialogue
-from neuroagent.application.work_tools import WorkToolRunner, build_work_dispatcher
+from neuroagent.application.work_tools import (
+    WorkToolRunner,
+    build_work_dispatcher,
+)
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.chat.services import (
@@ -186,7 +189,7 @@ class NeuroAgentService(
             work_tool_runner = WorkToolRunner(
                 build_messages=self._build_chat_messages,
                 call_turn=self._tool_turn,
-                dispatcher_factory=lambda: build_work_dispatcher(
+                dispatcher_factory=lambda context: build_work_dispatcher(
                     get_run=lambda run_id: self.get_run(run_id).model_dump(mode="json"),
                     list_artifacts=lambda run_id: [
                         item.model_dump(mode="json") for item in self.list_artifacts(run_id)
@@ -197,6 +200,8 @@ class NeuroAgentService(
                     ],
                     list_skills=skill_summaries,
                     policy=work_policy,
+                    project_id=context.project_id,
+                    allowed_run_ids=context.allowed_run_ids,
                 ),
                 probe_capability=self._tool_capability,
                 budget=tool_budget,

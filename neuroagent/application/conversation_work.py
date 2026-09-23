@@ -142,6 +142,7 @@ class ConversationWorkCoordinator:
         active_run_id: str | None,
         project_id: str | None,
         idempotency_key: str,
+        conversation_id: str | None = None,
     ) -> WorkActionResult:
         if request.action is ConversationAction.AUTO and self._is_demo_alff_request(
             request.content
@@ -151,6 +152,7 @@ class ConversationWorkCoordinator:
                     request,
                     workspace_path=workspace_path,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
                 )
             except ApplicationError as exc:
                 return WorkActionResult(
@@ -203,6 +205,7 @@ class ConversationWorkCoordinator:
                     workspace_path=workspace_path,
                     project_id=project_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
                 )
             return WorkActionResult(
                 "我可以协助准备预处理方案、查看运行进度、完成 QC 审核并启动 DPABI。"
@@ -213,6 +216,15 @@ class ConversationWorkCoordinator:
                 active_run_id=active_run_id,
             )
         except ApplicationError as exc:
+            # A challenge failure can occur after the idempotent run insert is
+            # staged.  Let the outer repository transaction roll that insert
+            # back; returning a friendly WorkActionResult here would otherwise
+            # commit a run that never held valid execution authority.
+            if action is ConversationAction.START_PREPROCESSING and exc.code in {
+                "confirmation_challenge_required",
+                "confirmation_challenge_invalid",
+            }:
+                raise
             return WorkActionResult(
                 assistant_content=exc.message,
                 tool={
@@ -226,6 +238,24 @@ class ConversationWorkCoordinator:
                 project_id=project_id,
                 active_run_id=active_run_id,
             )
+
+    def create_confirmation_challenge(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: QcExecutionMode,
+    ) -> str:
+        challenge = self._repository.create_confirmation_challenge(
+            conversation_id=conversation_id,
+            project_id=project_id,
+            plan_revision_id=plan_revision_id,
+            plan_hash=plan_hash,
+            qc_mode=qc_mode,
+        )
+        return challenge.confirmation_id
 
     def prepare_plan_from_draft(
         self,
@@ -797,6 +827,7 @@ class ConversationWorkCoordinator:
         workspace_path: str | None,
         project_id: str | None,
         idempotency_key: str,
+        conversation_id: str | None,
     ) -> WorkActionResult:
         missing = [
             name
@@ -804,6 +835,7 @@ class ConversationWorkCoordinator:
                 ("project_id", project_id),
                 ("plan_revision_id", request.plan_revision_id),
                 ("expected_plan_hash", request.expected_plan_hash),
+                ("confirmation_id", request.confirmation_id),
             )
             if value is None
         ]
@@ -876,6 +908,20 @@ class ConversationWorkCoordinator:
             ),
             f"{idempotency_key}:run",
         )
+        if conversation_id is None or request.confirmation_id is None:
+            raise ConflictError(
+                "confirmation_challenge_required",
+                "真实运行必须通过当前对话签发的一次性确认挑战。",
+            )
+        self._repository.consume_confirmation_challenge(
+            confirmation_id=request.confirmation_id,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            plan_revision_id=request.plan_revision_id,
+            plan_hash=request.expected_plan_hash,
+            qc_mode=qc_mode,
+            run_id=run.run_id,
+        )
         payload = {"run": run.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
@@ -905,6 +951,7 @@ class ConversationWorkCoordinator:
         *,
         workspace_path: str | None,
         idempotency_key: str,
+        conversation_id: str | None = None,
     ) -> WorkActionResult:
         if workspace_path is None:
             return WorkActionResult(
@@ -1071,15 +1118,37 @@ class ConversationWorkCoordinator:
             "skill_plan": resolved.skill_plan.model_dump(mode="json"),
             "plan_revision": resolved.plan_revision.model_dump(mode="json"),
         }
-        return WorkActionResult(
-            assistant_content=(
+        assistant_content = (
                 "已从独立 DemoData 副本冻结单受试者方案：TR 2.0 秒、234 时间点、"
                 "不删除初始点；Slice Timing 开启（奇数层后偶数层，参考层 33）；"
                 "Realign 使用 DPABI Jobmat；协变量回归、标准化、去趋势、时序滤波、"
                 "Scrubbing 和平滑全部关闭；计算 raw ALFF，频段 0.01–0.08 Hz，"
                 "使用 DPABI 自动掩膜。该方案仅用于技术兼容性检查。"
-                "复核无误后，请回复“确认批准并启动真实 MATLAB/DPABI 任务”。"
-            ),
+                "复核无误后，请使用下方服务端签发的一次性确认指令。"
+            )
+        if conversation_id is not None:
+            require_id = self.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=resolved.plan_revision.plan_revision_id,
+                plan_hash=resolved.plan_revision.plan_hash,
+                qc_mode=QcExecutionMode.REQUIRE,
+            )
+            skip_id = self.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=resolved.plan_revision.plan_revision_id,
+                plan_hash=resolved.plan_revision.plan_hash,
+                qc_mode=QcExecutionMode.SKIP,
+            )
+            assistant_content += (
+                "\n"
+                + f"批准并启动 {resolved.plan_revision.plan_hash[:12]} 做头动QC {require_id}"
+                + "\n"
+                + f"批准并启动 {resolved.plan_revision.plan_hash[:12]} 跳过QC {skip_id}"
+            )
+        return WorkActionResult(
+            assistant_content=assistant_content,
             payload=payload,
             tool=self._tool_result(
                 "prepare_demo_alff",

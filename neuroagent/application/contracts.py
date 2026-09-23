@@ -966,6 +966,21 @@ class ConversationToolCallView(StrictModel):
     updated_at: datetime
 
 
+class ConfirmationChallengeView(StrictModel):
+    """One-time server-issued authorization for a real Work execution."""
+
+    confirmation_id: str
+    conversation_id: str
+    project_id: str
+    plan_revision_id: str
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    qc_mode: QcExecutionMode
+    issued_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+    consumed_run_id: str | None = None
+
+
 class ConversationView(StrictModel):
     conversation_id: str
     mode: ConversationMode
@@ -1000,6 +1015,7 @@ class ConversationTurnCreate(StrictModel):
     expected_plan_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     real_execution_confirmed: bool = False
     qc_mode: QcExecutionMode | None = None
+    confirmation_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ConversationTurnView(StrictModel):

@@ -12,6 +12,7 @@ server work.  Three properties matter:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
@@ -115,7 +116,9 @@ class ToolDispatcher:
     def has(self, name: str) -> bool:
         return name in self._bindings
 
-    async def dispatch(self, call: ToolCall) -> ToolCallOutcome:
+    async def dispatch(
+        self, call: ToolCall, *, timeout_seconds: float | None = None
+    ) -> ToolCallOutcome:
         started = self._clock()
         # Redact once: arguments are untrusted model output and they become part
         # of the persisted audit record.
@@ -147,10 +150,23 @@ class ToolDispatcher:
                 message=schema_error,
             )
 
+        effective_timeout = (
+            float(binding.tool.timeout_seconds)
+            if timeout_seconds is None
+            else min(float(binding.tool.timeout_seconds), max(0.001, timeout_seconds))
+        )
         try:
-            produced = binding.handler(call.arguments)
-            if inspect.isawaitable(produced):
-                produced = await produced
+            produced = await _run_handler(binding.handler, call.arguments, effective_timeout)
+        except TimeoutError:
+            return self._outcome(
+                call,
+                binding.tool,
+                ToolCallStatus.FAILED,
+                started,
+                arguments=redacted,
+                error_code="tool_timeout",
+                message="the tool exceeded its bounded execution time",
+            )
         except ApplicationError as exc:
             return self._outcome(
                 call,
@@ -210,6 +226,7 @@ class ToolDispatcher:
             truncated=truncated,
             redactions=redactions,
         )
+
 
     def redacted_arguments(self, call: ToolCall) -> dict[str, Any]:
         """Redact raw arguments for the audit trail without affecting dispatch."""
@@ -284,3 +301,20 @@ class ToolDispatcher:
         except Exception:
             # Auditing must never turn a completed tool call into a failure.
             logger.exception("Tool audit sink failed for %s", call.name)
+
+
+async def _run_handler(
+    handler: ToolHandler,
+    arguments: Mapping[str, Any],
+    remaining_seconds: float | None,
+) -> Any:
+    """Run sync read tools off-loop and enforce the declared deadline."""
+
+    timeout = None if remaining_seconds is None else max(0.001, remaining_seconds)
+    if inspect.iscoroutinefunction(handler):
+        produced = handler(arguments)
+        return await asyncio.wait_for(produced, timeout=timeout)
+    produced = await asyncio.wait_for(asyncio.to_thread(handler, arguments), timeout=timeout)
+    if inspect.isawaitable(produced):
+        return await asyncio.wait_for(produced, timeout=timeout)
+    return produced

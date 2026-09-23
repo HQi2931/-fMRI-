@@ -93,6 +93,7 @@ class ChatAgent:
         )
         llm_result = None
         loop_result: ChatToolLoopResult | None = None
+        loop_candidate: ChatToolLoopResult | None = None
         tool_evidence: EvidenceCollector | None = None
         if retrieval.in_scope and self._llm_client.available(request.preferred_profile_id):
             if (
@@ -131,7 +132,10 @@ class ChatAgent:
                     preferred_profile_id=request.preferred_profile_id,
                     model=request.model,
                     collector=collector,
+                    context_window_tokens=request.context_window_tokens,
+                    max_output_tokens=request.max_output_tokens,
                 )
+                loop_candidate = candidate
                 # A loop that produced no answer (budget exhausted, provider
                 # error) must not degrade the reply, so fall back to one shot.
                 if candidate.final_text.strip():
@@ -214,28 +218,11 @@ class ChatAgent:
                 "remote_search_used": False,
                 "redaction_count": loop_result.redaction_count,
             }
-            metadata["tool_loop"] = {
-                "enabled": True,
-                "stop_reason": loop_result.stop_reason,
-                "steps": loop_result.steps,
-                "tool_calls": loop_result.tool_calls,
-                "tool_names": list(loop_result.tool_names),
-                # Complete, already-redacted audit records for the loop steps.
-                "calls": [
-                    {
-                        "tool_name": outcome.name,
-                        "status": outcome.status.value,
-                        "risk_tier": outcome.tier.value if outcome.tier is not None else None,
-                        "step_index": index,
-                        "provider_call_id": outcome.call_id,
-                        "duration_ms": outcome.duration_ms,
-                        "input": outcome.arguments,
-                        "output": outcome.result,
-                        "error": outcome.error_code or outcome.message,
-                    }
-                    for index, outcome in enumerate(loop_result.outcomes, start=1)
-                ],
-            }
+            metadata["tool_loop"] = _chat_loop_metadata(loop_result)
+        elif loop_candidate is not None:
+            # Preserve attempted calls when the candidate was empty and the
+            # response fell back to the single-shot path.
+            metadata["tool_loop"] = _chat_loop_metadata(loop_candidate)
         metadata["context"] = context.metadata
         return ChatAgentResponse(
             session_id=request.session_id,
@@ -244,3 +231,29 @@ class ChatAgent:
             citations=citations,
             metadata=metadata,
         )
+
+
+def _chat_loop_metadata(looped: ChatToolLoopResult) -> dict[str, object]:
+    return {
+        "enabled": True,
+        "stop_reason": looped.stop_reason,
+        "steps": looped.steps,
+        "tool_calls": looped.tool_calls,
+        "tool_names": list(looped.tool_names),
+        "fallback_candidate": not bool(looped.final_text.strip()),
+        "fallback_used": not bool(looped.final_text.strip()),
+        "calls": [
+            {
+                "tool_name": outcome.name,
+                "status": outcome.status.value,
+                "risk_tier": outcome.tier.value if outcome.tier is not None else None,
+                "step_index": index,
+                "provider_call_id": outcome.call_id,
+                "duration_ms": outcome.duration_ms,
+                "input": outcome.arguments,
+                "output": outcome.result,
+                "error": outcome.error_code or outcome.message,
+            }
+            for index, outcome in enumerate(looped.outcomes, start=1)
+        ],
+    }

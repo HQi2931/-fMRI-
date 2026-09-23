@@ -283,6 +283,28 @@ class ConversationRow(Base):
     )
 
 
+class ConfirmationChallengeRow(Base):
+    __tablename__ = "confirmation_challenges"
+    confirmation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.project_id", ondelete="RESTRICT"), index=True
+    )
+    plan_revision_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("plan_revisions.plan_revision_id", ondelete="RESTRICT"), index=True
+    )
+    plan_hash: Mapped[str] = mapped_column(String(64), index=True)
+    qc_mode: Mapped[str] = mapped_column(String(20))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workflow_runs.run_id", ondelete="RESTRICT"), nullable=True
+    )
+
+
 class ConversationMessageRow(Base):
     __tablename__ = "conversation_messages"
     message_id: Mapped[str] = mapped_column(String(36), primary_key=True)

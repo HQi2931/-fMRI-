@@ -29,6 +29,12 @@ class RetryableProviderError(ProviderError):
     pass
 
 
+class ProviderTimeoutError(RetryableProviderError):
+    """Provider-side deadline expiry, distinct from a generic transport error."""
+
+    timeout = True
+
+
 def parse_tool_calls(message: Mapping[str, Any]) -> tuple[ToolCall, ...]:
     """Read OpenAI-compatible ``tool_calls`` defensively.
 
@@ -96,6 +102,7 @@ class ModelProvider(Protocol):
         json_object: bool | None = None,
         tools: Sequence[LlmTool] | None = None,
         tool_choice: str = "auto",
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse: ...
 
 
@@ -113,6 +120,7 @@ class OpenAICompatibleProvider:
         json_object: bool | None = None,
         tools: Sequence[LlmTool] | None = None,
         tool_choice: str = "auto",
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         payload: dict[str, object] = {
             "model": profile.model,
@@ -135,7 +143,9 @@ class OpenAICompatibleProvider:
             payload["tool_choice"] = tool_choice
 
         owns_client = self._client is None
-        client = self._client or httpx.AsyncClient(timeout=profile.timeout_seconds)
+        client = self._client or httpx.AsyncClient(
+            timeout=timeout_seconds if timeout_seconds is not None else profile.timeout_seconds
+        )
         try:
             response = await client.post(
                 f"{profile.base_url}/chat/completions",
@@ -195,7 +205,11 @@ class OpenAICompatibleProvider:
                     else None
                 ),
             )
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "provider transport failed: request exceeded its timeout"
+            ) from exc
+        except httpx.NetworkError as exc:
             raise RetryableProviderError("provider transport failed") from exc
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ProviderError("provider response shape is invalid") from exc
@@ -257,8 +271,9 @@ class MockProvider:
         json_object: bool | None = None,
         tools: Sequence[LlmTool] | None = None,
         tool_choice: str = "auto",
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
-        del api_key, tool_choice
+        del api_key, tool_choice, timeout_seconds
         self.requests.append((profile, messages))
         self.request_options.append({"web_search": web_search, "json_object": json_object})
         self.tool_requests.append(tuple(tool.name for tool in tools or ()))

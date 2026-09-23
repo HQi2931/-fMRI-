@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -270,6 +271,21 @@ async def test_async_tool_handlers_are_awaited() -> None:
     outcome = await _dispatcher(read=slow).dispatch(_call("get_run_status", {"run_id": "r1"}))
 
     assert outcome.result == {"state": "async-ok"}
+
+
+@pytest.mark.asyncio
+async def test_tool_deadline_is_enforced() -> None:
+    async def slow(arguments: dict[str, Any]) -> dict[str, Any]:
+        del arguments
+        await asyncio.sleep(0.05)
+        return {"state": "too-late"}
+
+    outcome = await _dispatcher(read=slow).dispatch(
+        _call("get_run_status", {"run_id": "r1"}), timeout_seconds=0.01
+    )
+
+    assert outcome.status is ToolCallStatus.FAILED
+    assert outcome.error_code == "tool_timeout"
 
 
 def test_duplicate_tool_names_are_a_programming_error() -> None:

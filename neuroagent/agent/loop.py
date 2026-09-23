@@ -9,6 +9,8 @@ dispatcher, and the dispatcher can only reach model-visible tools.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import time
@@ -42,6 +44,9 @@ class AgentLoopBudget:
     max_seconds: float = 90.0
     max_total_tokens: int = 120_000
     max_repeat_failures: int = 2
+    context_window_tokens: int | None = None
+    max_output_tokens: int = 2_048
+    context_safety_ratio: float = 0.85
 
 
 class AgentLoopResult(BaseModel):
@@ -61,7 +66,7 @@ class AgentLoopResult(BaseModel):
         return len(self.outcomes)
 
 
-ModelTurn = Callable[[list[dict[str, Any]]], Awaitable[ProviderResponse]]
+ModelTurn = Callable[..., Awaitable[ProviderResponse]]
 EventSink = Callable[[ToolCallOutcome, int], None]
 
 
@@ -71,7 +76,9 @@ class ToolInvoker(Protocol):
     @property
     def catalog(self) -> tuple[LlmTool, ...]: ...
 
-    async def dispatch(self, call: ToolCall) -> ToolCallOutcome: ...
+    async def dispatch(
+        self, call: ToolCall, *, timeout_seconds: float | None = None
+    ) -> ToolCallOutcome: ...
 
 
 class AgentLoop:
@@ -118,9 +125,27 @@ class AgentLoop:
                     AgentLoopStopReason.BUDGET_TIME, steps, outcomes, usage, working, provider_model
                 )
             estimated = self._counter.count(working)
-            if max(sum(usage.values()), estimated) > budget.max_total_tokens:
+            context_limit = budget.max_total_tokens
+            if budget.context_window_tokens is not None:
+                context_limit = min(
+                    context_limit,
+                    max(
+                        1,
+                        int(
+                            (budget.context_window_tokens - budget.max_output_tokens)
+                            * budget.context_safety_ratio
+                        ),
+                    ),
+                )
+            if max(sum(usage.values()), estimated) > context_limit:
+                reason = (
+                    AgentLoopStopReason.BUDGET_CONTEXT
+                    if budget.context_window_tokens is not None
+                    and context_limit < budget.max_total_tokens
+                    else AgentLoopStopReason.BUDGET_TOKENS
+                )
                 return self._finish(
-                    AgentLoopStopReason.BUDGET_TOKENS,
+                    reason,
                     steps,
                     outcomes,
                     usage,
@@ -129,11 +154,28 @@ class AgentLoop:
                 )
 
             try:
-                response = await call_model(working)
-            except Exception:
+                remaining_for_model = max(
+                    0.001, budget.max_seconds - (self._clock() - started)
+                )
+                response = await asyncio.wait_for(
+                    _call_with_optional_budget(call_model, working, remaining_for_model),
+                    timeout=remaining_for_model,
+                )
+            except TimeoutError:
+                return self._finish(
+                    AgentLoopStopReason.PROVIDER_TIMEOUT,
+                    steps,
+                    outcomes,
+                    usage,
+                    working,
+                    provider_model,
+                )
+            except Exception as exc:
                 logger.warning("Agent loop model turn failed", exc_info=True)
                 return self._finish(
-                    AgentLoopStopReason.PROVIDER_ERROR,
+                    AgentLoopStopReason.PROVIDER_TIMEOUT
+                    if getattr(exc, "timeout", False)
+                    else AgentLoopStopReason.PROVIDER_ERROR,
                     steps,
                     outcomes,
                     usage,
@@ -161,7 +203,28 @@ class AgentLoop:
 
             working.append(_assistant_tool_message(response.tool_calls, response.content))
             for call in response.tool_calls:
-                outcome = await self._dispatcher.dispatch(call)
+                if is_cancelled is not None and is_cancelled():
+                    return self._finish(
+                        AgentLoopStopReason.CANCELLED,
+                        steps,
+                        outcomes,
+                        usage,
+                        working,
+                        provider_model,
+                    )
+                remaining = max(0.0, budget.max_seconds - (self._clock() - started))
+                if remaining <= 0:
+                    return self._finish(
+                        AgentLoopStopReason.BUDGET_TIME,
+                        steps,
+                        outcomes,
+                        usage,
+                        working,
+                        provider_model,
+                    )
+                outcome = await _dispatch_with_optional_timeout(
+                    self._dispatcher, call, remaining
+                )
                 outcomes.append(outcome)
                 working.append(_tool_message(outcome))
                 if self._emit is not None:
@@ -171,6 +234,16 @@ class AgentLoop:
                     repeat_failures = 0
                     last_failure = None
                     continue
+
+                if outcome.error_code == "tool_timeout":
+                    return self._finish(
+                        AgentLoopStopReason.TOOL_TIMEOUT,
+                        steps,
+                        outcomes,
+                        usage,
+                        working,
+                        provider_model,
+                    )
 
                 fingerprint = f"{outcome.name}:{outcome.error_code}"
                 repeat_failures = repeat_failures + 1 if fingerprint == last_failure else 1
@@ -189,6 +262,7 @@ class AgentLoop:
             AgentLoopStopReason.BUDGET_STEPS, steps, outcomes, usage, working, provider_model
         )
 
+
     def _finish(
         self,
         reason: AgentLoopStopReason,
@@ -206,6 +280,30 @@ class AgentLoop:
             provider_model=provider_model,
             estimated_tokens=self._counter.count(working),
         )
+
+
+async def _call_with_optional_budget(
+    call_model: ModelTurn,
+    messages: list[dict[str, Any]],
+    remaining_seconds: float,
+) -> ProviderResponse:
+    """Pass a deadline to new callers while preserving the one-argument seam."""
+
+    signature = inspect.signature(call_model)
+    if "remaining_seconds" in signature.parameters:
+        return await call_model(messages, remaining_seconds=remaining_seconds)
+    return await call_model(messages)
+
+
+async def _dispatch_with_optional_timeout(
+    dispatcher: ToolInvoker,
+    call: ToolCall,
+    remaining_seconds: float,
+) -> ToolCallOutcome:
+    signature = inspect.signature(dispatcher.dispatch)
+    if "timeout_seconds" in signature.parameters:
+        return await dispatcher.dispatch(call, timeout_seconds=remaining_seconds)
+    return await dispatcher.dispatch(call)
 
 
 def _assistant_tool_message(calls: Sequence[ToolCall], content: str) -> dict[str, Any]:

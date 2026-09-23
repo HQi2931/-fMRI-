@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -92,6 +93,8 @@ class ChatToolRunner:
         preferred_profile_id: str | None,
         model: str | None,
         collector: EvidenceCollector,
+        context_window_tokens: int = 16_384,
+        max_output_tokens: int = 2_048,
     ) -> ChatToolLoopResult:
         rendered = self._build_messages(
             question=question,
@@ -115,18 +118,26 @@ class ChatToolRunner:
 
         captured: dict[str, Any] = {}
 
-        async def call_model(transcript: list[dict[str, Any]]) -> ProviderResponse:
+        async def call_model(
+            transcript: list[dict[str, Any]], *, remaining_seconds: float | None = None
+        ) -> ProviderResponse:
             turn = await self._call_turn(
                 messages=transcript,
                 tools=tools,
                 preferred_profile_id=preferred_profile_id,
                 model=model,
+                remaining_seconds=remaining_seconds,
             )
             captured["profile_id"] = turn.selected_profile_id
             captured["attempted"] = turn.attempted_profile_ids
             return turn.response
 
-        result = await AgentLoop(dispatcher, budget=self._budget).run(
+        budget = replace(
+            self._budget,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_output_tokens,
+        )
+        result = await AgentLoop(dispatcher, budget=budget).run(
             messages=messages,
             call_model=call_model,
         )
