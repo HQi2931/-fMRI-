@@ -70,6 +70,10 @@ export type ConversationToolCall = {
   input: Record<string, unknown>;
   output: Record<string, unknown>;
   error: string | null;
+  // Agent tool-loop telemetry; null for single-shot tool calls.
+  step_index: number | null;
+  risk_tier: "read" | "propose" | "execute" | string | null;
+  duration_ms: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -92,6 +96,8 @@ export type ConversationTurn = {
   user_message: ConversationMessage;
   assistant_message: ConversationMessage;
   tool_call: ConversationToolCall | null;
+  /** Ordered bounded-tool-loop steps; empty for a single-shot turn. */
+  tool_calls: ConversationToolCall[];
 };
 export type ConversationContext = Schemas["ConversationContextView"];
 export type ConversationMemory = Schemas["MemoryView"];

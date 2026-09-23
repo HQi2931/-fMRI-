@@ -30,10 +30,12 @@ from tests.science.conftest import (
 
 
 def environment() -> EnvironmentSnapshot:
+    """The locally verified scientific stack, so resolution stays warning-free."""
+
     return EnvironmentSnapshot(
-        matlab_version="R2023b",
-        spm_version="SPM12",
-        dpabi_version="V8.2_240510",
+        matlab_version="R2024b",
+        spm_version="SPM25",
+        dpabi_version="V9.0_250415",
         adapter_version="1.0.0",
         environment_hash="e" * 64,
     )

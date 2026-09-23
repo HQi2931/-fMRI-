@@ -718,7 +718,7 @@ class QcReviewMixin(RepositoryBaseMixin):
         return self._qc_review(row)
 
     def get_qc_review(self, review_revision_id: str) -> QcReviewView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(QcReviewRow, review_revision_id)
             if row is None:
                 raise NotFoundError("qc_review_revision", review_revision_id)
@@ -731,7 +731,7 @@ class QcReviewMixin(RepositoryBaseMixin):
             return self._qc_review(row, approval)
 
     def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.scalar(
                 select(QcReviewRow)
                 .where(QcReviewRow.run_id == run_id)
@@ -833,7 +833,7 @@ class QcReviewMixin(RepositoryBaseMixin):
         )
 
     def get_qc_skip_for_run(self, run_id: str) -> QcSkipView | None:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.scalar(select(QcSkipRow).where(QcSkipRow.run_id == run_id))
             return None if row is None else self._qc_skip(row)
 

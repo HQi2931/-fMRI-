@@ -108,6 +108,17 @@ class RepositoryBaseMixin(ABC):
     _transaction_session: ContextVar[Session | None]
 
     @contextmanager
+    def _read_session(self) -> Iterator[Session]:
+        """Read pending writes when a use case is already inside an atomic transaction."""
+        active = self._transaction_session.get()
+        if active is not None:
+            active.flush()
+            yield active
+        else:
+            with self.database.session_factory() as session:
+                yield session
+
+    @contextmanager
     @abstractmethod
     def _immediate_write_transaction(self) -> Iterator[Session]: ...
 

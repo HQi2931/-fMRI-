@@ -127,9 +127,10 @@ def compile_preprocessing(
         if len(sources) != 1:
             raise ValueError("all requested metrics require the same mask source")
         if auto_mask:
-            if parameters is None or len(subjects) != 1 or mask_binding is not None:
+            if parameters is None or mask_binding is not None:
                 raise ValueError(
-                    "DPABI auto mask is supported only for single-subject preprocessing runs"
+                    "DPABI auto mask requires preprocessing and cannot use a "
+                    "registered mask binding"
                 )
         else:
             mask_ids = {item.mask_artifact_id for item in metric_parameters}

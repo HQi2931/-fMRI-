@@ -45,14 +45,14 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
             return self._project(row)
 
     def get_project(self, project_id: str) -> ProjectView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ProjectRow, project_id)
             if row is None:
                 raise NotFoundError("project", project_id)
             return self._project(row)
 
     def list_projects(self) -> list[ProjectView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             rows = session.scalars(select(ProjectRow).order_by(ProjectRow.created_at)).all()
             return [self._project(row) for row in rows]
 
@@ -87,7 +87,7 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
             return self._dataset(row)
 
     def get_dataset(self, dataset_id: str) -> DatasetView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(DatasetRow, dataset_id)
             if row is None:
                 raise NotFoundError("dataset", dataset_id)
@@ -123,14 +123,14 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
             return self._manifest(row)
 
     def get_manifest(self, manifest_id: str) -> ManifestRevisionView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ManifestRevisionRow, manifest_id)
             if row is None:
                 raise NotFoundError("manifest", manifest_id)
             return self._manifest(row)
 
     def get_manifest_content(self, manifest_id: str) -> dict[str, Any]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ManifestRevisionRow, manifest_id)
             if row is None:
                 raise NotFoundError("manifest", manifest_id)
@@ -165,14 +165,14 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
             return self._demographics(row)
 
     def get_demographics_content(self, demographics_id: str) -> tuple[str, dict[str, Any]]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(DemographicsRevisionRow, demographics_id)
             if row is None:
                 raise NotFoundError("demographics_revision", demographics_id)
             return row.dataset_id, _load(row.content_json, {})
 
     def get_demographics(self, demographics_id: str) -> DemographicsRevisionView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(DemographicsRevisionRow, demographics_id)
             if row is None:
                 raise NotFoundError("demographics_revision", demographics_id)
@@ -207,7 +207,7 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
             return self._split(row)
 
     def get_split(self, split_id: str) -> DatasetSplitView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(DatasetSplitRevisionRow, split_id)
             if row is None:
                 raise NotFoundError("dataset_split_revision", split_id)

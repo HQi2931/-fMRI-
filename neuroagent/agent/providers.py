@@ -1,18 +1,24 @@
-"""Model provider adapters. Providers never receive tools or local credentials in payloads."""
+"""Model provider adapters. Providers only ever receive model-visible tools."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 import httpx
+from pydantic import ValidationError
 
 from neuroagent.agent.models import (
+    MAX_TOOL_ARGUMENT_BYTES,
+    MAX_TOOL_CALLS_PER_RESPONSE,
     ModelCapability,
     ModelProfile,
     ProviderCitation,
     ProviderResponse,
+    ToolCall,
 )
+from neuroagent.agent.tool_spec import LlmTool, provider_tool_payload
 
 
 class ProviderError(RuntimeError):
@@ -23,15 +29,73 @@ class RetryableProviderError(ProviderError):
     pass
 
 
+def parse_tool_calls(message: Mapping[str, Any]) -> tuple[ToolCall, ...]:
+    """Read OpenAI-compatible ``tool_calls`` defensively.
+
+    Every entry is untrusted provider output: a non-object entry, a missing id,
+    a missing function name, an oversized or non-object arguments payload or an
+    over-long name is skipped or flagged rather than raising, so one malformed
+    call cannot discard an otherwise usable response.
+    """
+
+    raw = message.get("tool_calls")
+    if not isinstance(raw, list):
+        return ()
+    calls: list[ToolCall] = []
+    for entry in raw[:MAX_TOOL_CALLS_PER_RESPONSE]:
+        if not isinstance(entry, dict):
+            continue
+        call_id = entry.get("id")
+        function = entry.get("function")
+        if not isinstance(call_id, str) or not call_id or not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name or len(name) > 64:
+            continue
+        arguments, valid = parse_tool_arguments(function.get("arguments"))
+        try:
+            calls.append(
+                ToolCall(
+                    call_id=call_id[:128],
+                    name=name,
+                    arguments=arguments,
+                    arguments_valid=valid,
+                )
+            )
+        except ValidationError:
+            continue
+    return tuple(calls)
+
+
+def parse_tool_arguments(value: object) -> tuple[dict[str, Any], bool]:
+    """Parse a provider's ``arguments`` field, which is normally a JSON string."""
+
+    if value is None or value == "":
+        return {}, True
+    if isinstance(value, dict):
+        return value, True
+    if not isinstance(value, str) or len(value) > MAX_TOOL_ARGUMENT_BYTES:
+        return {}, False
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}, False
+    if not isinstance(parsed, dict):
+        return {}, False
+    return parsed, True
+
+
 class ModelProvider(Protocol):
     async def generate(
         self,
         profile: ModelProfile,
         api_key: str,
-        messages: Sequence[dict[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         web_search: bool = False,
         json_object: bool | None = None,
+        tools: Sequence[LlmTool] | None = None,
+        tool_choice: str = "auto",
     ) -> ProviderResponse: ...
 
 
@@ -43,10 +107,12 @@ class OpenAICompatibleProvider:
         self,
         profile: ModelProfile,
         api_key: str,
-        messages: Sequence[dict[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         web_search: bool = False,
         json_object: bool | None = None,
+        tools: Sequence[LlmTool] | None = None,
+        tool_choice: str = "auto",
     ) -> ProviderResponse:
         payload: dict[str, object] = {
             "model": profile.model,
@@ -62,6 +128,11 @@ class OpenAICompatibleProvider:
             if ModelCapability.WEB_SEARCH not in profile.capabilities:
                 raise ProviderError("profile does not declare web search support")
             payload["web_search_options"] = {"search_context_size": "medium"}
+        if tools:
+            if ModelCapability.TOOL_USE not in profile.capabilities:
+                raise ProviderError("profile does not declare tool use support")
+            payload["tools"] = provider_tool_payload(tools)
+            payload["tool_choice"] = tool_choice
 
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=profile.timeout_seconds)
@@ -81,10 +152,17 @@ class OpenAICompatibleProvider:
             if response.status_code >= 400:
                 raise ProviderError(f"provider rejected request ({response.status_code})")
             body = response.json()
-            message = body["choices"][0]["message"]
-            content = message["content"]
+            choice = body["choices"][0]
+            message = choice["message"]
+            tool_calls = parse_tool_calls(message)
+            content = message.get("content")
             if not isinstance(content, str):
-                raise ProviderError("provider returned non-text content")
+                # A tool-calling turn legitimately carries an empty content
+                # field; only a response with nothing usable is a protocol error.
+                if tool_calls:
+                    content = ""
+                else:
+                    raise ProviderError("provider returned non-text content")
             usage = {
                 key: int(value)
                 for key, value in (body.get("usage") or {}).items()
@@ -110,6 +188,12 @@ class OpenAICompatibleProvider:
                 model=str(body.get("model") or profile.model),
                 usage=usage,
                 citations=tuple(citations),
+                tool_calls=tool_calls,
+                finish_reason=(
+                    choice["finish_reason"]
+                    if isinstance(choice.get("finish_reason"), str)
+                    else None
+                ),
             )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise RetryableProviderError("provider transport failed") from exc
@@ -157,21 +241,27 @@ class MockProvider:
 
     def __init__(self, responses: Sequence[str | ProviderResponse | Exception]) -> None:
         self._responses = list(responses)
-        self.requests: list[tuple[ModelProfile, Sequence[dict[str, str]]]] = []
+        self.requests: list[tuple[ModelProfile, Sequence[Mapping[str, Any]]]] = []
         self.request_options: list[dict[str, bool | None]] = []
+        # Recorded separately so the long-standing ``request_options`` shape
+        # asserted by existing tests stays byte-identical.
+        self.tool_requests: list[tuple[str, ...]] = []
 
     async def generate(
         self,
         profile: ModelProfile,
         api_key: str,
-        messages: Sequence[dict[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         web_search: bool = False,
         json_object: bool | None = None,
+        tools: Sequence[LlmTool] | None = None,
+        tool_choice: str = "auto",
     ) -> ProviderResponse:
-        del api_key
+        del api_key, tool_choice
         self.requests.append((profile, messages))
         self.request_options.append({"web_search": web_search, "json_object": json_object})
+        self.tool_requests.append(tuple(tool.name for tool in tools or ()))
         if not self._responses:
             raise ProviderError("mock response queue is empty")
         response = self._responses.pop(0)

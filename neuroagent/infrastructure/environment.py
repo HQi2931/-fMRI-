@@ -23,8 +23,12 @@ from neuroagent.application.hashing import content_hash
 from neuroagent.application.settings import Settings
 from neuroagent.skills.models import EnvironmentSnapshot
 
+# Sentinel label: the configured DPABI version label replaces it when the probe
+# view is built, so this placeholder never reaches the environment snapshot.
+_DPABI_VERSION_SENTINEL = "__selected_dpabi_version__"
+
 _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    ("DPABI V8.2_240510", (("dpabi.m", "dpabi.m"),)),
+    (_DPABI_VERSION_SENTINEL, (("dpabi.m", "dpabi.m"),)),
     ("DPARSFA_run", (("DPARSFA_run.m", "DPARSF/DPARSFA_run.m"),)),
     (
         "DPABI ALFF/ReHo entry points",
@@ -262,7 +266,7 @@ def probe_environment(
     ]
     components = [
         _component(
-            f"DPABI {selected.dpabi_version}" if name == "DPABI V8.2_240510" else name,
+            f"DPABI {selected.dpabi_version}" if name == _DPABI_VERSION_SENTINEL else name,
             files,
         )
         for name, files in checks

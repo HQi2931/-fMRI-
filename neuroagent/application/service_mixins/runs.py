@@ -60,7 +60,6 @@ from neuroagent.domain.fmri.statistics import (
     StatisticalQcSource,
     StatisticalTest,
 )
-from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 
 
 class RunMixin(BaseServiceMixin):
@@ -679,7 +678,7 @@ class RunMixin(BaseServiceMixin):
         evidence_path = attempt_root / "output" / "preprocessing-evidence.json"
         try:
             expected_counts = self._expected_volume_counts(evidence_path)
-            report = parse_dpabi_head_motion_qc(
+            report = self.head_motion_qc_parser(
                 realign_root,
                 input_manifest_hash=plan.manifest_hash,
                 subject_ids=tuple(subject.subject_id for subject in manifest.subjects),

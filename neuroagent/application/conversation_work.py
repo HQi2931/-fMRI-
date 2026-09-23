@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,44 @@ from neuroagent.application.contracts import (
     SkillPlanResolveRequest,
     SkillPlanResolveView,
     StatisticalResultView,
+    WorkspaceSetupIntent,
 )
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.ports import PathPolicyPort, RepositoryPort
+from neuroagent.application.work_draft import WorkDraft, confirmed_skill_intent, draft_hash
+
+_RUN_STATE_LABELS = {
+    "queued": "排队中",
+    "running": "执行中",
+    "cancelling": "正在取消",
+    "qc_review": "等待 QC 审核",
+    "succeeded": "已完成",
+    "failed_retryable": "暂时失败，可重试",
+    "failed_terminal": "失败",
+    "timed_out": "已超时",
+    "cancelled": "已取消",
+}
+_QC_STATE_LABELS = {
+    "draft": "待确认",
+    "approved": "已批准",
+    "rejected": "已拒绝",
+}
+_QC_SCOPE_LABELS = {
+    "head_motion": "头动检查",
+    "pre_statistics": "统计前检查",
+}
+
+
+def _display_run_state(value: str) -> str:
+    return _RUN_STATE_LABELS.get(value, value)
+
+
+def _display_qc_state(value: str) -> str:
+    return _QC_STATE_LABELS.get(value, value)
+
+
+def _display_qc_scope(value: str) -> str:
+    return _QC_SCOPE_LABELS.get(value, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +87,7 @@ class WorkActionResult:
     workspace_path: str | None = None
     project_id: str | None = None
     active_run_id: str | None = None
+    commit: Callable[[], WorkActionResult] | None = None
 
 
 class ConversationWorkCoordinator:
@@ -129,7 +166,16 @@ class ConversationWorkCoordinator:
                     project_id=project_id,
                     active_run_id=active_run_id,
                 )
-        action = self._resolve_action(request, workspace_path, active_run_id)
+        if request.action is ConversationAction.AUTO:
+            conversational_reply = self._conversational_reply(request.content)
+            if conversational_reply is not None:
+                return WorkActionResult(
+                    assistant_content=conversational_reply,
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=active_run_id,
+                )
+        action = self.resolve_action(request, workspace_path, active_run_id)
         try:
             if action is ConversationAction.SETUP_WORKSPACE:
                 return self._setup_workspace(request, workspace_path, idempotency_key)
@@ -159,8 +205,9 @@ class ConversationWorkCoordinator:
                     idempotency_key=idempotency_key,
                 )
             return WorkActionResult(
-                "我已记录这条工作要求。你可以让我准备预处理方案、查看运行进度，"
-                "或在已有审核计划后明确启动 DPABI 预处理。",
+                "我可以协助准备预处理方案、查看运行进度、完成 QC 审核并启动 DPABI。"
+                "请直接告诉我你的目标；如果要生成 ALFF 方案，请补充 TR、时间点数、"
+                "预处理步骤、频段和 QC 要求。",
                 workspace_path=workspace_path,
                 project_id=project_id,
                 active_run_id=active_run_id,
@@ -178,6 +225,95 @@ class ConversationWorkCoordinator:
                 workspace_path=workspace_path,
                 project_id=project_id,
                 active_run_id=active_run_id,
+            )
+
+    def prepare_plan_from_draft(
+        self,
+        request: ConversationTurnCreate,
+        draft: WorkDraft,
+        *,
+        workspace_path: str | None,
+        project_id: str | None,
+        dataset_id: str | None,
+        conversation_id: str,
+        user_confirmation_ref: str,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        """Bind a user-reviewed draft to the frozen dataset and compile a plan.
+
+        This is the escalation path from free-form dialogue into a server-owned
+        plan, so the binding lives here rather than in the dialogue layer.  The
+        draft arrived as a model *suggestion*: only ``confirmed_skill_intent``
+        attaches parameter provenance, and it refuses a draft whose reviewed hash
+        no longer matches.  Compiling neither approves nor runs anything.
+        """
+
+        payload: dict[str, Any] = {}
+        try:
+            if not workspace_path:
+                return WorkActionResult("请先选择工作区，再确认参数草稿。", project_id=project_id)
+            if dataset_id is not None and project_id is not None:
+                dataset = self._repository.get_dataset(dataset_id)
+                project = self._repository.get_project(project_id)
+                if dataset.project_id != project_id:
+                    raise ValueError("dataset project mismatch")
+                bound = self._path_policy.validate_read_path(
+                    dataset.source_path,
+                    project_roots=project.source_roots,
+                    expect_directory=True,
+                )
+                self._validate_workspace_match(workspace_path, bound, project.source_roots)
+            else:
+                setup = request.model_copy(
+                    update={
+                        "action": ConversationAction.SETUP_WORKSPACE,
+                        "workspace_setup": WorkspaceSetupIntent(
+                            project_name="对话研究项目",
+                            dataset_name="工作区数据集",
+                            work_root=str(self._work_root / "conversations" / conversation_id),
+                        ),
+                    }
+                )
+                registered = self._setup_workspace(
+                    setup, workspace_path, idempotency_key + ":setup"
+                )
+                payload.update(registered.payload)
+                project_id = registered.project_id
+                dataset = self._repository.get_dataset(payload["dataset"]["dataset_id"])
+                assert project_id is not None
+                project = self._repository.get_project(project_id)
+            if dataset.current_manifest_id is None:
+                raise ValueError("workspace has no frozen manifest")
+            manifest = self._repository.get_manifest(dataset.current_manifest_id)
+            intent = confirmed_skill_intent(
+                draft,
+                project_id=project.project_id,
+                dataset_ref=dataset.dataset_id,
+                input_manifest_hash=manifest.content_hash,
+                reviewed_hash=draft_hash(draft),
+                user_confirmation_ref=user_confirmation_ref,
+            )
+            resolved = self._prepare_preprocessing_plan(
+                request.model_copy(
+                    update={
+                        "skill_plan_intent": intent,
+                        "expected_project_version": project.version,
+                    }
+                ),
+                project_id,
+                idempotency_key + ":compile",
+            )
+            payload.update(resolved.payload)
+            return replace(resolved, payload=payload, workspace_path=workspace_path)
+        except (ApplicationError, ValueError) as exc:
+            explanation = (
+                exc.message if isinstance(exc, ApplicationError) else "参数或工作区绑定未通过校验"
+            )
+            return WorkActionResult(
+                "方案尚未编译，也未运行：" + explanation,
+                payload=payload,
+                project_id=project_id,
+                workspace_path=workspace_path,
             )
 
     def _setup_workspace(
@@ -260,7 +396,8 @@ class ConversationWorkCoordinator:
             return WorkActionResult(
                 assistant_content=(
                     "生成方案前必须提交完整的科研参数、参数来源证据和当前项目版本。"
-                    "请在方案表单中逐项确认，系统不会根据对话猜测 TR、频段或预处理选择。"
+                    "当前页面没有单独的方案表单，请直接在输入框中补充这些信息；"
+                    "系统不会根据对话猜测 TR、频段或预处理选择。"
                 ),
                 tool={
                     "tool_name": "prepare_preprocessing_plan",
@@ -301,9 +438,8 @@ class ConversationWorkCoordinator:
         }
         return WorkActionResult(
             assistant_content=(
-                "不可变预处理方案已编译并通过阻断校验。"
-                f"计划版本为 {resolved.plan_revision.revision}，状态为 "
-                f"{resolved.plan_revision.state.value}；请审查 DAG、警告和哈希后再批准。"
+                "预处理方案已生成，并通过了必要的阻断校验。"
+                "请重点审查处理流程、科研参数和提示信息；确认无误后再批准并启动。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -325,7 +461,7 @@ class ConversationWorkCoordinator:
         payload = {"run": run.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"运行 {run.run_id[:8]} 当前状态为 {run.state.value}，已执行 {run.attempt} 次。"
+                f"当前任务状态为“{_display_run_state(run.state.value)}”，已尝试 {run.attempt} 次。"
             ),
             payload=payload,
             tool=self._tool_result("get_run_progress", {"run_id": active_run_id}, payload),
@@ -345,7 +481,8 @@ class ConversationWorkCoordinator:
         if request.qc_review_id is None and review is None:
             return WorkActionResult(
                 assistant_content=(
-                    "当前运行尚未生成 QC review；如果 DPABI 已完成 Realign，可让我补跑头动 QC。"
+                    "当前运行还没有生成 QC 审核结果；如果 DPABI 已完成 Realign，"
+                    "可以继续进行头动 QC。"
                 ),
                 tool={
                     "tool_name": "get_qc_status",
@@ -360,17 +497,16 @@ class ConversationWorkCoordinator:
             assert request.qc_review_id is not None
             review = self._get_qc_review(request.qc_review_id)
         if project_id is not None and review.project_id != project_id:
-            raise ConflictError("cross_project_qc_review", "QC review 不属于当前对话项目。")
+            raise ConflictError("cross_project_qc_review", "QC 审核不属于当前对话项目。")
         if target_run_id is not None and review.run_id != target_run_id:
-            raise ConflictError("conversation_run_qc_mismatch", "QC review 不属于当前运行。")
+            raise ConflictError("conversation_run_qc_mismatch", "QC 审核不属于当前运行。")
         payload = {"qc_review": review.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"QC review {review.review.review_revision_id[:8]} 当前状态为 "
-                f"{review.state.value}，范围为 {review.review.review_scope.value}；"
+                f"QC 审核当前状态为“{_display_qc_state(review.state.value)}”，"
+                f"检查范围为“{_display_qc_scope(review.review.review_scope.value)}”；"
                 f"纳入 {len(review.review.included_subject_ids)} 名，"
                 f"排除 {len(review.review.excluded_subject_ids)} 名受试者。"
-                f"内容哈希：{review.review.content_hash}。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -413,8 +549,7 @@ class ConversationWorkCoordinator:
                 "头动 QC 草稿已生成："
                 f"纳入 {len(review.review.included_subject_ids)} 名，"
                 f"排除 {len(review.review.excluded_subject_ids)} 名。"
-                f"QC hash：{review.review.content_hash}。"
-                "确认无误后，请明确回复“批准 QC”。"
+                "请检查结果；确认无误后回复“批准 QC”。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -441,7 +576,7 @@ class ConversationWorkCoordinator:
             review = self._get_latest_qc_review_for_run(run_id)
         if review is None:
             return WorkActionResult(
-                assistant_content="当前对话没有可批准的 QC review。",
+                assistant_content="当前对话没有可批准的 QC 审核结果。",
                 tool={
                     "tool_name": "approve_qc_review",
                     "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
@@ -452,7 +587,7 @@ class ConversationWorkCoordinator:
                 active_run_id=active_run_id,
             )
         if project_id is not None and review.project_id != project_id:
-            raise ConflictError("cross_project_qc_review", "QC review 不属于当前对话项目。")
+            raise ConflictError("cross_project_qc_review", "QC 审核不属于当前对话项目。")
         run = self._get_run(review.run_id)
         approved = self._approve_qc_review(
             review.review.review_revision_id,
@@ -462,16 +597,13 @@ class ConversationWorkCoordinator:
                 review_hash=review.review.content_hash,
                 actor="work-conversation-agent",
                 approved=True,
-                reason="用户在 Work 对话中明确批准 QC review。",
+                reason="用户在 Work 对话中明确批准 QC 审核。",
             ),
             f"{idempotency_key}:approve-qc",
         )
         payload = {"qc_review": approved.model_dump(mode="json")}
         return WorkActionResult(
-            assistant_content=(
-                f"QC review {approved.review.review_revision_id[:8]} 已批准；"
-                "运行已通过 QC 门禁，可以继续统计设计。"
-            ),
+            assistant_content=("QC 审核已批准，当前任务已通过质量控制，可以继续进行统计设计。"),
             payload=payload,
             tool=self._tool_result(
                 "approve_qc_review",
@@ -576,7 +708,7 @@ class ConversationWorkCoordinator:
         ]
         if missing:
             return WorkActionResult(
-                assistant_content="运行预览需要当前项目、已验证计划和精确计划哈希。",
+                assistant_content="运行预览需要当前项目和已审核的预处理方案。",
                 tool={
                     "tool_name": "preview_dpabi_preprocessing",
                     "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
@@ -594,7 +726,10 @@ class ConversationWorkCoordinator:
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
         if plan.plan_hash != request.expected_plan_hash:
-            raise ConflictError("run_plan_hash_mismatch", "运行预览的计划哈希已失配。")
+            raise ConflictError(
+                "run_plan_hash_mismatch",
+                "运行预览所依据的方案已发生变化，请重新生成并审核方案。",
+            )
         if plan.state is not PlanState.APPROVED:
             raise ConflictError("approved_plan_required", "只有已批准计划可以进入运行预览。")
         dataset_ref = plan.plan.get("skill_plan", {}).get("dataset_ref")
@@ -678,7 +813,7 @@ class ConversationWorkCoordinator:
                 assistant_content=(
                     "启动前需要已验证并审批的计划、本次真实 MATLAB/DPABI 运行确认，"
                     "以及明确选择“做头动 QC”或“跳过 QC”。"
-                    "确认后，任务会进入现有 Workflow/Worker 队列，"
+                    "确认后，任务会进入执行队列，"
                     "并在所选工作区原位生成 DPABI 结果目录。"
                 ),
                 tool={
@@ -701,19 +836,8 @@ class ConversationWorkCoordinator:
         plan = self._repository.get_plan(request.plan_revision_id)
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
-        if plan.state is PlanState.AWAITING_APPROVAL:
-            self._approve_plan(
-                plan.plan_revision_id,
-                ApprovalCreate(
-                    expected_version=plan.version,
-                    plan_hash=plan.plan_hash,
-                    actor="work-conversation-agent",
-                    decision=ApprovalDecision.APPROVED,
-                    reason="用户在 Work 对话中明确确认批准并启动真实 MATLAB/DPABI 任务。",
-                ),
-                f"{idempotency_key}:approval",
-            )
-            plan = self._repository.get_plan(plan.plan_revision_id)
+        if plan.plan_hash != request.expected_plan_hash:
+            raise ConflictError("run_plan_hash_mismatch", "方案版本已变化，请重新审查并确认。")
         dataset_ref = plan.plan.get("skill_plan", {}).get("dataset_ref")
         if not isinstance(dataset_ref, str):
             raise InputValidationError(
@@ -727,6 +851,19 @@ class ConversationWorkCoordinator:
             expect_directory=True,
         )
         self._validate_workspace_match(workspace_path, bound_workspace, project.source_roots)
+        if plan.state is PlanState.AWAITING_APPROVAL:
+            self._approve_plan(
+                plan.plan_revision_id,
+                ApprovalCreate(
+                    expected_version=plan.version,
+                    plan_hash=plan.plan_hash,
+                    actor="work-conversation-agent",
+                    decision=ApprovalDecision.APPROVED,
+                    reason="用户在 Work 对话中明确确认批准并启动真实 MATLAB/DPABI 任务。",
+                ),
+                f"{idempotency_key}:approval",
+            )
+            plan = self._repository.get_plan(plan.plan_revision_id)
         run = self._create_run(
             RunCreate(
                 project_id=project_id,
@@ -742,9 +879,9 @@ class ConversationWorkCoordinator:
         payload = {"run": run.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"DPABI 任务已进入 Workflow/Worker 队列，运行 ID 为 {run.run_id}。"
-                f"本次 QC 选择为{'跳过' if qc_mode is QcExecutionMode.SKIP else '执行头动检测'}；"
-                "结果会写入该计划绑定的数据集工作区；可以继续询问运行进度。"
+                "DPABI 任务已进入执行队列。"
+                f"本次将{'跳过 QC' if qc_mode is QcExecutionMode.SKIP else '执行头动 QC'}；"
+                "任务完成后我会报告结果和质量控制状态。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -940,8 +1077,7 @@ class ConversationWorkCoordinator:
                 "不删除初始点；Slice Timing 开启（奇数层后偶数层，参考层 33）；"
                 "Realign 使用 DPABI Jobmat；协变量回归、标准化、去趋势、时序滤波、"
                 "Scrubbing 和平滑全部关闭；计算 raw ALFF，频段 0.01–0.08 Hz，"
-                "使用 DPABI 自动掩膜。该计划仅用于技术兼容性冒烟。"
-                f"计划哈希：{resolved.plan_revision.plan_hash}。"
+                "使用 DPABI 自动掩膜。该方案仅用于技术兼容性检查。"
                 "复核无误后，请回复“确认批准并启动真实 MATLAB/DPABI 任务”。"
             ),
             payload=payload,
@@ -958,6 +1094,38 @@ class ConversationWorkCoordinator:
     def _is_demo_alff_request(content: str) -> bool:
         text = content.casefold()
         return "alff" in text and any(word in text for word in ("demodata", "demo data", "sub_001"))
+
+    @staticmethod
+    def _conversational_reply(content: str) -> str | None:
+        """Handle lightweight conversation before falling back to an execution action."""
+
+        text = content.strip().casefold()
+        if re.fullmatch(r"(?:你好|您好|嗨|hello|hi|谢谢|感谢)[\s，,。!！?？]*", text):
+            return (
+                "你好！我可以协助你完成 rs-fMRI 预处理、ALFF 计算、QC 审核和结果查看。"
+                "你可以直接告诉我想处理的数据和目标；如果使用 DemoData，也可以直接说明要计算 ALFF。"
+            )
+        if (
+            "方案表单" in text
+            or ("表单" in text and any(word in text for word in ("方案", "预处理", "参数")))
+            or any(phrase in text for phrase in ("参数怎么填", "怎么填写参数", "如何填写参数"))
+        ):
+            return (
+                "当前 Work 页面没有单独的方案表单，直接在下方输入框填写即可。"
+                "生成方案时请提供 TR、时间点数、Slice Timing、Realign、标准化、"
+                "协变量回归、去趋势、滤波、平滑、ALFF 频段和 QC 要求。"
+                "如果使用 DemoData，可以直接说“使用当前 DemoData 计算 ALFF”，"
+                "我会先读取数据并列出待确认参数。"
+            )
+        if any(
+            phrase in text for phrase in ("你能做什么", "怎么开始", "如何开始", "帮助", "使用说明")
+        ):
+            return (
+                "你可以先选择工作区，然后直接用自然语言告诉我目标。"
+                "我会先整理方案和参数，等你确认后才启动真实计算；"
+                "计算完成后可以继续查看进度、QC 和结果。"
+            )
+        return None
 
     def _validate_workspace_match(
         self,
@@ -979,29 +1147,22 @@ class ConversationWorkCoordinator:
             )
 
     @staticmethod
-    def _resolve_action(
+    def resolve_action(
         request: ConversationTurnCreate,
         workspace_path: str | None,
         active_run_id: str | None,
     ) -> ConversationAction:
+        """Keyword fallback used when no model is connected.
+
+        This path may only ever return a read or draft action.  Actions that
+        start, approve, skip or set up work are server-only, so a keyword match
+        must not reach them: the safety property is enforced here rather than
+        left to whichever caller happens to remember to check.
+        """
+
         if request.action is not ConversationAction.AUTO:
             return request.action
         text = request.content.casefold()
-        skip_requested = any(
-            word in text for word in ("跳过qc", "跳过 qc", "不做qc", "不做 qc", "无需qc", "无需 qc")
-        )
-        if (
-            skip_requested
-            and active_run_id is not None
-            and not any(word in text for word in ("启动", "运行", "执行", "开始"))
-        ):
-            return ConversationAction.SKIP_QC
-        if any(word in text for word in ("批准qc", "批准 qc", "确认qc", "确认 qc")):
-            return ConversationAction.APPROVE_QC_REVIEW
-        if any(word in text for word in ("头动", "realignparameter", "head motion")) and any(
-            word in text for word in ("qc", "质量控制", "质控", "检测", "检查", "筛")
-        ):
-            return ConversationAction.CREATE_HEAD_MOTION_QC
         if any(word in text for word in ("qc", "质量控制", "质控")):
             return ConversationAction.GET_QC_STATUS
         if any(word in text for word in ("统计结果", "结果报告", "显著簇")):
@@ -1010,10 +1171,6 @@ class ConversationWorkCoordinator:
             return ConversationAction.GET_PROGRESS
         if any(word in text for word in ("生成方案", "准备方案", "创建方案", "预处理方案")):
             return ConversationAction.PREPARE_PREPROCESSING_PLAN
-        if any(word in text for word in ("启动", "运行", "执行", "开始预处理")):
-            return ConversationAction.START_PREPROCESSING
-        if workspace_path and any(word in text for word in ("建立项目", "注册工作区", "冻结清单")):
-            return ConversationAction.SETUP_WORKSPACE
         return ConversationAction.AUTO
 
     @staticmethod

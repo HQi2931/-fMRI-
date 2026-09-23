@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     memory_minimum_similarity: float = Field(default=0.45, ge=-1, le=1)
     worker_lease_seconds: int = Field(default=30, ge=1)
     idempotency_lease_seconds: int = Field(default=300, ge=30)
+    # Bounded Agent tool loop.  The loop is opt-in per model profile (the profile
+    # must declare ``tool_use``); these values bound what one turn may spend once
+    # it runs.  Each is a hard stop, not a hint.
+    agent_tool_loop_enabled: bool = True
+    agent_max_tool_steps: int = Field(default=8, ge=1, le=32)
+    agent_max_tool_seconds: float = Field(default=90.0, gt=0, le=600)
+    agent_max_tool_tokens: int = Field(default=120_000, ge=1_000, le=2_000_000)
+    agent_max_repeat_tool_failures: int = Field(default=2, ge=1, le=10)
+    agent_tool_result_max_bytes: int = Field(default=65_536, ge=1_024, le=1_048_576)
     redaction_salt: str | None = None
     secrets_file: Path = _PROJECT_ROOT / ".env"
     environment: str = "development"

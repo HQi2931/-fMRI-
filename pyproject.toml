@@ -75,6 +75,7 @@ asyncio_mode = "auto"
 markers = [
   "integration: integration tests using local mock infrastructure",
   "matlab_smoke: explicitly approved lightweight MATLAB smoke tests",
+  "demodata_smoke: explicitly approved DemoData acceptance runs; needs local data and MATLAB",
 ]
 
 [tool.coverage.run]

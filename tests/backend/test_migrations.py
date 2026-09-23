@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import textwrap
@@ -8,6 +9,29 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+
+
+def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
+    """Running migrations in-process must not switch off neuroagent logging.
+
+    ``fileConfig`` defaults to ``disable_existing_loggers=True``, which silenced
+    every already-imported ``neuroagent.*`` logger as soon as Alembic ran.  The
+    API's unhandled-error log and the worker's executor traceback both went
+    missing in production while every test still passed.
+    """
+
+    application_logger = logging.getLogger("neuroagent.workflow.worker")
+    assert application_logger.disabled is False
+
+    database_path = tmp_path / "logging.sqlite"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+    command.upgrade(config, "head")
+
+    assert application_logger.disabled is False, "migrations disabled application logging"
+    assert application_logger.isEnabledFor(logging.ERROR), (
+        "migrations raised the effective level of application logging"
+    )
 
 
 def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> None:
@@ -41,6 +65,48 @@ def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> No
         "paper_sections",
         "literature_chunks",
     }.issubset(tables)
+
+
+def test_agent_tool_loop_migration_adds_audit_columns_and_round_trips(tmp_path: Path) -> None:
+    """0014 must add the loop columns, and its downgrade must be reversible."""
+
+    database_path = tmp_path / "tool-loop.sqlite"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        columns = {
+            column["name"] for column in inspect(engine).get_columns("conversation_tool_calls")
+        }
+    finally:
+        engine.dispose()
+
+    assert {"step_index", "risk_tier", "provider_call_id", "duration_ms"}.issubset(columns)
+
+    # Downgrade must not be lossy for the columns that already existed, and the
+    # upgrade must be re-runnable (a broken batch alter leaves SQLite mid-way).
+    command.downgrade(config, "0013_optional_qc")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        downgraded = {
+            column["name"] for column in inspect(engine).get_columns("conversation_tool_calls")
+        }
+    finally:
+        engine.dispose()
+    assert "step_index" not in downgraded
+    assert {"tool_call_id", "tool_name", "input_json", "output_json"}.issubset(downgraded)
+
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        restored = {
+            column["name"] for column in inspect(engine).get_columns("conversation_tool_calls")
+        }
+    finally:
+        engine.dispose()
+    assert {"step_index", "risk_tier", "provider_call_id", "duration_ms"}.issubset(restored)
 
 
 def test_two_processes_can_initialize_the_same_new_sqlite_database(tmp_path: Path) -> None:

@@ -103,7 +103,7 @@ class AlffFalffParameters(FrozenModel):
 
 
 class RehoParameters(FrozenModel):
-    """Explicit ReHo choices mapped to DPABI V8.2 semantics."""
+    """Explicit ReHo choices mapped to DPABI semantics."""
 
     tr_seconds: float = Field(gt=0)
     temporal_filter_band: FrequencyBand | None

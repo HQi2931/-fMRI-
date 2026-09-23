@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +49,7 @@ from neuroagent.application.contracts import (
     ValidationIssue,
     WorkflowState,
 )
+from neuroagent.domain.fmri.qc import HeadMotionQcCriteria, HeadMotionQcReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,24 @@ class DemographicsReaderPort(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class HeadMotionQcParserPort(Protocol):
+    """Turn DPABI RealignParameter evidence into typed head-motion QC.
+
+    The parser reads files from the filesystem, so the application layer depends
+    on this port rather than importing the infrastructure adapter directly.
+    """
+
+    def __call__(
+        self,
+        realign_parameter_dir: Path,
+        *,
+        input_manifest_hash: str,
+        subject_ids: tuple[str, ...],
+        criteria: HeadMotionQcCriteria | None = None,
+        expected_volume_counts: dict[str, int] | None = None,
+    ) -> HeadMotionQcReport: ...
+
+
 class SecretWriterPort(Protocol):
     """Write one validated secret through a controlled local adapter."""
 
@@ -164,6 +183,7 @@ class RepositoryPort(Protocol):
         preferred_profile_id: str | None,
         project_id: str | None,
         active_run_id: str | None,
+        tool_calls: Sequence[dict[str, Any]] | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,

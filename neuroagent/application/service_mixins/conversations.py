@@ -9,9 +9,12 @@ from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.contracts import (
+    ConversationAction,
     ConversationContextView,
     ConversationCreate,
+    ConversationMessageView,
     ConversationMode,
+    ConversationToolCallView,
     ConversationToolStatus,
     ConversationTurnCreate,
     ConversationTurnView,
@@ -34,6 +37,7 @@ from neuroagent.application.conversation_work import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
+from neuroagent.application.work_dialogue import WorkDialogue
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
@@ -41,6 +45,7 @@ from neuroagent.memory.models import MemoryCandidateDraft
 
 
 class ConversationMixin(BaseServiceMixin):
+    work_dialogue: WorkDialogue
     answer_rsfmri_question: Callable[[RsFmriQuestionRequest], RsFmriAnswerView]
     get_run: Callable[[str], RunView]
     create_run: Callable[[RunCreate, str], RunView]
@@ -183,14 +188,26 @@ class ConversationMixin(BaseServiceMixin):
                     "context_input_too_large", "当前消息超过所选模型的上下文预算。"
                 ) from exc
 
-            action_result = self.conversation_work.execute(
-                request,
-                workspace_path=workspace_path,
-                active_run_id=active_run_id,
-                project_id=project_id,
-                idempotency_key=idempotency_key,
-            )
-            model_metadata: dict[str, Any] | None = None
+            if request.action is ConversationAction.AUTO:
+                action_result = await self.work_dialogue.respond(
+                    conversation,
+                    request,
+                    work_packet,
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    preferred_profile_id=preferred_profile_id,
+                    idempotency_key=idempotency_key,
+                    has_profiles=bool(self.repository.list_model_profiles()),
+                )
+            else:
+                action_result = self.conversation_work.execute(
+                    request,
+                    workspace_path=workspace_path,
+                    active_run_id=active_run_id,
+                    project_id=project_id,
+                    idempotency_key=idempotency_key,
+                )
+            model_metadata = action_result.payload.get("model")
             return (
                 conversation.version,
                 action_result,
@@ -230,6 +247,8 @@ class ConversationMixin(BaseServiceMixin):
                     "conversation_changed_during_prepare",
                     "工作请求准备期间对话已变化，请基于最新状态重试。",
                 )
+            if action_result.commit is not None:
+                action_result = action_result.commit()
             project_id = action_result.project_id or request.project_id or conversation.project_id
             workspace_path = action_result.workspace_path
             active_run_id = action_result.active_run_id
@@ -243,6 +262,7 @@ class ConversationMixin(BaseServiceMixin):
                     assistant_content=action_result.assistant_content,
                     assistant_payload=payload,
                     tool=action_result.tool,
+                    tool_calls=_loop_tool_calls(payload),
                     workspace_path=workspace_path,
                     preferred_profile_id=preferred_profile_id,
                     project_id=project_id,
@@ -276,6 +296,7 @@ class ConversationMixin(BaseServiceMixin):
                 user_message=user_message,
                 assistant_message=assistant_message,
                 tool_call=stored_tool,
+                tool_calls=_turn_loop_steps(stored, user_message),
             )
 
         return await self._idempotent_async(
@@ -411,6 +432,7 @@ class ConversationMixin(BaseServiceMixin):
     ) -> ConversationTurnView:
         assistant_content, payload, tool, preferred_profile_id = prepared
         conversation = self.repository.get_conversation(conversation_id)
+        loop_calls = _loop_tool_calls(payload)
         stored, user_message, assistant_message, stored_tool = (
             self.repository.append_conversation_exchange(
                 conversation_id,
@@ -418,6 +440,7 @@ class ConversationMixin(BaseServiceMixin):
                 assistant_content=assistant_content,
                 assistant_payload=payload,
                 tool=tool,
+                tool_calls=loop_calls,
                 workspace_path=conversation.workspace_path,
                 preferred_profile_id=preferred_profile_id,
                 project_id=conversation.project_id,
@@ -462,6 +485,7 @@ class ConversationMixin(BaseServiceMixin):
             user_message=user_message,
             assistant_message=assistant_message,
             tool_call=stored_tool,
+            tool_calls=_turn_loop_steps(stored, user_message),
         )
 
     @staticmethod
@@ -474,3 +498,65 @@ class ConversationMixin(BaseServiceMixin):
             "input": input_data,
             "output": output,
         }
+
+
+def _turn_loop_steps(
+    conversation: ConversationView, user_message: ConversationMessageView
+) -> list[ConversationToolCallView]:
+    """The Agent tool-loop steps this turn produced, in execution order.
+
+    Shared by the Chat and Work paths so both report the same contract.  Only
+    rows carrying a ``step_index`` are loop steps; the turn's summary tool record
+    is reported separately through ``tool_call``.
+    """
+
+    return [
+        item
+        for item in conversation.tool_calls
+        if item.user_message_id == user_message.message_id and item.step_index is not None
+    ]
+
+
+def _loop_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract bounded-tool-loop audit records from a turn payload.
+
+    Chat nests them under ``chat.metadata.tool_loop``; Work keeps ``tool_loop`` at
+    the top level of its payload.  Both shapes are accepted.  The records were
+    produced by the dispatcher, so their arguments and results are already
+    redacted and bounded; malformed entries are dropped rather than trusted,
+    because this payload has been persisted and re-read before.
+    """
+
+    loop: Any = payload.get("tool_loop")
+    if not isinstance(loop, dict):
+        chat = payload.get("chat")
+        metadata = chat.get("metadata") if isinstance(chat, dict) else None
+        loop = metadata.get("tool_loop") if isinstance(metadata, dict) else None
+    if not isinstance(loop, dict):
+        return []
+    raw_calls = loop.get("calls")
+    if not isinstance(raw_calls, list):
+        return []
+
+    calls: list[dict[str, Any]] = []
+    for entry in raw_calls:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("tool_name")
+        status = entry.get("status")
+        if not isinstance(name, str) or not name or not isinstance(status, str):
+            continue
+        calls.append(
+            {
+                "tool_name": name,
+                "status": status,
+                "input": entry.get("input") if isinstance(entry.get("input"), dict) else {},
+                "output": entry.get("output") if isinstance(entry.get("output"), dict) else {},
+                "error": entry.get("error") if isinstance(entry.get("error"), str) else None,
+                "step_index": entry.get("step_index"),
+                "risk_tier": entry.get("risk_tier"),
+                "provider_call_id": entry.get("provider_call_id"),
+                "duration_ms": entry.get("duration_ms"),
+            }
+        )
+    return calls

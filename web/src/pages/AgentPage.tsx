@@ -12,7 +12,20 @@ import {
 import { Feedback } from "../components/Ui";
 import { updateWorkspace, useWorkspace } from "../workspace";
 
-type Message = { id: string; role: "user" | "assistant"; text: string; citations?: Citation[] };
+type ToolStep = {
+  key: string;
+  name: string;
+  status: string;
+  tier: string | null;
+  durationMs: number | null;
+};
+type Message = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  citations?: Citation[];
+  steps?: ToolStep[];
+};
 type ModelChoice = {
   key: string;
   profileId: string;
@@ -28,14 +41,43 @@ const WELCOME: Record<ConversationMode, Message> = {
 
 function messagesFrom(conversation?: Conversation): Message[] {
   if (!conversation) return [];
+  // A tool-loop turn writes one row per step, keyed to the user message that
+  // triggered it, so the steps are re-attached to its reply on every reload.
+  const stepsByUser = new Map<string, ToolStep[]>();
+  for (const call of conversation.tool_calls ?? []) {
+    if (call.step_index === null || call.step_index === undefined) continue;
+    const steps = stepsByUser.get(call.user_message_id) ?? [];
+    steps.push({
+      key: `${call.tool_call_id}`,
+      name: call.tool_name,
+      status: call.status,
+      tier: call.risk_tier ?? null,
+      durationMs: call.duration_ms ?? null,
+    });
+    stepsByUser.set(call.user_message_id, steps);
+  }
+  let pending: ToolStep[] | undefined;
   return conversation.messages
     .filter((item) => item.role === "user" || item.role === "assistant")
-    .map((item) => ({
-      id: item.message_id,
-      role: item.role as "user" | "assistant",
-      text: item.content,
-      citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
-    }));
+    .map((item) => {
+      if (item.role === "user") {
+        pending = stepsByUser.get(item.message_id);
+        return {
+          id: item.message_id,
+          role: "user" as const,
+          text: item.content,
+        };
+      }
+      const message: Message = {
+        id: item.message_id,
+        role: "assistant",
+        text: item.content,
+        citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
+        steps: pending,
+      };
+      pending = undefined;
+      return message;
+    });
 }
 
 function applyConversationContext(conversation: Conversation): void {
@@ -43,6 +85,10 @@ function applyConversationContext(conversation: Conversation): void {
     projectId: conversation.project_id ?? undefined,
     runId: conversation.active_run_id ?? undefined,
     workspacePath: conversation.workspace_path ?? undefined,
+    planRevisionId: undefined,
+    planVersion: undefined,
+    planHash: undefined,
+    planState: undefined,
   };
   for (const message of conversation.messages) {
     const payload = message.payload as Record<string, unknown>;
@@ -61,6 +107,13 @@ function applyConversationContext(conversation: Conversation): void {
       patch.planState = plan.state;
     }
     if (run) { patch.runId = run.run_id; patch.runVersion = run.version; patch.runState = run.state; }
+    const draft = payload.work_draft as { compiled?: boolean } | undefined;
+    if (draft && !draft.compiled) {
+      patch.planRevisionId = undefined;
+      patch.planVersion = undefined;
+      patch.planHash = undefined;
+      patch.planState = undefined;
+    }
   }
   updateWorkspace(patch);
 }
@@ -69,6 +122,14 @@ function ConversationHistory({ messages }: { messages: Message[] }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
       <span>{item.role === "assistant" ? "Agent" : "你"}</span>
+      {item.steps && item.steps.length > 0 && <ol className="chat-tool-steps" aria-label="Agent 工具步骤">
+        {item.steps.map((step) => <li key={step.key} data-tier={step.tier ?? "unknown"} data-status={step.status}>
+          <code>{step.name}</code>
+          {step.tier && <span className="tool-tier">{step.tier}</span>}
+          <span className="tool-status">{step.status}</span>
+          {step.durationMs !== null && <span className="tool-duration">{step.durationMs} ms</span>}
+        </li>)}
+      </ol>}
       <p>{item.text}</p>
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
     </div>)}
@@ -225,7 +286,7 @@ export function AgentPage() {
         target_run_id: mode === "work" && boundToSelectedWorkspace ? workspace.runId ?? null : null,
         plan_revision_id: mode === "work" && boundToSelectedWorkspace ? workspace.planRevisionId ?? null : null,
         expected_plan_hash: mode === "work" && boundToSelectedWorkspace ? workspace.planHash ?? null : null,
-        real_execution_confirmed: mode === "work" && /确认.*(真实|matlab|dpabi).*(运行|任务|执行)|批准并启动/i.test(content),
+        real_execution_confirmed: false,
       });
       cache(turn.conversation);
     } catch (caught) { setError(describeError(caught)); } finally { setBusy(false); }
@@ -254,8 +315,8 @@ export function AgentPage() {
       </div>
       <ConversationHistory messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} />
       {mode === "work" && activeRun && <div className="run-inline" role="status">
-        <strong>运行 {activeRun.run_id.slice(0, 8)} · {activeRun.state}</strong>
-        <span>{runStageLabel(activeRun)}{typeof activeRun.stage_progress === "number" && activeRun.state === "running" ? ` · ${Math.round(activeRun.stage_progress * 100)}%` : ""}</span>
+        <strong>任务状态：{runStageLabel(activeRun)}</strong>
+        {typeof activeRun.stage_progress === "number" && activeRun.state === "running" && <span>当前进度：{Math.round(activeRun.stage_progress * 100)}%</span>}
         {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
       </div>}
       <div className="chat-composer">
@@ -268,7 +329,7 @@ export function AgentPage() {
           <button className="button button-primary" type="button" disabled={busy || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
         </div>
       </div>
-      {mode === "work" && <p className="work-context-line">工作区：{workspacePath || "尚未选择"} · 项目：{workspace.projectId?.slice(0, 8) ?? "尚未建立"}</p>}
+      {mode === "work" && <p className="work-context-line">工作区：{workspacePath || "尚未选择"}</p>}
     </section>
   </main>;
 }

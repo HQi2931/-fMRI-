@@ -33,7 +33,16 @@ def work_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[NeuroAgentService]:
+    # Tests must never inherit the developer's machine state.  The repository
+    # ``.env`` is untracked and holds real DPABI paths, real API keys and
+    # ``RSFMRI_ENABLE_REAL_EXECUTION``; inheriting it made the suite report a
+    # different result locally than in CI.  ``_env_file=None`` drops the dotenv
+    # file entirely, and the security-relevant fields are pinned so that an
+    # exported process variable cannot re-enable real execution either.
     settings = Settings(
+        _env_file=None,
+        enable_real_execution=False,
+        serve_frontend=False,
         rag_db_dir=None,  # Never inherit a developer's paid RAG configuration in tests.
         database_url=f"sqlite:///{(tmp_path / 'metadata.sqlite').as_posix()}",
         allowed_source_roots=[source_root],
@@ -41,6 +50,7 @@ def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[Neur
         matlab_executable=tmp_path / "missing" / "matlab.exe",
         spm_dir=tmp_path / "missing" / "spm12",
         dpabi_dir=tmp_path / "missing" / "dpabi",
+        secrets_file=tmp_path / ".env",  # Never read the developer's real API keys.
         worker_lease_seconds=1,
     )
     app_service = build_service(settings)

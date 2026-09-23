@@ -22,9 +22,59 @@ CONCRETE = {
     "neuroagent/infrastructure/persistence/repository_mixins/models.py": "ModelAgentMixin",
 }
 
+# The split was meant to be behaviour-preserving, so any baseline method whose
+# body changed needs an explicit, reviewed reason here.  Each entry below was
+# compared against the baseline before being accepted.
+INTENTIONAL_BOUNDARY_CHANGES = {
+    # Inject the secret writer instead of writing the dotenv file inline.
+    "create_model_profile",
+    # Bind the frozen plan/manifest locks before queuing.
+    "create_run",
+    # Move artifact registration inside the caller's transaction.
+    "_register_artifacts_in_session",
+    # Fence finalization on the worker lease owner.
+    "finalize_job_success",
+    # Optional QC gate: adds `qc_mode`/`qc_status` to RunView.  Both are derived
+    # with explicit defaults (`"require"`, and a state-based `qc_status`) so rows
+    # written before the column existed still map correctly.
+    "_run",
+    # Optional QC gate: adds `review_scope` to QcReviewRevision, read with a
+    # `"pre_statistics"` default so older QC rows stay valid.
+    "_qc_review",
+    # Optional QC gate: maintains the derived `qc_status` when a review is
+    # approved or rejected.
+    "approve_qc_review",
+    # Optional QC gate: persists `review_scope`, and restricts the
+    # "every included subject needs a metric artifact" check to
+    # pre-statistics scope -- a head-motion-only review legitimately has no
+    # metric artifacts.  The invariant that such a review can never feed
+    # statistics is enforced downstream by `assert_statistics_ready`
+    # (domain/fmri/qc.py), covered by
+    # tests/science/test_statistics.py::test_head_motion_only_qc_cannot_enter_statistics.
+    "create_qc_review",
+}
+
 
 def _class_methods(source: str, class_name: str) -> dict[str, str]:
     tree = ast.parse(source)
+    # Transaction-aware reads intentionally replace standalone sessions. Compare
+    # the remaining method bodies exactly; read-your-writes/rollback has a separate
+    # behavioral regression in test_work_dialogue.py.
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "_read_session"
+        ):
+            node.func = ast.Attribute(
+                value=ast.Attribute(
+                    value=ast.Name(id="self", ctx=ast.Load()), attr="database", ctx=ast.Load()
+                ),
+                attr="session_factory",
+                ctx=ast.Load(),
+            )
     cls = next(
         node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
     )
@@ -88,12 +138,6 @@ def test_repository_split_preserves_baseline_methods_exactly() -> None:
         assert not overlap, f"duplicate repository methods: {sorted(overlap)}"
         found.update(methods)
 
-        intentional_boundary_changes = {
-            "create_model_profile",
-            "create_run",
-            "_register_artifacts_in_session",
-            "finalize_job_success",
-        }
     assert set(baseline).issubset(found)
-    unchanged = set(baseline) - intentional_boundary_changes
+    unchanged = set(baseline) - INTENTIONAL_BOUNDARY_CHANGES
     assert {name: found[name] for name in unchanged} == {name: baseline[name] for name in unchanged}

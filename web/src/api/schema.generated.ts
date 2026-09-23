@@ -1496,6 +1496,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Duration Ms */
+            duration_ms?: number | null;
             /** Error */
             error?: string | null;
             /** Input */
@@ -1506,7 +1508,11 @@ export interface components {
             output?: {
                 [key: string]: unknown;
             };
+            /** Risk Tier */
+            risk_tier?: string | null;
             status: components["schemas"]["ConversationToolStatus"];
+            /** Step Index */
+            step_index?: number | null;
             /** Tool Call Id */
             tool_call_id: string;
             /** Tool Name */
@@ -1577,6 +1583,8 @@ export interface components {
             assistant_message: components["schemas"]["ConversationMessageView"];
             conversation: components["schemas"]["ConversationView"];
             tool_call?: components["schemas"]["ConversationToolCallView"] | null;
+            /** Tool Calls */
+            tool_calls?: components["schemas"]["ConversationToolCallView"][];
             user_message: components["schemas"]["ConversationMessageView"];
         };
         /** ConversationView */
@@ -2008,7 +2016,7 @@ export interface components {
         };
         /**
          * GrfSmoothnessMode
-         * @description Explicit DPABI V8.2 smoothness source used by GRF inference.
+         * @description Explicit DPABI smoothness source used by GRF inference.
          * @enum {string}
          */
         GrfSmoothnessMode: "dpabi_header_or_estimate" | "provided_dlh";
@@ -2318,7 +2326,7 @@ export interface components {
          * ModelCapability
          * @enum {string}
          */
-        ModelCapability: "json_object" | "streaming" | "reasoning" | "web_search";
+        ModelCapability: "json_object" | "streaming" | "reasoning" | "web_search" | "tool_use";
         /** ModelListRequest */
         ModelListRequest: {
             /** Api Key */
@@ -2938,7 +2946,7 @@ export interface components {
         };
         /**
          * RehoParameters
-         * @description Explicit ReHo choices mapped to DPABI V8.2 semantics.
+         * @description Explicit ReHo choices mapped to DPABI semantics.
          */
         RehoParameters: {
             /** Cluster Voxels */

@@ -313,6 +313,11 @@ class ConversationToolCallRow(Base):
     input_json: Mapped[str] = mapped_column(Text, default="{}")
     output_json: Mapped[str] = mapped_column(Text, default="{}")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Agent tool-loop telemetry; null for rows written before the loop existed.
+    step_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    risk_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

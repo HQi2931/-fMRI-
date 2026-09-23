@@ -16,17 +16,22 @@ from neuroagent.skills.models import (
 )
 from neuroagent.skills.registry import SkillRegistry
 
+# Authored and independently verified against the installed local stack:
+# MATLAB R2024b (24.2.0.2712019), SPM25 (25.01.02) and DPABI V9.0_250415
+# (``dpabi.m`` reports Release='V9.0_250415').  These labels are evidence, not
+# compatibility promises: a different install only raises an advisory warning
+# and still requires entry-point probing plus dry-run review.
 _COMPATIBILITY = SkillCompatibility(
-    matlab="R2023b",
-    spm="SPM12",
-    dpabi="V8.2_240510",
+    matlab="R2024b",
+    spm="SPM25",
+    dpabi="V9.0_250415",
     adapter="1.0.0",
 )
 
 _METRIC_EVIDENCE = (
-    "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:3925-4101",
-    "DPABI_V8.2_240510/DPARSF/Subfunctions/y_alff_falff.m:90-155",
-    "DPABI_V8.2_240510/DPARSF/Subfunctions/y_reho.m:69-95",
+    "DPABI_V9.0_250415/DPARSF/DPARSFA_run.m:3925-4101",
+    "DPABI_V9.0_250415/DPARSF/Subfunctions/y_alff_falff.m:90-155",
+    "DPABI_V9.0_250415/DPARSF/Subfunctions/y_reho.m:69-95",
     "docs/architecture/fmri-skill-layer.md#7-alfffalff-and-reho",
 )
 
@@ -211,7 +216,7 @@ def _common_skill() -> SkillSpec:
             "manual_plan_approval",
         ),
         compatibility=_COMPATIBILITY,
-        evidence_refs=("DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:1-192",),
+        evidence_refs=("DPABI_V9.0_250415/DPARSF/DPARSFA_run.m:1-192",),
         known_limitations=("Study-specific preprocessing parameters remain mandatory",),
         reviewed_by=(
             "skill_workflow_engineer",
@@ -264,8 +269,8 @@ def _alff_skill() -> SkillSpec:
         qc_requirements=("alff_falff_metric_qc", "manual_pre_statistics_qc"),
         compatibility=_COMPATIBILITY,
         evidence_refs=(
-            "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:3925-4008",
-            "DPABI_V8.2_240510/DPARSF/Subfunctions/y_alff_falff.m:90-155",
+            "DPABI_V9.0_250415/DPARSF/DPARSFA_run.m:3925-4008",
+            "DPABI_V9.0_250415/DPARSF/Subfunctions/y_alff_falff.m:90-155",
         ),
         known_limitations=("IsCalALFF produces ALFF and fALFF together",),
         reviewed_by=(
@@ -314,8 +319,8 @@ def _reho_skill() -> SkillSpec:
         qc_requirements=("reho_metric_qc", "manual_pre_statistics_qc"),
         compatibility=_COMPATIBILITY,
         evidence_refs=(
-            "DPABI_V8.2_240510/DPARSF/DPARSFA_run.m:4056-4095",
-            "DPABI_V8.2_240510/DPARSF/Subfunctions/y_reho.m:69-95",
+            "DPABI_V9.0_250415/DPARSF/DPARSFA_run.m:4056-4095",
+            "DPABI_V9.0_250415/DPARSF/Subfunctions/y_reho.m:69-95",
         ),
         known_limitations=("Physical neighborhood comparability still requires grid QC",),
         reviewed_by=(
@@ -459,11 +464,11 @@ def _statistics_skills() -> tuple[SkillSpec, SkillSpec, SkillSpec]:
         qc_requirements=("approved_qc_revision", "frozen_subject_order"),
         compatibility=_COMPATIBILITY,
         evidence_refs=(
-            "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest1_Image.m:1",
-            "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest2_Image.m:1",
-            "DPABI_V8.2_240510/StatisticalAnalysis/y_TTestPaired_Image.m:1",
-            "DPABI_V8.2_240510/StatisticalAnalysis/y_FDR_Image.m:1",
-            "DPABI_V8.2_240510/StatisticalAnalysis/y_GRF_Threshold.m:1",
+            "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest1_Image.m:1",
+            "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest2_Image.m:1",
+            "DPABI_V9.0_250415/StatisticalAnalysis/y_TTestPaired_Image.m:1",
+            "DPABI_V9.0_250415/StatisticalAnalysis/y_FDR_Image.m:1",
+            "DPABI_V9.0_250415/StatisticalAnalysis/y_GRF_Threshold.m:1",
         ),
         known_limitations=("Thresholds, tails and covariates require study-level approval",),
         reviewed_by=(
@@ -504,7 +509,7 @@ def _correction_skill(method: str) -> SkillSpec:
         steps=(step,),
         qc_requirements=("approved_qc_revision", "frozen_subject_order"),
         compatibility=_COMPATIBILITY,
-        evidence_refs=(f"DPABI_V8.2_240510/StatisticalAnalysis/{source}",),
+        evidence_refs=(f"DPABI_V9.0_250415/StatisticalAnalysis/{source}",),
         known_limitations=("Thresholds and tails require explicit study-level approval",),
         reviewed_by=(
             "skill_workflow_engineer",

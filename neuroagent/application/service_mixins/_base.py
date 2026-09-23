@@ -19,6 +19,7 @@ from neuroagent.application.ports import (
     DatabaseLifecyclePort,
     DatasetInspectorPort,
     DemographicsReaderPort,
+    HeadMotionQcParserPort,
     PathPolicyPort,
     RepositoryPort,
     SecretWriterPort,
@@ -46,6 +47,7 @@ class BaseServiceMixin:
     path_policy: PathPolicyPort
     dataset_inspector: DatasetInspectorPort
     demographics_reader: DemographicsReaderPort
+    head_motion_qc_parser: HeadMotionQcParserPort
     environment_provider: EnvironmentLockProvider
     skill_registry: SkillRegistry
     skill_validator: SkillValidator

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -22,25 +23,34 @@ from neuroagent.context.interfaces import (
 from neuroagent.memory.interfaces import MemoryService, MemorySnapshot
 from neuroagent.retrieval.interfaces import RetrievalResult, RetrievedChunk
 
+logger = logging.getLogger(__name__)
+
 
 class RuleBasedIntentRouter:
     """Conservative router that only drafts work; it never dispatches it."""
 
     _WORK_VERBS = re.compile(
-        r"(?:帮我|请|替我|按照.*(?:方法|文献).*)?(?:计算|运行|执行|预处理|分析我的|处理我的|"
-        r"calculate|run|execute|preprocess|analy[sz]e my)",
+        r"^(?:按照[^。！？?\n]*(?:方法|文献))?(?:请)?(?:帮我|替我)?"
+        r"(?:计算|运行|执行|预处理|分析我的|处理我的)|"
+        r"^(?:please\s+)?(?:calculate|run|execute|preprocess|analy[sz]e my)\b",
         re.IGNORECASE,
     )
     _KNOWLEDGE_MARKERS = re.compile(
         r"(?:是什么|什么意思|为什么|如何理解|区别|原理|介绍|解释|怎么|怎样|能否|"
-        r"可以吗|吗[？?。！!]?$|what is|why|explain|difference)",
+        r"可以吗|吗[？?。！!]?$|查|搜索|检索|查询|方案|方法|what is|why|explain|difference|"
+        r"\b(?:look up|search|find|how|plan|method)\b)",
         re.IGNORECASE,
     )
+    _NEGATION = re.compile(r"不要|不需要|不用|别|仅|只是|暂不|\b(?:not|never|only)\b|n't", re.I)
     _BAND = re.compile(r"(0?\.\d+)\s*(?:-|–|—|至|到|,)\s*(0?\.\d+)")
 
     async def route(self, request: ChatAgentRequest) -> RoutedIntent:
         text = request.message.strip()
-        if self._WORK_VERBS.search(text) and not self._KNOWLEDGE_MARKERS.search(text):
+        if (
+            self._WORK_VERBS.search(text)
+            and not self._KNOWLEDGE_MARKERS.search(text)
+            and not self._NEGATION.search(text)
+        ):
             lowered = text.casefold()
             if "alff" in lowered:
                 task = "calculate_alff"
@@ -70,9 +80,6 @@ class ModelIntentRouter:
     _GREETING = re.compile(
         r"^(?:你好|您好|嗨|谢谢|感谢|再见|hello|hi|thanks|thank you)[!！。.?？\s]*$", re.I
     )
-    _CONTEXTUAL_FOLLOWUP = re.compile(
-        r"^(?:那|那么|它|这个|上述|前面|继续|再说|and |what about|how about|that\b|it\b)", re.I
-    )
 
     def __init__(
         self,
@@ -88,17 +95,37 @@ class ModelIntentRouter:
         routed = await self._rules.route(request)
         if self._GREETING.fullmatch(request.message.strip()):
             return routed.model_copy(update={"intent": ChatIntent.CONVERSATION})
-        if routed.intent is ChatIntent.WORK_REQUEST:
-            return routed
         if not (request.preferred_profile_id or self._has_profiles()):
-            return routed.model_copy(update={"intent": ChatIntent.KNOWLEDGE_QUERY})
-        if not self._CONTEXTUAL_FOLLOWUP.search(request.message.strip()):
-            return routed
-        raw = await self._classify(request)
+            if routed.intent is ChatIntent.WORK_REQUEST:
+                return routed
+            return RoutedIntent(intent=ChatIntent.KNOWLEDGE_QUERY, query=request.message.strip())
+        # Classify all substantive turns: keyword matches must never preempt the
+        # model's understanding of lookup requests, negation, or conversation history.
+        fallback = RoutedIntent(intent=ChatIntent.KNOWLEDGE_QUERY, query=request.message.strip())
         try:
-            return RoutedIntent.model_validate_json(raw)
-        except ValueError:
-            return routed
+            raw = await self._classify(request)
+            classified = RoutedIntent.model_validate_json(raw)
+        except Exception as exc:
+            # Routing is advisory. A provider/validation failure must not turn an
+            # ambiguous message into a work draft or expose provider credentials.
+            # Only the exception type is logged: the fallback is otherwise
+            # indistinguishable from the model answering "knowledge query", so a
+            # persistently failing classifier would stay invisible.
+            logger.warning("chat intent classification failed: %s", type(exc).__name__)
+            return fallback
+        if not classified.query.strip():
+            return fallback
+        if classified.intent is ChatIntent.WORK_REQUEST:
+            if classified.work_request is None:
+                return fallback
+            return classified.model_copy(
+                update={
+                    "work_request": classified.work_request.model_copy(
+                        update={"requires_user_confirmation": True}
+                    )
+                }
+            )
+        return classified.model_copy(update={"work_request": None})
 
 
 class RequestMemoryService:

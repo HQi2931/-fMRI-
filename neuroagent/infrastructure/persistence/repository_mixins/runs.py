@@ -121,7 +121,7 @@ class RunMixin(RepositoryBaseMixin):
             return self._run(run)
 
     def get_run(self, run_id: str) -> RunView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(WorkflowRunRow, run_id)
             if row is None:
                 raise NotFoundError("run", run_id)
@@ -133,7 +133,7 @@ class RunMixin(RepositoryBaseMixin):
         project_id: str | None = None,
         state: WorkflowState | None = None,
     ) -> list[RunView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             query = select(WorkflowRunRow)
             if project_id is not None:
                 if session.get(ProjectRow, project_id) is None:

@@ -37,7 +37,7 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
             r".*(not found|undefined|cannot find)|undefined function|函数.*未找到"
         ),
         ("MATLAB, SPM12 或 DPABI 入口不可见",),
-        ("重新运行环境探测", "核对 MATLAB, SPM12 和 DPABI V8.2 路径"),
+        ("重新运行环境探测", "核对 MATLAB、SPM 和 DPABI 路径"),
     ),
     (
         FailureCode.RESOURCE,

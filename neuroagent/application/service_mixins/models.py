@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from neuroagent.agent.gateway import ChatGatewayResult, ModelGateway, ModelGatewayError
+from neuroagent.agent.gateway import (
+    ChatGatewayResult,
+    ChatMessages,
+    ModelGateway,
+    ModelGatewayError,
+    ToolTurnResult,
+)
 from neuroagent.agent.models import (
     AgentSummaryPurpose,
     AgentTaskRequest,
@@ -156,6 +162,15 @@ class ModelAgentMixin(BaseServiceMixin):
                 ) from exc
         return result
 
+    def _build_chat_messages(self, **kwargs: object) -> ChatMessages:
+        return self._model_gateway().build_chat_messages(**kwargs)  # type: ignore[arg-type]
+
+    async def _tool_turn(self, **kwargs: object) -> ToolTurnResult:
+        return await self._model_gateway().generate_tool_turn(**kwargs)  # type: ignore[arg-type]
+
+    async def _tool_capability(self, preferred_profile_id: str | None) -> bool:
+        return await self._model_gateway().tool_capable(preferred_profile_id)
+
     async def _generate_rsfmri_chat(
         self,
         *,
@@ -171,6 +186,7 @@ class ModelAgentMixin(BaseServiceMixin):
         routing: bool = False,
         summary_mode: bool = False,
         memory_mode: bool = False,
+        work_mode: bool = False,
     ) -> ChatGatewayResult:
         try:
             return await self._model_gateway().generate_chat(
@@ -182,6 +198,7 @@ class ModelAgentMixin(BaseServiceMixin):
                 routing=routing,
                 summary_mode=summary_mode,
                 memory_mode=memory_mode,
+                work_mode=work_mode,
                 evidence=evidence,
                 preferred_profile_id=preferred_profile_id,
                 model=model,

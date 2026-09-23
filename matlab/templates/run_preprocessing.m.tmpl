@@ -59,12 +59,14 @@ if ~isempty(Error)
     error('rsfmri:dpabi:DPARSFAFailed', 'DPARSFA_run returned an error result.');
 end
 if auto_mask_requested
-    assert(numel(Cfg.SubjectID) == 1, 'rsfmri:mask:AutoMaskSubjectCount', ...
-        'DPABI auto mask currently requires one subject per run.');
-    metric_cfg.MaskFile = fullfile(staging_directory, 'Masks', 'AutoMasks', ...
-        ['AutoMask_', Cfg.SubjectID{1}, '.nii']);
-    assert(isfile(metric_cfg.MaskFile), 'rsfmri:mask:AutoMaskMissing', ...
-        'DPABI did not produce the declared auto mask.');
+    auto_mask_paths = cell(numel(Cfg.SubjectID), 1);
+    for index = 1:numel(Cfg.SubjectID)
+        auto_mask_paths{index} = fullfile(staging_directory, 'Masks', 'AutoMasks', ...
+            ['AutoMask_', Cfg.SubjectID{index}, '.nii']);
+        assert(isfile(auto_mask_paths{index}), 'rsfmri:mask:AutoMaskMissing', ...
+            'DPABI did not produce the declared auto mask for %s.', Cfg.SubjectID{index});
+    end
+    metric_cfg.MaskFile = auto_mask_paths{1};
 end
 checkpoints = struct([]);
 for index = 1:numel(Cfg.SubjectID)
@@ -75,7 +77,9 @@ for index = 1:numel(Cfg.SubjectID)
     if Cfg.IsScrubbing, expected = 0; end
     check_temporal(headers, Cfg.TR, expected);
     if has_metrics
-        check_mask_grid(headers(1), metric_cfg.MaskFile);
+        checkpoint_mask = metric_cfg.MaskFile;
+        if auto_mask_requested, checkpoint_mask = auto_mask_paths{index}; end
+        check_mask_grid(headers(1), checkpoint_mask);
         if metric_cfg.IsCalALFF
             check_band(metric_cfg.CalALFF.AHighPass_LowCutoff, ...
                 metric_cfg.CalALFF.ALowPass_HighCutoff, Cfg.TR, numel(headers));
@@ -91,6 +95,7 @@ for index = 1:numel(Cfg.SubjectID)
     checkpoints(index).subject_id = subject;
     checkpoints(index).metadata = header_evidence(spm_vol(destination));
 end
+all_subject_ids = Cfg.SubjectID;
 if has_metrics
     metric_cfg.StartingDirName = checkpoint_stage;
     metric_cfg.RemoveFirstTimePoints = 0;
@@ -99,12 +104,27 @@ if has_metrics
         'IsNormalize', 'IsNeedT1CoregisterToFun', 'IsSegment', 'IsDARTEL', ...
         'IsWarpMasksIntoIndividualSpace', 'IsAutoMask'};
     for index = 1:numel(disabled), metric_cfg.(disabled{index}) = 0; end
-    metric_cfg_path = fullfile(run_directory, 'config', 'MetricsCfg.mat');
-    Cfg = metric_cfg;
-    save(metric_cfg_path, 'Cfg');
-    [Error, MetricEffectiveCfg] = DPARSFA_run(metric_cfg_path, ...
-        staging_directory, subject_list_path, 0);
-    assert(isempty(Error), 'rsfmri:dpabi:MetricFailed', 'DPARSFA metric phase failed.');
+    MetricEffectiveCfg = metric_cfg;
+    for index = 1:numel(metric_cfg.SubjectID)
+        subject = metric_cfg.SubjectID{index};
+        subject_cfg = metric_cfg;
+        subject_cfg.SubjectID = {subject};
+        subject_cfg.SubjectNum = 1;
+        if auto_mask_requested, subject_cfg.MaskFile = auto_mask_paths{index}; end
+        Cfg = subject_cfg;
+        metric_cfg_path = fullfile(run_directory, 'config', ['MetricsCfg_', subject, '.mat']);
+        subject_list_path = fullfile(run_directory, 'config', ['MetricSubjectList_', subject, '.txt']);
+        fid = fopen(subject_list_path, 'w');
+        assert(fid ~= -1, 'rsfmri:config:MetricSubjectList', ...
+            'Cannot create the per-subject metric list.');
+        fprintf(fid, '%s\n', subject);
+        fclose(fid);
+        save(metric_cfg_path, 'Cfg');
+        [Error, MetricEffectiveCfg] = DPARSFA_run(metric_cfg_path, ...
+            staging_directory, subject_list_path, 0);
+        assert(isempty(Error), 'rsfmri:dpabi:MetricFailed', ...
+            'DPARSFA metric phase failed for %s.', subject);
+    end
     save(fullfile(run_directory, 'config', 'MetricEffectiveCfg.mat'), 'MetricEffectiveCfg');
 end
 records = struct([]);
@@ -113,8 +133,15 @@ for index = 1:numel(request.outputs)
     destination = fullfile(run_directory, output.relative_path);
     checkpoint = checkpoints(strcmp({checkpoints.subject_id}, output.subject_id));
     temporal = checkpoint.metadata;
+    output_mask = metric_cfg.MaskFile;
+    if auto_mask_requested
+        output_subject_index = find(strcmp(all_subject_ids, output.subject_id), 1);
+        assert(~isempty(output_subject_index), 'rsfmri:mask:SubjectMissing', ...
+            'No auto mask binding exists for %s.', output.subject_id);
+        output_mask = auto_mask_paths{output_subject_index};
+    end
     if strcmp(output.metric, 'brain_mask')
-        copyfile(metric_cfg.MaskFile, destination);
+        copyfile(output_mask, destination);
     elseif ~strcmp(output.metric, 'timeseries')
         switch output.metric
             case 'alff', name = 'ALFFMap';
@@ -145,9 +172,9 @@ for index = 1:numel(request.outputs)
         end
     end
     headers = spm_vol(destination);
-    if has_metrics, check_mask_grid(headers(1), metric_cfg.MaskFile); end
+    if has_metrics, check_mask_grid(headers(1), output_mask); end
     finite_evidence = validate_output_values(headers, output.metric, ...
-        has_metrics, metric_cfg.MaskFile);
+        has_metrics, output_mask);
     records(index).relative_path = output.relative_path;
     records(index).subject_id = output.subject_id;
     records(index).metric = output.metric;

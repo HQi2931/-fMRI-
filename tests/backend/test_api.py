@@ -177,6 +177,10 @@ def test_chat_uses_selected_llm_and_explicit_web_search(
     provider = MockProvider(
         [
             ProviderResponse(
+                content='{"intent":"knowledge_query","query":"ALFF 的生理含义"}',
+                model="search-model",
+            ),
+            ProviderResponse(
                 content="联网证据与本地方法文档一致: ALFF 反映低频振幅。",
                 model="search-model",
                 citations=(
@@ -185,7 +189,7 @@ def test_chat_uses_selected_llm_and_explicit_web_search(
                         title="rs-fMRI methods",
                     ),
                 ),
-            )
+            ),
         ]
     )
     settings = Settings(
@@ -238,7 +242,10 @@ def test_chat_uses_selected_llm_and_explicit_web_search(
     assert body["assistant_message"]["payload"]["model"]["profile_id"] == "search-profile"
     evidence = body["assistant_message"]["payload"]["rag"]["answer"]["evidence"]
     assert any(item["source"] == "https://example.org/rsfmri-methods" for item in evidence)
-    assert provider.request_options == [{"web_search": True, "json_object": False}]
+    assert provider.request_options == [
+        {"web_search": False, "json_object": True},
+        {"web_search": True, "json_object": False},
+    ]
     assert provider.requests[0][0].model == "selected-search-model"
 
 
@@ -480,7 +487,36 @@ def test_work_conversation_plan_request_waits_for_explicit_scientific_parameters
     body = response.json()
     assert body["tool_call"]["status"] == "awaiting_confirmation"
     assert "科研参数" in body["assistant_message"]["content"]
+    assert "没有单独的方案表单" in body["assistant_message"]["content"]
     assert "work_cards" not in body["assistant_message"]["payload"]
+
+
+def test_work_conversation_handles_greetings_and_form_questions_naturally(
+    service: NeuroAgentService,
+) -> None:
+    with TestClient(create_app(service=service)) as client:
+        created = client.post(
+            "/api/v1/conversations",
+            json={"mode": "work"},
+            headers={"Idempotency-Key": "work-conversation-natural-dialogue"},
+        ).json()
+        greeting = client.post(
+            f"/api/v1/conversations/{created['conversation_id']}/turns",
+            json={"content": "你好"},
+            headers={"Idempotency-Key": "work-natural-greeting"},
+        )
+        form_help = client.post(
+            f"/api/v1/conversations/{created['conversation_id']}/turns",
+            json={"content": "方案表单在哪里"},
+            headers={"Idempotency-Key": "work-natural-form-help"},
+        )
+
+    assert greeting.status_code == 201
+    assert "你好" in greeting.json()["assistant_message"]["content"]
+    assert "我已记录" not in greeting.json()["assistant_message"]["content"]
+    assert form_help.status_code == 201
+    assert "没有单独的方案表单" in form_help.json()["assistant_message"]["content"]
+    assert "工作要求" not in form_help.json()["assistant_message"]["content"]
 
 
 def test_work_conversation_routes_qc_and_statistical_result_queries(
@@ -506,7 +542,8 @@ def test_work_conversation_routes_qc_and_statistical_result_queries(
 
     assert qc.status_code == 201
     assert qc.json()["tool_call"]["status"] == "awaiting_confirmation"
-    assert "QC review" in qc.json()["assistant_message"]["content"]
+    assert "QC 审核" in qc.json()["assistant_message"]["content"]
+    assert "QC review" not in qc.json()["assistant_message"]["content"]
     assert results.status_code == 201
     assert results.json()["tool_call"]["status"] == "succeeded"
     assert results.json()["assistant_message"]["payload"]["statistical_results"] == []
@@ -537,7 +574,7 @@ def test_removed_work_card_endpoints_are_not_exposed(
     assert capabilities.status_code == 404
     assert card_action.status_code == 404
     assert unclear.status_code == 201
-    assert "工作要求" in unclear.json()["assistant_message"]["content"]
+    assert "我可以协助" in unclear.json()["assistant_message"]["content"]
     assert "work_cards" not in unclear.json()["assistant_message"]["payload"]
 
 
@@ -578,6 +615,8 @@ def test_work_conversation_naturally_prepares_demo_alff_plan_without_cards(
     assert parameters["alff_falff"]["mask_artifact_id"] is None
     assert parameters["preprocessing"]["tr_seconds"] == 2.0
     assert parameters["preprocessing"]["expected_time_points"] == 234
+    assert "计划哈希" not in body["assistant_message"]["content"]
+    assert "ID" not in body["assistant_message"]["content"]
     assert "work_cards" not in payload
 
 
@@ -773,6 +812,10 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
         assert started.status_code == 201, started.text
         started_body = started.json()
         assert started_body["tool_call"]["status"] == "succeeded"
+        started_content = started_body["assistant_message"]["content"]
+        assert "DPABI 任务已进入执行队列" in started_content
+        assert "运行 ID" not in started_content
+        assert "hash" not in started_content.lower()
         assert started_body["conversation"]["active_run_id"]
         assert progress.status_code == 201, progress.text
         progress_body = progress.json()

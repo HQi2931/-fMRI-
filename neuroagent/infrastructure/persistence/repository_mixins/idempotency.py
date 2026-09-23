@@ -179,7 +179,7 @@ class IdempotencyMixin(RepositoryBaseMixin):
         self, scope: str, key: str, request_hash: str
     ) -> dict[str, Any] | None:
         """Compatibility read used by diagnostics; it never reserves a key."""
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.scalar(
                 select(IdempotencyRow).where(
                     IdempotencyRow.scope == scope,

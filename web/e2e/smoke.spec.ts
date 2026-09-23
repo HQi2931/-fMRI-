@@ -44,7 +44,7 @@ async function installConversationApi(page: Page) {
         sequence: messages.length + 1,
         role: "assistant",
         content: isConfirmation
-          ? "DPABI 任务已进入 Workflow/Worker 队列，运行 ID 为 run-12345678。"
+          ? "DPABI 任务已进入执行队列。本次将执行头动 QC；任务完成后我会报告结果和质量控制状态。"
           : "已冻结 DemoData Sub_001 的 raw ALFF 方案；请确认批准并启动真实 MATLAB/DPABI 任务。",
         payload: isConfirmation
           ? { run: { run_id: activeRunId, state: "queued", version: 1 } }
@@ -94,7 +94,7 @@ test("prepares and starts DemoData ALFF naturally in Work", async ({ page }) => 
 
   await input.fill("确认批准并启动真实 MATLAB/DPABI 任务");
   await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByText(/运行 run-1234 · qc_review/)).toBeVisible();
+  await expect(page.getByText("任务状态：等待 QC 审核")).toBeVisible();
   await expect(page.getByText("等待 QC 审核")).toBeVisible();
   await expect(page.locator(".work-message-card")).toHaveCount(0);
 });

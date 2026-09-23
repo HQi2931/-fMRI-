@@ -132,7 +132,7 @@ class StatisticsJobPayload(FrozenExecutionModel):
             raise ValueError("T-map correction must not declare df2")
         two_sided = self.statistics.tail is Tail.TWO_SIDED
         if self.correction.function.value == "y_FDR_Image" and not two_sided:
-            raise ValueError("DPABI V8.2 y_FDR_Image uses two-sided T/Z/R p values")
+            raise ValueError("DPABI y_FDR_Image uses two-sided T/Z/R p values")
         if (
             self.correction.function.value == "y_GRF_Threshold"
             and bool(self.correction.parameters["two_tailed"]) != two_sided

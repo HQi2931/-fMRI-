@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import re
 
+from neuroagent.chat.evidence import EvidenceCollector
 from neuroagent.chat.interfaces import ChatAgentError, CitationService, IntentRouter, LLMClient
 from neuroagent.chat.models import ChatAgentRequest, ChatAgentResponse, ChatIntent
+from neuroagent.chat.tool_loop import ChatToolLoopResult, ChatToolRunner
 from neuroagent.context.interfaces import ContextManager
 from neuroagent.memory.interfaces import MemoryService
 from neuroagent.retrieval.interfaces import RagService, RetrievalResult
@@ -23,6 +25,7 @@ class ChatAgent:
         memory_service: MemoryService,
         llm_client: LLMClient,
         citation_service: CitationService,
+        tool_runner: ChatToolRunner | None = None,
     ) -> None:
         self._intent_router = intent_router
         self._rag_service = rag_service
@@ -30,6 +33,8 @@ class ChatAgent:
         self._memory_service = memory_service
         self._llm_client = llm_client
         self._citation_service = citation_service
+        # Optional: when absent, Chat keeps the single-shot retrieval path.
+        self._tool_runner = tool_runner
 
     async def respond(self, request: ChatAgentRequest) -> ChatAgentResponse:
         if request.stream:
@@ -87,22 +92,71 @@ class ChatAgent:
             work_context=request.work_context,
         )
         llm_result = None
+        loop_result: ChatToolLoopResult | None = None
+        tool_evidence: EvidenceCollector | None = None
         if retrieval.in_scope and self._llm_client.available(request.preferred_profile_id):
-            llm_result = await self._llm_client.generate(
-                context,
-                preferred_profile_id=request.preferred_profile_id,
-                model=request.model,
-                allow_remote_search=request.allow_remote_search,
-            )
+            if (
+                retrieval_performed
+                and self._tool_runner is not None
+                and await self._tool_runner.available(request.preferred_profile_id)
+            ):
+                collector = EvidenceCollector()
+                # Seed with the upfront evidence so the loop can only add to it,
+                # and citation ids stay identical to what the citation service
+                # assigns when it enumerates the same collector.
+                collector.add(retrieval.chunks)
+                seed = collector.add(context.retrieval_context)
+                candidate = await self._tool_runner.run(
+                    question=request.message,
+                    evidence=[
+                        {
+                            "citation_id": citation_id,
+                            "source": chunk.source,
+                            "title": chunk.title,
+                            "excerpt": chunk.text,
+                            "score": chunk.score,
+                            "chunk_id": chunk.chunk_id,
+                            "paper_id": chunk.paper_id,
+                            "section": chunk.section,
+                            "subsection": chunk.subsection,
+                            "page_start": chunk.page_start,
+                            "page_end": chunk.page_end,
+                        }
+                        for citation_id, chunk in seed
+                    ],
+                    recent_messages=[item.model_dump() for item in memory.recent_messages],
+                    pinned_context=[item.model_dump() for item in memory.pinned_context],
+                    conversation_summary=memory.conversation_summary,
+                    work_context=request.work_context,
+                    preferred_profile_id=request.preferred_profile_id,
+                    model=request.model,
+                    collector=collector,
+                )
+                # A loop that produced no answer (budget exhausted, provider
+                # error) must not degrade the reply, so fall back to one shot.
+                if candidate.final_text.strip():
+                    loop_result = candidate
+                    tool_evidence = collector
+            if loop_result is None:
+                llm_result = await self._llm_client.generate(
+                    context,
+                    preferred_profile_id=request.preferred_profile_id,
+                    model=request.model,
+                    allow_remote_search=request.allow_remote_search,
+                )
+        citation_source = (
+            tool_evidence.chunks if tool_evidence is not None else context.retrieval_context
+        )
         citations = self._citation_service.build(
-            context.retrieval_context,
+            citation_source,
             provider_citations=(llm_result.provider_citations if llm_result is not None else ()),
         )
-        answer = (
-            llm_result.content
-            if llm_result is not None
-            else retrieval.suggested_answer or "当前没有足够证据回答这个问题。"
-        )
+        if loop_result is not None:
+            answer = loop_result.final_text
+        elif llm_result is not None:
+            answer = llm_result.content
+        else:
+            answer = retrieval.suggested_answer or "当前没有足够证据回答这个问题。"
         known = {
             citation.citation_id
             for citation in citations
@@ -147,6 +201,40 @@ class ChatAgent:
                 "usage": llm_result.usage,
                 "remote_search_used": llm_result.remote_search_used,
                 "redaction_count": llm_result.redaction_count,
+            }
+        if loop_result is not None:
+            metadata["llm_used"] = True
+            metadata["retrieved_chunk_count"] = len(tool_evidence.chunks) if tool_evidence else 0
+            metadata["model"] = {
+                "profile_id": loop_result.profile_id,
+                "model": loop_result.model,
+                "context_hash": loop_result.context_hash,
+                "attempted_profile_ids": list(loop_result.attempted_profile_ids),
+                "usage": loop_result.usage,
+                "remote_search_used": False,
+                "redaction_count": loop_result.redaction_count,
+            }
+            metadata["tool_loop"] = {
+                "enabled": True,
+                "stop_reason": loop_result.stop_reason,
+                "steps": loop_result.steps,
+                "tool_calls": loop_result.tool_calls,
+                "tool_names": list(loop_result.tool_names),
+                # Complete, already-redacted audit records for the loop steps.
+                "calls": [
+                    {
+                        "tool_name": outcome.name,
+                        "status": outcome.status.value,
+                        "risk_tier": outcome.tier.value if outcome.tier is not None else None,
+                        "step_index": index,
+                        "provider_call_id": outcome.call_id,
+                        "duration_ms": outcome.duration_ms,
+                        "input": outcome.arguments,
+                        "output": outcome.result,
+                        "error": outcome.error_code or outcome.message,
+                    }
+                    for index, outcome in enumerate(loop_result.outcomes, start=1)
+                ],
             }
         metadata["context"] = context.metadata
         return ChatAgentResponse(

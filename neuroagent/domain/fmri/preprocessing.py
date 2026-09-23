@@ -2,7 +2,7 @@
 
 The models in this module deliberately have no study-specific defaults.  A
 disabled operation is still an explicit choice, and every enabled operation
-must carry the parameters that DPABI V8.2 will consume.
+must carry the parameters that DPABI will consume.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ class RealignmentParameters(FrozenModel):
     @model_validator(mode="after")
     def approved_options_are_explicit(self) -> RealignmentParameters:
         if self.enabled != (self.options_source is not None):
-            raise ValueError("realignment requires the explicit DPABI V8.2 Jobmat options source")
+            raise ValueError("realignment requires the explicit DPABI Jobmat options source")
         return self
 
 
@@ -390,9 +390,7 @@ class PreprocessingParameters(FrozenModel):
                 and regressor.method is TissueRegressorMethod.COMPCOR
             }
             if len(compcor_counts) > 1:
-                raise ValueError(
-                    "DPABI V8.2 uses one shared CompCor component count for WM and CSF"
-                )
+                raise ValueError("DPABI uses one shared CompCor component count for WM and CSF")
         if (
             self.smoothing.method is SmoothingMethod.DARTEL
             and self.normalization.mode is not NormalizationMode.DARTEL

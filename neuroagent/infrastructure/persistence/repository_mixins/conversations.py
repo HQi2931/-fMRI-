@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -83,14 +84,14 @@ class ConversationMixin(RepositoryBaseMixin):
             return self._conversation_view(session, row)
 
     def get_conversation(self, conversation_id: str) -> ConversationView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ConversationRow, conversation_id)
             if row is None:
                 raise NotFoundError("conversation", conversation_id)
             return self._conversation_view(session, row)
 
     def list_conversations(self, *, mode: ConversationMode | None = None) -> list[ConversationView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             statement = select(ConversationRow)
             if mode is not None:
                 statement = statement.where(ConversationRow.mode == mode.value)
@@ -109,12 +110,20 @@ class ConversationMixin(RepositoryBaseMixin):
         preferred_profile_id: str | None,
         project_id: str | None,
         active_run_id: str | None,
+        tool_calls: Sequence[dict[str, Any]] | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,
         ConversationMessageView,
         ConversationToolCallView | None,
     ]:
+        """Append one user/assistant exchange and its audit rows atomically.
+
+        ``tool`` is the long-standing single-call form; ``tool_calls`` carries the
+        ordered steps of a bounded Agent tool loop.  Writing them in the same
+        transaction as the messages means a loop's audit trail can never be
+        half-persisted, and it avoids needing the user message id before insert.
+        """
         with self._write_session() as session:
             row = session.get(ConversationRow, conversation_id)
             if row is None:
@@ -155,6 +164,31 @@ class ConversationMixin(RepositoryBaseMixin):
                     error=tool.get("error"),
                 )
                 session.add(tool_row)
+            for step_index, call in enumerate(tool_calls or (), start=1):
+                session.add(
+                    ConversationToolCallRow(
+                        tool_call_id=_id(),
+                        conversation_id=conversation_id,
+                        user_message_id=user_row.message_id,
+                        tool_name=str(call["tool_name"]),
+                        status=str(call["status"]),
+                        input_json=canonical_json(call.get("input", {})),
+                        output_json=canonical_json(call.get("output", {})),
+                        error=call.get("error"),
+                        step_index=int(call["step_index"])
+                        if call.get("step_index") is not None
+                        else step_index,
+                        risk_tier=str(call["risk_tier"])
+                        if call.get("risk_tier") is not None
+                        else None,
+                        provider_call_id=str(call["provider_call_id"])
+                        if call.get("provider_call_id") is not None
+                        else None,
+                        duration_ms=int(call["duration_ms"])
+                        if call.get("duration_ms") is not None
+                        else None,
+                    )
+                )
             row.workspace_path = workspace_path
             row.preferred_profile_id = preferred_profile_id
             row.project_id = project_id
@@ -169,7 +203,7 @@ class ConversationMixin(RepositoryBaseMixin):
             )
 
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             conversation = session.get(ConversationRow, conversation_id)
             if conversation is None:
                 raise NotFoundError("conversation", conversation_id)
@@ -369,7 +403,7 @@ class ConversationMixin(RepositoryBaseMixin):
             return self._memory(row)
 
     def get_forgotten_source_message_ids(self, conversation_id: str) -> set[str]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             source_ids = session.scalars(
                 select(MemoryRecordRow.source_message_id).where(
                     MemoryRecordRow.conversation_id == conversation_id,
@@ -547,7 +581,7 @@ class ConversationMixin(RepositoryBaseMixin):
             for item in state.memories
             if item.status is MemoryStatus.CONFIRMED
         }
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             rows = session.scalars(
                 select(MemoryEmbeddingRow).where(
                     MemoryEmbeddingRow.memory_id.in_(versions),
@@ -618,7 +652,13 @@ class ConversationMixin(RepositoryBaseMixin):
         tools = session.scalars(
             select(ConversationToolCallRow)
             .where(ConversationToolCallRow.conversation_id == row.conversation_id)
-            .order_by(ConversationToolCallRow.created_at)
+            .order_by(
+                ConversationToolCallRow.created_at,
+                # Loop steps share one timestamp, so order them by their step so
+                # the transcript the model produced is the transcript shown.
+                ConversationToolCallRow.step_index,
+                ConversationToolCallRow.tool_call_id,
+            )
         ).all()
         return ConversationView(
             conversation_id=row.conversation_id,
@@ -658,6 +698,9 @@ class ConversationMixin(RepositoryBaseMixin):
             input=_load(row.input_json, {}),
             output=_load(row.output_json, {}),
             error=row.error,
+            step_index=row.step_index,
+            risk_tier=row.risk_tier,
+            duration_ms=row.duration_ms,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
         )

@@ -41,7 +41,7 @@ class Centering(StrEnum):
 
 
 class GrfSmoothnessMode(StrEnum):
-    """Explicit DPABI V8.2 smoothness source used by GRF inference."""
+    """Explicit DPABI smoothness source used by GRF inference."""
 
     DPABI_HEADER_OR_ESTIMATE = "dpabi_header_or_estimate"
     PROVIDED_DLH = "provided_dlh"
@@ -136,7 +136,7 @@ class StatisticalDesignRevision(FrozenModel):
         if self.test is StatisticalTest.ONE_SAMPLE_T and any(
             column.centering is not Centering.GRAND_MEAN for column in self.covariates
         ):
-            raise ValueError("DPABI V8.2 y_TTest1_Image always grand-mean centers other covariates")
+            raise ValueError("DPABI y_TTest1_Image always grand-mean centers other covariates")
         if len({column.name for column in self.covariates}) != len(self.covariates):
             raise ValueError("covariate names must be unique")
         self._validate_test_specific_fields()
@@ -328,7 +328,7 @@ def centered_covariate_columns(
 
 
 def residual_degrees_of_freedom(design: StatisticalDesignRevision) -> int:
-    """Return the residual DF used by the DPABI V8.2 image helpers."""
+    """Return the residual DF used by the DPABI image helpers."""
 
     row_count = len(design.images)
     return row_count - design_column_count(design)
@@ -394,7 +394,7 @@ def validate_correction_for_design(
         raise ValueError("T-map correction must not declare df2")
     if isinstance(correction, FdrCorrection):
         if design.tail is not Tail.TWO_SIDED:
-            raise ValueError("DPABI V8.2 y_FDR_Image supports only two-sided T-map p values")
+            raise ValueError("DPABI y_FDR_Image supports only two-sided T-map p values")
         return
     if correction.two_tailed != (design.tail is Tail.TWO_SIDED):
         raise ValueError("GRF two_tailed must match the statistical-design tail")

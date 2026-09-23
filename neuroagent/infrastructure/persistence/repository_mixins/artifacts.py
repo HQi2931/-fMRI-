@@ -127,7 +127,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
         return prepared
 
     def list_artifacts(self, run_id: str) -> list[ArtifactView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             rows = session.scalars(
                 select(ArtifactRow)
                 .where(ArtifactRow.run_id == run_id)
@@ -136,14 +136,14 @@ class ArtifactEventMixin(RepositoryBaseMixin):
             return [self._artifact(row) for row in rows]
 
     def get_artifact(self, artifact_id: str) -> ArtifactView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ArtifactRow, artifact_id)
             if row is None:
                 raise NotFoundError("artifact", artifact_id)
             return self._artifact(row)
 
     def assert_artifacts_belong_to_run(self, artifact_ids: tuple[str, ...], run_id: str) -> None:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             for artifact_id in artifact_ids:
                 row = session.get(ArtifactRow, artifact_id)
                 if row is None:
@@ -239,7 +239,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
     def list_statistical_results(
         self, *, project_id: str, run_id: str | None = None
     ) -> list[StatisticalResultView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             if session.get(ProjectRow, project_id) is None:
                 raise NotFoundError("project", project_id)
             query = select(StatisticalResultRow).where(
@@ -255,7 +255,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
             return [self._statistical_result_view(row) for row in rows]
 
     def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(StatisticalResultRow, result_id)
             if row is None:
                 raise NotFoundError("statistical_result", result_id)
@@ -289,7 +289,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
         *,
         project_id: str | None = None,
     ) -> list[RuntimeEventView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             query = select(RuntimeEventRow).where(RuntimeEventRow.event_id > after_event_id)
             if run_id is not None:
                 query = query.where(RuntimeEventRow.run_id == run_id)

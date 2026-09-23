@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import ValidationError
@@ -17,20 +18,69 @@ from neuroagent.application.contracts import (
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.service_mixins._base import BaseServiceMixin
+from neuroagent.application.statistics_draft import (
+    ArtifactRef,
+    DesignIssue,
+    QcBinding,
+    StatisticalDesignProposal,
+    StatisticsChoices,
+    StatisticsDraft,
+    assemble_statistical_design,
+    build_correction,
+    collect_design_sources,
+    proposal_hash,
+    render_statistics_draft_review,
+    statistics_draft_hash,
+)
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.qc import assert_statistics_ready
 from neuroagent.domain.fmri.statistics import (
     FdrCorrection,
     GrfCorrection,
+    MissingValuePolicy,
     StatisticalDesignRevision,
     StatisticalQcSource,
     StatisticalTest,
+    Tail,
     design_matrix,
     validate_correction_for_design,
 )
 from neuroagent.skills.models import SkillPlan
 from neuroagent.skills.registry import SkillRegistryError
 from neuroagent.tools.registry import ToolRegistryError
+
+#: Mask artifact type produced by the controlled preprocessing path.
+_BRAIN_MASK_TYPE = "preprocessing.brain_mask"
+
+
+def _design_issue(code: str, message: str) -> DesignIssue:
+    return DesignIssue(code=code, message=message)
+
+
+def _artifact_ref(artifact: ArtifactView) -> ArtifactRef:
+    """Read subject identity from the registered lineage, never from the path."""
+
+    lineage = artifact.provenance.get("lineage")
+    subject_id = lineage.get("subject_id") if isinstance(lineage, dict) else None
+    return ArtifactRef(
+        artifact_id=artifact.artifact_id,
+        artifact_type=artifact.artifact_type,
+        subject_id=subject_id if isinstance(subject_id, str) and subject_id else None,
+    )
+
+
+def _choices_from_draft(draft: StatisticsDraft) -> StatisticsChoices:
+    return StatisticsChoices(
+        test=draft.test or StatisticalTest.ONE_SAMPLE_T,
+        grouping_column=draft.grouping_column,
+        group_order=tuple(draft.group_order),
+        condition_column=draft.condition_column,
+        condition_order=tuple(draft.condition_order),
+        covariates=tuple(draft.covariates),
+        tail=draft.tail or Tail.TWO_SIDED,
+        one_sample_baseline=draft.one_sample_baseline,
+        missing_value_policy=draft.missing_value_policy or MissingValuePolicy.ERROR,
+    )
 
 
 def _validate_statistical_locks(
@@ -403,6 +453,178 @@ class StatisticsMixin(BaseServiceMixin):
             finalize=finalize,
         )
 
+    def prepare_statistical_design_proposal(
+        self,
+        *,
+        run_id: str,
+        draft: StatisticsDraft,
+        covariate_values: Mapping[str, Mapping[str, float | None]] | None = None,
+        label_values: Mapping[str, Mapping[str, str | None]] | None = None,
+    ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
+        """Assemble a reviewable design from a run's frozen QC decision.
+
+        The conversation never supplies identifiers: this method reads the run's
+        approval state, the QC inclusion order and the registered artifacts, then
+        hands them to the pure assembler.  Everything the model chose is method
+        and column names only.
+
+        Categorical labels (grouping, conditions) and numeric covariates are
+        separate arguments on purpose: a grouping column is a string label, while
+        a covariate is a number, and conflating them would let a numeric column be
+        used as a group code.
+        """
+
+        run = self.repository.get_run(run_id)
+        if run.state.value != "succeeded":
+            return None, (
+                _design_issue(
+                    "source_run_not_succeeded",
+                    f"运行当前状态为 {run.state.value}。统计设计必须在已成功完成的运行上建立。",
+                ),
+            )
+
+        binding, included, allowed_metric_ids, manifest_hash, issue = (
+            self._statistics_source_binding(run_id)
+        )
+        if issue is not None:
+            return None, (issue,)
+
+        artifacts_by_id = {
+            item.artifact_id: item for item in self.repository.list_artifacts(run_id)
+        }
+        refs: list[ArtifactRef] = []
+        for artifact_id, artifact in artifacts_by_id.items():
+            if allowed_metric_ids is not None and artifact_id not in allowed_metric_ids:
+                continue
+            refs.append(_artifact_ref(artifact))
+        mask_refs = [
+            _artifact_ref(artifact)
+            for artifact in artifacts_by_id.values()
+            if artifact.artifact_type == (draft.mask_artifact_type or _BRAIN_MASK_TYPE)
+        ]
+
+        sources, source_issues = collect_design_sources(
+            artifacts=(*refs, *mask_refs),
+            included_subject_ids=included,
+            metric_artifact_type=draft.metric_artifact_type or "",
+            mask_artifact_type=draft.mask_artifact_type or _BRAIN_MASK_TYPE,
+            label_column=draft.grouping_column,
+            label_values=(
+                (label_values or {}).get(draft.grouping_column, {})
+                if draft.grouping_column
+                else None
+            ),
+        )
+        if sources is None:
+            return None, source_issues
+
+        design, design_issues = assemble_statistical_design(
+            choices=_choices_from_draft(draft),
+            subjects=sources.subjects,
+            covariate_values=covariate_values or {},
+            mask_artifact_id=sources.mask_artifact_id,
+            revision_id=f"conversation-{run_id}-{statistics_draft_hash(draft)[:12]}",
+            qc=binding,
+        )
+        if design is None:
+            return None, design_issues
+
+        correction, correction_issues = build_correction(draft, design)
+        if correction_issues:
+            return None, correction_issues
+        try:
+            validate_correction_for_design(design, correction)
+        except ValueError as exc:
+            return None, (_design_issue("correction_rejected_by_domain", str(exc)),)
+
+        project = self.repository.get_project(run.project_id)
+        return (
+            StatisticalDesignProposal(
+                design=design,
+                correction=correction,
+                project_id=run.project_id,
+                project_version=project.version,
+                input_manifest_hash=manifest_hash,
+                source_run_id=run_id,
+                frozen_subject_order=design.subject_order,
+                metric_artifact_ids=tuple(image.artifact_id for image in design.images),
+                review=render_statistics_draft_review(draft),
+                proposal_hash=proposal_hash(design, correction),
+            ),
+            (),
+        )
+
+    def _statistics_source_binding(
+        self, run_id: str
+    ) -> tuple[QcBinding, tuple[str, ...], frozenset[str] | None, str, DesignIssue | None]:
+        """Resolve the QC binding, frozen inclusion order and manifest to use.
+
+        An approved QC review is preferred, because its inclusion order and metric
+        artifact list are the frozen scientific decision.  A recorded QC skip is
+        accepted, but then there is no reviewed artifact list to inherit, so every
+        registered metric artifact of the run is eligible.
+        """
+
+        review = self.repository.get_latest_qc_review_for_run(run_id)
+        if review is not None and review.state.value == "approved":
+            return (
+                QcBinding(
+                    source=StatisticalQcSource.APPROVED_REVIEW,
+                    qc_review_revision_id=review.review.review_revision_id,
+                    qc_review_hash=review.review.content_hash,
+                ),
+                tuple(review.review.included_subject_ids),
+                frozenset(review.review.metric_artifact_ids),
+                review.review.input_manifest_hash,
+                None,
+            )
+
+        skip = self.repository.get_qc_skip_for_run(run_id)
+        if skip is not None:
+            run = self.repository.get_run(run_id)
+            plan = self.repository.get_plan(run.plan_revision_id)
+            approved = (
+                self.repository.get_approved_qc_review(skip.qc_review_revision_id)
+                if skip.qc_review_revision_id
+                else None
+            )
+            included = tuple(approved.review.included_subject_ids) if approved is not None else ()
+            if not included:
+                return (
+                    QcBinding(source=StatisticalQcSource.SKIPPED),
+                    (),
+                    None,
+                    plan.manifest_hash,
+                    _design_issue(
+                        "qc_inclusion_order_unavailable",
+                        "该运行的 QC 跳过记录没有可继承的受试者纳入顺序。"
+                        "无法建立显式对齐的统计设计。",
+                    ),
+                )
+            return (
+                QcBinding(
+                    source=StatisticalQcSource.SKIPPED,
+                    qc_skip_id=skip.qc_skip_id,
+                    qc_skip_hash=skip.decision_hash,
+                    qc_source_run_id=run_id,
+                ),
+                included,
+                None,
+                plan.manifest_hash,
+                None,
+            )
+
+        return (
+            QcBinding(source=StatisticalQcSource.APPROVED_REVIEW),
+            (),
+            None,
+            "",
+            _design_issue(
+                "statistics_source_unapproved",
+                "该运行既无已批准的 QC review 也无 QC 跳过记录。统计设计必须建立在其中之一之上。",
+            ),
+        )
+
     def _validate_statistics_qc_source(
         self,
         request: StatisticalDesignCreate,
@@ -543,119 +765,156 @@ class StatisticsMixin(BaseServiceMixin):
                     "message": "MATLAB/SPM/DPABI/adapter environment lock changed",
                 }
             )
-
         if kind == "skill_plan":
-            try:
-                skill_plan = SkillPlan.model_validate(plan.plan.get("skill_plan"))
-            except ValidationError:
-                return [
-                    *reasons,
-                    {"code": "skill_plan_invalid", "message": "stored SkillPlan is invalid"},
-                ]
-            if skill_plan.plan_hash != plan.plan_hash:
-                reasons.append(
-                    {
-                        "code": "skill_plan_hash_changed",
-                        "message": "embedded SkillPlan hash differs from the approved revision",
-                    }
-                )
-            if (
-                skill_plan.input_manifest_hash != plan.manifest_hash
-                or skill_plan.environment.environment_hash != plan.environment_hash
-            ):
-                reasons.append(
-                    {
-                        "code": "skill_plan_lock_mismatch",
-                        "message": "stored SkillPlan locks differ from revision locks",
-                    }
-                )
-            try:
-                dataset = self.repository.get_dataset(skill_plan.dataset_ref)
-                manifest_id = plan.plan.get("dataset_manifest_id")
-                if dataset.project_id != plan.project_id:
-                    reasons.append(
-                        {
-                            "code": "dataset_project_changed",
-                            "message": "dataset no longer belongs to the approved project",
-                        }
-                    )
-                if not isinstance(manifest_id, str) or dataset.current_manifest_id != manifest_id:
-                    reasons.append(
-                        {
-                            "code": "dataset_manifest_revision_changed",
-                            "message": "dataset current manifest revision changed",
-                        }
-                    )
-                elif self.repository.get_manifest(manifest_id).content_hash != plan.manifest_hash:
-                    reasons.append(
-                        {
-                            "code": "dataset_manifest_hash_changed",
-                            "message": "dataset current manifest hash changed",
-                        }
-                    )
-                if verify_source_files:
-                    project = self.repository.get_project(dataset.project_id)
-                    source = self.path_policy.validate_read_path(
-                        dataset.source_path,
-                        project_roots=project.source_roots,
-                        expect_directory=True,
-                    )
-                    current_source_hash = content_hash(self.dataset_inspector.inspect(source))
-                    if current_source_hash != plan.manifest_hash:
-                        reasons.append(
-                            {
-                                "code": "source_manifest_content_changed",
-                                "message": (
-                                    "dataset source files no longer match the approved "
-                                    "manifest hash"
-                                ),
-                            }
-                        )
-            except (ApplicationError, OSError):
-                reasons.append(
-                    {
-                        "code": "dataset_lock_unavailable",
-                        "message": "approved dataset or manifest lock is unavailable",
-                    }
-                )
-            for lock in skill_plan.skill_locks:
-                try:
-                    current = self.skill_registry.resolve(lock.skill_id, lock.version)
-                except SkillRegistryError:
-                    reasons.append(
-                        {
-                            "code": "skill_lock_unavailable",
-                            "message": f"{lock.skill_id}@{lock.version}",
-                        }
-                    )
-                    continue
-                if current.content_hash != lock.content_hash:
-                    reasons.append(
-                        {
-                            "code": "skill_lock_changed",
-                            "message": f"{lock.skill_id}@{lock.version}",
-                        }
-                    )
-            for step in skill_plan.steps:
-                try:
-                    current_tool = self.tool_registry.resolve_capability(step.tool.capability)
-                except ToolRegistryError:
-                    reasons.append(
-                        {
-                            "code": "tool_lock_unavailable",
-                            "message": step.tool.capability,
-                        }
-                    )
-                    continue
-                if current_tool != step.tool:
-                    reasons.append(
-                        {
-                            "code": "tool_lock_changed",
-                            "message": step.tool.capability,
-                        }
-                    )
-            return reasons
+            return self._skill_plan_staleness_reasons(plan, reasons, verify_source_files)
+        return self._statistical_design_staleness_reasons(
+            plan,
+            reasons,
+            current_environment_hash=current_environment_hash,
+            verify_source_files=verify_source_files,
+            seen=seen,
+        )
 
+    def _skill_plan_staleness_reasons(
+        self,
+        plan: PlanRevisionView,
+        reasons: list[dict[str, str]],
+        verify_source_files: bool,
+    ) -> list[dict[str, str]]:
+        try:
+            skill_plan = SkillPlan.model_validate(plan.plan.get("skill_plan"))
+        except ValidationError:
+            return [
+                *reasons,
+                {"code": "skill_plan_invalid", "message": "stored SkillPlan is invalid"},
+            ]
+        if skill_plan.plan_hash != plan.plan_hash:
+            reasons.append(
+                {
+                    "code": "skill_plan_hash_changed",
+                    "message": "embedded SkillPlan hash differs from the approved revision",
+                }
+            )
+        if (
+            skill_plan.input_manifest_hash != plan.manifest_hash
+            or skill_plan.environment.environment_hash != plan.environment_hash
+        ):
+            reasons.append(
+                {
+                    "code": "skill_plan_lock_mismatch",
+                    "message": "stored SkillPlan locks differ from revision locks",
+                }
+            )
+        reasons.extend(self._dataset_lock_staleness_reasons(plan, skill_plan, verify_source_files))
+        reasons.extend(self._skill_and_tool_lock_staleness_reasons(skill_plan))
+        return reasons
+
+    def _dataset_lock_staleness_reasons(
+        self,
+        plan: PlanRevisionView,
+        skill_plan: SkillPlan,
+        verify_source_files: bool,
+    ) -> list[dict[str, str]]:
+        reasons: list[dict[str, str]] = []
+        try:
+            dataset = self.repository.get_dataset(skill_plan.dataset_ref)
+            manifest_id = plan.plan.get("dataset_manifest_id")
+            if dataset.project_id != plan.project_id:
+                reasons.append(
+                    {
+                        "code": "dataset_project_changed",
+                        "message": "dataset no longer belongs to the approved project",
+                    }
+                )
+            if not isinstance(manifest_id, str) or dataset.current_manifest_id != manifest_id:
+                reasons.append(
+                    {
+                        "code": "dataset_manifest_revision_changed",
+                        "message": "dataset current manifest revision changed",
+                    }
+                )
+            elif self.repository.get_manifest(manifest_id).content_hash != plan.manifest_hash:
+                reasons.append(
+                    {
+                        "code": "dataset_manifest_hash_changed",
+                        "message": "dataset current manifest hash changed",
+                    }
+                )
+            if verify_source_files:
+                project = self.repository.get_project(dataset.project_id)
+                source = self.path_policy.validate_read_path(
+                    dataset.source_path,
+                    project_roots=project.source_roots,
+                    expect_directory=True,
+                )
+                current_source_hash = content_hash(self.dataset_inspector.inspect(source))
+                if current_source_hash != plan.manifest_hash:
+                    reasons.append(
+                        {
+                            "code": "source_manifest_content_changed",
+                            "message": (
+                                "dataset source files no longer match the approved manifest hash"
+                            ),
+                        }
+                    )
+        except (ApplicationError, OSError):
+            reasons.append(
+                {
+                    "code": "dataset_lock_unavailable",
+                    "message": "approved dataset or manifest lock is unavailable",
+                }
+            )
+        return reasons
+
+    def _skill_and_tool_lock_staleness_reasons(self, skill_plan: SkillPlan) -> list[dict[str, str]]:
+        reasons: list[dict[str, str]] = []
+        for lock in skill_plan.skill_locks:
+            try:
+                current = self.skill_registry.resolve(lock.skill_id, lock.version)
+            except SkillRegistryError:
+                reasons.append(
+                    {
+                        "code": "skill_lock_unavailable",
+                        "message": f"{lock.skill_id}@{lock.version}",
+                    }
+                )
+                continue
+            if current.content_hash != lock.content_hash:
+                reasons.append(
+                    {
+                        "code": "skill_lock_changed",
+                        "message": f"{lock.skill_id}@{lock.version}",
+                    }
+                )
+        for step in skill_plan.steps:
+            try:
+                current_tool = self.tool_registry.resolve_capability(step.tool.capability)
+            except ToolRegistryError:
+                reasons.append(
+                    {
+                        "code": "tool_lock_unavailable",
+                        "message": step.tool.capability,
+                    }
+                )
+                continue
+            if current_tool != step.tool:
+                reasons.append(
+                    {
+                        "code": "tool_lock_changed",
+                        "message": step.tool.capability,
+                    }
+                )
+        return reasons
+
+    def _statistical_design_staleness_reasons(
+        self,
+        plan: PlanRevisionView,
+        reasons: list[dict[str, str]],
+        *,
+        current_environment_hash: str,
+        verify_source_files: bool,
+        seen: set[str] | None,
+    ) -> list[dict[str, str]]:
         _validate_statistical_locks(self, plan, reasons)
         try:
             design_view = self._statistics_view(plan)

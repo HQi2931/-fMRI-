@@ -16,6 +16,15 @@ class OutboundPolicyError(ValueError):
     """Raised when outbound content cannot be proven safe."""
 
 
+class _Dropped:
+    """Sentinel: this leaf value cannot be proven safe, so it is omitted."""
+
+    __slots__ = ()
+
+
+_DROPPED = _Dropped()
+
+
 class OutboundContextPolicy:
     _drop_key_fragments = (
         "api_key",
@@ -119,8 +128,42 @@ class OutboundContextPolicy:
             context_hash=context_hash,
         )
 
+    def redact_tool_result(self, payload: Mapping[str, Any]) -> RedactedContext:
+        """Redact machine-shaped tool output before it re-enters model context.
+
+        A tool result is structured data rather than user prose, so a leaf string
+        that cannot be proven de-identified is *dropped and counted* instead of
+        rejecting the whole result; that keeps one stray field from destroying an
+        otherwise usable tool call.  Structural violations (binary content,
+        excessive depth, width or length) still fail closed, because those
+        indicate a defective tool contract rather than hostile input.
+        """
+
+        sanitized, count = self._sanitize_mapping(
+            payload, depth=0, subject_context=False, drop_unsafe=True
+        )
+        encoded = json.dumps(
+            sanitized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if self._absolute_path.search(encoded) or self._email.search(encoded):
+            raise OutboundPolicyError("tool result still contains a prohibited identifier")
+        context_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return RedactedContext(
+            payload=sanitized,
+            redaction_count=count,
+            context_hash=context_hash,
+        )
+
     def _sanitize_mapping(
-        self, payload: Mapping[str, Any], *, depth: int, subject_context: bool
+        self,
+        payload: Mapping[str, Any],
+        *,
+        depth: int,
+        subject_context: bool,
+        drop_unsafe: bool = False,
     ) -> tuple[dict[str, Any], int]:
         if depth > 12:
             raise OutboundPolicyError("outbound context is nested too deeply")
@@ -168,23 +211,35 @@ class OutboundContextPolicy:
                 value,
                 depth=depth + 1,
                 subject_context=subject_context or is_subject_container,
+                drop_unsafe=drop_unsafe,
             )
+            if cleaned is _DROPPED:
+                redactions += child_count
+                continue
             result[key] = cleaned
             redactions += child_count
         return result, redactions
 
-    def _sanitize_value(self, value: Any, *, depth: int, subject_context: bool) -> tuple[Any, int]:
+    def _sanitize_value(
+        self,
+        value: Any,
+        *,
+        depth: int,
+        subject_context: bool,
+        drop_unsafe: bool = False,
+    ) -> tuple[Any, int]:
         if value is None or isinstance(value, (bool, int, float)):
             return value, 0
         if isinstance(value, bytes):
             raise OutboundPolicyError("binary content cannot leave the local machine")
         if isinstance(value, str):
-            return self._sanitize_string(value)
+            return self._sanitize_string(value, drop_unsafe=drop_unsafe)
         if isinstance(value, Mapping):
             return self._sanitize_mapping(
                 value,
                 depth=depth,
                 subject_context=subject_context,
+                drop_unsafe=drop_unsafe,
             )
         if isinstance(value, Sequence):
             if len(value) > 100:
@@ -196,13 +251,16 @@ class OutboundContextPolicy:
                     item,
                     depth=depth + 1,
                     subject_context=subject_context,
+                    drop_unsafe=drop_unsafe,
                 )
-                items.append(cleaned)
                 redactions += child_count
+                if cleaned is _DROPPED:
+                    continue
+                items.append(cleaned)
             return items, redactions
         raise OutboundPolicyError(f"unsupported outbound value type: {type(value).__name__}")
 
-    def _sanitize_string(self, value: str) -> tuple[str, int]:
+    def _sanitize_string(self, value: str, *, drop_unsafe: bool = False) -> tuple[Any, int]:
         if len(value) > 20_000:
             raise OutboundPolicyError("outbound string is too long")
         if (
@@ -211,6 +269,8 @@ class OutboundContextPolicy:
             or self._chinese_person_reference.search(value)
             or self._credential.search(value)
         ):
+            if drop_unsafe:
+                return _DROPPED, 1
             raise OutboundPolicyError("free-form sensitive text cannot leave the local machine")
         redactions = 0
         cleaned = value

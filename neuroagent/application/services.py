@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
+from typing import Any, cast
 
+from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.providers import ModelProvider
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.application.chat_tools import build_chat_dispatcher
 from neuroagent.application.contracts import (
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
@@ -23,6 +25,7 @@ from neuroagent.application.ports import (
     DatabaseLifecyclePort,
     DatasetInspectorPort,
     DemographicsReaderPort,
+    HeadMotionQcParserPort,
     PathPolicyPort,
     RepositoryPort,
     SecretWriterPort,
@@ -38,6 +41,8 @@ from neuroagent.application.service_mixins import (
     StatisticsMixin,
 )
 from neuroagent.application.settings import Settings
+from neuroagent.application.work_dialogue import WorkDialogue
+from neuroagent.application.work_tools import WorkToolRunner, build_work_dispatcher
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.chat.services import (
@@ -48,6 +53,7 @@ from neuroagent.chat.services import (
     LocalEvidenceRagService,
     ModelIntentRouter,
 )
+from neuroagent.chat.tool_loop import ChatToolRunner
 from neuroagent.context.engine import ContextEngine
 from neuroagent.domain.fmri.skillpacks.builtin import build_builtin_registry
 from neuroagent.literature.chunker import ScientificChunker
@@ -86,6 +92,7 @@ class NeuroAgentService(
         path_policy: PathPolicyPort,
         dataset_inspector: DatasetInspectorPort,
         demographics_reader: DemographicsReaderPort,
+        head_motion_qc_parser: HeadMotionQcParserPort,
         environment_provider: EnvironmentLockProvider,
         secret_resolver: SecretResolver,
         secret_writer: SecretWriterPort,
@@ -99,6 +106,7 @@ class NeuroAgentService(
         self.path_policy = path_policy
         self.dataset_inspector = dataset_inspector
         self.demographics_reader = demographics_reader
+        self.head_motion_qc_parser = head_motion_qc_parser
         self.skill_registry = skill_registry or build_builtin_registry()
         self.skill_validator = SkillValidator()
         self.skill_resolver = SkillResolver(self.skill_registry)
@@ -149,6 +157,55 @@ class NeuroAgentService(
             tool_result=self._tool_result,
             work_root=settings.allowed_work_root,
         )
+        # The bounded tool loop needs the same outbound policy as the single-shot
+        # path, so it is only wired when de-identification is configured and the
+        # operator has not switched the loop off.
+        salt = settings.redaction_salt
+        tool_policy: OutboundContextPolicy | None = None
+        tool_budget: AgentLoopBudget | None = None
+        if salt and settings.agent_tool_loop_enabled:
+            tool_policy = OutboundContextPolicy(salt)
+            tool_budget = AgentLoopBudget(
+                max_steps=settings.agent_max_tool_steps,
+                max_seconds=settings.agent_max_tool_seconds,
+                max_total_tokens=settings.agent_max_tool_tokens,
+                max_repeat_failures=settings.agent_max_repeat_tool_failures,
+            )
+        skill_summaries = lambda: [  # noqa: E731 - bound once, used by both catalogs
+            {
+                "skill_id": spec.skill_id,
+                "title": spec.title,
+                "status": spec.status.value,
+            }
+            for spec in self.list_skills()
+        ]
+        work_tool_runner: WorkToolRunner | None = None
+        if tool_policy is not None:
+            # Bind non-optional: a closure does not keep the narrowing above.
+            work_policy = tool_policy
+            work_tool_runner = WorkToolRunner(
+                build_messages=self._build_chat_messages,
+                call_turn=self._tool_turn,
+                dispatcher_factory=lambda: build_work_dispatcher(
+                    get_run=lambda run_id: self.get_run(run_id).model_dump(mode="json"),
+                    list_artifacts=lambda run_id: [
+                        item.model_dump(mode="json") for item in self.list_artifacts(run_id)
+                    ],
+                    list_results=lambda run_id: self._statistical_results_for(run_id),
+                    correction_capabilities=lambda: [
+                        item.model_dump(mode="json") for item in self.correction_capabilities()
+                    ],
+                    list_skills=skill_summaries,
+                    policy=work_policy,
+                ),
+                probe_capability=self._tool_capability,
+                budget=tool_budget,
+            )
+        self.work_dialogue = WorkDialogue(
+            self.conversation_work,
+            lambda **kwargs: self._generate_rsfmri_chat(**kwargs),
+            tool_runner=work_tool_runner,
+        )
         uploaded_index = UploadedLiteratureIndex(
             work_root=settings.allowed_work_root,
             repository=cast(LiteratureRepository, repository),
@@ -168,27 +225,42 @@ class NeuroAgentService(
             ),
             max_pdf_bytes=settings.literature_max_pdf_bytes,
         )
+        rag_service = FmriAnalysisRagService(
+            db_dir=settings.rag_db_dir,
+            collection=settings.rag_collection,
+            secret_resolver=secret_resolver,
+            api_key_env=settings.rag_api_key_env,
+            redaction_salt=settings.redaction_salt,
+            rerank=settings.rag_rerank,
+            uploaded_index=uploaded_index,
+            fallback_rag=LocalEvidenceRagService(
+                lambda question: (
+                    self.answer_rsfmri_question(
+                        RsFmriQuestionRequest(question=question, allow_remote_search=False)
+                    ).answer
+                )
+            ),
+        )
+        tool_runner: ChatToolRunner | None = None
+        if tool_policy is not None:
+            tool_runner = ChatToolRunner(
+                build_messages=self._build_chat_messages,
+                call_turn=self._tool_turn,
+                dispatcher_factory=lambda collector: build_chat_dispatcher(
+                    retrieve=lambda query, limit: rag_service.retrieve(query, limit=limit),
+                    collector=collector,
+                    policy=tool_policy,
+                    list_skills=skill_summaries,
+                ),
+                probe_capability=self._tool_capability,
+                budget=tool_budget,
+            )
         self.chat_agent = ChatAgent(
             intent_router=ModelIntentRouter(
                 self._classify_chat_intent,
                 has_profiles=lambda: bool(self.repository.list_model_profiles()),
             ),
-            rag_service=FmriAnalysisRagService(
-                db_dir=settings.rag_db_dir,
-                collection=settings.rag_collection,
-                secret_resolver=secret_resolver,
-                api_key_env=settings.rag_api_key_env,
-                redaction_salt=settings.redaction_salt,
-                rerank=settings.rag_rerank,
-                uploaded_index=uploaded_index,
-                fallback_rag=LocalEvidenceRagService(
-                    lambda question: (
-                        self.answer_rsfmri_question(
-                            RsFmriQuestionRequest(question=question, allow_remote_search=False)
-                        ).answer
-                    )
-                ),
-            ),
+            rag_service=rag_service,
             context_manager=self.context_engine,
             memory_service=DEFAULT_MEMORY_SERVICE,
             llm_client=GatewayLlmClient(
@@ -196,6 +268,7 @@ class NeuroAgentService(
                 has_profiles=lambda: bool(self.repository.list_model_profiles()),
             ),
             citation_service=DEFAULT_CITATION_SERVICE,
+            tool_runner=tool_runner,
         )
 
     def close(self) -> None:
@@ -233,6 +306,15 @@ class NeuroAgentService(
     def health(self) -> HealthView:
         self.database.ping()
         return HealthView()
+
+    def _statistical_results_for(self, run_id: str) -> list[dict[str, Any]]:
+        """Project a run's registered statistical results for the Work catalog."""
+
+        run = self.get_run(run_id)
+        return [
+            item.model_dump(mode="json")
+            for item in self.list_statistical_results(project_id=run.project_id, run_id=run_id)
+        ]
 
     def environment_probe(self) -> EnvironmentProbeView:
         return self.environment_provider.current().probe

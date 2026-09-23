@@ -957,6 +957,11 @@ class ConversationToolCallView(StrictModel):
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    # Agent tool-loop telemetry.  ``None`` for single-shot tool calls and for
+    # rows persisted before the loop existed.
+    step_index: int | None = Field(default=None, ge=1)
+    risk_tier: str | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
     created_at: datetime
     updated_at: datetime
 
@@ -1002,6 +1007,9 @@ class ConversationTurnView(StrictModel):
     user_message: ConversationMessageView
     assistant_message: ConversationMessageView
     tool_call: ConversationToolCallView | None = None
+    #: Ordered steps of a bounded Agent tool loop.  Empty for single-shot turns,
+    #: where ``tool_call`` carries the one call.
+    tool_calls: list[ConversationToolCallView] = Field(default_factory=list)
 
 
 class MemoryCreate(StrictModel):

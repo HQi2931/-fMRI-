@@ -1,6 +1,6 @@
-"""Explicit domain-to-DPABI V8.2 mapping.
+"""Explicit domain-to-DPABI parameter mapping.
 
-Only fields confirmed in the local V8.2 source are emitted here.  The adapter
+Only fields confirmed in the locally installed DPABI source are emitted here.  The adapter
 does not choose scientific parameters and does not execute MATLAB.
 """
 
@@ -539,7 +539,7 @@ def _project_nuisance(parameters: PreprocessingParameters) -> dict[str, Any]:
         if regressor.enabled and regressor.method is TissueRegressorMethod.COMPCOR
     }
     if compcor_counts:
-        # DPARSFA V8.2 reads only Cfg.Covremove.CSF.CompCorPCNum for the
+        # DPARSFA reads only Cfg.Covremove.CSF.CompCorPCNum for the
         # combined WM/CSF CompCor mask, even when only WM is selected.
         covremove["CSF"]["CompCorPCNum"] = compcor_counts.pop()
     if nuisance.head_motion_scrubbing is not None:

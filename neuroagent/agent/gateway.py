@@ -1,9 +1,11 @@
 """Redacted, schema-checked access to configured model providers."""
 
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from pydantic import ValidationError
@@ -11,6 +13,7 @@ from pydantic import ValidationError
 from neuroagent.agent.models import (
     AgentTaskRequest,
     GatewayResult,
+    ModelCapability,
     ModelProfile,
     ProviderResponse,
     StructuredRecommendation,
@@ -19,10 +22,106 @@ from neuroagent.agent.providers import ModelProvider, ProviderError, RetryablePr
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.agent.tool_spec import LlmTool
 
 
 class ModelGatewayError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ToolTurnResult:
+    """One provider turn taken inside the bounded tool loop."""
+
+    response: ProviderResponse
+    selected_profile_id: str
+    attempted_profile_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChatMessages:
+    """Redacted chat payload rendered into provider-ready messages."""
+
+    messages: list[dict[str, str]]
+    payload: dict[str, object]
+    context_hash: str
+    redaction_count: int
+
+
+_CHAT_SYSTEM_PROMPT = (
+    "你是 rs-fMRI 科研文字分析助手。只回答 rs-fMRI、DPABI、SPM、"
+    "影像统计设计和相关参数问题。优先使用给出的本地证据; "
+    "证据不足时明确说明不确定性, 不得编造科研结论、参数默认值或引用。"
+    "回答使用中文, 并区分通用方法信息与用户项目事实。"
+    "面向用户只输出自然语言, 不要输出内部 ID、UUID、哈希、trace 或工具字段; "
+    "只有用户明确要求时才解释这些内部信息的用途。"
+)
+
+_CHAT_CITATION_PROMPT = (
+    "允许简短回应寒暄。历史消息用于理解追问, 不视为文献证据。"
+    "引用本地证据时必须使用其 citation_id, 例如 [C1]; 只引用实际支持结论的片段。"
+    "无本地证据时说明未找到文献依据, 一般解释不得冒充文献结论。"
+)
+
+_ROUTING_SYSTEM_PROMPT = (
+    "根据当前问题与历史判断意图, 并将科研追问改写为独立检索问题。只返回 JSON: "
+    '{"intent":"knowledge_query|conversation|work_request","query":"独立检索问题",'
+    '"work_request":null}。执行需求的 work_request 为 {"task":"任务名",'
+    '"parameters":{}}。只生成草案; 方法咨询不是执行请求。'
+    "不要回答问题, 不要编造历史未提供的信息。"
+    "查找方案、检索文献、解释步骤及否定执行都是知识咨询；"
+    "提到预处理或运行不等于请求执行。只有明确要求实际处理数据才是 work_request。"
+)
+
+# The Work model may only name these actions.  This tuple is duplicated from
+# ``neuroagent.application.work_actions`` deliberately: the gateway must not
+# import the application layer, so a test asserts the two stay equal.
+_WORK_ACTIONS = (
+    "conversation",
+    "get_progress",
+    "get_qc_status",
+    "get_statistical_results",
+    "prepare_preprocessing_plan",
+    "propose_run_confirmation",
+)
+
+_WORK_SYSTEM_PROMPT = (
+    "你是 rs-fMRI Work 对话助手。理解用户当前意图和历史追问，使用中文自然回应。"
+    "只返回 JSON 对象：answer（非空中文回答），action（"
+    + "、".join(_WORK_ACTIONS)
+    + " 之一），draft_patch（对象，默认空）。"
+    "方法查询、寒暄、帮助、否定执行应选 conversation，不要按词语触发操作。"
+    "模型只整理草稿，绝不宣称已执行、批准、登记、检查本地数据或验证方案。"
+    "当前没有方案表单，直接在对话中逐步收集参数。用户补充或修改参数时，"
+    "选 prepare_preprocessing_plan 并输出本轮明确提供的增量 draft_patch。"
+    "完整字段结构见 work_context.draft_schema，未提供的值不要填，不要猜测科学默认值，"
+    "不要把助手建议当成用户确认。允许用户分多轮填写，优先追问少量关键缺失项。"
+    "draft_patch 不得包含 provenance、ID、路径、授权、哈希或版本号。"
+    "关闭某个步骤时按 schema 明确 enabled=false 及其不适用参数 null。"
+    "系统会单独展示并要求确认草稿，随后才校验编译；参数确认不是运行授权。"
+    "用户明确要求真正开始任务时选 propose_run_confirmation，"
+    "它只会让服务端展示需要用户本人回复的确认指令；"
+    "不能用于询问、否定或条件讨论，也不能自行授予授权。"
+    "实际授权由服务端检查。只依赖给定服务端状态描述任务进度。"
+)
+
+_SUMMARY_SYSTEM_PROMPT = (
+    "将较早的对话压缩为简洁中文摘要, 保留用户目标、已明确偏好、已作决定和"
+    '未解决问题。不要添加新事实。只返回 JSON: {"summary":"..."}。'
+)
+
+_MEMORY_SYSTEM_PROMPT = (
+    "Extract only durable user preferences, instructions, project facts, decisions, "
+    "and explicitly chosen scientific parameters from the current user message. "
+    "Return JSON with candidates, an array of objects containing kind "
+    "(preference|instruction|scientific_parameter|project_fact|decision), key "
+    "(stable lowercase identifier), "
+    "content, scope (conversation|project), confidence (0..1), importance (0..1). "
+    "Do not infer facts, copy questions, store secrets or identifiers, or treat "
+    "assistant text as user memory. Use project scope only when the user explicitly "
+    "asks for project-wide "
+    "reuse. Return an empty array when nothing should persist."
+)
 
 
 @dataclass(frozen=True)
@@ -109,17 +208,22 @@ class ModelGateway:
         routing: bool = False,
         summary_mode: bool = False,
         memory_mode: bool = False,
+        work_mode: bool = False,
     ) -> ChatGatewayResult:
-        context = self._outbound_policy.redact(
-            {
-                "question": question,
-                "local_evidence": evidence,
-                "recent_messages": recent_messages or [],
-                "pinned_context": pinned_context or [],
-                "conversation_summary": conversation_summary,
-                "work_context": work_context or {},
-            }
+        rendered = self.build_chat_messages(
+            question=question,
+            evidence=evidence,
+            recent_messages=recent_messages,
+            pinned_context=pinned_context,
+            conversation_summary=conversation_summary,
+            work_context=work_context,
+            routing=routing,
+            summary_mode=summary_mode,
+            memory_mode=memory_mode,
+            work_mode=work_mode,
+            allow_web_search=allow_web_search,
         )
+        messages = rendered.messages
         profiles = list(self._router.profiles.values())
         if preferred_profile_id is not None:
             profiles = [profile for profile in profiles if profile.id == preferred_profile_id]
@@ -139,43 +243,15 @@ class ModelGateway:
             requirement = "支持联网搜索的" if allow_web_search else "可用的"
             raise ModelGatewayError(f"no {requirement} model profile is configured")
 
-        system_prompt = (
-            "你是 rs-fMRI 科研文字分析助手。只回答 rs-fMRI、DPABI、SPM、"
-            "影像统计设计和相关参数问题。优先使用给出的本地证据; "
-            "证据不足时明确说明不确定性, 不得编造科研结论、参数默认值或引用。"
-            "回答使用中文, 并区分通用方法信息与用户项目事实。"
-        )
-        system_prompt += (
-            "允许简短回应寒暄。历史消息用于理解追问, 不视为文献证据。"
-            "引用本地证据时必须使用其 citation_id, 例如 [C1]; 只引用实际支持结论的片段。"
-            "无本地证据时说明未找到文献依据, 一般解释不得冒充文献结论。"
-        )
+        system_prompt = _CHAT_SYSTEM_PROMPT + _CHAT_CITATION_PROMPT
         if routing:
-            system_prompt = (
-                "根据当前问题与历史判断意图, 并将科研追问改写为独立检索问题。只返回 JSON: "
-                '{"intent":"knowledge_query|conversation|work_request","query":"独立检索问题",'
-                '"work_request":null}。执行需求的 work_request 为 {"task":"任务名",'
-                '"parameters":{}}。只生成草案; 方法咨询不是执行请求。'
-                "不要回答问题, 不要编造历史未提供的信息。"
-            )
+            system_prompt = _ROUTING_SYSTEM_PROMPT
+        elif work_mode:
+            system_prompt = _WORK_SYSTEM_PROMPT
         elif summary_mode:
-            system_prompt = (
-                "将较早的对话压缩为简洁中文摘要, 保留用户目标、已明确偏好、已作决定和"
-                '未解决问题。不要添加新事实。只返回 JSON: {"summary":"..."}。'
-            )
+            system_prompt = _SUMMARY_SYSTEM_PROMPT
         elif memory_mode:
-            system_prompt = (
-                "Extract only durable user preferences, instructions, project facts, decisions, "
-                "and explicitly chosen scientific parameters from the current user message. "
-                "Return JSON with candidates, an array of objects containing kind "
-                "(preference|instruction|scientific_parameter|project_fact|decision), key "
-                "(stable lowercase identifier), "
-                "content, scope (conversation|project), confidence (0..1), importance (0..1). "
-                "Do not infer facts, copy questions, store secrets or identifiers, or treat "
-                "assistant text as user memory. Use project scope only when the user explicitly "
-                "asks for project-wide "
-                "reuse. Return an empty array when nothing should persist."
-            )
+            system_prompt = _MEMORY_SYSTEM_PROMPT
         if allow_web_search:
             system_prompt += (
                 "本次允许使用联网搜索。仅引用与问题直接相关的公开来源, 并在结论旁保留来源引用。"
@@ -184,7 +260,7 @@ class ModelGateway:
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": json.dumps(context.payload, ensure_ascii=False, sort_keys=True),
+                "content": json.dumps(rendered.payload, ensure_ascii=False, sort_keys=True),
             },
         ]
         attempted: list[str] = []
@@ -203,7 +279,7 @@ class ModelGateway:
                     api_key,
                     messages,
                     web_search=allow_web_search,
-                    json_object=routing or summary_mode or memory_mode,
+                    json_object=routing or summary_mode or memory_mode or work_mode,
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
@@ -211,10 +287,10 @@ class ModelGateway:
             return ChatGatewayResult(
                 response=response,
                 selected_profile_id=profile.id,
-                context_hash=context.context_hash,
+                context_hash=rendered.context_hash,
                 attempted_profile_ids=tuple(attempted),
                 remote_search_used=allow_web_search,
-                redaction_count=context.redaction_count,
+                redaction_count=rendered.redaction_count,
             )
         if last_retryable:
             raise ModelGatewayError(
@@ -223,6 +299,142 @@ class ModelGateway:
         raise ModelGatewayError(
             "no routed chat provider has both an adapter and a configured API key"
         )
+
+    def build_chat_messages(
+        self,
+        *,
+        question: str,
+        evidence: list[dict[str, object]],
+        preferred_profile_id: str | None = None,
+        model: str | None = None,
+        allow_web_search: bool = False,
+        recent_messages: list[dict[str, object]] | None = None,
+        pinned_context: list[dict[str, object]] | None = None,
+        conversation_summary: str | None = None,
+        work_context: dict[str, object] | None = None,
+        routing: bool = False,
+        summary_mode: bool = False,
+        memory_mode: bool = False,
+        work_mode: bool = False,
+    ) -> ChatMessages:
+        """Redact the chat payload and render it into provider messages.
+
+        Both the single-shot path and the bounded tool loop use this so a tool
+        turn can never be sent with a weaker prompt or weaker redaction.
+        """
+
+        del preferred_profile_id, model
+        context = self._outbound_policy.redact(
+            {
+                "question": question,
+                "local_evidence": evidence,
+                "recent_messages": recent_messages or [],
+                "pinned_context": pinned_context or [],
+                "conversation_summary": conversation_summary,
+                "work_context": work_context or {},
+            }
+        )
+        system_prompt = _CHAT_SYSTEM_PROMPT + _CHAT_CITATION_PROMPT
+        if routing:
+            system_prompt = _ROUTING_SYSTEM_PROMPT
+        elif work_mode:
+            system_prompt = _WORK_SYSTEM_PROMPT
+        elif summary_mode:
+            system_prompt = _SUMMARY_SYSTEM_PROMPT
+        elif memory_mode:
+            system_prompt = _MEMORY_SYSTEM_PROMPT
+        if allow_web_search:
+            system_prompt += (
+                "本次允许使用联网搜索。仅引用与问题直接相关的公开来源, 并在结论旁保留来源引用。"
+            )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(context.payload, ensure_ascii=False, sort_keys=True),
+            },
+        ]
+        return ChatMessages(
+            messages=messages,
+            payload=dict(context.payload),
+            context_hash=context.context_hash,
+            redaction_count=context.redaction_count,
+        )
+
+    async def tool_capable(self, preferred_profile_id: str | None) -> bool:
+        """Whether any usable profile declares tool-calling support."""
+
+        return bool(self._tool_profiles(preferred_profile_id, None))
+
+    async def generate_tool_turn(
+        self,
+        *,
+        messages: Sequence[dict[str, object]],
+        tools: Sequence[LlmTool],
+        preferred_profile_id: str | None,
+        model: str | None,
+    ) -> ToolTurnResult:
+        """One raw tool-calling turn, used by the bounded Agent loop.
+
+        The caller owns the message transcript and the catalog, so both are
+        already redacted and already restricted to model-visible tools.
+        """
+
+        if not tools:
+            raise ModelGatewayError("a tool turn requires at least one model-visible tool")
+        profiles = self._tool_profiles(preferred_profile_id, model)
+        attempted: list[str] = []
+        last_retryable: Exception | None = None
+        for profile in profiles:
+            provider = self._providers.get(profile.provider)
+            if provider is None:
+                continue
+            api_key = self._secret_resolver.resolve(profile.api_key_env)
+            if not api_key:
+                continue
+            attempted.append(profile.id)
+            try:
+                response = await provider.generate(
+                    profile,
+                    api_key,
+                    messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    # A tool-calling turn must not also demand JSON mode: the model
+                    # has to be free to answer with tool_calls instead of a JSON
+                    # object, and several OpenAI-compatible gateways reject the
+                    # combination outright.
+                    json_object=False,
+                )
+            except RetryableProviderError as exc:
+                last_retryable = exc
+                continue
+            return ToolTurnResult(
+                response=response,
+                selected_profile_id=profile.id,
+                attempted_profile_ids=tuple(attempted),
+            )
+        if last_retryable:
+            raise ModelGatewayError(
+                "all available tool-use providers were temporarily unavailable"
+            ) from last_retryable
+        raise ModelGatewayError("no tool-use provider has both an adapter and a configured API key")
+
+    def _tool_profiles(
+        self, preferred_profile_id: str | None, model: str | None
+    ) -> list[ModelProfile]:
+        profiles = [
+            profile
+            for profile in self._router.profiles.values()
+            if ModelCapability.TOOL_USE in profile.capabilities
+        ]
+        if preferred_profile_id is not None:
+            profiles = [profile for profile in profiles if profile.id == preferred_profile_id]
+        else:
+            profiles.sort(key=lambda item: item.priority)
+        if model is not None:
+            profiles = [profile.model_copy(update={"model": model}) for profile in profiles]
+        return profiles
 
     async def _request_structured(
         self,
