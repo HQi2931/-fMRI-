@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Operations
 - 维护者：backend_service_engineer
-- 更新日期：2026-09-23
+- 更新日期：2026-09-27
 - 关联：[模型数据外发策略](../security/data-egress.md)
 
 外部模型是可选能力。未配置 Provider 时，数据检查、Skill 编译、审批、Mock Worker、QC 和统计设计仍可独立使用。
@@ -59,7 +59,7 @@ OPENAI_COMPATIBLE_API_KEY=<local-secret>
 
 - `json_object`：Provider 支持 `response_format` 结构化输出。意图路由、参数草稿、记忆抽取都依赖它。
 - `web_search`：允许联网搜索。用户每次都必须显式开启，且只会路由到声明了该能力的 Profile。
-- `tool_use`：Provider 支持 OpenAI 兼容的 `tools` / `tool_calls` 字段。**只有声明该能力的 Profile 才会进入有界工具调用循环**，从而在 Chat 中获得多跳检索；未声明的 Profile 保持原有单次检索与作答路径，行为不变。
+- `tool_use`：Profile 级能力声明，表示该连接下的模型支持 OpenAI 兼容的 `tools` / `tool_calls`。声明后可进入有界工具调用循环；用户仍需按实际情况确认该 Provider/模型支持，项目不会因返回了模型名称而自动推断能力。
 
 ```json
 {
@@ -76,7 +76,8 @@ OPENAI_COMPATIBLE_API_KEY=<local-secret>
 
 注意：
 
-- 只有确认该模型真的支持 function calling 才声明 `tool_use`。声明后 Provider 会收到 `tools` 数组；不支持的模型会返回参数错误，或被服务端判定为一次性回退到单次路径。
+- 只有确认该 Provider 支持 function calling 才声明 `tool_use`。此配置会作用于 Profile 下列出的模型；具体 Work 文件授权会在用户点击授权时，向选中的具体模型发送一次仅含合成指令和无副作用工具的探针。只有模型按约定返回该工具调用，授权才会建立。探针不含工作区路径或文件内容，不执行工具。
+- Work 授权绑定工作区、Profile 配置修订和具体模型。修改服务地址、模型配置或能力后必须重新授权；被撤销、过期配置或其他模型的授权不能用于读取工作区内容。
 - 工具结果会重新进入模型上下文，因此工具输出同样经过外发脱敏策略处理，并被标记为不可信数据。
 - 循环的步数与耗时由服务端预算控制，与 Profile 的 `timeout_seconds` 是两套独立限制，后者约束单次 HTTP 请求。
 
@@ -88,7 +89,7 @@ DeepSeek 配置和兼容性核对以官方 [Chat Completion API](https://api-doc
 
 ## 轻量 smoke
 
-Provider smoke 会向外部服务发送一个已脱敏的连通性和 JSON schema 测试，可能产生费用。它只能由用户显式点击“测试”或调用 `POST /api/v1/providers/test` 触发，CI 不会使用真实密钥。
+Provider smoke 会向外部服务发送一个已脱敏的连通性和 JSON schema 测试，可能产生费用。它只能由用户显式点击“测试”或调用 `POST /api/v1/providers/test` 触发，CI 不会使用真实密钥。Work 文件授权另外会发送一次合成工具调用探针；该探针不读取工作区内容，也不取代用户对后续文件内容外发的明确授权。
 
 smoke 前确认：
 

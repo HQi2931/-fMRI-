@@ -16,6 +16,8 @@
 - `statistics_draft.py` 只负责统计设计的取值来源与顺序，科学校验仍由领域层负责；
 - `work_actions.py` 是 Work 可选动作的唯一事实来源；
 - `conversation_work.py` 与 `work_dialogue.py` 将 DPABI 阶段发现、模型建议和用户确认分开：模型只能引用服务端候选，`selected_input_stage` 由服务端复查后写入冻结 manifest；
+- Work 草稿在模型建议后生成服务端确定性的 `plan_preview`，展示公共预处理、ALFF/fALFF 与 ReHo 分支及消费的中间检查点；该预览只用于审查，仍由 Skill 编译器和一次性执行确认控制实际运行；
+- 运行失败后，Work 的只读诊断工具可对受限 attempt 日志调用确定性 DPABI 分类器；只向模型返回分类、摘要和建议，不传递日志证据文本，也不会自行变更方案或启动重试；
 - `reporting.py` 生成不调用模型的确定性复现报告。
 
 本层不导入 `neuroagent.infrastructure`（由导入边界测试守护），不实现具体影像算法，不直接启动进程。HTTP 细节属于 API 层。

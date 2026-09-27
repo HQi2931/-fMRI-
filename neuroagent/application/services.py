@@ -9,17 +9,20 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
 
+from neuroagent.agent.gateway import ModelGatewayError
 from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.models import ModelCapability
-from neuroagent.agent.providers import ModelProvider
+from neuroagent.agent.providers import ModelProvider, ProviderError
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.agent.tool_spec import LlmTool, ToolTier
 from neuroagent.application.chat_tools import build_chat_dispatcher
 from neuroagent.application.contracts import (
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
     EnvironmentProbeView,
     HealthView,
+    ModelProfileView,
     RsFmriQuestionRequest,
     WorkspaceChangeProposal,
     WorkspaceContentConsent,
@@ -33,6 +36,7 @@ from neuroagent.application.conversation_context import ConversationContextCoord
 from neuroagent.application.conversation_work import ConversationWorkCoordinator
 from neuroagent.application.environment_lock import EnvironmentLockProvider
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.hashing import canonical_json
 from neuroagent.application.ports import (
     DatabaseLifecyclePort,
     DatasetInspectorPort,
@@ -106,6 +110,35 @@ class NeuroAgentService(
         return hashlib.sha256(str(root.resolve(strict=True)).encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _profile_revision(profile_view: ModelProfileView) -> str:
+        material = canonical_json(
+            {
+                "profile": profile_view.profile.model_dump(mode="json"),
+                "version": profile_view.version,
+                "created_at": profile_view.created_at.isoformat(),
+            }
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _consent_matches_current_context(
+        self,
+        consent: WorkspaceContentConsent,
+        *,
+        workspace_hash: str | None,
+        profile_view: ModelProfileView | None,
+    ) -> bool:
+        return bool(
+            workspace_hash
+            and profile_view
+            and consent.revoked_at is None
+            and consent.workspace_hash == workspace_hash
+            and consent.profile_id == profile_view.profile.id
+            and consent.profile_revision == self._profile_revision(profile_view)
+            and consent.policy_version == self.workspace_policy_version
+            and ModelCapability.TOOL_USE in profile_view.profile.capabilities
+        )
+
+    @staticmethod
     def _file_hash(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as stream:
@@ -133,15 +166,18 @@ class NeuroAgentService(
             return False
         expected_hash = self._workspace_hash(root)
         try:
+            profile_view = self.repository.get_model_profile(profile_id)
+        except Exception:
+            return False
+        try:
             consents = self.repository.list_workspace_consents(conversation_id)
         except (AttributeError, NotImplementedError):
             return False
         return any(
-            item.workspace_hash == expected_hash
-            and item.profile_id == profile_id
-            and item.model == model
-            and item.policy_version == self.workspace_policy_version
-            and item.revoked_at is None
+            item.model == model
+            and self._consent_matches_current_context(
+                item, workspace_hash=expected_hash, profile_view=profile_view
+            )
             for item in consents
         )
 
@@ -151,7 +187,7 @@ class NeuroAgentService(
             return None
         return self.workspace_file_factory(root)
 
-    def create_workspace_content_consent(
+    async def create_workspace_content_consent(
         self, conversation_id: str, request: WorkspaceContentConsentCreate
     ) -> WorkspaceContentConsent:
         if not self.settings.workspace_file_assistant_enabled or not self.settings.redaction_salt:
@@ -162,35 +198,164 @@ class NeuroAgentService(
         conversation = self.repository.get_conversation(conversation_id)
         if conversation.mode.value != "work" or not conversation.workspace_path:
             raise InputValidationError("workspace_required", "文件助手需要绑定 Work 工作区。")
-        profile = self.get_model_profile(request.profile_id).profile
-        if ModelCapability.TOOL_USE not in profile.capabilities:
+        profile_view = self.get_model_profile(request.profile_id)
+        if ModelCapability.TOOL_USE not in profile_view.profile.capabilities:
             raise InputValidationError(
-                "workspace_tool_use_required", "所选模型不支持工作区文件工具。"
+                "workspace_tool_use_required",
+                "该服务商配置尚未声明工具调用能力。请在设置中确认并启用 tool_use。",
+                profile_id=request.profile_id,
+                required_capability=ModelCapability.TOOL_USE.value,
             )
         if not request.acknowledge_remote_processing:
             raise InputValidationError(
                 "workspace_consent_required", "必须确认文件内容可能发送给所选模型服务。"
             )
         root = self._workspace_root(conversation.workspace_path)
-        host = urlsplit(profile.base_url).hostname or profile.base_url
-        return self.repository.create_workspace_consent(
+        workspace_hash = self._workspace_hash(root)
+        await self._probe_workspace_tool_support(profile_view, request.model)
+
+        # Do not persist a consent if the model configuration or selected
+        # workspace changed while the external capability probe was running.
+        latest_profile = self.get_model_profile(request.profile_id)
+        latest_conversation = self.repository.get_conversation(conversation_id)
+        latest_root = self._workspace_root(latest_conversation.workspace_path)
+        latest_workspace_hash = (
+            self._workspace_hash(latest_root) if latest_root is not None else None
+        )
+        if (
+            self._profile_revision(latest_profile) != self._profile_revision(profile_view)
+            or latest_workspace_hash != workspace_hash
+        ):
+            raise ConflictError(
+                "workspace_consent_context_changed",
+                "工作区或模型配置在兼容性测试期间发生变化，请刷新后重新授权。",
+            )
+        host = urlsplit(profile_view.profile.base_url).hostname or profile_view.profile.base_url
+        consent = self.repository.create_workspace_consent(
             conversation_id=conversation_id,
-            workspace_hash=self._workspace_hash(root),
+            workspace_hash=workspace_hash,
             profile_id=request.profile_id,
+            profile_revision=self._profile_revision(profile_view),
             model=request.model,
             policy_version=self.workspace_policy_version,
             provider_host=host,
         )
+        self.repository.append_event(
+            project_id=conversation.project_id,
+            run_id=None,
+            event_type="WorkspaceContentConsentGranted",
+            severity="info",
+            payload={
+                "consent_id": consent.consent_id,
+                "conversation_id": conversation_id,
+                "workspace_hash": workspace_hash,
+                "profile_id": request.profile_id,
+                "profile_revision": self._profile_revision(profile_view),
+                "model": request.model,
+                "provider_host": host,
+                "tool_probe": "passed",
+            },
+        )
+        return consent.model_copy(update={"valid_for_current_context": True})
+
+    async def _probe_workspace_tool_support(
+        self, profile_view: ModelProfileView, model: str
+    ) -> None:
+        probe_tool = LlmTool(
+            name="workspace_tool_probe",
+            description="Synthetic compatibility probe. This function has no side effects.",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            tier=ToolTier.READ,
+            timeout_seconds=15,
+            max_result_bytes=1_024,
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "This is a tool compatibility check. Call the offered "
+                    "workspace_tool_probe function exactly once with an empty object. "
+                    "Do not answer in prose."
+                ),
+            },
+            {"role": "user", "content": "Run the synthetic tool compatibility check."},
+        ]
+        try:
+            result = await self._model_gateway().generate_tool_turn(
+                messages=messages,
+                tools=[probe_tool],
+                preferred_profile_id=profile_view.profile.id,
+                model=model,
+                remaining_seconds=min(profile_view.profile.timeout_seconds, 15.0),
+            )
+        except (ModelGatewayError, ProviderError) as exc:
+            raise InputValidationError(
+                "workspace_tool_probe_failed",
+                "所选模型的工具调用测试未通过。请确认该模型支持 tools/tool_calls、API Key 可用，再重试。",
+                profile_id=profile_view.profile.id,
+                model=model,
+            ) from exc
+        calls = result.response.tool_calls
+        if (
+            result.selected_profile_id != profile_view.profile.id
+            or len(calls) != 1
+            or calls[0].name != probe_tool.name
+            or not calls[0].arguments_valid
+            or calls[0].arguments
+        ):
+            raise InputValidationError(
+                "workspace_tool_probe_failed",
+                "所选模型未能按要求调用测试工具。请确认该模型支持 tools/tool_calls，再重试。",
+                profile_id=profile_view.profile.id,
+                model=model,
+            )
 
     def list_workspace_content_consents(
         self, conversation_id: str
     ) -> list[WorkspaceContentConsent]:
-        return self.repository.list_workspace_consents(conversation_id)
+        consents = self.repository.list_workspace_consents(conversation_id)
+        conversation = self.repository.get_conversation(conversation_id)
+        try:
+            root = self._workspace_root(conversation.workspace_path)
+            workspace_hash = self._workspace_hash(root) if root is not None else None
+        except Exception:
+            workspace_hash = None
+        profiles = {item.profile.id: item for item in self.repository.list_model_profiles()}
+        return [
+            item.model_copy(
+                update={
+                    "valid_for_current_context": self._consent_matches_current_context(
+                        item,
+                        workspace_hash=workspace_hash,
+                        profile_view=profiles.get(item.profile_id),
+                    )
+                }
+            )
+            for item in consents
+        ]
 
     def revoke_workspace_content_consent(
         self, conversation_id: str, consent_id: str
     ) -> WorkspaceContentConsent:
-        return self.repository.revoke_workspace_consent(conversation_id, consent_id)
+        consent = self.repository.revoke_workspace_consent(conversation_id, consent_id)
+        self.repository.append_event(
+            project_id=None,
+            run_id=None,
+            event_type="WorkspaceContentConsentRevoked",
+            severity="info",
+            payload={
+                "consent_id": consent.consent_id,
+                "conversation_id": conversation_id,
+                "workspace_hash": consent.workspace_hash,
+                "profile_id": consent.profile_id,
+                "model": consent.model,
+            },
+        )
+        return consent
 
     def list_workspace_files(self, conversation_id: str, directory: str = "") -> dict[str, Any]:
         conversation = self.repository.get_conversation(conversation_id)
@@ -457,6 +622,7 @@ class NeuroAgentService(
                 call_turn=self._tool_turn,
                 dispatcher_factory=lambda context: build_work_dispatcher(
                     get_run=lambda run_id: self.get_run(run_id).model_dump(mode="json"),
+                    diagnose_run=lambda run_id: self.diagnose_latest_run(run_id),
                     list_artifacts=lambda run_id: [
                         item.model_dump(mode="json") for item in self.list_artifacts(run_id)
                     ],

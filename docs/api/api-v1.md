@@ -136,6 +136,16 @@
 | `list_workspace_stages` | 当前选择工作区的服务端核验 DPABI 阶段候选；只返回摘要，不返回未授权文件内容 |
 | `list_workspace_entries` / `search_workspace_content` / `read_workspace_content` | 在内容授权和用户点选范围内按需浏览、搜索、分段读取文件；结果视为不可信数据 |
 
+工作区文件内容授权绑定会话工作区、Profile 配置修订和具体模型：
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| `GET` | `/conversations/{conversation_id}/workspace/consents` | 返回授权记录，并标出 `valid_for_current_context`；Profile 或工作区变化后旧授权不再有效 |
+| `POST` | `/conversations/{conversation_id}/workspace/consents` | 用户确认外发后，向指定 Profile 和具体模型发送一次不含工作区信息的合成工具调用探针；仅探针成功时创建授权 |
+| `DELETE` | `/conversations/{conversation_id}/workspace/consents/{consent_id}` | 撤销授权 |
+
+Profile 必须声明 `tool_use`。探针不会执行工具；服务端要求响应包含指定的空参数 `tool_calls`。错误或超时返回 `workspace_tool_probe_failed`，配置未声明能力返回 `workspace_tool_use_required`。成功响应包含 `profile_revision` 与 `valid_for_current_context`。Profile 更新或删除重建、工作区变化、撤销以及切换到其他模型都会阻止工作区文件工具进入本轮目录。
+
 统计设计的取值来源与装配规则见 [统计设计的取值来源与装配](../architecture/statistical-design-assembly.md)。
 
 循环的最终文本就是 Work 原有的 JSON 契约，因此回复内容与 `action` 的解析、校验和授权路径与
@@ -148,6 +158,7 @@ Work 只绑定用户选择的工作区，目录中的 DPABI 输入由用户自�
 前端把 Model Profile 作为服务商 API 连接使用。绑定时调用 `/providers/models` 验证密钥并获取模型；
 Agent 页面再次读取该连接的模型列表，并在每个对话回合用 `model` 字段提交用户实际选择的模型。
 Profile 内部保存的 `model` 仅作为服务商暂时无法列出模型时的兼容回退，不要求用户额外维护。
+设置页可编辑 Profile 能力。用户开启 `tool_use` 前需确认服务商支持工具调用；Work 文件授权随后会针对所选的具体模型执行独立探针。
 
 Chat 回合请求从 Phase 1 起包含 `stream` 字段。当前只支持 `false`；`true` 返回
 `422 chat_streaming_not_implemented`，为后续 SSE/NDJSON token stream 保留明确扩展位。ChatAgent 会把

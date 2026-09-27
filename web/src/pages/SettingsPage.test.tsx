@@ -250,6 +250,38 @@ describe("settings page", () => {
     expect(webSearch).not.toBeChecked();
   });
 
+  it("enables tool use on an existing profile without resending an API key", async () => {
+    const user = userEvent.setup();
+    let current = modelProfile();
+    const fetchSpy = installFetch({ profiles: () => json([current]) });
+    const fallback = fetchSpy.getMockImplementation();
+    fetchSpy.mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/model-profiles") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { profile: { capabilities: string[] } };
+        current = { ...current, profile: { ...current.profile, capabilities: body.profile.capabilities } };
+        return json(current);
+      }
+      if (path.endsWith("/model-profiles")) return json([current]);
+      return fallback?.(input, init) ?? notFound();
+    });
+
+    render(<SettingsPage />);
+    await screen.findByText("1 项");
+    const toolUseCheckbox = screen.getAllByLabelText("工具调用（Work 工作区文件工具）")[1];
+    await user.click(toolUseCheckbox);
+    await user.click(screen.getByRole("button", { name: "保存能力" }));
+
+    await screen.findByText(/已保存 deepseek 的模型能力/);
+    const save = fetchSpy.mock.calls.find(([input, init]) =>
+      pathOf(input).endsWith("/model-profiles") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(save?.[1]?.body))).toMatchObject({
+      profile: { id: "deepseek", capabilities: ["json_object", "tool_use"] },
+      api_key: null,
+    });
+  });
+
   it("binds a provider, derives the id from the key variable and reloads profiles", async () => {
     const user = userEvent.setup();
     const fetchSpy = installFetch({

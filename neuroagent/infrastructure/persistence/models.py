@@ -291,6 +291,7 @@ class WorkspaceConsentRow(Base):
     )
     workspace_hash: Mapped[str] = mapped_column(String(64), index=True)
     profile_id: Mapped[str] = mapped_column(String(63))
+    profile_revision: Mapped[str] = mapped_column(String(64), default="")
     model: Mapped[str] = mapped_column(String(200))
     policy_version: Mapped[str] = mapped_column(String(32))
     provider_host: Mapped[str] = mapped_column(String(255))

@@ -31,7 +31,12 @@ from neuroagent.application.contracts import (
     ProviderTestRequest,
     ProviderTestView,
 )
-from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
+from neuroagent.application.errors import (
+    ApplicationError,
+    ConflictError,
+    InputValidationError,
+    NotFoundError,
+)
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.skills.models import SkillRequest
 
@@ -47,16 +52,22 @@ class ModelAgentMixin(BaseServiceMixin):
                     request.profile.api_key_env,
                     request.api_key,
                 )
+            try:
+                self.repository.get_model_profile(request.profile.id)
+                event_type = "ModelProfileUpdated"
+            except NotFoundError:
+                event_type = "ModelProfileCreated"
             result = self.repository.create_model_profile(request.profile)
             self.repository.append_event(
                 project_id=None,
                 run_id=None,
-                event_type="ModelProfileCreated",
+                event_type=event_type,
                 severity="info",
                 payload={
                     "profile_id": request.profile.id,
                     "provider": request.profile.provider,
                     "api_key_env": request.profile.api_key_env,
+                    "profile_version": result.version,
                 },
             )
             return result

@@ -36,6 +36,7 @@ class WorkspaceAssistantMixin(RepositoryBaseMixin):
             conversation_id=row.conversation_id,
             workspace_hash=row.workspace_hash,
             profile_id=row.profile_id,
+            profile_revision=row.profile_revision,
             model=row.model,
             policy_version=row.policy_version,
             provider_host=row.provider_host,
@@ -67,6 +68,7 @@ class WorkspaceAssistantMixin(RepositoryBaseMixin):
         conversation_id: str,
         workspace_hash: str,
         profile_id: str,
+        profile_revision: str,
         model: str,
         policy_version: str,
         provider_host: str,
@@ -85,6 +87,9 @@ class WorkspaceAssistantMixin(RepositoryBaseMixin):
                 )
             ).first()
             if existing is not None:
+                existing.profile_revision = profile_revision
+                existing.provider_host = provider_host
+                existing.granted_at = datetime.now(UTC)
                 existing.revoked_at = None
                 session.flush()
                 return self._consent(existing)
@@ -93,6 +98,7 @@ class WorkspaceAssistantMixin(RepositoryBaseMixin):
                 conversation_id=conversation_id,
                 workspace_hash=workspace_hash,
                 profile_id=profile_id,
+                profile_revision=profile_revision,
                 model=model,
                 policy_version=policy_version,
                 provider_host=provider_host,

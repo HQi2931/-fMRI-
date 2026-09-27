@@ -4146,10 +4146,20 @@ export interface components {
             policy_version: string;
             /** Profile Id */
             profile_id: string;
+            /**
+             * Profile Revision
+             * @default
+             */
+            profile_revision: string;
             /** Provider Host */
             provider_host: string;
             /** Revoked At */
             revoked_at?: string | null;
+            /**
+             * Valid For Current Context
+             * @default false
+             */
+            valid_for_current_context: boolean;
             /** Workspace Hash */
             workspace_hash: string;
         };

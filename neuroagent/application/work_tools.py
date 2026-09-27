@@ -1,9 +1,9 @@
 """Work-side tool catalog and loop driver.
 
 Work already receives run/QC/plan state through ``work_context``, so this catalog
-deliberately does **not** re-expose it.  What it adds is the state that context
-does not carry: statistical correction capabilities, the registered artifact
-types of a run, and the reviewed Skill list.  All of it is Tier A (read only).
+does deliberately **not** re-expose it. What it adds is the state that context
+does not carry: bounded run-log diagnoses, statistical correction capabilities,
+registered artifact types, and the reviewed Skill list. All are read-only.
 
 The loop's final text is the same JSON contract Work always used, so parsing,
 validation and the whole authorization path stay untouched.
@@ -43,6 +43,7 @@ MAX_CORRECTIONS_REPORTED = 20
 GetRunCall = Callable[[str], Mapping[str, Any]]
 ListArtifactsCall = Callable[[str], Sequence[Mapping[str, Any]]]
 ListResultsCall = Callable[[str], Sequence[Mapping[str, Any]]]
+RunDiagnosisCall = Callable[[str], Mapping[str, Any]]
 CorrectionCapabilitiesCall = Callable[[], Sequence[Mapping[str, Any]]]
 ListSkillsCall = Callable[[], Sequence[Mapping[str, Any]]]
 
@@ -88,6 +89,22 @@ LIST_RUN_ARTIFACTS_TOOL = LlmTool(
     description=(
         "List the registered artifact types and counts for a run. Use this before "
         "proposing a statistical analysis so the inputs actually exist."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"run_id": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "required": ["run_id"],
+        "additionalProperties": False,
+    },
+    tier=ToolTier.READ,
+    max_result_bytes=16_384,
+)
+
+GET_RUN_DIAGNOSIS_TOOL = LlmTool(
+    name="get_run_diagnosis",
+    description=(
+        "Read the local deterministic diagnosis for a failed run from its bounded, "
+        "sanitized MATLAB/DPABI logs. This reports causes and suggestions; it never retries or changes a plan."
     ),
     parameters={
         "type": "object",
@@ -200,6 +217,7 @@ def build_work_tool_bindings(
     *,
     get_run: GetRunCall,
     list_artifacts: ListArtifactsCall | None = None,
+    diagnose_run: RunDiagnosisCall | None = None,
     list_results: ListResultsCall | None = None,
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
@@ -268,6 +286,22 @@ def build_work_tool_bindings(
                 for name, count in sorted(counts.items())[:MAX_ARTIFACTS_REPORTED]
             ],
         }
+
+    def get_run_diagnosis(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        scoped = scoped_run(arguments)
+        if scoped is None:
+            return {"run_id": str(arguments["run_id"]), "status": "not_available_in_scope"}
+        run_id, view = scoped
+        if diagnose_run is None:
+            return {"run_id": run_id, "status": "diagnosis_unavailable"}
+        if str(view.get("state", "")) not in {
+            "failed_retryable", "failed_terminal", "timed_out"
+        }:
+            return {"run_id": run_id, "status": "run_not_failed"}
+        diagnosis = dict(diagnose_run(run_id))
+        evidence = diagnosis.pop("evidence", ())
+        diagnosis["evidence_count"] = len(evidence) if isinstance(evidence, Sequence) else 0
+        return {"run_id": run_id, **diagnosis}
 
     def get_statistical_results(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         scoped = scoped_run(arguments)
@@ -428,6 +462,8 @@ def build_work_tool_bindings(
         ToolBinding(tool=DESCRIBE_CORRECTIONS_TOOL, handler=describe_corrections),
         ToolBinding(tool=LIST_SKILLS_TOOL, handler=list_available_skills),
     ]
+    if diagnose_run is not None:
+        bindings.append(ToolBinding(tool=GET_RUN_DIAGNOSIS_TOOL, handler=get_run_diagnosis))
     if workspace_stage_check_available or workspace_stage_candidates:
         # Keep the stage check in the READ catalogue even when the workspace has
         # no verified candidates; the model then receives an explicit
@@ -450,6 +486,7 @@ def build_work_dispatcher(
     get_run: GetRunCall,
     policy: OutboundContextPolicy,
     list_artifacts: ListArtifactsCall | None = None,
+    diagnose_run: RunDiagnosisCall | None = None,
     list_results: ListResultsCall | None = None,
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
@@ -465,6 +502,7 @@ def build_work_dispatcher(
         build_work_tool_bindings(
             get_run=get_run,
             list_artifacts=list_artifacts,
+            diagnose_run=diagnose_run,
             list_results=list_results,
             correction_capabilities=correction_capabilities,
             list_skills=list_skills,

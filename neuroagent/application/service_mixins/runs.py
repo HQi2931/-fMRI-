@@ -199,6 +199,41 @@ class RunMixin(BaseServiceMixin):
         diagnosis = diagnose_dpabi_log(request.log_text)
         return RunDiagnosisView(run_id=run.run_id, diagnosis=diagnosis)
 
+    def diagnose_latest_run(self, run_id: str) -> dict[str, object]:
+        """Classify bounded local logs for a failed run without exposing paths."""
+
+        run = self.repository.get_run(run_id)
+        attempt_root = self._latest_attempt_root(run).resolve()
+        log_root = (attempt_root / "logs").resolve()
+        try:
+            log_root.relative_to(attempt_root)
+        except ValueError:
+            return diagnose_dpabi_log("").model_dump(mode="json")
+        allowed_names = {"matlab.log", "matlab.stdout.log", "matlab.stderr.log"}
+        chunks: list[str] = []
+        remaining = 64_000
+        for path in sorted(log_root.rglob("*"), key=lambda item: str(item)):
+            if not path.is_file() or path.name.lower() not in allowed_names:
+                continue
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(attempt_root)
+            except ValueError:
+                continue
+            try:
+                with resolved.open("rb") as stream:
+                    stream.seek(max(0, resolved.stat().st_size - min(remaining, 24_000)))
+                    content = stream.read(min(remaining, 24_000)).decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if content.strip():
+                chunks.append(content)
+                remaining -= len(content.encode("utf-8", errors="replace"))
+            if remaining <= 0:
+                break
+        diagnosis = diagnose_dpabi_log("\n".join(chunks) if chunks else "")
+        return diagnosis.model_dump(mode="json")
+
     def inspect_ml_table(self, request: MlTableInspectRequest) -> MlTableInspectView:
         project = self.repository.get_project(request.project_id)
         source = self.path_policy.validate_read_path(

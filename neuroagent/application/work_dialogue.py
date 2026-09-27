@@ -31,6 +31,7 @@ from neuroagent.application.work_draft import (
     draft_issues,
     draft_schema,
     merge_work_draft,
+    plan_preview,
     render_draft_review,
 )
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
@@ -452,7 +453,22 @@ class WorkDialogue:
                 payload["workspace_omitted_sensitive"] = loop_metadata.get(
                     "workspace_omitted_sensitive", 0
                 )
-            if interpreted.recommended_input_stage:
+            stage_profile = model_context["work_context"].get("workspace_data_profile")
+            selected_stage = (
+                str(stage_profile.get("selected_input_stage"))
+                if isinstance(stage_profile, dict) and stage_profile.get("selected_input_stage")
+                else None
+            )
+            stage_recommendation_needs_confirmation = bool(
+                interpreted.recommended_input_stage
+                and (
+                    bool(model_context["work_context"].get("workspace_stage_selection_required"))
+                    or selected_stage is None
+                    or selected_stage.casefold()
+                    != interpreted.recommended_input_stage.casefold()
+                )
+            )
+            if stage_recommendation_needs_confirmation:
                 candidates = list(model_context["work_context"].get("workspace_stage_candidates", []))
                 candidate_names = {
                     str(item.get("stage", "")).casefold() for item in candidates if isinstance(item, dict)
@@ -580,6 +596,7 @@ class WorkDialogue:
                     "workspace_path": workspace_path,
                     "compiled": False,
                 }
+                payload["plan_preview"] = plan_preview(draft)
                 if issues:
                     suffix = "\n\n仍需补充或修正：\n" + "\n".join(issues)
                 else:

@@ -13,6 +13,7 @@ import {
   type WorkspaceProposal,
 } from "../api/client";
 import { Feedback } from "../components/Ui";
+import { WorkspacePanel } from "../components/WorkspacePanel";
 import { updateWorkspace, useWorkspace } from "../workspace";
 
 type ToolStep = {
@@ -195,6 +196,8 @@ export function AgentPage() {
   const [workspaceEntries, setWorkspaceEntries] = useState<Array<{ path: string; kind: string; readable?: boolean }>>([]);
   const [selectedScope, setSelectedScope] = useState<string[]>([]);
   const [workspaceCheck, setWorkspaceCheck] = useState<WorkspaceCheck | null>(null);
+  const [workspaceChecking, setWorkspaceChecking] = useState(false);
+  const [workspaceCheckError, setWorkspaceCheckError] = useState("");
   const [selectedInputStage, setSelectedInputStage] = useState<string>("");
 
   const modeConversations = useMemo(() => conversations.filter((item) => item.mode === mode), [conversations, mode]);
@@ -203,6 +206,10 @@ export function AgentPage() {
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
   const visibleMessages = messagesFrom(activeConversation);
   const selectedModel = choices.find((item) => item.key === selectedModelKey);
+  const canAuthorizeWorkspaceFiles = Boolean(selectedModel?.capabilities.includes("tool_use"));
+  const authorizationUnavailableReason = !selectedModel
+    ? "先选择一个具体模型，自动选择不能授予文件授权"
+    : "模型配置未声明工具调用；请在设置中确认并启用 tool_use";
   const canSearch = selectedModel?.capabilities.includes("web_search") ?? choices.some((item) => item.capabilities.includes("web_search"));
 
   useEffect(() => {
@@ -260,28 +267,35 @@ export function AgentPage() {
       .then((listing) => setWorkspaceEntries(listing.entries.filter((item) => item.kind === "file" && item.readable !== false)))
       .catch(() => setWorkspaceEntries([]));
     return () => controller.abort();
-  }, [activeConversation?.conversation_id, mode, workspacePath]);
+  }, [activeConversation, mode, workspacePath]);
 
   useEffect(() => {
-    if (mode !== "work" || !workspacePath) { setWorkspaceCheck(null); setSelectedInputStage(""); return; }
+    setWorkspaceCheck(null);
+    setSelectedInputStage("");
+    setWorkspaceCheckError("");
+    if (mode !== "work" || !workspacePath) { setWorkspaceChecking(false); return; }
     const controller = new AbortController();
-    api.checkWorkspace({ path: workspacePath })
+    setWorkspaceChecking(true);
+    api.checkWorkspace({ path: workspacePath }, controller.signal)
       .then((result) => {
+        if (controller.signal.aborted) return;
         setWorkspaceCheck(result);
         setSelectedInputStage(result.selected_input_stage ?? "");
       })
-      .catch(() => setWorkspaceCheck(null));
+      .catch((caught) => { if (!controller.signal.aborted) setWorkspaceCheckError(describeError(caught)); })
+      .finally(() => { if (!controller.signal.aborted) setWorkspaceChecking(false); });
     return () => controller.abort();
   }, [mode, workspacePath]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || activeConversation.workspace_path !== workspacePath || !selectedModel) { setWorkspaceConsent(null); return; }
+    setWorkspaceConsent(null);
     const controller = new AbortController();
     api.workspaceConsents(activeConversation.conversation_id, controller.signal)
-      .then((items) => setWorkspaceConsent(items.find((item) => item.profile_id === selectedModel.profileId && item.model === selectedModel.model && !item.revoked_at) ?? null))
+      .then((items) => setWorkspaceConsent(items.find((item) => item.profile_id === selectedModel.profileId && item.model === selectedModel.model && item.valid_for_current_context && !item.revoked_at) ?? null))
       .catch(() => setWorkspaceConsent(null));
     return () => controller.abort();
-  }, [activeConversation?.conversation_id, mode, selectedModel?.key, workspacePath]);
+  }, [activeConversation, mode, selectedModel, workspacePath]);
 
   function cache(conversation: Conversation): void {
     setConversations((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
@@ -333,8 +347,12 @@ export function AgentPage() {
 
   async function grantWorkspaceConsent(): Promise<void> {
     if (!selectedModel) { setError("请先选择一个具体模型，再授权文件内容读取。"); return; }
+    if (!selectedModel.capabilities.includes("tool_use")) {
+      setError("该模型配置未声明工具调用能力。请在设置中确认并启用 tool_use，再授权文件分析。");
+      return;
+    }
     const provider = selectedModel.label.split(" · ")[0];
-    if (!window.confirm(`授权工作区文件分析？\n\n模型服务：${provider}\n发送范围：当前工作区内、用户选定的文件\n默认排除：.git、node_modules、虚拟环境、缓存和构建产物\n规则：凭据、邮箱、电话和绝对路径会脱敏；无法可靠脱敏的临床身份整段省略。`)) return;
+    if (!window.confirm(`授权工作区文件分析？\n\n模型服务：${provider}\n发送范围：当前工作区内、用户选定的文件\n默认排除：.git、node_modules、虚拟环境、缓存和构建产物\n规则：凭据、邮箱、电话和绝对路径会脱敏；无法可靠脱敏的临床身份整段省略。\n\n现在会先向所选模型发送一次不含工作区内容的工具调用测试；测试通过后才创建授权。`)) return;
     setConsentBusy(true); setError("");
     try {
       const conversationId = await ensureConversation("work");
@@ -432,17 +450,31 @@ export function AgentPage() {
           if (selected) cache(selected);
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
         <button className="button button-secondary" type="button" disabled={busy} onClick={() => void newConversation()}>新会话</button>
-        {mode === "work" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void chooseWorkspace()}>{workspacePath ? "更换工作区" : "选择工作区"}</button>}
-        {mode === "work" && workspacePath && (workspaceConsent ? <button className="button button-secondary" type="button" disabled={busy || consentBusy} onClick={() => void revokeWorkspaceConsent()}>撤销文件授权</button> : <button className="button button-secondary" type="button" disabled={busy || consentBusy} onClick={() => void grantWorkspaceConsent()}>授权文件分析</button>)}
       </div>
+      {mode === "work" && <WorkspacePanel
+        key={workspacePath}
+        path={workspacePath}
+        check={workspaceCheck}
+        checking={workspaceChecking}
+        checkError={workspaceCheckError}
+        selectedStage={selectedInputStage}
+        busy={busy}
+        consentBusy={consentBusy}
+        consentGranted={Boolean(workspaceConsent)}
+        canAuthorize={canAuthorizeWorkspaceFiles}
+        authorizationUnavailableReason={authorizationUnavailableReason}
+        onChoose={() => void chooseWorkspace()}
+        onStageChange={setSelectedInputStage}
+        onConsent={() => void (workspaceConsent ? revokeWorkspaceConsent() : grantWorkspaceConsent())}
+      >
+        {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
+      </WorkspacePanel>}
       <ConversationHistory messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} />
       {mode === "work" && activeRun && <div className="run-inline" role="status">
         <strong>任务状态：{runStageLabel(activeRun)}</strong>
         {typeof activeRun.stage_progress === "number" && activeRun.state === "running" && <span>当前进度：{Math.round(activeRun.stage_progress * 100)}%</span>}
         {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
       </div>}
-      {mode === "work" && workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
-      {mode === "work" && workspaceCheck?.stage_candidates?.length ? <div className="workspace-stage-panel"><label>DPABI 预处理起始阶段<select value={selectedInputStage} onChange={(event) => setSelectedInputStage(event.target.value)}><option value="">请先由模型建议并确认</option>{workspaceCheck.stage_candidates.map((item) => <option key={item.stage} value={item.stage} disabled={!item.selectable}>{item.stage} · {item.label}（{item.subject_count} 个受试者）</option>)}</select></label><p>{workspaceCheck.stage_selection_required ? "当前阶段不会自动选取；选择后请在对话中确认服务器签发的阶段命令。" : "阶段选择仅作为用户确认候选，仍需重新扫描并冻结 manifest。"}</p></div> : null}
       <div className="chat-composer">
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }
@@ -453,7 +485,6 @@ export function AgentPage() {
           <button className="button button-primary" type="button" disabled={busy || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
         </div>
       </div>
-      {mode === "work" && <p className="work-context-line">工作区：{workspacePath || "尚未选择"}</p>}
     </section>
   </main>;
 }

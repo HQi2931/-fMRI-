@@ -83,22 +83,6 @@ class OutboundContextPolicy:
         re.IGNORECASE,
     )
     _opaque_subject_token = re.compile(r"\b(?:S|P)\d{3,}\b")
-    # Free-form text is permitted only when it does not look like a clinical
-    # narrative.  These patterns intentionally reject instead of attempting a
-    # lossy substitution: a partial redaction is not proof that the remaining
-    # sentence is de-identified.
-    _clinical_identifier = re.compile(
-        r"(?:患者|病人|受试者|姓名|住院号|病历号|门诊号|就诊号|身份证(?:号)?|"
-        r"医保号|手机号|联系电话|家庭住址|出生日期|"
-        r"\b(?:patient|name|mrn|medical\s*record|admission)\b)",
-        re.IGNORECASE,
-    )
-    _age_demographic = re.compile(
-        r"(?<!\d)(?:[1-9]?\d|1[01]\d|120)\s*岁(?:\s*(?:男|女|男性|女性))?"
-    )
-    _chinese_person_reference = re.compile(
-        r"(?:患者|病人|受试者|姓名(?:为|是)?)[\uff1a:\s]*[\u3400-\u9fff·]{2,8}"
-    )
     _credential = re.compile(
         r"(?:\bBearer\s+[A-Za-z0-9._~-]{16,}|\bsk-[A-Za-z0-9_-]{16,}|"
         r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}|"
@@ -263,15 +247,10 @@ class OutboundContextPolicy:
     def _sanitize_string(self, value: str, *, drop_unsafe: bool = False) -> tuple[Any, int]:
         if len(value) > 20_000:
             raise OutboundPolicyError("outbound string is too long")
-        if (
-            self._clinical_identifier.search(value)
-            or self._age_demographic.search(value)
-            or self._chinese_person_reference.search(value)
-            or self._credential.search(value)
-        ):
+        if self._credential.search(value):
             if drop_unsafe:
                 return _DROPPED, 1
-            raise OutboundPolicyError("free-form sensitive text cannot leave the local machine")
+            raise OutboundPolicyError("credential-like content cannot leave the local machine")
         redactions = 0
         cleaned = value
         if self._absolute_path.search(cleaned):

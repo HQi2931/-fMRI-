@@ -102,6 +102,8 @@ type Options = {
   run?: () => Promise<Response>;
   picked?: () => Promise<Response>;
   profiles?: () => Promise<Response>;
+  workspaceConsents?: () => Promise<Response>;
+  grantWorkspaceConsent?: () => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -110,6 +112,10 @@ function installFetch(options: Options = {}) {
     const method = init?.method ?? "GET";
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
     if (path.endsWith("/providers/models")) return json({ models: ["deepseek-chat", "deepseek-reasoner"] });
+    if (path.endsWith("/workspace/consents")) {
+      if (method === "POST") return (options.grantWorkspaceConsent ?? (() => json({ error: { code: "workspace_tool_probe_failed", message: "所选模型未能通过工具调用测试。", details: {}, trace_id: "probe-trace" } }, 422)))();
+      return (options.workspaceConsents ?? (() => json([])))();
+    }
     if (path.endsWith("/workspaces/pick")) {
       return (options.picked ?? (() => json({ path: "D:/picked-work" })))();
     }
@@ -193,6 +199,76 @@ describe("agent workbench page", () => {
     render(<AgentPage />);
 
     expect(await screen.findByRole("option", { name: "api.deepseek.com · deepseek-chat" })).toBeInTheDocument();
+  });
+
+  it("explains that automatic or non-tool profiles cannot authorize workspace files", async () => {
+    const user = userEvent.setup();
+    installFetch({ profiles: () => json([profile("deepseek", ["json_object"])]) });
+
+    render(<AgentPage />);
+
+    await screen.findByRole("option", { name: "api.deepseek.com · deepseek-chat" });
+    await user.selectOptions(screen.getByLabelText("模型"), "deepseek:deepseek-chat");
+    const authorize = await screen.findByRole("button", { name: "授权文件分析" });
+    expect(authorize).toBeDisabled();
+    expect(screen.getByText(/模型配置未声明工具调用/)).toBeInTheDocument();
+  });
+
+  it("shows the server probe failure when workspace authorization is rejected", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    installFetch({
+      profiles: () => json([profile("deepseek", ["json_object", "tool_use"])]),
+      grantWorkspaceConsent: () => json({
+        error: {
+          code: "workspace_tool_probe_failed",
+          message: "所选模型未能按要求调用测试工具。",
+          details: {},
+          trace_id: "probe-trace",
+        },
+      }, 422),
+    });
+
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "api.deepseek.com · deepseek-chat" });
+    await user.selectOptions(await screen.findByLabelText("模型"), "deepseek:deepseek-chat");
+    await user.click(await screen.findByRole("button", { name: "授权文件分析" }));
+
+    expect(await screen.findByText(/未能按要求调用测试工具/)).toBeInTheDocument();
+  });
+
+  it("refreshes valid workspace consent when the model or workspace changes", async () => {
+    const user = userEvent.setup();
+    installFetch({
+      profiles: () => json([profile("deepseek", ["json_object", "tool_use"])]),
+      workspaceConsents: () => json([{
+        consent_id: "consent-1",
+        conversation_id: "work-1",
+        workspace_hash: "a".repeat(64),
+        profile_id: "deepseek",
+        profile_revision: "b".repeat(64),
+        model: "deepseek-chat",
+        policy_version: "workspace-files-v1",
+        provider_host: "api.deepseek.com",
+        granted_at: now,
+        revoked_at: null,
+        valid_for_current_context: true,
+      }]),
+    });
+
+    render(<AgentPage />);
+    const modelPicker = await screen.findByLabelText("模型");
+    await screen.findByRole("option", { name: "api.deepseek.com · deepseek-chat" });
+    await user.selectOptions(modelPicker, "deepseek:deepseek-chat");
+    expect(await screen.findByText("文件分析已授权")).toBeInTheDocument();
+
+    await user.selectOptions(modelPicker, "deepseek:deepseek-reasoner");
+    expect(await screen.findByText("文件分析未授权")).toBeInTheDocument();
+
+    await user.selectOptions(modelPicker, "deepseek:deepseek-chat");
+    expect(await screen.findByText("文件分析已授权")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "更换工作区" }));
+    expect(await screen.findByText("文件分析未授权")).toBeInTheDocument();
   });
 
   it("starts a new conversation and switches between existing ones", async () => {

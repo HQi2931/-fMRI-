@@ -194,6 +194,9 @@ class ConversationContextCoordinator:
             context["workspace_stage_rule_version"] = workspace_stage_candidates.get(
                 "rule_version"
             )
+            data_profile = workspace_stage_candidates.get("data_profile")
+            if isinstance(data_profile, dict):
+                context["workspace_data_profile"] = data_profile
         selected_plan_id = plan_revision_id
         if active_run_id is not None:
             run = self._repository.get_run(active_run_id)

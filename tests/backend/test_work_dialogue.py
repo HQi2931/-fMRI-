@@ -98,6 +98,29 @@ def test_work_uses_model_and_history_for_questions_without_actions(service, monk
     execute.assert_not_called()
 
 
+def test_work_context_exposes_only_anonymized_workspace_profile(service) -> None:
+    context = service.conversation_context.work_context(
+        project_id=None,
+        active_run_id=None,
+        plan_revision_id=None,
+        workspace_stage_candidates={
+            "candidates": [],
+            "selection_required": False,
+            "data_profile": {
+                "kind": "dpabi_ready",
+                "subject_count": 2,
+                "functional_subject_count": 2,
+                "anatomical_subject_count": 1,
+                "issues": [],
+                "warnings": ["部分受试者未识别到 T1 结构像。"],
+            },
+        },
+    )
+
+    assert context["workspace_data_profile"]["subject_count"] == 2
+    assert "subject_id" not in json.dumps(context["workspace_data_profile"])
+
+
 def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(service, monkeypatch):
     model = configure(
         service,
@@ -112,6 +135,7 @@ def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(servi
         session = create(client)
         first = turn(client, session, "生成方案，TR是2秒", "draft-1")
         old_hash = first["assistant_message"]["payload"]["work_draft"]["hash"]
+        assert first["assistant_message"]["payload"]["plan_preview"]["kind"] == "dpabi_plan_preview"
         turn(client, session, "去掉10个时间点", "draft-2")
         third = turn(client, session, "更正，TR是3秒", "draft-3")
         stale = turn(client, session, f"确认方案参数 {old_hash[:12]}", "stale")

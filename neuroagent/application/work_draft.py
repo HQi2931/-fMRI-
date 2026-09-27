@@ -148,6 +148,124 @@ def draft_issues(draft: WorkDraft) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def plan_preview(draft: WorkDraft) -> dict[str, Any]:
+    """Build a deterministic, non-executable outline for Plan-and-Execute review.
+
+    The model may suggest parameter values, but it must not be the authority for
+    the workflow topology.  This preview therefore derives only from the typed
+    draft and deliberately marks itself as provisional until the normal Skill
+    compiler validates the complete, user-confirmed draft.
+    """
+
+    selected = {
+        item.value if isinstance(item, MetricKind) else str(item)
+        for item in draft.requested_metrics
+    }
+    preprocessing = draft.preprocessing
+    smoothing = preprocessing.get("smoothing")
+    smoothing_timing = smoothing.get("timing") if isinstance(smoothing, dict) else None
+    common_steps: list[dict[str, Any]] = [
+        {
+            "step_id": "freeze_manifest",
+            "label": "冻结工作区输入清单",
+            "status": "planned",
+            "evidence": "server_manifest_after_user_confirmation",
+        },
+        {
+            "step_id": "common_preprocessing",
+            "label": "公共 DPABI 预处理",
+            "status": "planned" if preprocessing else "needs_parameters",
+            "evidence": "typed_preprocessing_parameters",
+        },
+    ]
+    if preprocessing:
+        if smoothing_timing not in {None, "disabled"}:
+            common_steps.append(
+                {
+                    "step_id": "common_smoothing",
+                    "label": "公共功能像平滑",
+                    "status": "review_required",
+                    "evidence": "draft.preprocessing.smoothing",
+                    "warning": (
+                        "指标运行通常要求公共预处理保持未平滑；请改为指标结果平滑或确认适用性。"
+                    ),
+                }
+            )
+        else:
+            common_steps.append(
+                {
+                    "step_id": "common_smoothing",
+                    "label": "公共功能像平滑",
+                    "status": "disabled_or_pending",
+                    "evidence": "draft.preprocessing.smoothing",
+                }
+            )
+
+    branches: list[dict[str, Any]] = []
+    if selected & {MetricKind.ALFF.value, MetricKind.FALFF.value}:
+        alff = draft.alff_falff or {}
+        branches.append(
+            {
+                "branch_id": "alff_falff",
+                "label": "ALFF/fALFF 分支",
+                "consumes": "未带通滤波、未空间平滑的 verified 时序检查点",
+                "steps": [
+                    "calculate_alff_falff",
+                    (
+                        "smooth_alff_falff_result"
+                        if alff.get("result_smoothing")
+                        else "register_alff_falff"
+                    ),
+                ],
+                "filter_timing": alff.get("filter_timing"),
+                "status": "planned" if alff else "needs_parameters",
+            }
+        )
+    if MetricKind.REHO.value in selected:
+        reho = draft.reho or {}
+        reho_steps = []
+        if reho.get("temporal_filter_band") is not None:
+            reho_steps.append("prepare_reho_temporal_filter_checkpoint")
+        reho_steps.append("calculate_reho")
+        if reho.get("smooth_reho") or reho.get("global_result_smoothing"):
+            reho_steps.append("smooth_reho_result")
+        else:
+            reho_steps.append("register_reho")
+        branches.append(
+            {
+                "branch_id": "reho",
+                "label": "ReHo 分支",
+                "consumes": "未空间平滑的 verified 时序检查点",
+                "steps": reho_steps,
+                "filter_timing": (
+                    "metric_branch"
+                    if reho.get("temporal_filter_band") is not None
+                    else "disabled_or_pending"
+                ),
+                "status": "planned" if reho else "needs_parameters",
+                "warning": (
+                    "ReHo 专用平滑与全局结果平滑不能同时启用。"
+                    if reho.get("smooth_reho") and reho.get("global_result_smoothing")
+                    else None
+                ),
+            }
+        )
+
+    return {
+        "kind": "dpabi_plan_preview",
+        "version": "1",
+        "provisional": True,
+        "status": "ready_for_review" if not draft_issues(draft) else "incomplete",
+        "common_steps": common_steps,
+        "branches": branches,
+        "shared_constraints": [
+            "所有输入、参数和处理阶段必须在用户确认后由服务端重新校验。",
+            "ALFF/fALFF 保留滤波前、未平滑检查点；ReHo 使用未平滑时序及其确认的分支检查点。",
+            "计划预览不会生成 MATLAB 文本，也不会启动执行。",
+        ],
+    }
+
+
 def confirmed_skill_intent(
     draft: WorkDraft,
     *,
@@ -269,7 +387,32 @@ _LABELS = {
 
 def render_draft_review(draft: WorkDraft) -> str:
     """Render every value, including nested disabled choices, for user review."""
-    lines = ["方案草稿（尚未批准执行）", f"草稿校验码：{draft_hash(draft)}"]
+    preview = plan_preview(draft)
+    lines = [
+        "方案草稿（尚未批准执行）",
+        f"草稿校验码：{draft_hash(draft)}",
+        "",
+        "执行方案预览（服务端确定性生成）",
+    ]
+    lines.append(f"- 状态：{preview['status']}；当前仅供审查，不会启动计算")
+    lines.append(
+        "- 公共步骤：" + " → ".join(str(item["label"]) for item in preview["common_steps"])
+    )
+    if preview["branches"]:
+        lines.append("- 指标分支：")
+        for branch in preview["branches"]:
+            lines.append(
+                "  - "
+                + str(branch["label"])
+                + "：消费"
+                + str(branch["consumes"])
+                + "；步骤 "
+                + " → ".join(str(step) for step in branch["steps"])
+            )
+            if branch.get("warning"):
+                lines.append("    - 约束：" + str(branch["warning"]))
+    else:
+        lines.append("- 指标分支：尚未选择")
 
     def render(values: dict[str, Any], depth: int = 0) -> None:
         for key, value in values.items():

@@ -10,6 +10,7 @@ from neuroagent.application.work_draft import (
     draft_issues,
     draft_schema,
     merge_work_draft,
+    plan_preview,
     render_draft_review,
 )
 from tests.science.conftest import preprocessing_parameters
@@ -85,10 +86,46 @@ def test_review_contains_every_nested_choice_and_hash_is_order_independent() -> 
         assert key in review
     assert "enabled" in review
     assert "tr_seconds" in review
+    preview = plan_preview(draft)
+    assert preview["kind"] == "dpabi_plan_preview"
+    assert preview["provisional"] is True
+    assert preview["status"] == "ready_for_review"
+    assert preview["common_steps"]
     reordered = draft.model_copy(
         update={"preprocessing": dict(reversed(list(draft.preprocessing.items())))}
     )
     assert draft_hash(reordered) == draft_hash(draft)
+
+
+def test_plan_preview_keeps_alff_and_reho_checkpoints_separate() -> None:
+    draft = WorkDraft(
+        preprocessing={"smoothing": {"timing": "disabled"}},
+        requested_metrics=["alff", "reho"],
+        alff_falff={
+            "filter_timing": "disabled",
+            "result_smoothing": False,
+        },
+        reho={
+            "temporal_filter_band": {"low_hz": 0.01, "high_hz": 0.08},
+            "smooth_reho": False,
+            "global_result_smoothing": False,
+        },
+    )
+
+    branches = {item["branch_id"]: item for item in plan_preview(draft)["branches"]}
+    assert branches["alff_falff"]["consumes"].startswith("未带通滤波")
+    assert branches["reho"]["consumes"].startswith("未空间平滑")
+    assert branches["reho"]["steps"] == [
+        "prepare_reho_temporal_filter_checkpoint",
+        "calculate_reho",
+        "register_reho",
+    ]
+
+
+def test_plan_preview_survives_partial_or_malformed_nested_draft() -> None:
+    preview = plan_preview(WorkDraft(preprocessing={"smoothing": None}))
+    assert preview["status"] == "incomplete"
+    assert preview["common_steps"][-1]["status"] == "disabled_or_pending"
 
 
 def test_schema_does_not_expose_provenance_or_confirmation() -> None:

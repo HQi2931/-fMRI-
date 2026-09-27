@@ -153,10 +153,10 @@ def list_workspace_consents(
     status_code=status.HTTP_201_CREATED,
     tags=["workspaces"],
 )
-def create_workspace_consent(
+async def create_workspace_consent(
     conversation_id: str, body: WorkspaceContentConsentCreate, request: Request
 ) -> WorkspaceContentConsent:
-    return service_from(request).create_workspace_content_consent(conversation_id, body)
+    return await service_from(request).create_workspace_content_consent(conversation_id, body)
 
 
 @router.delete(

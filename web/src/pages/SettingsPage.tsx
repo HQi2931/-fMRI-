@@ -5,13 +5,15 @@ import { EmptyState, Feedback, PageHeader } from "../components/Ui";
 import { StatusPill } from "../components/StatusPill";
 
 const CAPABILITIES = ["json_object", "streaming", "reasoning", "web_search"] as const;
-type Capability = (typeof CAPABILITIES)[number];
+type Capability = ModelProfile["profile"]["capabilities"][number];
+const ALL_CAPABILITIES = [...CAPABILITIES, "tool_use"] as const satisfies readonly Capability[];
 
 const CAPABILITY_LABELS: Record<Capability, string> = {
   json_object: "JSON 结构化输出",
   streaming: "流式输出",
   reasoning: "推理",
   web_search: "联网搜索（OpenAI-compatible）",
+  tool_use: "工具调用（Work 工作区文件工具）",
 };
 
 const PROVIDER_PRESETS = [
@@ -47,6 +49,7 @@ export function SettingsPage() {
   const [spmVersion, setSpmVersion] = useState("unspecified");
   const [dpabiVersion, setDpabiVersion] = useState("unspecified");
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
+  const [profileCapabilities, setProfileCapabilities] = useState<Record<string, Capability[]>>({});
   const [presetLabel, setPresetLabel] = useState("");
   const [provider, setProvider] = useState("openai-compatible");
   const [baseUrl, setBaseUrl] = useState("");
@@ -76,6 +79,10 @@ export function SettingsPage() {
     setSpmVersion(localConfig.spm_version);
     setDpabiVersion(localConfig.dpabi_version);
     setProfiles(configured);
+    setProfileCapabilities(Object.fromEntries(configured.map((item) => [
+      item.profile.id,
+      [...item.profile.capabilities],
+    ])));
   }, []);
 
   useEffect(() => {
@@ -125,6 +132,37 @@ export function SettingsPage() {
         ? previous.filter((item) => item !== capability)
         : [...previous, capability],
     );
+  }
+
+  function toggleProfileCapability(profileId: string, capability: Capability): void {
+    setProfileCapabilities((previous) => {
+      const current = previous[profileId] ?? [];
+      return {
+        ...previous,
+        [profileId]: current.includes(capability)
+          ? current.filter((item) => item !== capability)
+          : [...current, capability],
+      };
+    });
+  }
+
+  async function saveProfileCapabilities(item: ModelProfile): Promise<void> {
+    const nextCapabilities = profileCapabilities[item.profile.id] ?? [...item.profile.capabilities];
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await api.createProfile({
+        profile: { ...item.profile, capabilities: nextCapabilities },
+        api_key: null,
+      });
+      await refresh();
+      setMessage(`已保存 ${item.profile.id} 的模型能力。Work 文件授权时仍会验证具体模型的工具调用。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function resetForm(): void {
@@ -279,7 +317,7 @@ export function SettingsPage() {
             </div>
             <fieldset className="capability-field">
               <legend>能力</legend>
-              {CAPABILITIES.map((capability) => (
+              {ALL_CAPABILITIES.map((capability) => (
                 <label key={capability} className="check-field">
                   <input type="checkbox" checked={capabilities.includes(capability)} onChange={() => toggleCapability(capability)} />
                   {CAPABILITY_LABELS[capability]}
@@ -288,6 +326,7 @@ export function SettingsPage() {
             </fieldset>
           </div>
           <p className="muted">绑定时会立即验证 API 并读取模型列表。API Key 只写入未跟踪的本地 <code>.env</code>，不进入数据库、日志或浏览器状态；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
+          <p className="muted">“工具调用”是服务商配置声明。只有确认该服务商支持 OpenAI 兼容的 <code>tools/tool_calls</code> 才应开启；Work 还会在文件授权前验证所选具体模型。</p>
           <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : "绑定 API 并读取模型"}</button></div>
         </section>
         <section className="panel">
@@ -303,7 +342,22 @@ export function SettingsPage() {
                   <p className="muted">{item.profile.provider} · {item.profile.base_url}</p>
                   <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 上下文 {item.profile.context_window_tokens} · 回答 {item.profile.max_output_tokens} token</p>
                   <p className="muted">能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
+                  <fieldset className="capability-field profile-capability-field">
+                    <legend>编辑能力</legend>
+                    {ALL_CAPABILITIES.map((capability) => (
+                      <label key={capability} className="check-field">
+                        <input
+                          type="checkbox"
+                          checked={(profileCapabilities[item.profile.id] ?? item.profile.capabilities).includes(capability)}
+                          onChange={() => toggleProfileCapability(item.profile.id, capability)}
+                        />
+                        {CAPABILITY_LABELS[capability]}
+                      </label>
+                    ))}
+                  </fieldset>
+                  {(profileCapabilities[item.profile.id] ?? item.profile.capabilities).includes("tool_use") && <p className="muted">开启后，该 Profile 的模型都会进入工具调用候选；Work 文件授权仍会单独测试你选择的模型。</p>}
                   <div className="button-row">
+                    <button className="button button-secondary" type="button" disabled={busy || JSON.stringify([...(profileCapabilities[item.profile.id] ?? item.profile.capabilities)].sort()) === JSON.stringify([...item.profile.capabilities].sort())} onClick={() => void saveProfileCapabilities(item)}>保存能力</button>
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>刷新模型列表</button>
                     <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>
                   </div>

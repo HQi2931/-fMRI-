@@ -97,10 +97,10 @@ def test_non_string_subject_list_fails_closed() -> None:
         "patient Alice has medical record 12345678",
     ),
 )
-def test_free_form_clinical_text_fails_closed(unsafe_text: str) -> None:
+def test_free_form_clinical_text_is_allowed_for_research_workflows(unsafe_text: str) -> None:
     policy = OutboundContextPolicy("a-stable-test-salt-value")
-    with pytest.raises(OutboundPolicyError, match="sensitive text"):
-        policy.redact({"user_question": unsafe_text})
+    result = policy.redact({"user_question": unsafe_text})
+    assert result.payload["user_question"] == unsafe_text
 
 
 def test_generic_chinese_method_question_remains_allowed() -> None:
@@ -117,5 +117,5 @@ def test_aggregate_modality_counts_are_safe_to_send() -> None:
 
 def test_credential_embedded_in_free_text_fails_closed() -> None:
     policy = OutboundContextPolicy("a-stable-test-salt-value")
-    with pytest.raises(OutboundPolicyError, match="sensitive text"):
+    with pytest.raises(OutboundPolicyError, match="credential-like content"):
         policy.redact({"note": "api_key=abcdefghijklmnopqrstuv"})

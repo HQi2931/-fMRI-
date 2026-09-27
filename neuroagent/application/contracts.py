@@ -994,11 +994,13 @@ class WorkspaceContentConsent(StrictModel):
     conversation_id: str
     workspace_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     profile_id: str = Field(min_length=1, max_length=63)
+    profile_revision: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     model: str = Field(min_length=1, max_length=200)
     policy_version: str
     provider_host: str
     granted_at: datetime
     revoked_at: datetime | None = None
+    valid_for_current_context: bool = False
 
 
 class WorkspaceContentConsentCreate(StrictModel):

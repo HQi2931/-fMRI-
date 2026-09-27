@@ -166,11 +166,41 @@ class ConversationWorkCoordinator:
             selected_input_stage=confirmed_stage,
         )
         candidates = list(content.get("stage_candidates", []))
+        profile = content.get("profile")
+        subjects = content.get("subjects")
+        subject_items = subjects if isinstance(subjects, list) else []
+        workspace_profile = {
+            "kind": profile.get("kind") if isinstance(profile, dict) else None,
+            "file_count": profile.get("file_count") if isinstance(profile, dict) else None,
+            "nifti_count": profile.get("nifti_count") if isinstance(profile, dict) else None,
+            "dicom_count": profile.get("dicom_count") if isinstance(profile, dict) else None,
+            "subject_count": profile.get("subject_count") if isinstance(profile, dict) else None,
+            "functional_subject_count": sum(
+                bool(item.get("functional_files"))
+                for item in subject_items
+                if isinstance(item, dict)
+            ),
+            "anatomical_subject_count": sum(
+                bool(item.get("anatomical_files"))
+                for item in subject_items
+                if isinstance(item, dict)
+            ),
+            "issues": list(profile.get("issues", []))[:20]
+            if isinstance(profile, dict)
+            else [],
+            "warnings": list(profile.get("warnings", []))[:20]
+            if isinstance(profile, dict)
+            else [],
+            "input_stage": content.get("input_stage"),
+            "selected_input_stage": content.get("selected_input_stage"),
+            "output_directories": list(content.get("output_directories", []))[:20],
+        }
         return {
             "candidates": candidates,
             "token": self.stage_confirmation_token(str(source), candidates),
             "selection_required": bool(content.get("stage_selection_required", False)),
             "rule_version": content.get("stage_rule_version"),
+            "data_profile": workspace_profile,
         }
 
     def confirm_workspace_stage(
