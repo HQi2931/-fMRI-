@@ -79,8 +79,14 @@ from neuroagent.application.contracts import (
     StatisticalResultView,
     StatisticsRunCreate,
     WorkflowState,
+    WorkspaceChangeProposal,
     WorkspaceCheckRequest,
     WorkspaceCheckView,
+    WorkspaceContentConsent,
+    WorkspaceContentConsentCreate,
+    WorkspacePatchApplyRequest,
+    WorkspacePatchApplyView,
+    WorkspacePatchUndoView,
     WorkspacePickView,
 )
 from neuroagent.application.services import NeuroAgentService
@@ -128,6 +134,80 @@ def check_workspace(body: WorkspaceCheckRequest, request: Request) -> WorkspaceC
 @router.post("/workspaces/pick", response_model=WorkspacePickView, tags=["workspaces"])
 def pick_workspace(request: Request) -> WorkspacePickView:
     return service_from(request).pick_workspace()
+
+
+@router.get(
+    "/conversations/{conversation_id}/workspace/consents",
+    response_model=list[WorkspaceContentConsent],
+    tags=["workspaces"],
+)
+def list_workspace_consents(
+    conversation_id: str, request: Request
+) -> list[WorkspaceContentConsent]:
+    return service_from(request).list_workspace_content_consents(conversation_id)
+
+
+@router.post(
+    "/conversations/{conversation_id}/workspace/consents",
+    response_model=WorkspaceContentConsent,
+    status_code=status.HTTP_201_CREATED,
+    tags=["workspaces"],
+)
+def create_workspace_consent(
+    conversation_id: str, body: WorkspaceContentConsentCreate, request: Request
+) -> WorkspaceContentConsent:
+    return service_from(request).create_workspace_content_consent(conversation_id, body)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/workspace/consents/{consent_id}",
+    response_model=WorkspaceContentConsent,
+    tags=["workspaces"],
+)
+def revoke_workspace_consent(
+    conversation_id: str, consent_id: str, request: Request
+) -> WorkspaceContentConsent:
+    return service_from(request).revoke_workspace_content_consent(conversation_id, consent_id)
+
+
+@router.get("/conversations/{conversation_id}/workspace/files", tags=["workspaces"])
+def list_workspace_files(
+    conversation_id: str, request: Request, directory: str = ""
+) -> dict[str, object]:
+    return service_from(request).list_workspace_files(conversation_id, directory)
+
+
+@router.get(
+    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}",
+    response_model=WorkspaceChangeProposal,
+    tags=["workspaces"],
+)
+def get_workspace_proposal(
+    conversation_id: str, proposal_id: str, request: Request
+) -> WorkspaceChangeProposal:
+    return service_from(request).get_workspace_proposal(conversation_id, proposal_id)
+
+
+@router.post(
+    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}/apply",
+    response_model=WorkspacePatchApplyView,
+    tags=["workspaces"],
+)
+def apply_workspace_proposal(
+    conversation_id: str, proposal_id: str, body: WorkspacePatchApplyRequest, request: Request
+) -> WorkspacePatchApplyView:
+    return service_from(request).apply_workspace_proposal(conversation_id, proposal_id, body)
+
+
+@router.post(
+    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}/undo",
+    response_model=WorkspacePatchUndoView,
+    tags=["workspaces"],
+)
+def undo_workspace_proposal(
+    conversation_id: str, proposal_id: str, request: Request
+) -> WorkspacePatchUndoView:
+    return service_from(request).undo_workspace_proposal(conversation_id, proposal_id)
 
 
 @router.post(

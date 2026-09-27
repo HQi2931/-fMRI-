@@ -478,8 +478,26 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
     try:
         with TestClient(create_app(service=service)) as client:
             session = create(client, source)
-            turn(client, session, "这是我明确选择的全部ALFF参数", "full-review")
-            result = turn(client, session, f"确认方案参数 {draft_hash(draft)[:12]}", "compile-alff")
+            setup = turn(
+                client,
+                session,
+                "登记并确认工作区",
+                "setup-alff",
+                action="setup_workspace",
+                workspace_setup={
+                    "project_name": "ALFF dialogue project",
+                    "dataset_name": "ALFF input",
+                    "work_root": str(work / "project"),
+                    "selected_input_stage": "FunRaw",
+                },
+            )
+            assert setup["tool_call"]["status"] == "succeeded"
+            review = turn(client, session, "这是我明确选择的全部ALFF参数", "full-review")
+            assert (
+                "work_draft" in review["assistant_message"]["payload"]
+            ), review["assistant_message"]["content"]
+            current_hash = review["assistant_message"]["payload"]["work_draft"]["hash"]
+            result = turn(client, session, f"确认方案参数 {current_hash[:12]}", "compile-alff")
             payload = result["assistant_message"]["payload"]
             assert "plan_revision" in payload, result["assistant_message"]["content"]
             assert payload["plan_revision"]["state"] == "awaiting_approval"

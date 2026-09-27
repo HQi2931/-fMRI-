@@ -826,7 +826,8 @@
           "get_qc_status",
           "approve_qc_review",
           "skip_qc",
-          "get_statistical_results"
+          "get_statistical_results",
+          "propose_workspace_changes"
         ],
         "title": "ConversationAction",
         "type": "string"
@@ -1223,6 +1224,19 @@
             "title": "Real Execution Confirmed",
             "type": "boolean"
           },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
+          },
           "skill_plan_intent": {
             "anyOf": [
               {
@@ -1248,6 +1262,16 @@
               }
             ],
             "title": "Target Run Id"
+          },
+          "workspace_file_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceFileScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "workspace_path": {
             "anyOf": [
@@ -2641,6 +2665,24 @@
             "title": "Revision",
             "type": "integer"
           },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
+          },
+          "stage_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceStageCandidate"
+            },
+            "title": "Stage Candidates",
+            "type": "array"
+          },
           "subjects": {
             "items": {
               "$ref": "#/components/schemas/SubjectManifestEntry"
@@ -2673,6 +2715,19 @@
             "default": false,
             "title": "Report Only",
             "type": "boolean"
+          },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
           }
         },
         "required": [
@@ -7807,6 +7862,95 @@
         "title": "WorkflowState",
         "type": "string"
       },
+      "WorkspaceChangeProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "citations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceCitation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "diff": {
+            "maxLength": 1048576,
+            "title": "Diff",
+            "type": "string"
+          },
+          "edits": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceEdit"
+            },
+            "maxItems": 200,
+            "title": "Edits",
+            "type": "array"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "proposal_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash",
+            "type": "string"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undone At"
+          },
+          "workspace_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Workspace Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "conversation_id",
+          "workspace_hash",
+          "proposal_hash",
+          "edits",
+          "diff",
+          "status",
+          "expires_at"
+        ],
+        "title": "WorkspaceChangeProposal",
+        "type": "object"
+      },
       "WorkspaceCheckRequest": {
         "additionalProperties": false,
         "description": "Read-only request to validate a user-selected DPABI workspace.",
@@ -7816,6 +7960,19 @@
             "minLength": 1,
             "title": "Path",
             "type": "string"
+          },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
           }
         },
         "required": [
@@ -7896,6 +8053,29 @@
             "title": "Path",
             "type": "string"
           },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
+          },
+          "stage_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceStageCandidate"
+            },
+            "title": "Stage Candidates",
+            "type": "array"
+          },
+          "stage_selection_required": {
+            "default": false,
+            "title": "Stage Selection Required",
+            "type": "boolean"
+          },
           "subject_count": {
             "title": "Subject Count",
             "type": "integer"
@@ -7934,6 +8114,319 @@
           "checked_at"
         ],
         "title": "WorkspaceCheckView",
+        "type": "object"
+      },
+      "WorkspaceCitation": {
+        "additionalProperties": false,
+        "description": "A location in a workspace file that can be independently re-read.",
+        "properties": {
+          "locator": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Locator",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote"
+          }
+        },
+        "required": [
+          "path",
+          "locator"
+        ],
+        "title": "WorkspaceCitation",
+        "type": "object"
+      },
+      "WorkspaceContentConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "consent_id": {
+            "title": "Consent Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "granted_at": {
+            "format": "date-time",
+            "title": "Granted At",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "profile_id": {
+            "maxLength": 63,
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "provider_host": {
+            "title": "Provider Host",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "workspace_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Workspace Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "consent_id",
+          "conversation_id",
+          "workspace_hash",
+          "profile_id",
+          "model",
+          "policy_version",
+          "provider_host",
+          "granted_at"
+        ],
+        "title": "WorkspaceContentConsent",
+        "type": "object"
+      },
+      "WorkspaceContentConsentCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_remote_processing": {
+            "default": false,
+            "title": "Acknowledge Remote Processing",
+            "type": "boolean"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "profile_id": {
+            "maxLength": 63,
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "model"
+        ],
+        "title": "WorkspaceContentConsentCreate",
+        "type": "object"
+      },
+      "WorkspaceEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "after_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Sha256"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Line"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Sha256"
+          },
+          "path": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "replacement": {
+            "maxLength": 1048576,
+            "title": "Replacement",
+            "type": "string"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Line"
+          }
+        },
+        "required": [
+          "path",
+          "replacement"
+        ],
+        "title": "WorkspaceEdit",
+        "type": "object"
+      },
+      "WorkspaceFileScope": {
+        "additionalProperties": false,
+        "description": "Optional user-selected file scope for the Work file assistant.",
+        "properties": {
+          "paths": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Paths",
+            "type": "array"
+          }
+        },
+        "title": "WorkspaceFileScope",
+        "type": "object"
+      },
+      "WorkspacePatchApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_hash"
+        ],
+        "title": "WorkspacePatchApplyRequest",
+        "type": "object"
+      },
+      "WorkspacePatchApplyView": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "proposal_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash",
+            "type": "string"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "undo_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undo Expires At"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "proposal_hash",
+          "status"
+        ],
+        "title": "WorkspacePatchApplyView",
+        "type": "object"
+      },
+      "WorkspacePatchUndoView": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undone At"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "status"
+        ],
+        "title": "WorkspacePatchUndoView",
         "type": "object"
       },
       "WorkspacePickView": {
@@ -7975,6 +8468,19 @@
             "title": "Project Name",
             "type": "string"
           },
+          "selected_input_stage": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Input Stage"
+          },
           "work_root": {
             "maxLength": 4000,
             "minLength": 1,
@@ -7988,6 +8494,70 @@
           "work_root"
         ],
         "title": "WorkspaceSetupIntent",
+        "type": "object"
+      },
+      "WorkspaceStageCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Completed Steps",
+            "type": "array"
+          },
+          "file_count": {
+            "minimum": 0.0,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "requires_realign_parameters": {
+            "default": false,
+            "title": "Requires Realign Parameters",
+            "type": "boolean"
+          },
+          "rule_version": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "selectable": {
+            "default": false,
+            "title": "Selectable",
+            "type": "boolean"
+          },
+          "stage": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Stage",
+            "type": "string"
+          },
+          "subject_count": {
+            "minimum": 0.0,
+            "title": "Subject Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stage",
+          "label",
+          "subject_count",
+          "file_count",
+          "rule_version"
+        ],
+        "title": "WorkspaceStageCandidate",
         "type": "object"
       }
     }
@@ -9324,6 +9894,720 @@
         "summary": "Send Conversation Turn",
         "tags": [
           "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/consents": {
+      "get": {
+        "operationId": "list_workspace_consents_api_v1_conversations__conversation_id__workspace_consents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkspaceContentConsent"
+                  },
+                  "title": "Response List Workspace Consents Api V1 Conversations  Conversation Id  Workspace Consents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Workspace Consents",
+        "tags": [
+          "workspaces"
+        ]
+      },
+      "post": {
+        "operationId": "create_workspace_consent_api_v1_conversations__conversation_id__workspace_consents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceContentConsentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceContentConsent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Create Workspace Consent",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/consents/{consent_id}": {
+      "delete": {
+        "operationId": "revoke_workspace_consent_api_v1_conversations__conversation_id__workspace_consents__consent_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "consent_id",
+            "required": true,
+            "schema": {
+              "title": "Consent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceContentConsent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Revoke Workspace Consent",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/files": {
+      "get": {
+        "operationId": "list_workspace_files_api_v1_conversations__conversation_id__workspace_files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "directory",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Directory",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Workspace Files Api V1 Conversations  Conversation Id  Workspace Files Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Workspace Files",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "get_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceChangeProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Workspace Proposal",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/apply": {
+      "post": {
+        "operationId": "apply_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspacePatchApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspacePatchApplyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Apply Workspace Proposal",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/undo": {
+      "post": {
+        "operationId": "undo_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspacePatchUndoView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Undo Workspace Proposal",
+        "tags": [
+          "workspaces"
         ]
       }
     },

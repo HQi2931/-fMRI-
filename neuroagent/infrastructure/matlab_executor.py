@@ -18,6 +18,7 @@ from neuroagent.application.environment_lock import (
 from neuroagent.application.ports import ExecutionResult, RepositoryPort
 from neuroagent.application.settings import Settings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage, MetricScaling
+from neuroagent.domain.fmri.dpabi_stages import stage_rule, verified_source_version
 from neuroagent.domain.fmri.metrics import MetricMaskSource, SmoothingTiming, TemporalFilterTiming
 from neuroagent.domain.fmri.preprocessing import NormalizationTiming
 from neuroagent.domain.fmri.qc import HeadMotionQcCriteria
@@ -42,6 +43,34 @@ from neuroagent.tools.input_staging import (
     StagingCopyTool,
 )
 from neuroagent.workflow.runtime import WorkflowFactory
+
+
+def _apply_verified_stage_resume(cfg: dict[str, Any], stage: str) -> dict[str, Any]:
+    """Disable DPABI steps already represented by a verified input checkpoint."""
+
+    rule = stage_rule(stage)
+    if rule is None:
+        raise ValueError("unknown DPABI input stage")
+    updated = dict(cfg)
+    fields = {
+        "slice_timing": "IsSliceTiming",
+        "realignment": "IsRealign",
+        "nuisance": "IsCovremove",
+        "filter": "IsFilter",
+        "normalization": "IsNormalize",
+        "smoothing": "IsSmooth",
+        "detrend": "IsDetrend",
+        "scrubbing": "IsScrubbing",
+    }
+    for step in rule.completed_steps:
+        field = fields.get(step)
+        if field is not None:
+            updated[field] = 0
+    # DPARSFA mutates the selected input for dummy-scan removal.  A verified
+    # checkpoint must never be temporally shortened a second time.
+    if rule.completed_steps:
+        updated["RemoveFirstTimePoints"] = 0
+    return updated
 
 
 class MatlabJobExecutor:
@@ -169,17 +198,75 @@ class MatlabJobExecutor:
                     if compilation.staging_plan is None:
                         raise ValueError("in-place execution requires frozen source inputs")
                     self._verify_in_place_inputs(compilation.staging_plan, preprocessing_workspace)
-                    stages = {
-                        item.functional_files[0].replace("\\", "/").split("/", 1)[0]
-                        for item in manifest.subjects
-                    }
-                    if len(stages) != 1:
-                        raise ValueError("in-place DPABI inputs must use one functional stage")
+                    # The selected checkpoint is part of the frozen manifest.
+                    # Never recover the old implicit "single directory" behavior
+                    # here: a plan created without explicit user confirmation must
+                    # fail closed before MATLAB is launched.
+                    stage = manifest.selected_input_stage
+                    if not stage or stage_rule(stage) is None:
+                        raise ValueError(
+                            "in-place DPABI inputs require an explicitly confirmed functional stage"
+                        )
+                    selected_rule = stage_rule(stage)
+                    if (
+                        selected_rule is not None
+                        and selected_rule.completed_steps
+                        and not verified_source_version(configuration.dpabi_version)
+                    ):
+                        raise ValueError(
+                            "intermediate DPABI stage resume requires the verified "
+                            "DPABI V9.0_250415 source"
+                        )
+                    manifest_content = self._repository.get_manifest_content(
+                        str(frozen.plan["dataset_manifest_id"])
+                    )
+                    self._verify_manifest_file_hashes(manifest_content, preprocessing_workspace)
                     compiled_payload = compilation.spec.payload
                     if not isinstance(compiled_payload, PreprocessingJobPayload):
                         raise ValueError("preprocessing compilation payload is invalid")
                     cfg = dict(compiled_payload.metric_projection.cfg)
-                    cfg["StartingDirName"] = next(iter(stages))
+                    downstream_needs_realign = bool(
+                        any(
+                            int(cfg.get(field, 0) or 0)
+                            for field in (
+                                "IsCovremove",
+                                "IsFilter",
+                                "IsNormalize",
+                                "IsSmooth",
+                                "IsDetrend",
+                                "IsScrubbing",
+                            )
+                        )
+                    )
+                    cfg["StartingDirName"] = stage
+                    cfg = _apply_verified_stage_resume(cfg, stage)
+                    predicted_stage = _predict_dpabi_stage(stage, cfg)
+                    if predicted_stage != stage and (
+                        preprocessing_workspace / predicted_stage
+                    ).exists():
+                        raise ValueError(
+                            f"DPABI output stage already exists: {predicted_stage}"
+                        )
+                    if (
+                        (cfg.get("IsCalALFF", 0) or cfg.get("IsCalReHo", 0))
+                        and (preprocessing_workspace / "Results").exists()
+                    ):
+                        raise ValueError("DPABI Results directory already exists")
+                    needs_realign_evidence = (
+                        selected_rule is not None
+                        and selected_rule.requires_realign_parameters
+                        and (
+                            downstream_needs_realign
+                            or str(run.qc_mode or "require") != "skip"
+                        )
+                    )
+                    if needs_realign_evidence and not (
+                        preprocessing_workspace / "RealignParameter"
+                    ).is_dir():
+                        raise ValueError(
+                            "selected DPABI checkpoint requires RealignParameter for "
+                            "the requested downstream operation or QC"
+                        )
                     mask_file = cfg.get("MaskFile")
                     if isinstance(mask_file, str) and mask_file not in {
                         "Default",
@@ -192,7 +279,16 @@ class MatlabJobExecutor:
                         update={"cfg": cfg, "cfg_hash": stable_hash(cfg)}
                     )
                     in_place_payload = compiled_payload.model_copy(
-                        update={"metric_projection": projection}
+                        update={
+                            "metric_projection": projection,
+                            # The verified checkpoint may disable Realign even
+                            # when the generic plan requested it.  Keep the
+                            # payload's explicit base-Cfg allow-list aligned
+                            # with the effective frozen configuration.
+                            "base_cfg_allowed_fields": (
+                                ("Realign",) if cfg.get("IsRealign") else ()
+                            ),
+                        }
                     )
                     spec = compilation.spec.model_copy(update={"payload": in_place_payload})
                     compilation = replace(compilation, spec=spec)
@@ -307,8 +403,26 @@ class MatlabJobExecutor:
         preprocessing_workspace: Path | None,
         job_hash: str,
     ) -> tuple[dict[str, Any], ...]:
-        if compilation.parameters is None or not compilation.parameters.realignment.enabled:
+        if not isinstance(compilation.spec.payload, PreprocessingJobPayload):
             return ()
+        cfg = compilation.spec.payload.metric_projection.cfg
+        # Read the effective compiled DPABI flags.  In-place stage resume can
+        # disable IsRealign even when the generic parameter draft enabled it;
+        # QC provenance must describe what this run actually executed.
+        current_realign = bool(cfg.get("IsRealign", 0))
+        selected_stage = cfg.get("StartingDirName")
+        prior_realign = bool(
+            isinstance(selected_stage, str)
+            and "realignment"
+            in (
+                stage_rule(selected_stage).completed_steps
+                if stage_rule(selected_stage)
+                else ()
+            )
+        )
+        if not current_realign and not prior_realign:
+            return ()
+        qc_source = "current_execution" if current_realign else "prior_checkpoint"
         evidence = json.loads((root / "output/preprocessing-evidence.json").read_text())
         rows = evidence["outputs"]
         if isinstance(rows, dict):
@@ -347,6 +461,7 @@ class MatlabJobExecutor:
                     "executor": "controlled_matlab",
                     "job_hash": job_hash,
                     "plan_hash": compilation.spec.plan_hash,
+                    "source": qc_source,
                     "head_motion_qc": report_payload,
                 },
             },
@@ -390,8 +505,11 @@ class MatlabJobExecutor:
     def _verify_in_place_inputs(plan: StagingCopyPlan, workspace: Path) -> None:
         root = workspace.resolve(strict=True)
         for operation in plan.operations:
-            source = (root / operation.source_relative_path).resolve(strict=True)
-            if not _within(source, root) or not source.is_file() or source.is_symlink():
+            raw_source = root / PurePosixPath(operation.source_relative_path)
+            if raw_source.is_symlink() or _is_junction(raw_source):
+                raise ValueError("frozen in-place input is unavailable or unsafe")
+            source = raw_source.resolve(strict=True)
+            if not _within(source, root) or not source.is_file():
                 raise ValueError("frozen in-place input is unavailable or unsafe")
             if source.stat().st_size != operation.size_bytes:
                 raise ValueError("frozen in-place input size changed")
@@ -401,6 +519,36 @@ class MatlabJobExecutor:
                     digest.update(chunk)
             if digest.hexdigest() != operation.sha256:
                 raise ValueError("frozen in-place input hash changed")
+
+    @staticmethod
+    def _verify_manifest_file_hashes(content: dict[str, Any], workspace: Path) -> None:
+        """Recheck the immutable manifest, including DPABI companion evidence."""
+
+        hashes = content.get("file_hashes")
+        sizes = content.get("file_sizes")
+        if not isinstance(hashes, dict) or not isinstance(sizes, dict):
+            raise ValueError("frozen manifest is missing file hash evidence")
+        root = workspace.resolve(strict=True)
+        if not root.is_dir() or workspace.is_symlink():
+            raise ValueError("in-place workspace is unavailable or unsafe")
+        for relative, expected_hash in hashes.items():
+            if not isinstance(relative, str) or not isinstance(expected_hash, str):
+                raise ValueError("frozen manifest contains invalid file hash evidence")
+            raw_candidate = root / PurePosixPath(relative)
+            if raw_candidate.is_symlink() or _is_junction(raw_candidate):
+                raise ValueError("frozen manifest file is unavailable or unsafe")
+            candidate = raw_candidate.resolve(strict=True)
+            if not _within(candidate, root) or not candidate.is_file():
+                raise ValueError("frozen manifest file is unavailable or unsafe")
+            expected_size = sizes.get(relative)
+            if not isinstance(expected_size, int) or candidate.stat().st_size != expected_size:
+                raise ValueError("frozen manifest file size changed")
+            digest = hashlib.sha256()
+            with candidate.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_hash:
+                raise ValueError("frozen manifest file hash changed")
 
     @staticmethod
     def _stage_in_place_mask(spec: MatlabJobSpec, run_directory: Path, workspace: Path) -> None:
@@ -481,6 +629,9 @@ class MatlabJobExecutor:
         )
         manifest_id = str(frozen.plan["dataset_manifest_id"])
         manifest = self._repository.get_manifest(manifest_id)
+        dataset = self._repository.get_dataset(plan.dataset_ref)
+        if dataset.current_manifest_id != manifest_id:
+            raise ValueError("dataset manifest revision changed after plan approval")
         parameters = dict(plan.resolved_parameters)
         masks = {
             str(parameters[name]["mask_artifact_id"])
@@ -721,3 +872,33 @@ def _within(candidate: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_junction(path: Path) -> bool:
+    checker = getattr(path, "is_junction", None)
+    if callable(checker):
+        return bool(checker())
+    try:
+        return bool(getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return True
+
+
+def _predict_dpabi_stage(stage: str, cfg: dict[str, Any]) -> str:
+    """Predict the next DPABI checkpoint from the verified append order."""
+
+    suffixes = (
+        ("IsSliceTiming", "A"),
+        ("IsRealign", "R"),
+        ("IsCovremove", "C"),
+        ("IsFilter", "F"),
+        ("IsNormalize", "W"),
+        ("IsSmooth", "S"),
+        ("IsDetrend", "D"),
+        ("IsScrubbing", "B"),
+    )
+    result = stage
+    for field, suffix in suffixes:
+        if cfg.get(field, 0):
+            result += suffix
+    return result

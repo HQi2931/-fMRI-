@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-09-23
+- 更新日期：2026-09-27
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
@@ -39,6 +39,12 @@
 | `POST` | `/workspaces/check` | 对用户选择的本机目录执行只读 DPABI/fMRI 格式检查 |
 | `POST` | `/workspaces/pick` | 打开服务所在 Windows 会话的系统文件夹选择器 |
 | `POST` | `/projects/{project_id}/datasets` | 在项目允许根内登记数据集 |
+
+`POST /workspaces/check` 对 DPABI-ready 目录返回 `stage_candidates`、`stage_selection_required`、
+`rule_version` 和每个候选的受试者/文件覆盖数。`selected_input_stage` 只能由用户在确认候选后提交；
+服务端会重新扫描并绑定工作区路径、候选检查令牌和版本化阶段规则，生成冻结 manifest。即使候选只有
+`FunRaw` 或 `FunImg`，也不能省略确认；模型的阶段建议仅作为待审字段，不能直接写入请求。确认成功后，
+后续 `prepare_preprocessing_plan` 只把选定阶段放入 `functional_files`，其余 checkpoint 留在 inventory。
 
 ## 持久化对话与工具编排
 
@@ -83,7 +89,7 @@
 
 | action | 行为与边界 |
 | --- | --- |
-| `setup_workspace` | 在用户选择的目录上显式创建项目、数据集并冻结当前文件清单；Work 不检查或整理目录格式，路径/权限等技术错误仍失败；要求项目名、数据集名和工作根目录，不使用隐式名称 |
+| `setup_workspace` | 在用户选择的目录上显式创建项目、数据集并冻结当前文件清单；DPABI-ready 工作区必须携带已确认的 `selected_input_stage`；Work 不检查或整理目录格式，路径/权限等技术错误仍失败；要求项目名、数据集名和工作根目录，不使用隐式名称 |
 | `prepare_preprocessing_plan` | 使用完整 `skill_plan_intent` 和 `expected_project_version` 调用现有 Skill Resolver；缺少会改变科研含义的参数时返回待确认，不猜测默认值 |
 | `preview_preprocessing_run` | 在启动前重新校验计划哈希与审批状态、冻结输入、环境锁、工作区访问和磁盘余量；只返回技术预检结果，不做目录格式判断或排队 |
 | `start_preprocessing` | 从已审批且当前有效的计划排队 MATLAB 预处理；要求当前对话签发且未消费的 `confirmation_id`、精确计划 ID/哈希和 QC 绑定；持久化工具名为 `start_dpabi_preprocessing` |
@@ -127,6 +133,8 @@
 | `get_statistical_results` | 该运行已登记的统计结果摘要 |
 | `describe_statistical_capabilities` | 本安装实际支持的多重比较校正方法及其必需参数 |
 | `list_skills` | 已评审 Skill 的标识、标题与状态 |
+| `list_workspace_stages` | 当前选择工作区的服务端核验 DPABI 阶段候选；只返回摘要，不返回未授权文件内容 |
+| `list_workspace_entries` / `search_workspace_content` / `read_workspace_content` | 在内容授权和用户点选范围内按需浏览、搜索、分段读取文件；结果视为不可信数据 |
 
 统计设计的取值来源与装配规则见 [统计设计的取值来源与装配](../architecture/statistical-design-assembly.md)。
 

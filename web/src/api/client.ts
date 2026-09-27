@@ -35,6 +35,19 @@ export type WorkspaceCheck = {
   functional_subject_count: number;
   anatomical_subject_count: number;
   input_stage: string | null;
+  selected_input_stage: string | null;
+  stage_selection_required: boolean;
+  stage_candidates: Array<{
+    stage: string;
+    label: string;
+    completed_steps: string[];
+    requires_realign_parameters: boolean;
+    subject_count: number;
+    file_count: number;
+    selectable: boolean;
+    issues: string[];
+    rule_version: string;
+  }>;
   output_directories: string[];
   invalid_nifti_files: string[];
   issues: string[];
@@ -51,6 +64,12 @@ export type WorkspaceCheck = {
   checked_at: string;
 };
 export type WorkspacePick = { path: string | null; cancelled: boolean };
+export type WorkspaceFileEntry = { path: string; name: string; kind: "file" | "directory"; size?: number; format?: string | null; readable?: boolean };
+export type WorkspaceFileListing = { directory: string; entries: WorkspaceFileEntry[]; total: number; next_offset: number | null };
+export type WorkspaceConsent = { consent_id: string; conversation_id: string; workspace_hash: string; profile_id: string; model: string; policy_version: string; provider_host: string; granted_at: string; revoked_at: string | null };
+export type WorkspaceProposal = { proposal_id: string; conversation_id: string; workspace_hash: string; proposal_hash: string; edits: Array<Record<string, unknown>>; diff: string; citations: Array<{ path: string; locator: string; quote?: string | null }>; status: string; expires_at: string; applied_at: string | null; undone_at: string | null };
+export type WorkspacePatchApplyView = { proposal_id: string; proposal_hash: string; status: string; applied_at: string | null; undo_expires_at: string | null };
+export type WorkspacePatchUndoView = { proposal_id: string; status: string; undone_at: string | null };
 export type ConversationMode = "chat" | "work";
 export type ConversationMessage = {
   message_id: string;
@@ -103,7 +122,8 @@ export type ConversationContext = Schemas["ConversationContextView"];
 export type ConversationMemory = Schemas["MemoryView"];
 type ConversationTurnDefaults = "action" | "allow_remote_search" | "paper_ids" | "real_execution_confirmed" | "stream";
 export type ConversationTurnBody = Omit<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>
-  & Partial<Pick<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>>;
+  & Partial<Pick<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>>
+  & { workspace_file_scope?: { paths: string[] } | null };
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
 export type StatisticalResult = Schemas["StatisticalResultView"];
 export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
@@ -321,10 +341,24 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   environment: (signal?: AbortSignal) => request<EnvironmentProbe>("/environment/probe", { signal }),
   environmentConfig: (signal?: AbortSignal) => request<EnvironmentConfig>("/environment/config", { signal }),
-  checkWorkspace: (body: { path: string }, signal?: AbortSignal) =>
+  checkWorkspace: (body: { path: string; selected_input_stage?: string | null }, signal?: AbortSignal) =>
     post<WorkspaceCheck>("/workspaces/check", body, signal),
   pickWorkspace: (signal?: AbortSignal) =>
     post<WorkspacePick>("/workspaces/pick", {}, signal),
+  workspaceConsents: (conversationId: string, signal?: AbortSignal) =>
+    request<WorkspaceConsent[]>(`/conversations/${encodeURIComponent(conversationId)}/workspace/consents`, { signal }),
+  grantWorkspaceConsent: (conversationId: string, body: { profile_id: string; model: string; acknowledge_remote_processing: boolean }, signal?: AbortSignal) =>
+    post<WorkspaceConsent>(`/conversations/${encodeURIComponent(conversationId)}/workspace/consents`, body, signal),
+  revokeWorkspaceConsent: (conversationId: string, consentId: string, signal?: AbortSignal) =>
+    request<WorkspaceConsent>(`/conversations/${encodeURIComponent(conversationId)}/workspace/consents/${encodeURIComponent(consentId)}`, { method: "DELETE", signal }),
+  workspaceFiles: (conversationId: string, directory = "", signal?: AbortSignal) =>
+    request<WorkspaceFileListing>(`/conversations/${encodeURIComponent(conversationId)}/workspace/files?directory=${encodeURIComponent(directory)}`, { signal }),
+  workspaceProposal: (conversationId: string, proposalId: string, signal?: AbortSignal) =>
+    request<WorkspaceProposal>(`/conversations/${encodeURIComponent(conversationId)}/workspace/proposals/${encodeURIComponent(proposalId)}`, { signal }),
+  applyWorkspaceProposal: (conversationId: string, proposalId: string, proposalHash: string, signal?: AbortSignal) =>
+    post<WorkspacePatchApplyView>(`/conversations/${encodeURIComponent(conversationId)}/workspace/proposals/${encodeURIComponent(proposalId)}/apply`, { proposal_hash: proposalHash }, signal),
+  undoWorkspaceProposal: (conversationId: string, proposalId: string, signal?: AbortSignal) =>
+    post<WorkspacePatchUndoView>(`/conversations/${encodeURIComponent(conversationId)}/workspace/proposals/${encodeURIComponent(proposalId)}/undo`, {}, signal),
   conversations: (mode?: ConversationMode, signal?: AbortSignal) =>
     request<Conversation[]>(
       `/conversations${mode ? `?mode=${encodeURIComponent(mode)}` : ""}`,

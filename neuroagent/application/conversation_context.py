@@ -142,6 +142,7 @@ class ConversationContextCoordinator:
         project_id: str | None,
         active_run_id: str | None,
         plan_revision_id: str | None,
+        workspace_stage_candidates: dict[str, Any] | None = None,
     ) -> PreparedWorkContext:
         profile_id = preferred_profile_id
         context_window_tokens, max_output_tokens = self.context_limits(profile_id)
@@ -164,6 +165,7 @@ class ConversationContextCoordinator:
                 project_id=project_id,
                 active_run_id=active_run_id,
                 plan_revision_id=plan_revision_id,
+                workspace_stage_candidates=workspace_stage_candidates,
             ),
         )
         return PreparedWorkContext(
@@ -179,8 +181,19 @@ class ConversationContextCoordinator:
         project_id: str | None,
         active_run_id: str | None,
         plan_revision_id: str | None,
+        workspace_stage_candidates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context: dict[str, Any] = {"project_id": project_id}
+        if workspace_stage_candidates:
+            context["workspace_stage_candidates"] = list(
+                workspace_stage_candidates.get("candidates", [])
+            )
+            context["workspace_stage_selection_required"] = bool(
+                workspace_stage_candidates.get("selection_required", False)
+            )
+            context["workspace_stage_rule_version"] = workspace_stage_candidates.get(
+                "rule_version"
+            )
         selected_plan_id = plan_revision_id
         if active_run_id is not None:
             run = self._repository.get_run(active_run_id)

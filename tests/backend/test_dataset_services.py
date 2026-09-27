@@ -176,7 +176,10 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
 
     manifest = service.inspect_dataset(
         dataset.dataset_id,
-        ManifestScanRequest(expected_dataset_version=dataset.version),
+        ManifestScanRequest(
+            expected_dataset_version=dataset.version,
+            selected_input_stage="FunRaw",
+        ),
         "dpabi-stage-scan",
     )
     after = {
@@ -199,7 +202,10 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
     current_dataset = service.get_dataset(dataset.dataset_id)
     changed = service.inspect_dataset(
         dataset.dataset_id,
-        ManifestScanRequest(expected_dataset_version=current_dataset.version),
+        ManifestScanRequest(
+            expected_dataset_version=current_dataset.version,
+            selected_input_stage="FunRaw",
+        ),
         "dpabi-stage-result-change",
     )
     assert changed.content_hash != manifest.content_hash
@@ -210,16 +216,16 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
     [
         (
             ("FunRaw/S001/raw.nii", "FunImg/S001/converted.nii"),
-            "dpabi_input_stage_ambiguous",
+            "dpabi_input_stage_selection_required",
         ),
-        (("FunImgARW/S001/processed.nii",), "dpabi_input_stage_missing"),
-        (("Results/ALFF/ALFFMap_S001.nii",), "dpabi_input_stage_missing"),
+        (("FunImgARW/S001/processed.nii",), "dpabi_input_stage_selection_required"),
+        (("Results/ALFF/ALFFMap_S001.nii",), "dpabi_input_stage_selection_required"),
         (
             (
                 "Results/ALFF/ALFFMap_S001.nii",
                 "RealignParameter/S001/mean.nii",
             ),
-            "dpabi_input_stage_missing",
+            "dpabi_input_stage_selection_required",
         ),
         (
             ("FunRaw/S001/raw.nii", "FunImg-ARW/S001/processed.nii"),

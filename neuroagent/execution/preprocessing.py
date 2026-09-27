@@ -12,6 +12,7 @@ from neuroagent.application.contracts import (
     ManifestRevisionView,
     SubjectManifestEntry,
 )
+from neuroagent.domain.fmri.dpabi_stages import stage_rule
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
     MetricMaskSource,
@@ -298,6 +299,17 @@ def _validate_frozen_inputs(
         raise ValueError("manifest subject roles do not match frozen content")
     if content.get("profile") != manifest.profile.model_dump(mode="json"):
         raise ValueError("manifest profile does not match frozen content")
+    if manifest.profile.kind is DatasetKind.DPABI_READY:
+        selected = manifest.selected_input_stage or content.get("selected_input_stage")
+        if not isinstance(selected, str) or stage_rule(selected) is None:
+            raise ValueError(
+                "DPABI-ready preprocessing requires an explicitly confirmed input stage"
+            )
+        if manifest.selected_input_stage != selected:
+            raise ValueError("DPABI manifest stage confirmation is not frozen consistently")
+        content_stage = content.get("selected_input_stage")
+        if content_stage != selected:
+            raise ValueError("DPABI manifest stage confirmation differs from its content")
     invalid_nifti = content.get("invalid_nifti_files")
     if isinstance(invalid_nifti, list) and invalid_nifti:
         raise ValueError("frozen manifest contains NIfTI files with unreadable headers")

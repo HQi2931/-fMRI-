@@ -16,6 +16,7 @@ from neuroagent.infrastructure.filesystem.demographics import read_demographics
 from neuroagent.infrastructure.filesystem.directory_picker import SystemDirectoryPicker
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.infrastructure.filesystem.workspace_files import WorkspaceFilePolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.infrastructure.mock_executor import MockJobExecutor
 from neuroagent.infrastructure.persistence.database import Database
@@ -79,6 +80,11 @@ def build_service(
         secret_writer=secret_writer or LocalDotenvSecretWriter(),
         providers=providers,
         workspace_picker=SystemDirectoryPicker(),
+        workspace_file_factory=lambda root: WorkspaceFilePolicy(
+            root,
+            max_text_bytes=resolved_settings.workspace_max_text_bytes,
+            max_document_bytes=resolved_settings.workspace_max_document_bytes,
+        ),
         skill_registry=skill_registry,
     )
 

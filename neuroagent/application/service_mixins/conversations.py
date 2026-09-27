@@ -171,6 +171,18 @@ class ConversationMixin(BaseServiceMixin):
             )
             project_id = request.project_id or conversation.project_id
             active_run_id = conversation.active_run_id
+            confirmed_stage = None
+            for message in reversed(conversation.messages):
+                manifest_payload = message.payload.get("manifest")
+                if isinstance(manifest_payload, dict) and manifest_payload.get(
+                    "selected_input_stage"
+                ):
+                    confirmed_stage = str(manifest_payload["selected_input_stage"])
+                    break
+            workspace_stage_candidates = self.conversation_work.workspace_stage_candidates(
+                workspace_path,
+                confirmed_stage=confirmed_stage,
+            )
             try:
                 prepared_context = self.conversation_context.prepare_work(
                     conversation,
@@ -179,6 +191,7 @@ class ConversationMixin(BaseServiceMixin):
                     project_id=project_id,
                     active_run_id=active_run_id,
                     plan_revision_id=request.plan_revision_id,
+                    workspace_stage_candidates=workspace_stage_candidates,
                 )
                 work_packet = prepared_context.packet
                 context_state = prepared_context.state
@@ -196,6 +209,13 @@ class ConversationMixin(BaseServiceMixin):
                     workspace_path=workspace_path,
                     project_id=project_id,
                     preferred_profile_id=preferred_profile_id,
+                    workspace_content_consent=(
+                        self.workspace_content_consent_granted(
+                            conversation_id, workspace_path, preferred_profile_id, request.model
+                        )
+                        if hasattr(self, "workspace_content_consent_granted")
+                        else False
+                    ),
                     idempotency_key=idempotency_key,
                     has_profiles=bool(self.repository.list_model_profiles()),
                 )

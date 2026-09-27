@@ -209,6 +209,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/workspace/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workspace Consents */
+        get: operations["list_workspace_consents_api_v1_conversations__conversation_id__workspace_consents_get"];
+        put?: never;
+        /** Create Workspace Consent */
+        post: operations["create_workspace_consent_api_v1_conversations__conversation_id__workspace_consents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/consents/{consent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Workspace Consent */
+        delete: operations["revoke_workspace_consent_api_v1_conversations__conversation_id__workspace_consents__consent_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workspace Files */
+        get: operations["list_workspace_files_api_v1_conversations__conversation_id__workspace_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workspace Proposal */
+        get: operations["get_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Workspace Proposal */
+        post: operations["apply_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo Workspace Proposal */
+        post: operations["undo_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/corrections": {
         parameters: {
             query?: never;
@@ -1437,7 +1540,7 @@ export interface components {
          * ConversationAction
          * @enum {string}
          */
-        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "create_head_motion_qc" | "get_progress" | "get_qc_status" | "approve_qc_review" | "skip_qc" | "get_statistical_results";
+        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "create_head_motion_qc" | "get_progress" | "get_qc_status" | "approve_qc_review" | "skip_qc" | "get_statistical_results" | "propose_workspace_changes";
         /** ConversationContextView */
         ConversationContextView: {
             /** Memories */
@@ -1568,6 +1671,8 @@ export interface components {
              * @default false
              */
             real_execution_confirmed: boolean;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
             skill_plan_intent?: components["schemas"]["SkillPlanIntent"] | null;
             /**
              * Stream
@@ -1576,6 +1681,7 @@ export interface components {
             stream: boolean;
             /** Target Run Id */
             target_run_id?: string | null;
+            workspace_file_scope?: components["schemas"]["WorkspaceFileScope"] | null;
             /** Workspace Path */
             workspace_path?: string | null;
             workspace_setup?: components["schemas"]["WorkspaceSetupIntent"] | null;
@@ -2090,6 +2196,10 @@ export interface components {
             profile: components["schemas"]["DatasetProfile"];
             /** Revision */
             revision: number;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
+            /** Stage Candidates */
+            stage_candidates?: components["schemas"]["WorkspaceStageCandidate"][];
             /** Subjects */
             subjects: components["schemas"]["SubjectManifestEntry"][];
         };
@@ -2102,6 +2212,8 @@ export interface components {
              * @default false
              */
             report_only: boolean;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
         };
         /**
          * MemoryAction
@@ -3916,6 +4028,37 @@ export interface components {
          * @enum {string}
          */
         WorkflowState: "queued" | "running" | "cancelling" | "qc_review" | "succeeded" | "failed_retryable" | "failed_terminal" | "timed_out" | "cancelled";
+        /** WorkspaceChangeProposal */
+        WorkspaceChangeProposal: {
+            /** Applied At */
+            applied_at?: string | null;
+            /**
+             * Citations
+             * @default []
+             */
+            citations: components["schemas"]["WorkspaceCitation"][];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Diff */
+            diff: string;
+            /** Edits */
+            edits: components["schemas"]["WorkspaceEdit"][];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Proposal Hash */
+            proposal_hash: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undone At */
+            undone_at?: string | null;
+            /** Workspace Hash */
+            workspace_hash: string;
+        };
         /**
          * WorkspaceCheckRequest
          * @description Read-only request to validate a user-selected DPABI workspace.
@@ -3923,6 +4066,8 @@ export interface components {
         WorkspaceCheckRequest: {
             /** Path */
             path: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
         };
         /** WorkspaceCheckView */
         WorkspaceCheckView: {
@@ -3954,6 +4099,15 @@ export interface components {
             output_directories?: string[];
             /** Path */
             path: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
+            /** Stage Candidates */
+            stage_candidates?: components["schemas"]["WorkspaceStageCandidate"][];
+            /**
+             * Stage Selection Required
+             * @default false
+             */
+            stage_selection_required: boolean;
             /** Subject Count */
             subject_count: number;
             /** Subjects */
@@ -3962,6 +4116,107 @@ export interface components {
             total_space_bytes: number;
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * WorkspaceCitation
+         * @description A location in a workspace file that can be independently re-read.
+         */
+        WorkspaceCitation: {
+            /** Locator */
+            locator: string;
+            /** Path */
+            path: string;
+            /** Quote */
+            quote?: string | null;
+        };
+        /** WorkspaceContentConsent */
+        WorkspaceContentConsent: {
+            /** Consent Id */
+            consent_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Granted At
+             * Format: date-time
+             */
+            granted_at: string;
+            /** Model */
+            model: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Profile Id */
+            profile_id: string;
+            /** Provider Host */
+            provider_host: string;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /** Workspace Hash */
+            workspace_hash: string;
+        };
+        /** WorkspaceContentConsentCreate */
+        WorkspaceContentConsentCreate: {
+            /**
+             * Acknowledge Remote Processing
+             * @default false
+             */
+            acknowledge_remote_processing: boolean;
+            /** Model */
+            model: string;
+            /** Profile Id */
+            profile_id: string;
+        };
+        /** WorkspaceEdit */
+        WorkspaceEdit: {
+            /** After Sha256 */
+            after_sha256?: string | null;
+            /** End Line */
+            end_line?: number | null;
+            /** Expected Sha256 */
+            expected_sha256?: string | null;
+            /** Path */
+            path: string;
+            /** Replacement */
+            replacement: string;
+            /** Start Line */
+            start_line?: number | null;
+        };
+        /**
+         * WorkspaceFileScope
+         * @description Optional user-selected file scope for the Work file assistant.
+         */
+        WorkspaceFileScope: {
+            /**
+             * Paths
+             * @default []
+             */
+            paths: string[];
+        };
+        /** WorkspacePatchApplyRequest */
+        WorkspacePatchApplyRequest: {
+            /** Proposal Hash */
+            proposal_hash: string;
+        };
+        /** WorkspacePatchApplyView */
+        WorkspacePatchApplyView: {
+            /** Applied At */
+            applied_at?: string | null;
+            /** Proposal Hash */
+            proposal_hash: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undo Expires At */
+            undo_expires_at?: string | null;
+        };
+        /** WorkspacePatchUndoView */
+        WorkspacePatchUndoView: {
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undone At */
+            undone_at?: string | null;
         };
         /** WorkspacePickView */
         WorkspacePickView: {
@@ -3986,8 +4241,37 @@ export interface components {
             dataset_name: string;
             /** Project Name */
             project_name: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
             /** Work Root */
             work_root: string;
+        };
+        /** WorkspaceStageCandidate */
+        WorkspaceStageCandidate: {
+            /** Completed Steps */
+            completed_steps?: string[];
+            /** File Count */
+            file_count: number;
+            /** Issues */
+            issues?: string[];
+            /** Label */
+            label: string;
+            /**
+             * Requires Realign Parameters
+             * @default false
+             */
+            requires_realign_parameters: boolean;
+            /** Rule Version */
+            rule_version: string;
+            /**
+             * Selectable
+             * @default false
+             */
+            selectable: boolean;
+            /** Stage */
+            stage: string;
+            /** Subject Count */
+            subject_count: number;
         };
     };
     responses: never;
@@ -4965,6 +5249,554 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationTurnView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_workspace_consents_api_v1_conversations__conversation_id__workspace_consents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_workspace_consent_api_v1_conversations__conversation_id__workspace_consents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceContentConsentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_workspace_consent_api_v1_conversations__conversation_id__workspace_consents__consent_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                consent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_workspace_files_api_v1_conversations__conversation_id__workspace_files_get: {
+        parameters: {
+            query?: {
+                directory?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceChangeProposal"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    apply_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePatchApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePatchApplyView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    undo_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePatchUndoView"];
                 };
             };
             /** @description Bad Request */

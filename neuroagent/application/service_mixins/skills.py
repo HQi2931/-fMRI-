@@ -16,6 +16,12 @@ from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
+from neuroagent.domain.fmri.dpabi_stages import (
+    expected_anatomical_stage as expected_dpabi_anatomical_stage,
+)
+from neuroagent.domain.fmri.dpabi_stages import (
+    stage_rule,
+)
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
 from neuroagent.skills.compiler import SkillCompileError
 from neuroagent.skills.models import (
@@ -55,7 +61,6 @@ class SkillPlanMixin(BaseServiceMixin):
                 "完成显式序列角色映射和受控转换后才能创建预处理或指标计划。",
             )
         if manifest.profile.kind is DatasetKind.DPABI_READY:
-            supported_stages = {"funraw", "funimg"}
             functional_stage_roots = sorted(
                 {
                     relative_path.split("/", maxsplit=1)[0].lower()
@@ -65,19 +70,24 @@ class SkillPlanMixin(BaseServiceMixin):
             )
             if (
                 len(functional_stage_roots) != 1
-                or functional_stage_roots[0] not in supported_stages
+                or stage_rule(functional_stage_roots[0]) is None
             ):
                 raise InputValidationError(
                     "manifest_dpabi_input_stage_invalid",
                     "DPABI-ready manifest 必须只绑定一个受支持的功能输入 stage, "
                     "不能混合中间 checkpoint。",
                     functional_stage_roots=functional_stage_roots,
-                    supported_input_stage_roots=sorted(supported_stages),
+                    supported_input_stage_roots=[
+                        "FunRaw",
+                        "FunImg",
+                        "FunImgAR",
+                        "FunImgARW",
+                        "FunImgARWS",
+                    ],
                 )
-            expected_anatomical_stage = {
-                "funraw": "t1raw",
-                "funimg": "t1img",
-            }[functional_stage_roots[0]]
+            expected_anatomical_stage = expected_dpabi_anatomical_stage(
+                functional_stage_roots[0]
+            ).casefold()
             invalid_anatomical_paths = sorted(
                 relative_path
                 for entry in manifest.subjects
@@ -91,6 +101,33 @@ class SkillPlanMixin(BaseServiceMixin):
                     expected_anatomical_stage=expected_anatomical_stage,
                     invalid_relative_paths=invalid_anatomical_paths,
                 )
+            rule = stage_rule(functional_stage_roots[0])
+            assert rule is not None
+            preprocessing = intent.preprocessing
+            if preprocessing is not None:
+                completed = set(rule.completed_steps)
+                duplicate_steps: list[str] = []
+                if "slice_timing" in completed and preprocessing.slice_timing.enabled:
+                    duplicate_steps.append("slice_timing")
+                if "realignment" in completed and preprocessing.realignment.enabled:
+                    duplicate_steps.append("realignment")
+                if (
+                    "normalization" in completed
+                    and preprocessing.normalization.mode is not NormalizationMode.DISABLED
+                ):
+                    duplicate_steps.append("normalization")
+                if "smoothing" in completed and preprocessing.smoothing.timing.value != "disabled":
+                    duplicate_steps.append("smoothing")
+                if completed and preprocessing.dummy_scans > 0:
+                    duplicate_steps.append("remove_first_time_points")
+                if duplicate_steps:
+                    raise InputValidationError(
+                        "manifest_dpabi_stage_step_conflict",
+                        "所选 DPABI checkpoint 已包含方案要求再次执行的步骤。",
+                        input_stage=functional_stage_roots[0],
+                        completed_steps=sorted(completed),
+                        duplicate_steps=duplicate_steps,
+                    )
         missing_functional = [
             {
                 "subject_id": entry.subject_id,

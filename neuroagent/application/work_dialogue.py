@@ -1,6 +1,5 @@
 """Model interpretation produces drafts; only server-checked commands authorize actions."""
 
-# ruff: noqa: RUF001
 from __future__ import annotations
 
 import logging
@@ -17,6 +16,7 @@ from neuroagent.application.contracts import (
     ConversationTurnCreate,
     ConversationView,
     QcExecutionMode,
+    WorkspaceCitation,
 )
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError
@@ -52,6 +52,12 @@ class WorkInterpretation(BaseModel):
     answer: str = Field(min_length=1, max_length=12000)
     action: str = Field(default="conversation", max_length=64)
     draft_patch: dict[str, Any] = Field(default_factory=dict)
+    workspace_citations: tuple[WorkspaceCitation, ...] = ()
+    workspace_edits: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+    recommended_input_stage: str | None = Field(default=None, max_length=64)
+    stage_intent: str | None = Field(default=None, max_length=1000)
+    stage_reasoning: str | None = Field(default=None, max_length=4000)
+    stage_questions: tuple[str, ...] = ()
 
     @field_validator("action")
     @classmethod
@@ -77,6 +83,14 @@ def execution_command(plan_hash: str, qc: str, confirmation_id: str | None = Non
 def _work_loop_metadata(looped: Any) -> dict[str, Any]:
     """Persist loop outcomes even when the final answer requires fallback."""
 
+    workspace_redactions = 0
+    workspace_omitted_sensitive = 0
+    for outcome in looped.outcomes:
+        if outcome.name not in {"read_workspace_content", "search_workspace_content"}:
+            continue
+        result = outcome.result or {}
+        workspace_redactions += int(result.get("redactions", 0) or 0)
+        workspace_omitted_sensitive += int(result.get("omitted_sensitive", 0) or 0)
     return {
         "enabled": True,
         "stop_reason": looped.stop_reason,
@@ -85,6 +99,8 @@ def _work_loop_metadata(looped: Any) -> dict[str, Any]:
         "usage": looped.usage,
         "fallback_candidate": not bool(looped.final_text.strip()),
         "fallback_used": False,
+        "workspace_redactions": workspace_redactions,
+        "workspace_omitted_sensitive": workspace_omitted_sensitive,
         "calls": [
             {
                 "tool_name": outcome.name,
@@ -102,10 +118,62 @@ def _work_loop_metadata(looped: Any) -> dict[str, Any]:
     }
 
 
+def _valid_workspace_citation_paths(
+    citations: tuple[WorkspaceCitation, ...], loop_metadata: dict[str, Any] | None
+) -> bool:
+    """Accept citations only for successful reads in this turn.
+
+    Search/list results help the model locate a file but are not evidence by
+    themselves.  The server therefore binds every citation to a read tool
+    result persisted in the bounded loop metadata.
+    """
+
+    if not loop_metadata:
+        return not citations
+    evidence: dict[str, list[dict[str, Any]]] = {}
+    read_seen = False
+    for call in loop_metadata.get("calls", []):
+        if call.get("tool_name") != "read_workspace_content" or call.get("status") != "succeeded":
+            continue
+        read_seen = True
+        output = call.get("output") or {}
+        path = output.get("path")
+        if not isinstance(path, str):
+            continue
+        locators = output.get("locators") or []
+        evidence[path] = [locator for locator in locators if isinstance(locator, dict)]
+    if read_seen and not citations:
+        return False
+    for citation in citations:
+        if citation.path not in evidence:
+            return False
+        if citation.locator and not any(
+            _locator_matches(citation.locator, locator) for locator in evidence[citation.path]
+        ):
+            return False
+    return True
+
+
+def _locator_matches(requested: str, locator: dict[str, Any]) -> bool:
+    normalized = requested.casefold().replace(" ", "")
+    flattened = "".join(f"{key}{value}" for key, value in locator.items())
+    if normalized in flattened.casefold().replace(" ", ""):
+        return True
+    for key, value in locator.items():
+        if normalized in f"{key}{value}".casefold().replace(" ", ""):
+            return True
+        if normalized == str(value).casefold().replace(" ", ""):
+            return True
+        if isinstance(value, dict) and _locator_matches(requested, value):
+            return True
+    return requested == str(locator)
+
+
 # The user echoes this exact, server-issued command; a model cannot forge it
 # because authorization is never taken from model output.  The pattern and
 # ``execution_command`` must stay in step.
 EXECUTION_COMMAND_PATTERN = r"批准并启动 ([a-f0-9]{12}) (做头动QC|跳过QC) ([a-f0-9-]{36})"
+STAGE_CONFIRMATION_PATTERN = r"确认起始阶段 ([A-Za-z0-9_]+) ([a-f0-9]{12})"
 
 
 class WorkDialogue:
@@ -114,11 +182,15 @@ class WorkDialogue:
         coordinator: ConversationWorkCoordinator,
         generate: Callable[..., Awaitable[ChatGatewayResult]],
         tool_runner: WorkToolRunner | None = None,
+        create_workspace_proposal: Callable[..., dict[str, Any]] | None = None,
+        confirm_workspace_stage: Callable[..., Any] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.generate = generate
         # Optional: without it Work keeps the single-shot interpretation path.
         self.tool_runner = tool_runner
+        self.create_workspace_proposal = create_workspace_proposal
+        self.confirm_workspace_stage = confirm_workspace_stage
 
     async def respond(
         self,
@@ -129,6 +201,7 @@ class WorkDialogue:
         workspace_path: str | None,
         project_id: str | None,
         preferred_profile_id: str | None,
+        workspace_content_consent: bool = False,
         idempotency_key: str,
         has_profiles: bool,
     ) -> WorkActionResult:
@@ -149,6 +222,36 @@ class WorkDialogue:
             saved = None
         draft = WorkDraft.model_validate(saved["draft"]) if saved else WorkDraft()
         text = request.content.strip()
+
+        stage_confirmation = re.fullmatch(STAGE_CONFIRMATION_PATTERN, text)
+        if stage_confirmation:
+            if self.confirm_workspace_stage is None or not workspace_path:
+                return reply("当前服务不能确认工作区起始阶段。")
+            dataset_payload = latest_payload(conversation, "dataset")
+            if not dataset_payload or not dataset_payload.get("dataset_id"):
+                return reply("请先登记工作区，再确认 DPABI 起始阶段。")
+            candidates = list(packet.work_context.get("workspace_stage_candidates", []))
+            stage = stage_confirmation[1]
+            token = stage_confirmation[2]
+
+            def commit_stage() -> WorkActionResult:
+                manifest = self.confirm_workspace_stage(
+                    dataset_id=str(dataset_payload["dataset_id"]),
+                    workspace_path=workspace_path,
+                    selected_input_stage=stage,
+                    token=token,
+                    idempotency_key=idempotency_key,
+                )
+                return replace(
+                    reply(
+                        f"已确认 DPABI 起始阶段 {stage}。"
+                        "现在可以继续整理预处理参数。",
+                        {"manifest": manifest.model_dump(mode="json"), "selected_input_stage": stage},
+                    ),
+                    project_id=project_id,
+                )
+
+            return replace(reply(""), commit=commit_stage)
         if text.startswith("确认方案参数"):
             if not saved or text != f"确认方案参数 {draft_hash(draft)[:12]}":
                 return reply("草稿已变化或工作区不匹配，请先查看当前参数草稿并确认最新版本。")
@@ -244,6 +347,22 @@ class WorkDialogue:
                 return reply(
                     "这条消息不会启动任务。自然语言方法问答和多轮参数整理需要先在设置中连接模型。"
                 )
+            if (
+                packet.work_context.get("workspace_stage_selection_required")
+                and request.action is ConversationAction.PREPARE_PREPROCESSING_PLAN
+            ):
+                candidates = [
+                    str(item.get("stage", ""))
+                    for item in packet.work_context.get("workspace_stage_candidates", [])
+                    if isinstance(item, dict)
+                ]
+                return reply(
+                    "当前未连接支持工具调用的模型，不能可靠识别预处理意图。"
+                    "请先选择并明确确认一个 DPABI 起始阶段："
+                    + ("、".join(candidates) if candidates else "无可核验候选")
+                    + "。本轮未执行操作。",
+                    {"stage_candidates": candidates, "stage_selection_required": True},
+                )
             offline_action = self.coordinator.resolve_action(
                 request,
                 workspace_path,
@@ -312,18 +431,145 @@ class WorkDialogue:
                         if run_id
                     ),
                     selected_profile_id=preferred_profile_id,
-                    context_window_tokens=int(
-                        packet.metadata.get("context_window_tokens", 16_384)
-                    ),
+                    context_window_tokens=int(packet.metadata.get("context_window_tokens", 16_384)),
                     max_output_tokens=int(packet.metadata.get("max_output_tokens", 2_048)),
+                    workspace_path=workspace_path,
+                    workspace_file_scope=(
+                        request.workspace_file_scope.paths if request.workspace_file_scope else ()
+                    ),
+                    workspace_content_consent=workspace_content_consent,
+                    workspace_stage_candidates=tuple(
+                        item for item in model_context["work_context"].get("workspace_stage_candidates", [])
+                        if isinstance(item, dict)
+                    ),
                 ),
             )
             interpreted = WorkInterpretation.model_validate_json(raw_content)
-            if interpreted.draft_patch and interpreted.action != "prepare_preprocessing_plan":
-                raise ValueError("draft patch requires planning intent")
             payload: dict[str, Any] = {"model": metadata}
             if loop_metadata is not None:
                 payload["tool_loop"] = loop_metadata
+                payload["workspace_redactions"] = loop_metadata.get("workspace_redactions", 0)
+                payload["workspace_omitted_sensitive"] = loop_metadata.get(
+                    "workspace_omitted_sensitive", 0
+                )
+            if interpreted.recommended_input_stage:
+                candidates = list(model_context["work_context"].get("workspace_stage_candidates", []))
+                candidate_names = {
+                    str(item.get("stage", "")).casefold() for item in candidates if isinstance(item, dict)
+                }
+                if interpreted.recommended_input_stage.casefold() not in candidate_names:
+                    return reply(
+                        "模型建议的 DPABI 起始阶段不在服务端本轮候选清单中，已拒绝该建议；请重新读取工作区阶段。",
+                        payload,
+                    )
+                selected_candidate = next(
+                    (
+                        item
+                        for item in candidates
+                        if isinstance(item, dict)
+                        and str(item.get("stage", "")).casefold()
+                        == interpreted.recommended_input_stage.casefold()
+                    ),
+                    None,
+                )
+                if selected_candidate is None or not bool(
+                    selected_candidate.get("selectable", False)
+                ):
+                    issues = (
+                        selected_candidate.get("issues")
+                        if isinstance(selected_candidate, dict)
+                        else None
+                    ) or ["候选阶段当前不可执行"]
+                    return reply(
+                        "模型建议的 DPABI 起始阶段已被服务端判定为不可执行："
+                        + "；".join(str(issue) for issue in issues),
+                        payload,
+                    )
+                if workspace_path and candidates:
+                    token = self.coordinator.stage_confirmation_token(workspace_path, candidates)
+                    payload["workspace_stage_recommendation"] = {
+                        "stage": interpreted.recommended_input_stage,
+                        "intent": interpreted.stage_intent,
+                        "reasoning": interpreted.stage_reasoning,
+                        "questions": list(interpreted.stage_questions),
+                        "confirmation_command": (
+                            f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
+                            if latest_payload(conversation, "dataset")
+                            else None
+                        ),
+                    }
+                    self.coordinator.record_workspace_stage_recommendation(
+                        conversation_id=conversation.conversation_id,
+                        project_id=project_id,
+                        workspace_path=workspace_path,
+                        stage=interpreted.recommended_input_stage,
+                        intent=interpreted.stage_intent,
+                        reasoning=interpreted.stage_reasoning,
+                        questions=list(interpreted.stage_questions),
+                    )
+                    next_step = (
+                        "登记工作区后，再原样回复服务端签发的确认口令。"
+                        if latest_payload(conversation, "dataset") is None
+                        else (
+                            "请审查候选目录和依据后，原样回复："
+                            f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
+                        )
+                    )
+                    return reply(
+                        interpreted.answer
+                        + "\n\n模型建议起始阶段："
+                        + interpreted.recommended_input_stage
+                        + "。"
+                        + next_step,
+                        payload,
+                    )
+            if (
+                interpreted.action == "prepare_preprocessing_plan"
+                and bool(model_context["work_context"].get("workspace_stage_selection_required"))
+            ):
+                candidates = [
+                    str(item.get("stage", ""))
+                    for item in model_context["work_context"].get("workspace_stage_candidates", [])
+                    if isinstance(item, dict)
+                ]
+                return reply(
+                    "请先明确 DPABI 起始阶段。当前候选："
+                    + ("、".join(candidates) if candidates else "无可核验阶段")
+                    + "。模型可以根据你的处理意图提出建议，但必须由你确认后才能生成方案。",
+                    payload,
+                )
+            if not _valid_workspace_citation_paths(interpreted.workspace_citations, loop_metadata):
+                return reply(
+                    "文件引用无法与本轮成功读取结果对应，已拒绝该结论或修改提案。请先读取文件后重试。",
+                    payload,
+                )
+            if interpreted.workspace_citations:
+                payload["workspace_citations"] = [
+                    item.model_dump(mode="json") for item in interpreted.workspace_citations
+                ]
+            if interpreted.draft_patch and interpreted.action != "prepare_preprocessing_plan":
+                raise ValueError("draft patch requires planning intent")
+            if interpreted.action == "propose_workspace_changes":
+                if self.create_workspace_proposal is None:
+                    return reply("当前服务未启用工作区修改提案。", payload)
+                try:
+                    proposal = self.create_workspace_proposal(
+                        conversation_id=conversation.conversation_id,
+                        workspace_path=workspace_path,
+                        profile_id=preferred_profile_id,
+                        model=request.model,
+                        edits=interpreted.workspace_edits,
+                        citations=[
+                            item.model_dump(mode="json") for item in interpreted.workspace_citations
+                        ],
+                    )
+                except ApplicationError as exc:
+                    return reply(exc.message, payload)
+                payload["workspace_change_proposal"] = proposal
+                return reply(
+                    interpreted.answer + "\n\n已生成待审查补丁，请在界面中查看 diff 并确认应用。",
+                    payload,
+                )
             if interpreted.action == "prepare_preprocessing_plan":
                 draft = merge_work_draft(draft, interpreted.draft_patch)
                 issues = draft_issues(draft)

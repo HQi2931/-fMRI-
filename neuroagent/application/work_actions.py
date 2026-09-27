@@ -33,6 +33,7 @@ WORK_MODEL_ACTIONS: Mapping[str, ToolTier] = MappingProxyType(
         "get_qc_status": ToolTier.READ,
         "get_statistical_results": ToolTier.READ,
         "prepare_preprocessing_plan": ToolTier.PROPOSE,
+        "propose_workspace_changes": ToolTier.PROPOSE,
         "propose_run_confirmation": ToolTier.PROPOSE,
     }
 )

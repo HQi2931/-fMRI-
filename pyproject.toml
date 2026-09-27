@@ -22,6 +22,7 @@ dependencies = [
   "python-multipart>=0.0.20,<1",
   "python-dotenv>=1.1,<2",
   "pypdf>=6,<7",
+  "python-docx>=1.1,<2",
   "pyyaml>=6.0.2,<7",
   "sqlalchemy>=2.0.41,<3",
   "uvicorn[standard]>=0.35,<1",
@@ -56,6 +57,14 @@ exclude = [".venv", "web", "runs", "artifacts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+[tool.ruff.lint.per-file-ignores]
+"neuroagent/api/routes.py" = ["E501"]
+"neuroagent/application/ports.py" = ["E501"]
+"neuroagent/application/services.py" = ["E501", "RUF001"]
+"neuroagent/application/work_dialogue.py" = ["E501", "RUF001"]
+"neuroagent/application/work_tools.py" = ["E501"]
+"neuroagent/infrastructure/filesystem/workspace_files.py" = ["E501", "E702", "SIM102", "RUF001"]
+"neuroagent/infrastructure/persistence/repository_mixins/workspace_assistant.py" = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -27,21 +27,38 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class ProjectDatasetMixin(BaseServiceMixin):
-    def _inspect_source(self, source: Any, *, report_only: bool) -> dict[str, Any]:
+    def _inspect_source(
+        self,
+        source: Any,
+        *,
+        report_only: bool,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]:
         try:
-            return self.dataset_inspector.inspect(source, report_only=report_only)
+            return self.dataset_inspector.inspect(
+                source,
+                report_only=report_only,
+                selected_input_stage=selected_input_stage,
+            )
         except TypeError as exc:
             # Preserve compatibility with lightweight test/integration inspectors
             # that implement the original one-argument port.
-            if "report_only" not in str(exc):
+            if "report_only" not in str(exc) and "selected_input_stage" not in str(exc):
                 raise
-            return self.dataset_inspector.inspect(source)
+            try:
+                return self.dataset_inspector.inspect(source, report_only=report_only)
+            except TypeError:
+                return self.dataset_inspector.inspect(source)
 
     def check_workspace(self, request: WorkspaceCheckRequest) -> WorkspaceCheckView:
         """Inspect a selected workspace without registering or modifying it."""
 
         source = self.path_policy.validate_project_source_root(request.path)
-        content = self._inspect_source(source, report_only=True)
+        content = self._inspect_source(
+            source,
+            report_only=True,
+            selected_input_stage=request.selected_input_stage,
+        )
         profile = content["profile"]
         subjects = content["subjects"]
         warnings = list(profile.get("warnings", []))
@@ -73,6 +90,9 @@ class ProjectDatasetMixin(BaseServiceMixin):
             functional_subject_count=functional_subject_count,
             anatomical_subject_count=anatomical_subject_count,
             input_stage=content.get("input_stage"),
+            selected_input_stage=content.get("selected_input_stage"),
+            stage_selection_required=bool(content.get("stage_selection_required", False)),
+            stage_candidates=content.get("stage_candidates", []),
             output_directories=content.get("output_directories", []),
             invalid_nifti_files=invalid_nifti_files,
             warnings=warnings,
@@ -170,7 +190,11 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 project_roots=project.source_roots,
                 expect_directory=True,
             )
-            content = self._inspect_source(source, report_only=request.report_only)
+            content = self._inspect_source(
+                source,
+                report_only=request.report_only,
+                selected_input_stage=request.selected_input_stage,
+            )
             return dataset.project_id, content
 
         def finalize(prepared: tuple[str, dict[str, Any]]) -> ManifestRevisionView:

@@ -30,6 +30,7 @@ from neuroagent.application.contracts import (
     SubjectManifestEntry,
     ValidationIssue,
     WorkflowState,
+    WorkspaceStageCandidate,
 )
 from neuroagent.application.errors import ConflictError
 from neuroagent.domain.fmri.qc import QcCheck, QcReviewRevision
@@ -59,6 +60,7 @@ from neuroagent.infrastructure.persistence.repository_mixins import (
     ProjectDatasetMixin,
     QcReviewMixin,
     RunMixin,
+    WorkspaceAssistantMixin,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     _as_utc,
@@ -80,6 +82,7 @@ class SqliteRepository(
     ModelAgentMixin,
     ConversationMixin,
     LiteratureMixin,
+    WorkspaceAssistantMixin,
 ):
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -161,6 +164,11 @@ class SqliteRepository(
             content_hash=row.content_hash,
             profile=DatasetProfile.model_validate(value["profile"]),
             subjects=[SubjectManifestEntry.model_validate(item) for item in value["subjects"]],
+            selected_input_stage=value.get("selected_input_stage"),
+            stage_candidates=[
+                WorkspaceStageCandidate.model_validate(item)
+                for item in value.get("stage_candidates", [])
+            ],
             created_at=_as_utc(row.created_at),
         )
 

@@ -102,6 +102,7 @@
 - [ADR 0013：QC 由运行请求显式选择](adr/0013-optional-qc-gate.md)
 - [ADR 0014：有界工具调用循环与三级工具契约](adr/0014-bounded-tool-loop.md)
 - [ADR 0015：Agent 控制面预算、作用域与一次性执行授权](adr/0015-agent-control-plane-hardening.md)
+- [ADR 0017：DPABI 阶段由模型建议、用户确认与服务端冻结](adr/0017-explicit-dpabi-stage-selection.md)
 
 ### 审查记录
 

@@ -11,6 +11,9 @@ from neuroagent.infrastructure.persistence.repository_mixins.plans import PlanAp
 from neuroagent.infrastructure.persistence.repository_mixins.projects import ProjectDatasetMixin
 from neuroagent.infrastructure.persistence.repository_mixins.qc import QcReviewMixin
 from neuroagent.infrastructure.persistence.repository_mixins.runs import RunMixin
+from neuroagent.infrastructure.persistence.repository_mixins.workspace_assistant import (
+    WorkspaceAssistantMixin,
+)
 
 __all__ = [
     "ArtifactEventMixin",
@@ -24,4 +27,5 @@ __all__ = [
     "QcReviewMixin",
     "RepositoryBaseMixin",
     "RunMixin",
+    "WorkspaceAssistantMixin",
 ]

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -44,6 +46,7 @@ from neuroagent.application.contracts import (
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.ports import PathPolicyPort, RepositoryPort
 from neuroagent.application.work_draft import WorkDraft, confirmed_skill_intent, draft_hash
+from neuroagent.domain.fmri.dpabi_stages import canonical_stage_name
 
 _RUN_STATE_LABELS = {
     "queued": "排队中",
@@ -101,6 +104,7 @@ class ConversationWorkCoordinator:
         create_project: Callable[[ProjectCreate, str], ProjectView],
         create_dataset: Callable[[str, DatasetCreate, str], DatasetView],
         inspect_dataset: Callable[[str, ManifestScanRequest, str], ManifestRevisionView],
+        inspect_source: Callable[..., dict[str, Any]] | None = None,
         resolve_skill_plan: Callable[[SkillPlanResolveRequest, str], SkillPlanResolveView],
         validate_plan_current: Callable[[PlanRevisionView], None],
         get_qc_review: Callable[[str], QcReviewView],
@@ -120,6 +124,7 @@ class ConversationWorkCoordinator:
         self._create_project = create_project
         self._create_dataset = create_dataset
         self._inspect_dataset = inspect_dataset
+        self._inspect_source_callback = inspect_source
         self._resolve_skill_plan = resolve_skill_plan
         self._validate_plan_current = validate_plan_current
         self._get_qc_review = get_qc_review
@@ -133,6 +138,144 @@ class ConversationWorkCoordinator:
         self._approve_plan = approve_plan
         self._tool_result = tool_result
         self._work_root = work_root
+
+    @staticmethod
+    def stage_confirmation_token(workspace_path: str, candidates: list[dict[str, Any]]) -> str:
+        payload = {
+            "workspace": str(Path(workspace_path).resolve()),
+            "candidates": candidates,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def workspace_stage_candidates(
+        self,
+        workspace_path: str | None,
+        *,
+        confirmed_stage: str | None = None,
+    ) -> dict[str, Any]:
+        if not workspace_path:
+            return {"candidates": [], "token": None, "selection_required": False}
+        source = self._path_policy.validate_project_source_root(workspace_path)
+        if self._inspect_source_callback is None:
+            return {"candidates": [], "token": None, "selection_required": False}
+        content = self._inspect_source_callback(
+            source,
+            report_only=True,
+            selected_input_stage=confirmed_stage,
+        )
+        candidates = list(content.get("stage_candidates", []))
+        return {
+            "candidates": candidates,
+            "token": self.stage_confirmation_token(str(source), candidates),
+            "selection_required": bool(content.get("stage_selection_required", False)),
+            "rule_version": content.get("stage_rule_version"),
+        }
+
+    def confirm_workspace_stage(
+        self,
+        *,
+        dataset_id: str,
+        workspace_path: str,
+        selected_input_stage: str,
+        token: str,
+        idempotency_key: str,
+    ) -> ManifestRevisionView:
+        dataset = self._repository.get_dataset(dataset_id)
+        project = self._repository.get_project(dataset.project_id)
+        source = self._path_policy.validate_read_path(
+            dataset.source_path,
+            project_roots=project.source_roots,
+            expect_directory=True,
+        )
+        selected_workspace = self._path_policy.validate_project_source_root(workspace_path)
+        if source != selected_workspace:
+            raise ConflictError("conversation_workspace_plan_mismatch", "确认阶段的工作区已变化。")
+        if self._inspect_source_callback is None:
+            raise InputValidationError(
+                "dataset_inspector_unavailable", "工作区阶段检查服务不可用。"
+            )
+        report = self._inspect_source_callback(source, report_only=True)
+        candidates = list(report.get("stage_candidates", []))
+        expected_token = self.stage_confirmation_token(str(source), candidates)
+        if token != expected_token:
+            raise ConflictError(
+                "workspace_stage_confirmation_stale", "工作区阶段清单已变化，请重新读取并确认。"
+            )
+        canonical = canonical_stage_name(selected_input_stage)
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("stage", "")).casefold() == str(canonical or "").casefold()
+            ),
+            None,
+        )
+        if candidate is None:
+            raise InputValidationError(
+                "workspace_stage_not_candidate", "所选起始阶段不在本轮服务端候选清单中。"
+            )
+        if not bool(candidate.get("selectable", False)):
+            issues = candidate.get("issues") or ["候选阶段当前不可执行"]
+            raise InputValidationError(
+                "workspace_stage_not_selectable",
+                "所选起始阶段当前不可执行：" + "；".join(str(issue) for issue in issues),
+            )
+        content = self._inspect_source_callback(
+            source, report_only=False, selected_input_stage=selected_input_stage
+        )
+        result = self._repository.create_manifest(
+            dataset_id,
+            expected_version=dataset.version,
+            content=content,
+        )
+        self._repository.append_event(
+            project_id=project.project_id,
+            run_id=None,
+            event_type="WorkspaceStageConfirmed",
+            severity="info",
+            payload={
+                "dataset_id": dataset_id,
+                "manifest_id": result.manifest_id,
+                "selected_input_stage": selected_input_stage,
+                "stage_rule_version": content.get("stage_rule_version"),
+            },
+        )
+        return result
+
+    def record_workspace_stage_recommendation(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str | None,
+        workspace_path: str,
+        stage: str,
+        intent: str | None,
+        reasoning: str | None,
+        questions: list[str],
+    ) -> None:
+        """Keep the model suggestion auditable without granting it authority."""
+
+        self._repository.append_event(
+            project_id=project_id,
+            run_id=None,
+            event_type="WorkspaceStageRecommended",
+            severity="info",
+            payload={
+                "conversation_id": conversation_id,
+                "workspace_hash": hashlib.sha256(
+                    str(Path(workspace_path).resolve()).encode("utf-8")
+                ).hexdigest(),
+                "stage": stage,
+                "intent_length": len(intent or ""),
+                "reasoning_hash": hashlib.sha256(
+                    (reasoning or "").encode("utf-8")
+                ).hexdigest(),
+                "question_count": len(questions),
+            },
+        )
 
     def execute(
         self,
@@ -182,7 +325,9 @@ class ConversationWorkCoordinator:
             if action is ConversationAction.SETUP_WORKSPACE:
                 return self._setup_workspace(request, workspace_path, idempotency_key)
             if action is ConversationAction.PREPARE_PREPROCESSING_PLAN:
-                return self._prepare_preprocessing_plan(request, project_id, idempotency_key)
+                return self._prepare_preprocessing_plan(
+                    request, workspace_path, project_id, idempotency_key
+                )
             if action is ConversationAction.PREVIEW_PREPROCESSING_RUN:
                 return self._preview_preprocessing_run(request, workspace_path, project_id)
             if action is ConversationAction.GET_PROGRESS:
@@ -330,6 +475,7 @@ class ConversationWorkCoordinator:
                         "expected_project_version": project.version,
                     }
                 ),
+                workspace_path,
                 project_id,
                 idempotency_key + ":compile",
             )
@@ -386,7 +532,18 @@ class ConversationWorkCoordinator:
         )
         manifest = self._inspect_dataset(
             dataset.dataset_id,
-            ManifestScanRequest(expected_dataset_version=dataset.version, report_only=True),
+            ManifestScanRequest(
+                expected_dataset_version=dataset.version,
+                report_only=True,
+                selected_input_stage=(
+                    request.selected_input_stage
+                    or (
+                        request.workspace_setup.selected_input_stage
+                        if request.workspace_setup
+                        else None
+                    )
+                ),
+            ),
             f"{idempotency_key}:manifest",
         )
         project = self._repository.get_project(project.project_id)
@@ -395,6 +552,14 @@ class ConversationWorkCoordinator:
             "project": project.model_dump(mode="json"),
             "dataset": dataset.model_dump(mode="json"),
             "manifest": manifest.model_dump(mode="json"),
+            "stage_candidates": self._repository.get_manifest_content(manifest.manifest_id).get(
+                "stage_candidates", []
+            ),
+            "stage_selection_required": bool(
+                self._repository.get_manifest_content(manifest.manifest_id).get(
+                    "stage_selection_required", False
+                )
+            ),
         }
         return WorkActionResult(
             assistant_content=(
@@ -419,6 +584,7 @@ class ConversationWorkCoordinator:
     def _prepare_preprocessing_plan(
         self,
         request: ConversationTurnCreate,
+        workspace_path: str | None,
         project_id: str | None,
         idempotency_key: str,
     ) -> WorkActionResult:
@@ -440,6 +606,25 @@ class ConversationWorkCoordinator:
         intent = request.skill_plan_intent
         if project_id is not None and intent.project_id != project_id:
             raise ConflictError("conversation_project_mismatch", "方案不属于当前对话绑定的项目。")
+        dataset = self._repository.get_dataset(intent.dataset_ref)
+        if dataset.current_manifest_id is not None:
+            manifest = self._repository.get_manifest(dataset.current_manifest_id)
+            manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
+            if (
+                manifest.profile.kind.value == "dpabi_ready"
+                and not manifest_content.get("selected_input_stage")
+            ):
+                return WorkActionResult(
+                    "DPABI 工作区尚未确认起始 stage。请先审查模型建议和候选目录，"
+                    "再回复服务端签发的‘确认起始阶段 <stage> <校验码>’指令。",
+                    payload={
+                        "manifest_profile": manifest.profile.model_dump(mode="json"),
+                        "stage_candidates": manifest_content.get("stage_candidates", []),
+                        "stage_selection_required": True,
+                    },
+                    project_id=project_id,
+                    workspace_path=workspace_path,
+                )
         resolved = self._resolve_skill_plan(
             SkillPlanResolveRequest(
                 request=intent,
@@ -450,7 +635,6 @@ class ConversationWorkCoordinator:
             f"{idempotency_key}:skill-plan",
         )
         manifest_profile: dict[str, Any] = {}
-        dataset = self._repository.get_dataset(intent.dataset_ref)
         if dataset.current_manifest_id is not None:
             manifest = self._repository.get_manifest(dataset.current_manifest_id)
             manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
@@ -883,6 +1067,12 @@ class ConversationWorkCoordinator:
             expect_directory=True,
         )
         self._validate_workspace_match(workspace_path, bound_workspace, project.source_roots)
+        manifest_id = plan.plan.get("dataset_manifest_id")
+        if not isinstance(manifest_id, str) or dataset.current_manifest_id != manifest_id:
+            raise ConflictError(
+                "dataset_manifest_revision_changed",
+                "工作区起始阶段或文件清单已变化，原方案和审批已失效；请重新确认并生成方案。",
+            )
         if plan.state is PlanState.AWAITING_APPROVAL:
             self._approve_plan(
                 plan.plan_revision_id,
@@ -977,7 +1167,11 @@ class ConversationWorkCoordinator:
         )
         manifest = self._inspect_dataset(
             dataset.dataset_id,
-            ManifestScanRequest(expected_dataset_version=dataset.version, report_only=True),
+            ManifestScanRequest(
+                expected_dataset_version=dataset.version,
+                report_only=False,
+                selected_input_stage="FunImg",
+            ),
             f"{idempotency_key}:manifest",
         )
         if (

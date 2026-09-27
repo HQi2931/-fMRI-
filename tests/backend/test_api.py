@@ -64,11 +64,14 @@ def test_workspace_check_reports_dpabi_input_and_outputs(
     assert response.status_code == 200
     payload = response.json()
     assert payload["kind"] == "dpabi_ready"
-    assert payload["input_stage"] == "funraw"
-    assert payload["functional_subject_count"] == 1
-    assert payload["anatomical_subject_count"] == 1
+    assert payload["input_stage"] is None
+    assert payload["selected_input_stage"] is None
+    assert payload["stage_selection_required"] is True
+    assert [item["stage"] for item in payload["stage_candidates"]] == ["FunRaw"]
+    assert payload["functional_subject_count"] == 0
+    assert payload["anatomical_subject_count"] == 0
     assert payload["output_directories"] == ["Results"]
-    assert payload["issues"] == []
+    assert any("尚未由用户明确确认" in issue for issue in payload["issues"])
 
 
 def test_workspace_check_reports_format_risks_without_blocking(
@@ -372,6 +375,7 @@ def test_work_conversation_registers_selected_workspace_and_freezes_manifest(
                     "project_name": "Work project",
                     "dataset_name": "Resting state",
                     "work_root": str(work_root / "work-project"),
+                    "selected_input_stage": "FunRaw",
                 },
             },
             headers={"Idempotency-Key": "work-setup-turn"},
@@ -717,7 +721,10 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
         )
         manifest = service.inspect_dataset(
             dataset.dataset_id,
-            ManifestScanRequest(expected_dataset_version=dataset.version),
+            ManifestScanRequest(
+                expected_dataset_version=dataset.version,
+                selected_input_stage="FunRaw",
+            ),
             "conversation-run-manifest",
         )
         with TestClient(create_app(service=service)) as client:

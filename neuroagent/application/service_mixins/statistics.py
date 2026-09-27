@@ -833,7 +833,10 @@ class StatisticsMixin(BaseServiceMixin):
                         "message": "dataset current manifest revision changed",
                     }
                 )
-            elif self.repository.get_manifest(manifest_id).content_hash != plan.manifest_hash:
+            current_manifest = None
+            if isinstance(manifest_id, str) and dataset.current_manifest_id == manifest_id:
+                current_manifest = self.repository.get_manifest(manifest_id)
+            if current_manifest is not None and current_manifest.content_hash != plan.manifest_hash:
                 reasons.append(
                     {
                         "code": "dataset_manifest_hash_changed",
@@ -847,7 +850,15 @@ class StatisticsMixin(BaseServiceMixin):
                     project_roots=project.source_roots,
                     expect_directory=True,
                 )
-                current_source_hash = content_hash(self.dataset_inspector.inspect(source))
+                current_source_hash = content_hash(
+                    self._inspect_source(
+                        source,
+                        report_only=False,
+                        selected_input_stage=(
+                            current_manifest.selected_input_stage if current_manifest else None
+                        ),
+                    )
+                )
                 if current_source_hash != plan.manifest_hash:
                     reasons.append(
                         {

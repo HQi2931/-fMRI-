@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
+from contextlib import suppress
+from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from neuroagent.agent.loop import AgentLoopBudget
+from neuroagent.agent.models import ModelCapability
 from neuroagent.agent.providers import ModelProvider
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.secrets import SecretResolver
@@ -16,11 +21,18 @@ from neuroagent.application.contracts import (
     EnvironmentProbeView,
     HealthView,
     RsFmriQuestionRequest,
+    WorkspaceChangeProposal,
+    WorkspaceContentConsent,
+    WorkspaceContentConsentCreate,
+    WorkspacePatchApplyRequest,
+    WorkspacePatchApplyView,
+    WorkspacePatchUndoView,
     WorkspacePickView,
 )
 from neuroagent.application.conversation_context import ConversationContextCoordinator
 from neuroagent.application.conversation_work import ConversationWorkCoordinator
 from neuroagent.application.environment_lock import EnvironmentLockProvider
+from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.ports import (
     DatabaseLifecyclePort,
     DatasetInspectorPort,
@@ -29,6 +41,7 @@ from neuroagent.application.ports import (
     PathPolicyPort,
     RepositoryPort,
     SecretWriterPort,
+    WorkspaceFilePolicyPort,
     WorkspacePickerPort,
 )
 from neuroagent.application.service_mixins import (
@@ -86,6 +99,256 @@ class NeuroAgentService(
 ):
     """A transport-neutral facade around transactional use cases."""
 
+    workspace_policy_version = "workspace-files-v1"
+
+    @staticmethod
+    def _workspace_hash(root: Path) -> str:
+        return hashlib.sha256(str(root.resolve(strict=True)).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _workspace_root(self, path: str | None):
+        if not path:
+            return None
+        return self.path_policy.validate_project_source_root(path)
+
+    def workspace_content_consent_granted(
+        self,
+        conversation_id: str,
+        workspace_path: str | None,
+        profile_id: str | None,
+        model: str | None,
+    ) -> bool:
+        if not workspace_path or not profile_id or not model:
+            return False
+        try:
+            root = self._workspace_root(workspace_path)
+        except Exception:
+            return False
+        expected_hash = self._workspace_hash(root)
+        try:
+            consents = self.repository.list_workspace_consents(conversation_id)
+        except (AttributeError, NotImplementedError):
+            return False
+        return any(
+            item.workspace_hash == expected_hash
+            and item.profile_id == profile_id
+            and item.model == model
+            and item.policy_version == self.workspace_policy_version
+            and item.revoked_at is None
+            for item in consents
+        )
+
+    def _workspace_policy(self, path: str | None) -> WorkspaceFilePolicyPort | None:
+        root = self._workspace_root(path)
+        if root is None:
+            return None
+        return self.workspace_file_factory(root)
+
+    def create_workspace_content_consent(
+        self, conversation_id: str, request: WorkspaceContentConsentCreate
+    ) -> WorkspaceContentConsent:
+        if not self.settings.workspace_file_assistant_enabled or not self.settings.redaction_salt:
+            raise InputValidationError(
+                "workspace_file_assistant_unavailable",
+                "文件助手未启用：必须配置 redaction_salt 且开启功能。",
+            )
+        conversation = self.repository.get_conversation(conversation_id)
+        if conversation.mode.value != "work" or not conversation.workspace_path:
+            raise InputValidationError("workspace_required", "文件助手需要绑定 Work 工作区。")
+        profile = self.get_model_profile(request.profile_id).profile
+        if ModelCapability.TOOL_USE not in profile.capabilities:
+            raise InputValidationError(
+                "workspace_tool_use_required", "所选模型不支持工作区文件工具。"
+            )
+        if not request.acknowledge_remote_processing:
+            raise InputValidationError(
+                "workspace_consent_required", "必须确认文件内容可能发送给所选模型服务。"
+            )
+        root = self._workspace_root(conversation.workspace_path)
+        host = urlsplit(profile.base_url).hostname or profile.base_url
+        return self.repository.create_workspace_consent(
+            conversation_id=conversation_id,
+            workspace_hash=self._workspace_hash(root),
+            profile_id=request.profile_id,
+            model=request.model,
+            policy_version=self.workspace_policy_version,
+            provider_host=host,
+        )
+
+    def list_workspace_content_consents(
+        self, conversation_id: str
+    ) -> list[WorkspaceContentConsent]:
+        return self.repository.list_workspace_consents(conversation_id)
+
+    def revoke_workspace_content_consent(
+        self, conversation_id: str, consent_id: str
+    ) -> WorkspaceContentConsent:
+        return self.repository.revoke_workspace_consent(conversation_id, consent_id)
+
+    def list_workspace_files(self, conversation_id: str, directory: str = "") -> dict[str, Any]:
+        conversation = self.repository.get_conversation(conversation_id)
+        policy = self._workspace_policy(conversation.workspace_path)
+        if policy is None:
+            raise InputValidationError("workspace_required", "请先选择工作区。")
+        return policy.list_entries(directory=directory)
+
+    def create_workspace_proposal(
+        self,
+        *,
+        conversation_id: str,
+        workspace_path: str | None,
+        profile_id: str | None,
+        model: str | None,
+        edits: list[dict[str, Any]],
+        citations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self.workspace_content_consent_granted(
+            conversation_id, workspace_path, profile_id, model
+        ):
+            raise InputValidationError(
+                "workspace_consent_required", "请先授权当前模型读取工作区文件。"
+            )
+        policy = self._workspace_policy(workspace_path)
+        if policy is None:
+            raise InputValidationError("workspace_required", "请先选择工作区。")
+        if not citations:
+            raise InputValidationError(
+                "workspace_citation_required", "文件修改提案必须包含证据引用。"
+            )
+        for citation in citations:
+            policy._check_file(str(citation.get("path", "")))
+        built = policy.build_patch(
+            edits,
+            max_files=self.settings.workspace_patch_max_files,
+            max_bytes=self.settings.workspace_patch_max_bytes,
+        )
+        proposal = self.repository.create_workspace_patch(
+            conversation_id=conversation_id,
+            workspace_hash=self._workspace_hash(policy.root),
+            proposal_hash=built["proposal_hash"],
+            edits=built["edits"],
+            diff=built["diff"],
+            citations=citations,
+        )
+        return proposal.model_dump(mode="json")
+
+    def get_workspace_proposal(
+        self, conversation_id: str, proposal_id: str
+    ) -> WorkspaceChangeProposal:
+        return self.repository.get_workspace_patch(conversation_id, proposal_id)
+
+    def apply_workspace_proposal(
+        self,
+        conversation_id: str,
+        proposal_id: str,
+        request: WorkspacePatchApplyRequest,
+    ) -> WorkspacePatchApplyView:
+        from datetime import UTC, datetime
+
+        proposal = self.repository.get_workspace_patch(conversation_id, proposal_id)
+        if proposal.proposal_hash != request.proposal_hash:
+            raise ConflictError("workspace_patch_hash_mismatch", "补丁哈希与当前提案不一致。")
+        if proposal.status != "proposed" or proposal.expires_at <= datetime.now(UTC):
+            raise ConflictError("workspace_patch_not_applicable", "补丁不存在、已过期或已处理。")
+        conversation = self.repository.get_conversation(conversation_id)
+        policy = self._workspace_policy(conversation.workspace_path)
+        if policy is None or self._workspace_hash(policy.root) != proposal.workspace_hash:
+            raise ConflictError("workspace_mismatch", "当前工作区与提案不一致。")
+        result = policy.apply_patch(
+            [item.model_dump(mode="json") for item in proposal.edits],
+            self.settings.allowed_work_root,
+        )
+        try:
+            updated = self.repository.set_workspace_patch_applied(
+                conversation_id,
+                proposal_id,
+                backup_dir=result["backup_dir"],
+                postimage=result["postimage"],
+            )
+        except BaseException:
+            self._restore_workspace_patch(policy, proposal, result["backup_dir"])
+            raise
+        with suppress(Exception):
+            self.repository.invalidate_workspace_patch_undo(
+                conversation_id, proposal.workspace_hash, proposal_id
+            )
+        from datetime import timedelta
+
+        return WorkspacePatchApplyView(
+            proposal_id=proposal_id,
+            proposal_hash=proposal.proposal_hash,
+            status=updated.status,
+            applied_at=updated.applied_at,
+            undo_expires_at=(
+                updated.applied_at + timedelta(hours=24) if updated.applied_at else None
+            ),
+        )
+
+    @staticmethod
+    def _restore_workspace_patch(
+        policy: WorkspaceFilePolicyPort, proposal: WorkspaceChangeProposal, backup_dir: str
+    ) -> None:
+        import shutil
+
+        backup_root = Path(backup_dir)
+        for item in proposal.edits:
+            target = policy._relative(item.path, must_exist=False)
+            backup = backup_root / item.path
+            if backup.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, target)
+            else:
+                target.unlink(missing_ok=True)
+
+    def undo_workspace_proposal(
+        self, conversation_id: str, proposal_id: str
+    ) -> WorkspacePatchUndoView:
+        proposal = self.repository.get_workspace_patch(conversation_id, proposal_id)
+        if proposal.status != "applied":
+            raise ConflictError("workspace_patch_not_undoable", "补丁当前不可撤销。")
+        conversation = self.repository.get_conversation(conversation_id)
+        policy = self._workspace_policy(conversation.workspace_path)
+        if policy is None:
+            raise InputValidationError("workspace_required", "请先选择工作区。")
+        metadata = self.repository.get_workspace_patch_metadata(conversation_id, proposal_id)
+        if metadata is None:
+            raise ConflictError("workspace_patch_backup_missing", "补丁恢复快照不存在。")
+        from datetime import UTC, datetime, timedelta
+
+        if proposal.applied_at and proposal.applied_at + timedelta(hours=24) <= datetime.now(UTC):
+            raise ConflictError("workspace_patch_undo_expired", "补丁撤销窗口已过期。")
+        from pathlib import Path
+
+        backup_dir = Path(metadata["backup_dir"]).resolve()
+        try:
+            backup_dir.relative_to(self.settings.allowed_work_root.resolve())
+        except ValueError as exc:
+            raise ConflictError("workspace_patch_backup_invalid", "补丁恢复目录无效。") from exc
+        for path_text, digest in metadata["postimage"].items():
+            target = (policy.root / path_text).resolve(strict=False)
+            if not target.exists() or self._file_hash(target) != digest:
+                raise ConflictError("workspace_file_changed", "文件已被后续修改，不能覆盖式撤销。")
+        import shutil
+
+        for item in proposal.edits:
+            target = policy._relative(item.path, must_exist=False)
+            backup = backup_dir / item.path
+            if backup.exists():
+                shutil.copy2(backup, target)
+            else:
+                target.unlink(missing_ok=True)
+        self.repository.set_workspace_patch_undone(conversation_id, proposal_id)
+        return WorkspacePatchUndoView(
+            proposal_id=proposal_id, status="undone", undone_at=datetime.now(UTC)
+        )
+
     def __init__(
         self,
         settings: Settings,
@@ -101,6 +364,7 @@ class NeuroAgentService(
         secret_writer: SecretWriterPort,
         providers: Mapping[str, ModelProvider],
         workspace_picker: WorkspacePickerPort | None = None,
+        workspace_file_factory: Any | None = None,
         skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.settings = settings
@@ -120,6 +384,7 @@ class NeuroAgentService(
         self.secret_writer = secret_writer
         self.providers = dict(providers)
         self.workspace_picker = workspace_picker
+        self.workspace_file_factory = workspace_file_factory or (lambda root: None)
         self.context_engine: ContextEngine = cast(ContextEngine, DEFAULT_CONTEXT_MANAGER)
         self.semantic_memory = SemanticMemoryService(
             repository,
@@ -146,6 +411,7 @@ class NeuroAgentService(
             create_project=self.create_project,
             create_dataset=self.create_dataset,
             inspect_dataset=self.inspect_dataset,
+            inspect_source=self._inspect_source,
             resolve_skill_plan=self.resolve_skill_plan,
             validate_plan_current=self._require_plan_current,
             get_qc_review=self.get_qc_review,
@@ -202,6 +468,15 @@ class NeuroAgentService(
                     policy=work_policy,
                     project_id=context.project_id,
                     allowed_run_ids=context.allowed_run_ids,
+                    workspace_policy=(
+                        self._workspace_policy(context.workspace_path)
+                        if context.workspace_content_consent
+                        and self.settings.workspace_file_assistant_enabled
+                        else None
+                    ),
+                    workspace_scope=context.workspace_file_scope,
+                    workspace_stage_candidates=context.workspace_stage_candidates,
+                    workspace_stage_check_available=context.workspace_path is not None,
                 ),
                 probe_capability=self._tool_capability,
                 budget=tool_budget,
@@ -210,6 +485,8 @@ class NeuroAgentService(
             self.conversation_work,
             lambda **kwargs: self._generate_rsfmri_chat(**kwargs),
             tool_runner=work_tool_runner,
+            create_workspace_proposal=self.create_workspace_proposal,
+            confirm_workspace_stage=self.conversation_work.confirm_workspace_stage,
         )
         uploaded_index = UploadedLiteratureIndex(
             work_root=settings.allowed_work_root,

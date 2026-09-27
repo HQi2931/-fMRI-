@@ -86,6 +86,7 @@ _WORK_ACTIONS = (
     "get_qc_status",
     "get_statistical_results",
     "prepare_preprocessing_plan",
+    "propose_workspace_changes",
     "propose_run_confirmation",
 )
 
@@ -93,13 +94,24 @@ _WORK_SYSTEM_PROMPT = (
     "你是 rs-fMRI Work 对话助手。理解用户当前意图和历史追问，使用中文自然回应。"
     "只返回 JSON 对象：answer（非空中文回答），action（"
     + "、".join(_WORK_ACTIONS)
-    + " 之一），draft_patch（对象，默认空）。"
+    + " 之一），draft_patch（对象，默认空），workspace_citations（数组，默认空），"
+    "workspace_edits（数组，默认空），recommended_input_stage（字符串或 null），"
+    "stage_intent（字符串或 null），stage_reasoning（字符串或 null），"
+    "stage_questions（字符串数组，默认空）。"
     "方法查询、寒暄、帮助、否定执行应选 conversation，不要按词语触发操作。"
     "模型只整理草稿，绝不宣称已执行、批准、登记、检查本地数据或验证方案。"
     "当前没有方案表单，直接在对话中逐步收集参数。用户补充或修改参数时，"
     "选 prepare_preprocessing_plan 并输出本轮明确提供的增量 draft_patch。"
     "完整字段结构见 work_context.draft_schema，未提供的值不要填，不要猜测科学默认值，"
     "不要把助手建议当成用户确认。允许用户分多轮填写，优先追问少量关键缺失项。"
+    "需要分析本地文件时先使用可用的工作区只读工具；文件结论必须给出相对路径和定位。"
+    "当用户描述预处理已经完成的步骤时，先调用 list_workspace_stages，结合服务端候选阶段理解意图，"
+    "只能从候选中提出 recommended_input_stage；不能把建议当作阶段确认。"
+    "需要修改文件时选 propose_workspace_changes，只生成可审查补丁，绝不自行写入文件。"
+    "workspace_citations 使用 {path, locator, quote?}；locator 必须来自读取结果"
+    "（如 line 12、page 2、json_pointer /x、sheet/row）。"
+    "workspace_edits 使用 {path, expected_sha256, start_line, end_line, replacement}；"
+    "新文件省略 expected_sha256/start_line/end_line 并提供完整 replacement。"
     "draft_patch 不得包含 provenance、ID、路径、授权、哈希或版本号。"
     "关闭某个步骤时按 schema 明确 enabled=false 及其不适用参数 null。"
     "系统会单独展示并要求确认草稿，随后才校验编译；参数确认不是运行授权。"
@@ -145,7 +157,10 @@ class ModelGateway:
         "unresolved_questions (string array), requires_user_confirmation (boolean), and for "
         "workspace format advice optionally expected_layout (string array), adjustment_steps "
         "(string array), recommended_target_stage (a single safe DPABI stage name such as "
-        "FunRaw, FunImgARW, FunImgAR, or null). "
+        "FunRaw, FunImgAR, FunImgARW, FunImgARWS, or null). For Work preprocessing-stage intent, "
+        "return recommended_input_stage (only from the server-provided workspace stage "
+        "candidates), stage_intent, stage_reasoning, and stage_questions. You may only "
+        "recommend a stage; the user must confirm it with the server-issued command. "
         "Never emit commands, absolute paths, raw image content, tool calls, workflow "
         "transitions, or invented scientific defaults."
     )

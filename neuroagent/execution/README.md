@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：matlab_dpabi_engineer
-- 更新日期：2026-09-23
+- 更新日期：2026-09-27
 - 关联：[项目结构](../../docs/architecture/project-structure.md)
 
 `neuroagent.execution` 负责结构化 Job、固定模板、受控进程和产物边界。它不决定科研参数、不修改工作流状态，也不接受 Agent 生成的任意 Shell 或 MATLAB 文本。
@@ -15,6 +15,7 @@
 - `MockMatlabExecutor`，用于 CI 和完整工作流测试。
 - 默认禁止真实运行的 `ControlledMatlabExecutor` 已接入公共 Worker，支持 Windows 空格路径、超时、取消、退出码、日志和必需产物检查。执行前会快照预期输出；成功后仅登记本次新建或内容发生变化的非空普通文件，并记录大小和 SHA-256。目录、符号链接、零字节文件以及前次失败或重试遗留的未变化产物都会被拒绝。stdout/stderr 持续写入 `logs/<job_id>/attempt-NNN/`，重试保留历史；`MatlabJobResult` 只携带最多 1 MiB 的日志尾部，避免大输出阻塞或占满内存。Artifact API 目前提供元数据，不提供文件下载。
 - 公共 MATLAB 适配器给每次执行建立独立 attempt 工作目录，重新从只读输入准备 staging，避免重试复用已删除 dummy volumes 的时间序列。
+- DPABI 原位续跑读取冻结 manifest 的 `selected_input_stage`；`FunImgAR`、`FunImgARW`、`FunImgARWS` 等已核验 checkpoint 会关闭相应已完成步骤，禁止重复 dummy-volume 删除，并在运行前核对伴随文件哈希。头动 QC provenance 会区分 `prior_checkpoint` 与 `current_execution`。缺少显式阶段、步骤冲突或输出目录碰撞时失败关闭。
 - 统计软件证据来自运行时 MATLAB/SPM 版本和 DPABI 源码 Release 标记；效应量使用冻结设计矩阵的对比方差，见 [ADR 0007](../../docs/adr/0007-adjusted-statistical-effects.md)。
 - 指标影像与掩膜通过 DPABI `y_ReadRPI` 做相同轴方向规范化后核对维度和物理网格；仅做轴翻转，不重采样。
 

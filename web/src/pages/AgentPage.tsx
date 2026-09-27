@@ -8,6 +8,9 @@ import {
   type ConversationMode,
   type ModelProfile,
   type Run,
+  type WorkspaceConsent,
+  type WorkspaceCheck,
+  type WorkspaceProposal,
 } from "../api/client";
 import { Feedback } from "../components/Ui";
 import { updateWorkspace, useWorkspace } from "../workspace";
@@ -25,6 +28,8 @@ type Message = {
   text: string;
   citations?: Citation[];
   steps?: ToolStep[];
+  workspaceCitations?: Array<{ path: string; locator: string }>;
+  proposal?: WorkspaceProposal;
 };
 type ModelChoice = {
   key: string;
@@ -75,6 +80,10 @@ function messagesFrom(conversation?: Conversation): Message[] {
         citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
         steps: pending,
       };
+      const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
+      const workspaceCitations = item.payload.workspace_citations as Array<{ path: string; locator: string }> | undefined;
+      if (proposal) message.proposal = proposal;
+      if (workspaceCitations) message.workspaceCitations = workspaceCitations;
       pending = undefined;
       return message;
     });
@@ -118,7 +127,7 @@ function applyConversationContext(conversation: Conversation): void {
   updateWorkspace(patch);
 }
 
-function ConversationHistory({ messages }: { messages: Message[] }) {
+function ConversationHistory({ messages, onApply, onUndo }: { messages: Message[]; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
       <span>{item.role === "assistant" ? "Agent" : "你"}</span>
@@ -131,6 +140,8 @@ function ConversationHistory({ messages }: { messages: Message[] }) {
         </li>)}
       </ol>}
       <p>{item.text}</p>
+      {item.workspaceCitations && <ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul>}
+      {item.proposal && <details className="workspace-proposal"><summary>查看文件修改 diff（{item.proposal.proposal_hash.slice(0, 12)}）</summary><p>不可变补丁哈希：<code>{item.proposal.proposal_hash}</code></p><p>文件数：{item.proposal.edits.length} · 增加 {patchStats(item.proposal.diff).added} 行 · 删除 {patchStats(item.proposal.diff).removed} 行</p><pre>{item.proposal.diff}</pre>{item.proposal.status === "proposed" && <button className="button button-primary" type="button" onClick={() => onApply(item.proposal!)}>确认应用补丁</button>}{item.proposal.status === "applied" && <button className="button button-secondary" type="button" onClick={() => onUndo(item.proposal!)}>撤销本次补丁</button>}</details>}
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
     </div>)}
   </div>;
@@ -156,6 +167,15 @@ function runStageLabel(run: Run): string {
   return run.stage;
 }
 
+function patchStats(diff: string): { added: number; removed: number } {
+  let added = 0; let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+    if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+  }
+  return { added, removed };
+}
+
 export function AgentPage() {
   const workspace = useWorkspace();
   const initialWorkspace = useRef(workspace.workspacePath ?? "").current;
@@ -170,6 +190,12 @@ export function AgentPage() {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [consentBusy, setConsentBusy] = useState(false);
+  const [workspaceConsent, setWorkspaceConsent] = useState<WorkspaceConsent | null>(null);
+  const [workspaceEntries, setWorkspaceEntries] = useState<Array<{ path: string; kind: string; readable?: boolean }>>([]);
+  const [selectedScope, setSelectedScope] = useState<string[]>([]);
+  const [workspaceCheck, setWorkspaceCheck] = useState<WorkspaceCheck | null>(null);
+  const [selectedInputStage, setSelectedInputStage] = useState<string>("");
 
   const modeConversations = useMemo(() => conversations.filter((item) => item.mode === mode), [conversations, mode]);
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
@@ -227,6 +253,36 @@ export function AgentPage() {
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
   }, [activeConversation?.active_run_id, mode, workspace.runId]);
 
+  useEffect(() => {
+    if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
+    const controller = new AbortController();
+    api.workspaceFiles(activeConversation.conversation_id, "", controller.signal)
+      .then((listing) => setWorkspaceEntries(listing.entries.filter((item) => item.kind === "file" && item.readable !== false)))
+      .catch(() => setWorkspaceEntries([]));
+    return () => controller.abort();
+  }, [activeConversation?.conversation_id, mode, workspacePath]);
+
+  useEffect(() => {
+    if (mode !== "work" || !workspacePath) { setWorkspaceCheck(null); setSelectedInputStage(""); return; }
+    const controller = new AbortController();
+    api.checkWorkspace({ path: workspacePath })
+      .then((result) => {
+        setWorkspaceCheck(result);
+        setSelectedInputStage(result.selected_input_stage ?? "");
+      })
+      .catch(() => setWorkspaceCheck(null));
+    return () => controller.abort();
+  }, [mode, workspacePath]);
+
+  useEffect(() => {
+    if (mode !== "work" || !activeConversation || activeConversation.workspace_path !== workspacePath || !selectedModel) { setWorkspaceConsent(null); return; }
+    const controller = new AbortController();
+    api.workspaceConsents(activeConversation.conversation_id, controller.signal)
+      .then((items) => setWorkspaceConsent(items.find((item) => item.profile_id === selectedModel.profileId && item.model === selectedModel.model && !item.revoked_at) ?? null))
+      .catch(() => setWorkspaceConsent(null));
+    return () => controller.abort();
+  }, [activeConversation?.conversation_id, mode, selectedModel?.key, workspacePath]);
+
   function cache(conversation: Conversation): void {
     setConversations((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
     setActiveIds((items) => ({ ...items, [conversation.mode]: conversation.conversation_id }));
@@ -266,8 +322,71 @@ export function AgentPage() {
     setBusy(true); setError("");
     try {
       const picked = await api.pickWorkspace();
-      if (picked.path) { setWorkspacePath(picked.path); updateWorkspace({ workspacePath: picked.path }); }
+      if (picked.path) {
+        if (activeConversation?.workspace_path && activeConversation.workspace_path !== picked.path) {
+          setActiveIds((items) => ({ ...items, work: undefined }));
+        }
+        setSelectedScope([]); setWorkspacePath(picked.path); updateWorkspace({ workspacePath: picked.path });
+      }
     } catch (caught) { setError(describeError(caught)); } finally { setBusy(false); }
+  }
+
+  async function grantWorkspaceConsent(): Promise<void> {
+    if (!selectedModel) { setError("请先选择一个具体模型，再授权文件内容读取。"); return; }
+    const provider = selectedModel.label.split(" · ")[0];
+    if (!window.confirm(`授权工作区文件分析？\n\n模型服务：${provider}\n发送范围：当前工作区内、用户选定的文件\n默认排除：.git、node_modules、虚拟环境、缓存和构建产物\n规则：凭据、邮箱、电话和绝对路径会脱敏；无法可靠脱敏的临床身份整段省略。`)) return;
+    setConsentBusy(true); setError("");
+    try {
+      const conversationId = await ensureConversation("work");
+      const consent = await api.grantWorkspaceConsent(conversationId, {
+        profile_id: selectedModel.profileId,
+        model: selectedModel.model,
+        acknowledge_remote_processing: true,
+      });
+      setWorkspaceConsent(consent);
+    } catch (caught) { setError(describeError(caught)); } finally { setConsentBusy(false); }
+  }
+
+  async function revokeWorkspaceConsent(): Promise<void> {
+    if (!activeConversation || !workspaceConsent) return;
+    setConsentBusy(true); setError("");
+    try { await api.revokeWorkspaceConsent(activeConversation.conversation_id, workspaceConsent.consent_id); setWorkspaceConsent(null); }
+    catch (caught) { setError(describeError(caught)); }
+    finally { setConsentBusy(false); }
+  }
+
+  async function applyWorkspaceProposal(proposal: WorkspaceProposal): Promise<void> {
+    if (!activeConversation) return;
+    setBusy(true); setError("");
+    try {
+      const applied = await api.applyWorkspaceProposal(activeConversation.conversation_id, proposal.proposal_id, proposal.proposal_hash);
+      setConversations((items) => items.map((conversation) => conversation.conversation_id !== activeConversation.conversation_id ? conversation : {
+        ...conversation,
+        messages: conversation.messages.map((message) => {
+          const current = message.payload.workspace_change_proposal as WorkspaceProposal | undefined;
+          return current?.proposal_id === proposal.proposal_id ? { ...message, payload: { ...message.payload, workspace_change_proposal: { ...current, status: applied.status, applied_at: applied.applied_at } } } : message;
+        }),
+      }));
+    }
+    catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  async function undoWorkspaceProposal(proposal: WorkspaceProposal): Promise<void> {
+    if (!activeConversation) return;
+    setBusy(true); setError("");
+    try {
+      const undone = await api.undoWorkspaceProposal(activeConversation.conversation_id, proposal.proposal_id);
+      setConversations((items) => items.map((conversation) => conversation.conversation_id !== activeConversation.conversation_id ? conversation : {
+        ...conversation,
+        messages: conversation.messages.map((message) => {
+          const current = message.payload.workspace_change_proposal as WorkspaceProposal | undefined;
+          return current?.proposal_id === proposal.proposal_id ? { ...message, payload: { ...message.payload, workspace_change_proposal: { ...current, status: undone.status, undone_at: undone.undone_at } } } : message;
+        }),
+      }));
+    }
+    catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
   }
 
   async function send(): Promise<void> {
@@ -286,6 +405,8 @@ export function AgentPage() {
         target_run_id: mode === "work" && boundToSelectedWorkspace ? workspace.runId ?? null : null,
         plan_revision_id: mode === "work" && boundToSelectedWorkspace ? workspace.planRevisionId ?? null : null,
         expected_plan_hash: mode === "work" && boundToSelectedWorkspace ? workspace.planHash ?? null : null,
+        workspace_file_scope: mode === "work" && selectedScope.length ? { paths: selectedScope } : null,
+        selected_input_stage: mode === "work" && selectedInputStage ? selectedInputStage : null,
         real_execution_confirmed: false,
       });
       cache(turn.conversation);
@@ -312,13 +433,16 @@ export function AgentPage() {
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
         <button className="button button-secondary" type="button" disabled={busy} onClick={() => void newConversation()}>新会话</button>
         {mode === "work" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void chooseWorkspace()}>{workspacePath ? "更换工作区" : "选择工作区"}</button>}
+        {mode === "work" && workspacePath && (workspaceConsent ? <button className="button button-secondary" type="button" disabled={busy || consentBusy} onClick={() => void revokeWorkspaceConsent()}>撤销文件授权</button> : <button className="button button-secondary" type="button" disabled={busy || consentBusy} onClick={() => void grantWorkspaceConsent()}>授权文件分析</button>)}
       </div>
-      <ConversationHistory messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} />
+      <ConversationHistory messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} />
       {mode === "work" && activeRun && <div className="run-inline" role="status">
         <strong>任务状态：{runStageLabel(activeRun)}</strong>
         {typeof activeRun.stage_progress === "number" && activeRun.state === "running" && <span>当前进度：{Math.round(activeRun.stage_progress * 100)}%</span>}
         {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
       </div>}
+      {mode === "work" && workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
+      {mode === "work" && workspaceCheck?.stage_candidates?.length ? <div className="workspace-stage-panel"><label>DPABI 预处理起始阶段<select value={selectedInputStage} onChange={(event) => setSelectedInputStage(event.target.value)}><option value="">请先由模型建议并确认</option>{workspaceCheck.stage_candidates.map((item) => <option key={item.stage} value={item.stage} disabled={!item.selectable}>{item.stage} · {item.label}（{item.subject_count} 个受试者）</option>)}</select></label><p>{workspaceCheck.stage_selection_required ? "当前阶段不会自动选取；选择后请在对话中确认服务器签发的阶段命令。" : "阶段选择仅作为用户确认候选，仍需重新扫描并冻结 manifest。"}</p></div> : null}
       <div className="chat-composer">
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }

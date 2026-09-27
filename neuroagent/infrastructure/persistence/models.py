@@ -283,6 +283,51 @@ class ConversationRow(Base):
     )
 
 
+class WorkspaceConsentRow(Base):
+    __tablename__ = "workspace_content_consents"
+    consent_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    workspace_hash: Mapped[str] = mapped_column(String(64), index=True)
+    profile_id: Mapped[str] = mapped_column(String(63))
+    model: Mapped[str] = mapped_column(String(200))
+    policy_version: Mapped[str] = mapped_column(String(32))
+    provider_host: Mapped[str] = mapped_column(String(255))
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "workspace_hash",
+            "profile_id",
+            "model",
+            "policy_version",
+            name="uq_workspace_consent_scope",
+        ),
+    )
+
+
+class WorkspacePatchRow(Base):
+    __tablename__ = "workspace_change_proposals"
+    proposal_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"), index=True
+    )
+    workspace_hash: Mapped[str] = mapped_column(String(64), index=True)
+    proposal_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    edits_json: Mapped[str] = mapped_column(Text)
+    diff_text: Mapped[str] = mapped_column(Text)
+    citations_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(20), index=True, default="proposed")
+    backup_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    postimage_json: Mapped[str] = mapped_column(Text, default="{}")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class ConfirmationChallengeRow(Base):
     __tablename__ = "confirmation_challenges"
     confirmation_id: Mapped[str] = mapped_column(String(36), primary_key=True)

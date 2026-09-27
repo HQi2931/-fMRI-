@@ -52,6 +52,9 @@ INTENTIONAL_BOUNDARY_CHANGES = {
     # (domain/fmri/qc.py), covered by
     # tests/science/test_statistics.py::test_head_motion_only_qc_cannot_enter_statistics.
     "create_qc_review",
+    # Frozen manifests now expose the explicitly confirmed DPABI stage and
+    # candidate rule metadata in addition to the historical subject fields.
+    "_manifest",
 }
 
 

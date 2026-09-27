@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     agent_max_tool_tokens: int = Field(default=120_000, ge=1_000, le=2_000_000)
     agent_max_repeat_tool_failures: int = Field(default=2, ge=1, le=10)
     agent_tool_result_max_bytes: int = Field(default=65_536, ge=1_024, le=1_048_576)
+    workspace_file_assistant_enabled: bool = True
+    workspace_max_text_bytes: int = Field(default=10 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    workspace_max_document_bytes: int = Field(
+        default=50 * 1024 * 1024, ge=1_024, le=200 * 1024 * 1024
+    )
+    workspace_patch_max_files: int = Field(default=20, ge=1, le=100)
+    workspace_patch_max_bytes: int = Field(default=1_048_576, ge=1_024, le=10 * 1024 * 1024)
     redaction_salt: str | None = None
     secrets_file: Path = _PROJECT_ROOT / ".env"
     environment: str = "development"

@@ -114,7 +114,12 @@ def _prepare(
         "dataset",
     )
     manifest = service.inspect_dataset(
-        dataset.dataset_id, ManifestScanRequest(expected_dataset_version=dataset.version), "scan"
+        dataset.dataset_id,
+        ManifestScanRequest(
+            expected_dataset_version=dataset.version,
+            selected_input_stage="FunRaw" if in_place else None,
+        ),
+        "scan",
     )
     params = _minimal_preprocessing_payload()
     params.update(expected_time_points=124, dummy_scans=4, detrend=True)

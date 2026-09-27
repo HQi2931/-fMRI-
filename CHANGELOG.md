@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+### Work DPABI 阶段续跑
+
+- Work 现在对 DPABI 工作区返回完整阶段候选；模型可结合用户意图建议 `FunImgAR`、`FunImgARW` 或 `FunImgARWS`，但服务端拒绝候选集外的建议，且即使只有 `FunRaw`/`FunImg` 也必须由用户显式确认。
+- 冻结 manifest、计划和审批绑定阶段名、规则版本及检查结果。`in_place` 续跑按已完成步骤关闭 DPABI 配置、禁止重复删除初始时间点，并在 Worker 启动前重验输入和伴随文件哈希；旧的隐式单阶段请求失败关闭。
+- 新增 [ADR 0017](docs/adr/0017-explicit-dpabi-stage-selection.md) 与阶段选择契约说明。
+
 ### Agent 控制面加固
 
 - 落地计划 0009：Provider/工具硬 deadline、profile 感知上下文预算、回退工具轨迹审计、Work conversation/project/run 作用域隔离，以及持久化一次性 ConfirmationChallenge；真实 MATLAB 运行不再由客户端布尔值单独授权。
@@ -129,7 +135,7 @@
 - 异步 Provider 请求在等待模型响应期间按所有者令牌续租幂等记录；租约所有权丢失时取消仍在进行的调用并拒绝保存结果，以降低长调用被并发接管和重复调用的风险。远端已接受请求时仍可能产生不可确定的执行或计费结果。
 - 人口学字段映射保留规范 `subject_id`，拒绝空白名称、修剪后冲突和重复来源，避免导入内容覆盖已对齐的受试者身份。
 - 数据集扫描严格区分 BIDS BOLD/T1w 与 fmap、dwi、mask、derivative；多 BOLD run、普通目录受试者 ID 清洗碰撞以及未经角色映射的 DICOM 输入都会在科学计划前失败关闭。
-- DPABI-ready 扫描只绑定唯一的 `FunRaw` 或 `FunImg` 输入 stage；其他 `FunImg*` checkpoint 与 `Results` 仅进入 inventory/hash，多输入 stage、checkpoint-only 或不支持的 stage 均失败关闭。
+- DPABI-ready 扫描返回全部已核验的输入/中间 stage 候选；不再按目录数量隐式绑定，未知 `FunImg*` 后缀只进入 inventory/hash。`FunRaw`、`FunImg` 或 checkpoint 即使唯一也必须经过模型建议后的用户确认，确认阶段才进入冻结 manifest。
 - 阶段关闭报告必须用 `reviewed-tree` 绑定实际候选内容；候选在审查后发生任何变化都会在提交前失败关闭，所有暂存操作也会检查退出状态。
 - 普通 NIfTI 仅从明确的 func/rest/bold/functional 与 anat/t1 目录建立科学候选；结果图、mask、未知角色和多功能候选不再静默进入预处理。
 

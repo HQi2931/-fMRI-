@@ -108,6 +108,9 @@ class DatasetView(StrictModel):
 class ManifestScanRequest(StrictModel):
     expected_dataset_version: int = Field(ge=1)
     report_only: bool = False
+    # DPABI workspaces never infer an input stage from directory order.  A
+    # non-report scan must carry the stage explicitly confirmed by the user.
+    selected_input_stage: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class SubjectManifestEntry(StrictModel):
@@ -128,10 +131,23 @@ class DatasetProfile(StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class WorkspaceStageCandidate(StrictModel):
+    stage: str = Field(min_length=1, max_length=64)
+    label: str
+    completed_steps: list[str] = Field(default_factory=list)
+    requires_realign_parameters: bool = False
+    subject_count: int = Field(ge=0)
+    file_count: int = Field(ge=0)
+    selectable: bool = False
+    issues: list[str] = Field(default_factory=list)
+    rule_version: str = Field(min_length=1, max_length=100)
+
+
 class WorkspaceCheckRequest(StrictModel):
     """Read-only request to validate a user-selected DPABI workspace."""
 
     path: str = Field(min_length=1, max_length=4_000)
+    selected_input_stage: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class WorkspacePickView(StrictModel):
@@ -149,6 +165,9 @@ class WorkspaceCheckView(StrictModel):
     functional_subject_count: int
     anatomical_subject_count: int
     input_stage: str | None = None
+    selected_input_stage: str | None = None
+    stage_selection_required: bool = False
+    stage_candidates: list[WorkspaceStageCandidate] = Field(default_factory=list)
     output_directories: list[str] = Field(default_factory=list)
     invalid_nifti_files: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
@@ -170,6 +189,7 @@ class WorkspaceSetupIntent(StrictModel):
     project_name: str = Field(min_length=1, max_length=200)
     dataset_name: str = Field(min_length=1, max_length=200)
     work_root: str = Field(min_length=1, max_length=4_000)
+    selected_input_stage: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ManifestRevisionView(StrictModel):
@@ -179,6 +199,8 @@ class ManifestRevisionView(StrictModel):
     content_hash: str
     profile: DatasetProfile
     subjects: list[SubjectManifestEntry]
+    selected_input_stage: str | None = None
+    stage_candidates: list[WorkspaceStageCandidate] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -896,6 +918,7 @@ class ConversationAction(StrEnum):
     APPROVE_QC_REVIEW = "approve_qc_review"
     SKIP_QC = "skip_qc"
     GET_STATISTICAL_RESULTS = "get_statistical_results"
+    PROPOSE_WORKSPACE_CHANGES = "propose_workspace_changes"
 
 
 class MemoryScope(StrEnum):
@@ -936,6 +959,103 @@ class ConversationCreate(StrictModel):
     title: str | None = Field(default=None, max_length=200)
     workspace_path: str | None = Field(default=None, max_length=4_000)
     preferred_profile_id: str | None = Field(default=None, max_length=63)
+
+
+class WorkspaceFileScope(StrictModel):
+    """Optional user-selected file scope for the Work file assistant."""
+
+    paths: tuple[str, ...] = Field(default=(), max_length=200)
+
+    @field_validator("paths")
+    @classmethod
+    def relative_paths_only(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for path in value:
+            if (
+                not path
+                or path.startswith(("/", "\\"))
+                or ":" in path
+                or "\\" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+            ):
+                raise ValueError("workspace scope paths must be relative POSIX paths")
+        return value
+
+
+class WorkspaceCitation(StrictModel):
+    """A location in a workspace file that can be independently re-read."""
+
+    path: str = Field(min_length=1, max_length=4_000)
+    locator: str = Field(min_length=1, max_length=200)
+    quote: str | None = Field(default=None, max_length=500)
+
+
+class WorkspaceContentConsent(StrictModel):
+    consent_id: str
+    conversation_id: str
+    workspace_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    profile_id: str = Field(min_length=1, max_length=63)
+    model: str = Field(min_length=1, max_length=200)
+    policy_version: str
+    provider_host: str
+    granted_at: datetime
+    revoked_at: datetime | None = None
+
+
+class WorkspaceContentConsentCreate(StrictModel):
+    profile_id: str = Field(min_length=1, max_length=63)
+    model: str = Field(min_length=1, max_length=200)
+    acknowledge_remote_processing: bool = False
+
+
+class WorkspaceEdit(StrictModel):
+    path: str = Field(min_length=1, max_length=4_000)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
+    replacement: str = Field(max_length=1_048_576)
+    after_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def validate_edit(self) -> WorkspaceEdit:
+        if self.expected_sha256 is None:
+            if self.start_line is not None or self.end_line is not None:
+                raise ValueError("new files cannot specify line ranges")
+            return self
+        if self.start_line is None or self.end_line is None or self.end_line < self.start_line:
+            raise ValueError("existing file edits require a valid line range")
+        return self
+
+
+class WorkspaceChangeProposal(StrictModel):
+    proposal_id: str
+    conversation_id: str
+    workspace_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    edits: tuple[WorkspaceEdit, ...] = Field(max_length=200)
+    diff: str = Field(max_length=1_048_576)
+    citations: tuple[WorkspaceCitation, ...] = ()
+    status: str
+    expires_at: datetime
+    applied_at: datetime | None = None
+    undone_at: datetime | None = None
+
+
+class WorkspacePatchApplyRequest(StrictModel):
+    proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class WorkspacePatchApplyView(StrictModel):
+    proposal_id: str
+    proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: str
+    applied_at: datetime | None = None
+    undo_expires_at: datetime | None = None
+
+
+class WorkspacePatchUndoView(StrictModel):
+    proposal_id: str
+    status: str
+    undone_at: datetime | None = None
 
 
 class ConversationMessageView(StrictModel):
@@ -1016,6 +1136,9 @@ class ConversationTurnCreate(StrictModel):
     real_execution_confirmed: bool = False
     qc_mode: QcExecutionMode | None = None
     confirmation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    workspace_file_scope: WorkspaceFileScope | None = None
+    # Set only by an explicit user/UI confirmation; model output is ignored.
+    selected_input_stage: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ConversationTurnView(StrictModel):

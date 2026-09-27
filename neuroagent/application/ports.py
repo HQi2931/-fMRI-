@@ -50,6 +50,8 @@ from neuroagent.application.contracts import (
     StatisticalResultView,
     ValidationIssue,
     WorkflowState,
+    WorkspaceChangeProposal,
+    WorkspaceContentConsent,
 )
 from neuroagent.domain.fmri.qc import HeadMotionQcCriteria, HeadMotionQcReport
 
@@ -108,11 +110,29 @@ class PathPolicyPort(Protocol):
 
 
 class DatasetInspectorPort(Protocol):
-    def inspect(self, source_path: Path, *, report_only: bool = False) -> dict[str, Any]: ...
+    def inspect(
+        self,
+        source_path: Path,
+        *,
+        report_only: bool = False,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class WorkspacePickerPort(Protocol):
     def pick_directory(self) -> str | None: ...
+
+
+class WorkspaceFilePolicyPort(Protocol):
+    root: Path
+
+    def list_entries(self, **kwargs: Any) -> dict[str, Any]: ...
+    def search(self, query: str, **kwargs: Any) -> dict[str, Any]: ...
+    def read(self, relative: str, **kwargs: Any) -> Any: ...
+    def build_patch(self, edits: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]: ...
+    def apply_patch(self, edits: list[dict[str, Any]], backup_root: Path) -> dict[str, Any]: ...
+    def _check_file(self, relative: str) -> Path: ...
+    def _relative(self, value: str, *, must_exist: bool = True) -> Path: ...
 
 
 class DemographicsReaderPort(Protocol):
@@ -168,6 +188,36 @@ class RepositoryPort(Protocol):
     ) -> ConversationView: ...
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
+
+    def create_workspace_consent(self, **kwargs: Any) -> WorkspaceContentConsent: ...
+
+    def list_workspace_consents(self, conversation_id: str) -> list[WorkspaceContentConsent]: ...
+
+    def revoke_workspace_consent(
+        self, conversation_id: str, consent_id: str
+    ) -> WorkspaceContentConsent: ...
+
+    def create_workspace_patch(self, **kwargs: Any) -> WorkspaceChangeProposal: ...
+
+    def get_workspace_patch(
+        self, conversation_id: str, proposal_id: str
+    ) -> WorkspaceChangeProposal: ...
+
+    def set_workspace_patch_applied(
+        self, conversation_id: str, proposal_id: str, *, backup_dir: str, postimage: dict[str, str]
+    ) -> WorkspaceChangeProposal: ...
+
+    def set_workspace_patch_undone(
+        self, conversation_id: str, proposal_id: str
+    ) -> WorkspaceChangeProposal: ...
+
+    def get_workspace_patch_metadata(
+        self, conversation_id: str, proposal_id: str
+    ) -> dict[str, Any] | None: ...
+
+    def invalidate_workspace_patch_undo(
+        self, conversation_id: str, workspace_hash: str, except_proposal_id: str
+    ) -> None: ...
 
     def create_confirmation_challenge(
         self,
