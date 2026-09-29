@@ -37,11 +37,6 @@ class ChatAgent:
         self._tool_runner = tool_runner
 
     async def respond(self, request: ChatAgentRequest) -> ChatAgentResponse:
-        if request.stream:
-            raise ChatAgentError(
-                "chat_streaming_not_implemented",
-                "Chat token streaming 尚未在本阶段启用。",
-            )
         routed = await self._intent_router.route(request)
         intent, work_request = routed.intent, routed.work_request
         if intent is ChatIntent.WORK_REQUEST:
@@ -58,7 +53,7 @@ class ChatAgent:
                 metadata={
                     "retrieval_performed": False,
                     "llm_used": False,
-                    "streaming": False,
+                    "streaming": request.stream,
                     "work_dispatched": False,
                 },
             )
@@ -191,7 +186,7 @@ class ChatAgent:
             "retrieved_chunk_count": len(retrieval.chunks),
             "in_scope": retrieval.in_scope,
             "llm_used": llm_result is not None,
-            "streaming": False,
+            "streaming": request.stream,
             "remote_search_used": bool(llm_result and llm_result.remote_search_used),
             "rag": retrieval.metadata.get("legacy_view"),
             "retrieval": retrieval.metadata,

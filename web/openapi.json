@@ -9837,6 +9837,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/ConversationTurnView"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "description": "Successful Response"

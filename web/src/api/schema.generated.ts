@@ -5259,6 +5259,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationTurnView"];
+                    "text/event-stream": string;
                 };
             };
             /** @description Bad Request */

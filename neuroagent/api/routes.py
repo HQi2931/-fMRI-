@@ -9,6 +9,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 
+from neuroagent.api.conversation_stream import conversation_stream_response
 from neuroagent.application.contracts import (
     AgentTaskCreate,
     AgentTaskView,
@@ -345,13 +346,18 @@ def list_literature_papers(request: Request) -> list[PaperIngestResult]:
     response_model=ConversationTurnView,
     status_code=status.HTTP_201_CREATED,
     tags=["agent"],
+    responses={201: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}},
 )
 async def send_conversation_turn(
     conversation_id: str,
     body: ConversationTurnCreate,
     request: Request,
     idempotency_key: IdempotencyKey,
-) -> ConversationTurnView:
+) -> ConversationTurnView | StreamingResponse:
+    if body.stream:
+        return conversation_stream_response(
+            service_from(request), conversation_id, body, idempotency_key, request
+        )
     return await service_from(request).send_conversation_turn(
         conversation_id, body, idempotency_key
     )

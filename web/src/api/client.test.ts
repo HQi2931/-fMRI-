@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, describeError } from "./client";
+import { api, ApiError, describeError, type ConversationStreamEvent, type ConversationTurn } from "./client";
 
 describe("API client", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -275,4 +275,84 @@ describe("API client", () => {
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError(null)).toBe("发生未知错误");
   });
+});
+
+
+describe("conversation streaming", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const turn = { conversation: { conversation_id: "stream-1" }, assistant_message: { content: "最终回答" } } as ConversationTurn;
+  const body = { content: "你好" } as never;
+  function streamed(content: string, chunkSize = 7): Response {
+    const bytes = new TextEncoder().encode(content);
+    return new Response(new ReadableStream({ start(controller) {
+      for (let i = 0; i < bytes.length; i += chunkSize) controller.enqueue(bytes.slice(i, i + chunkSize));
+      controller.close();
+    } }), { status: 201, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+  }
+  it("decodes split UTF-8, CRLF, comments, reset, status and authoritative final", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(streamed(
+      ': keep-alive\r\n\r\nevent: status\r\ndata: {"message":"正在检索"}\r\n\r\n'
+      + 'event: delta\ndata: {"text":"你好"}\n\nevent: reset\ndata: {}\n\n'
+      + 'event: delta\ndata: {\n' + 'data: "text":"新回答"}\n\n'
+      + `event: final\ndata: ${JSON.stringify(turn)}\n\n`, 1,
+    ));
+    const events: ConversationStreamEvent[] = [];
+    await expect(api.streamConversationTurn("stream-utf8", body, (event) => events.push(event))).resolves.toEqual(turn);
+    expect(events).toEqual([
+      { type: "status", message: "正在检索" }, { type: "delta", text: "你好" },
+      { type: "reset" }, { type: "delta", text: "新回答" }, { type: "final", turn },
+    ]);
+    expect(new Headers(fetchSpy.mock.calls[0][1]?.headers).get("Accept")).toBe("text/event-stream");
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toMatchObject({ stream: true });
+  });
+  it("preserves the mutation key after disconnect and clears it after final", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(streamed('event: delta\ndata: {"text":"部分"}\n\n'))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    await expect(api.streamConversationTurn("stream-retry", body, () => undefined)).rejects.toThrow("尚未收到完整回答");
+    await api.streamConversationTurn("stream-retry", body, () => undefined);
+    await api.streamConversationTurn("stream-retry", body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[0]).toBeTruthy(); expect(keys[1]).toBe(keys[0]); expect(keys[2]).not.toBe(keys[0]);
+  });
+  it.each([422, 503])("maps SSE errors and retains uncertain keys for status %s", async (status) => {
+    const error = { code: "provider_error", message: "失败", details: { reason: "test" }, trace_id: "stream-trace" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(streamed(`event: error\ndata: ${JSON.stringify({ error, status })}\n\n`))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    await expect(api.streamConversationTurn(`stream-error-${status}`, body, () => undefined)).rejects.toMatchObject({ status, code: "provider_error", traceId: "stream-trace" });
+    await api.streamConversationTurn(`stream-error-${status}`, body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    if (status >= 500) expect(keys[1]).toBe(keys[0]); else expect(keys[1]).not.toBe(keys[0]);
+  });
+  it("preserves keys after abort and transport failures and accepts legacy JSON", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new DOMException("aborted", "AbortError"))
+      .mockRejectedValueOnce(new TypeError("network"))
+      .mockResolvedValueOnce(new Response(JSON.stringify(turn), { status: 201, headers: { "Content-Type": "application/json" } }));
+    const onEvent = vi.fn();
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).rejects.toThrow("network");
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).resolves.toEqual(turn);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(new Set(keys).size).toBe(1); expect(onEvent).toHaveBeenCalledWith({ type: "final", turn });
+  });
+  it("cancels active stream reading on abort while retaining the retry key", async () => {
+    const cancelled = vi.fn();
+    const abort = new AbortController();
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(new ReadableStream({ cancel: cancelled }), { headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    const pending = api.streamConversationTurn("stream-reader-abort", body, () => undefined, abort.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    abort.abort();
+    await rejected;
+    expect(cancelled).toHaveBeenCalled();
+    await api.streamConversationTurn("stream-reader-abort", body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
 });

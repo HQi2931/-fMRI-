@@ -261,6 +261,107 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(fallback, response.status);
 }
 
+function outcomeIsUncertain(error: ApiError): boolean {
+  return error.status >= 500 || [
+    "idempotency_request_in_progress", "idempotency_lease_lost", "idempotency_race",
+    "idempotency_completion_conflict",
+  ].includes(error.code);
+}
+
+export type ConversationStreamEvent =
+  | { type: "reset" }
+  | { type: "delta"; text: string }
+  | { type: "status"; message: string }
+  | { type: "final"; turn: ConversationTurn };
+
+async function streamConversationTurn(
+  conversationId: string,
+  body: ConversationTurnBody,
+  onEvent: (event: ConversationStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<ConversationTurn> {
+  const path = `/conversations/${conversationId}/turns`;
+  const serialized = canonicalJson({ ...body, stream: true });
+  const fingerprint = await mutationFingerprintForRequest("POST", path, serialized);
+  const key = rememberMutationKey(fingerprint);
+  const response = await fetch(`/api/v1${path}`, {
+    method: "POST", body: serialized, signal,
+    headers: { Accept: "text/event-stream", "Content-Type": "application/json", "Idempotency-Key": key },
+  });
+  if (!response.ok) {
+    const error = await parseError(response);
+    if (!outcomeIsUncertain(error)) forgetMutationKey(fingerprint);
+    throw error;
+  }
+  if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
+    const turn = await response.json() as ConversationTurn;
+    forgetMutationKey(fingerprint);
+    onEvent({ type: "final", turn });
+    return turn;
+  }
+  if (!response.body) throw new Error("连接中断，尚未收到完整回答。请重试同一请求。");
+  const reader = response.body.getReader();
+  const abortReading = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener("abort", abortReading, { once: true });
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let data: string[] = [];
+  let final: ConversationTurn | undefined;
+  function dispatch(): void {
+    if (!data.length) { eventName = "message"; return; }
+    const payload = JSON.parse(data.join("\n"));
+    data = [];
+    const type = eventName;
+    eventName = "message";
+    if (type === "error") {
+      const error = new ApiError(payload.error.message, payload.status, payload.error);
+      if (!outcomeIsUncertain(error)) forgetMutationKey(fingerprint);
+      throw error;
+    }
+    if (type === "reset") onEvent({ type: "reset" });
+    if (type === "delta" && typeof payload.text === "string") onEvent({ type: "delta", text: payload.text });
+    if (type === "status" && typeof payload.message === "string") onEvent({ type: "status", message: payload.message });
+    if (type === "final") {
+      final = payload as ConversationTurn;
+      forgetMutationKey(fingerprint);
+      onEvent({ type: "final", turn: final });
+    }
+  }
+  function consume(): void {
+    let newline: number;
+    while (!final && (newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      if (!line) dispatch();
+      else if (!line.startsWith(":")) {
+        const separator = line.indexOf(":");
+        const field = separator < 0 ? line : line.slice(0, separator);
+        const value = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /, "");
+        if (field === "event") eventName = value;
+        if (field === "data") data.push(value);
+      }
+    }
+  }
+  try {
+    while (!final) {
+      signal?.throwIfAborted();
+      const { value, done } = await reader.read();
+      signal?.throwIfAborted();
+      buffer += decoder.decode(value, { stream: !done });
+      consume();
+      if (done) break;
+    }
+    if (!final) throw new Error("连接中断，尚未收到完整回答。请重试同一请求。");
+    return final;
+  } finally {
+    // Releasing the browser stream does not cancel a dispatched server turn.
+    signal?.removeEventListener("abort", abortReading);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { idempotent = false, headers, ...init } = options;
   const requestHeaders = new Headers(headers);
@@ -280,15 +381,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) {
     const error = await parseError(response);
-    const outcomeIsUncertain =
-      error.status >= 500 ||
-      [
-        "idempotency_request_in_progress",
-        "idempotency_lease_lost",
-        "idempotency_race",
-        "idempotency_completion_conflict",
-      ].includes(error.code);
-    if (mutationFingerprint !== undefined && !outcomeIsUncertain) {
+    if (mutationFingerprint !== undefined && !outcomeIsUncertain(error)) {
       forgetMutationKey(mutationFingerprint);
     }
     throw error;
@@ -330,6 +423,7 @@ function patch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T>
 }
 
 export const api = {
+  streamConversationTurn,
   papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
   uploadPaper: (file: File) => {
     const body = new FormData();

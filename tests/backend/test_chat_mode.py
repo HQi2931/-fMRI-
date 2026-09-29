@@ -39,7 +39,7 @@ def test_chat_api_returns_stable_agent_metadata_and_persists_session(
     assert [item["sequence"] for item in restored.json()["messages"]] == [1, 2, 3]
 
 
-def test_chat_streaming_extension_fails_explicitly_until_implemented(
+def test_chat_streaming_returns_sse_and_a_persisted_final_turn(
     service: NeuroAgentService,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
@@ -49,8 +49,10 @@ def test_chat_streaming_extension_fails_explicitly_until_implemented(
             json={"content": "解释 ReHo", "stream": True},
             headers={"Idempotency-Key": "stream-chat-turn"},
         )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "chat_streaming_not_implemented"
+    assert response.status_code == 201
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: final" in response.text
+    assert "chat_streaming_not_implemented" not in response.text
 
 
 def test_chat_work_request_is_only_drafted_and_never_dispatched(

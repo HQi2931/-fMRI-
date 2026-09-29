@@ -22,6 +22,7 @@ from neuroagent.agent.providers import ModelProvider, ProviderError, RetryablePr
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.agent.streaming import current_answer_stream
 from neuroagent.agent.tool_spec import LlmTool
 
 
@@ -328,12 +329,14 @@ class ModelGateway:
                 continue
             attempted.append(profile.id)
             try:
-                response = await provider.generate(
+                response = await self._generate_visible(
+                    provider,
                     profile,
                     api_key,
                     messages,
                     web_search=allow_web_search,
                     json_object=routing or summary_mode or memory_mode or work_mode,
+                    visible=not (routing or summary_mode or memory_mode),
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
@@ -449,7 +452,8 @@ class ModelGateway:
                 continue
             attempted.append(profile.id)
             try:
-                response = await provider.generate(
+                response = await self._generate_visible(
+                    provider,
                     profile,
                     api_key,
                     messages,
@@ -483,6 +487,32 @@ class ModelGateway:
                 "all available tool-use providers were temporarily unavailable"
             ) from last_retryable
         raise ModelGatewayError("no tool-use provider has both an adapter and a configured API key")
+
+    async def _generate_visible(
+        self,
+        provider: ModelProvider,
+        profile: ModelProfile,
+        api_key: str,
+        messages: Sequence[Mapping[str, object]],
+        *,
+        visible: bool = True,
+        **options: object,
+    ) -> ProviderResponse:
+        observer = current_answer_stream() if visible else None
+        if observer is not None:
+            await observer.reset()
+            stream = getattr(provider, "generate_stream", None)
+            if stream is not None and ModelCapability.STREAMING in profile.capabilities:
+                response: ProviderResponse = await stream(
+                    profile, api_key, messages, on_text=observer.text, **options
+                )
+                if response.tool_calls:
+                    await observer.reset()
+                return response
+        response = await provider.generate(profile, api_key, messages, **options)  # type: ignore[arg-type]
+        if observer is not None and not response.tool_calls:
+            await observer.text(response.content)
+        return response
 
     def _tool_profiles(
         self, preferred_profile_id: str | None, model: str | None

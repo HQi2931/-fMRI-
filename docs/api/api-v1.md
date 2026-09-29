@@ -160,8 +160,29 @@ Agent 页面再次读取该连接的模型列表，并在每个对话回合用 `
 Profile 内部保存的 `model` 仅作为服务商暂时无法列出模型时的兼容回退，不要求用户额外维护。
 设置页可编辑 Profile 能力。用户开启 `tool_use` 前需确认服务商支持工具调用；Work 文件授权随后会针对所选的具体模型执行独立探针。
 
-Chat 回合请求从 Phase 1 起包含 `stream` 字段。当前只支持 `false`；`true` 返回
-`422 chat_streaming_not_implemented`，为后续 SSE/NDJSON token stream 保留明确扩展位。ChatAgent 会把
+Chat 与 Work 的回合请求均支持 `stream` 字段：`false`（默认）返回原有 JSON，
+`true` 返回 HTTP 201、`Content-Type: text/event-stream`，客户端使用 POST fetch 读取响应体。
+以下事件的 data 均为 JSON，帧以空行分隔：
+
+| event | data | 含义 |
+| --- | --- | --- |
+| `status` | `{message: string}` | 当前响应准备状态 |
+| `reset` | `{}` | 清空正文预览，隔离模型回退与工具轮次 |
+| `delta` | `{text: string}` | 追加正文增量；属于尚未校验的预览 |
+| `final` | `ConversationTurnView` | 完整校验并落库的会话、消息、引用、草稿与工具步骤 |
+| `error` | `{status: number, error: {code, message, details, trace_id}}` | 流已开始后的稳定错误封装；此时 HTTP 仍是 201 |
+
+服务端每 15 秒发送 `: keep-alive` 注释，设置 `Cache-Control: no-cache, no-transform`
+和 `X-Accel-Buffering: no`。不存在的会话和请求结构错误在流开始前按原 HTTP 错误返回。
+客户端只有收到 final 才认定成功；若断流或收到不确定的错误，应保留原幂等键并显式重试。
+断连后的已派发操作仍按原幂等协议收口，相同请求与键重放最终保存结果，不重复调用模型。
+
+声明 `streaming` 能力且适配器支持流式的 Profile 使用 Provider 原生 SSE；其他配置返回完整正文，
+仍通过相同流事件收口。内部意图、摘要和记忆 JSON 不展示。Work 只预览顶层 answer 文本，
+完整响应经过原有结构与业务校验后才处理动作，最终消息可替换预览。
+Chat 的引用仍在完成后按本轮证据编号校验，前端以 final 的引用与正文为准。
+
+ChatAgent 会把
 执行型语言转换为 `work_request` draft 并保存到消息 payload，但不会创建计划、运行 MATLAB 或调用
 Work Mode。普通回答中的 citation 只由类型化检索证据或 Provider 返回的 URL annotation 生成，
 不会从模型自由文本中猜测来源。

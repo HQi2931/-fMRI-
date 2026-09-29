@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -104,6 +104,7 @@ type Options = {
   profiles?: () => Promise<Response>;
   workspaceConsents?: () => Promise<Response>;
   grantWorkspaceConsent?: () => Promise<Response>;
+  turn?: (init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -126,6 +127,7 @@ function installFetch(options: Options = {}) {
       return (options.conversations ?? (() => json([conversation()])))();
     }
     if (path.endsWith("/turns")) {
+      if (options.turn) return options.turn(init);
       const current = conversation({
         messages: [
           message("u1", "user", "准备方案"),
@@ -433,4 +435,75 @@ describe("agent workbench page", () => {
     expect(await screen.findByText(/你好，我可以协助/)).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Agent 工具步骤" })).not.toBeInTheDocument();
   });
+  it.each(["work", "chat"])("renders %s deltas immediately and replaces them only after final", async (mode) => {
+    const user = userEvent.setup();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+    const fetchSpy = installFetch({
+      conversations: () => json([conversation({ mode })]),
+      turn: () => Promise.resolve(new Response(stream, { status: 201, headers: { "Content-Type": "text/event-stream" } })),
+    });
+    render(<AgentPage />);
+    if (mode === "chat") await user.click(screen.getByRole("tab", { name: /Chat/ }));
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    await user.type(screen.getByRole("textbox"), "流式问题{Enter}");
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => pathOf(input).endsWith("/turns"))).toBe(true));
+    expect(screen.getByText("流式问题")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Work/ })).toBeDisabled();
+    expect(screen.getByLabelText("当前会话")).toBeDisabled();
+    const emit = async (type: string, data: unknown) => act(async () => {
+      controller.enqueue(new TextEncoder().encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
+    });
+    await emit("delta", { text: "临时" });
+    expect(await screen.findByText("临时")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认应用补丁" })).not.toBeInTheDocument();
+    await emit("reset", {});
+    expect(screen.queryByText("临时")).not.toBeInTheDocument();
+    await emit("delta", { text: "新临时回答" });
+    await emit("status", { message: "正在整理结果" });
+    expect(await screen.findByText("正在整理结果")).toBeInTheDocument();
+    const current = conversation({ mode, messages: [message("u1", "user", "流式问题"), message("a1", "assistant", "最终完整回答")] });
+    await emit("final", { conversation: current, user_message: current.messages[0], assistant_message: current.messages[1], tool_calls: [], tool_call: null });
+    expect(await screen.findByText("最终完整回答")).toBeInTheDocument();
+    expect(screen.queryByText("新临时回答")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Work/ })).toBeEnabled();
+    expect(screen.getAllByText("流式问题")).toHaveLength(1);
+  });
+
+  it("marks disconnected output incomplete and restores the prompt for an idempotent retry", async () => {
+    const user = userEvent.setup();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchSpy = installFetch({ turn: () => Promise.resolve(new Response(new ReadableStream({ start(value) { controller = value; } }), { headers: { "Content-Type": "text/event-stream" } })) });
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    await user.type(screen.getByRole("textbox"), "重试问题{Enter}");
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => pathOf(input).endsWith("/turns"))).toBe(true));
+    await act(async () => {
+      controller.enqueue(new TextEncoder().encode('event: delta\ndata: {"text":"部分结果"}\n\n'));
+      controller.close();
+    });
+    expect(await screen.findByText(/回答未完成，临时内容可能不完整/)).toBeInTheDocument();
+    expect(screen.getByText("部分结果")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("重试问题");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([input]) => pathOf(input).endsWith("/turns"))).toHaveLength(2));
+    const keys = fetchSpy.mock.calls.filter(([input]) => pathOf(input).endsWith("/turns")).map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("aborts stream reading when the page unmounts", async () => {
+    const user = userEvent.setup();
+    let signal: AbortSignal | undefined | null;
+    installFetch({ turn: (init) => {
+      signal = init?.signal;
+      return new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    } });
+    const view = render(<AgentPage />);
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    await user.type(screen.getByRole("textbox"), "问题{Enter}");
+    await waitFor(() => expect(signal).toBeTruthy());
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
+  });
+
 });

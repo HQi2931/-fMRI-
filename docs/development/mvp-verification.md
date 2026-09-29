@@ -21,6 +21,16 @@
 
 对应风险回归主要位于 `tests/backend/test_database_runtime_lease.py`、`tests/backend/test_release_scripts.py`、`tests/backend/test_dataset_services.py`、`tests/science/test_execution_edges.py`、`web/src/api/client.test.ts` 和 `web/src/App.test.tsx`。
 
+## 2026-09-29 对话流式变更验证
+
+本次仅验证 [流式对话计划](../plans/0010-conversation-streaming.md) 的变更范围，未运行完整汇总门禁，
+未调用真实 Provider、RAG 服务或 MATLAB。
+
+- 相关后端与模型回归：125 项通过，覆盖原生增量、模型回退 reset、工具调用分片、Work 正文隔离、非法动作拒绝、会话落库、断连和幂等重放。
+- 前端 API 与工作台测试：36 项通过；TypeScript、所改文件 ESLint 与生产构建通过。
+- 相关 Python Ruff、strict mypy、文档规范和差异空白检查通过，OpenAPI 及生成类型已同步。
+- 扩大后端检查有 2 项原有断言失败：`test_clinical_tool_result_field_is_dropped_not_fatal` 仍要求已移除的临床文本过滤，`test_work_tool_loop_answers_in_the_json_contract` 的固定目录缺少已加入的 `get_run_diagnosis`。两项均在本次修改前的 HEAD 独立副本复现，因此不归为流式变更回归；完整门禁仍未全绿。
+
 ## 当前可验证的本地闭环
 
 - 项目、数据集、只读扫描、manifest、人口学对齐和数据集划分。

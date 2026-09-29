@@ -87,6 +87,7 @@
 - [计划 0007：能力化模块单体演进路线](plans/0007-capability-modularization-roadmap.md)
 - [计划 0008：语义长期记忆](plans/0008-semantic-long-term-memory.md)
 - [计划 0009：Agent 控制面与执行授权加固](plans/0009-agent-control-plane-hardening.md)
+- [计划 0010：Chat 与 Work 对话流式响应](plans/0010-conversation-streaming.md)
 - [Chat / Work 模型理解与参数补全](plans/conversation-model-understanding.md)
 
 ### 决策记录（ADR）
@@ -104,6 +105,7 @@
 - [ADR 0015：Agent 控制面预算、作用域与一次性执行授权](adr/0015-agent-control-plane-hardening.md)
 - [ADR 0017：DPABI 阶段由模型建议、用户确认与服务端冻结](adr/0017-explicit-dpabi-stage-selection.md)
 - [ADR 0018：工作区文件授权验证具体模型工具能力](adr/0018-workspace-tool-probe-and-consent-revision.md)
+- [ADR 0019：对话正文流式预览与事务收口](adr/0019-conversation-streaming.md)
 
 ### 审查记录
 
