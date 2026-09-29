@@ -13,6 +13,8 @@ import {
   type WorkspaceProposal,
 } from "../api/client";
 import { Feedback } from "../components/Ui";
+import { ConfirmationDialog } from "../components/ConfirmationDialog";
+import { readConfirmation } from "../components/confirmation";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import { updateWorkspace, useWorkspace } from "../workspace";
 
@@ -193,6 +195,8 @@ export function AgentPage() {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [dismissedConfirmation, setDismissedConfirmation] = useState<string | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const turnController = useRef<AbortController | null>(null);
   const [pendingTurn, setPendingTurn] = useState<{ mode: ConversationMode; user: string; text: string; status: string } | null>(null);
   useEffect(() => () => turnController.current?.abort(), []);
@@ -209,6 +213,10 @@ export function AgentPage() {
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
   const boundToSelectedWorkspace = activeConversation?.workspace_path === workspacePath;
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
+  const latestMessage = activeConversation?.messages.at(-1);
+  const confirmation = mode === "work" && boundToSelectedWorkspace && latestMessage?.role === "assistant"
+    ? readConfirmation(latestMessage.payload.confirmation_request) : null;
+  const confirmationKey = confirmation ? `${activeConversation?.conversation_id}:${latestMessage?.message_id}` : null;
   const visibleMessages = messagesFrom(activeConversation);
   if (pendingTurn?.mode === mode) visibleMessages.push(
     { id: "pending-user", role: "user", text: pendingTurn.user },
@@ -416,8 +424,8 @@ export function AgentPage() {
     finally { setBusy(false); }
   }
 
-  async function send(): Promise<void> {
-    const content = prompt.trim();
+  async function send(confirmationCommand?: string): Promise<void> {
+    const content = (confirmationCommand ?? prompt).trim();
     if (!content || busy) return;
     const controller = new AbortController();
     turnController.current = controller;
@@ -448,7 +456,7 @@ export function AgentPage() {
       if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); }
     } catch (caught) {
       if (!controller.signal.aborted) {
-        setError(describeError(caught)); setPrompt(content);
+        setError(describeError(caught)); if (!confirmationCommand) setPrompt(content);
         setPendingTurn((pending) => pending && { ...pending, status: "回答未完成，临时内容可能不完整。请重试。" });
       }
     } finally {
@@ -458,6 +466,12 @@ export function AgentPage() {
   }
 
   return <main className="agent-shell">
+    {confirmation && confirmationKey !== dismissedConfirmation && <ConfirmationDialog
+      key={confirmationKey} request={confirmation} busy={busy} error={error}
+      onConfirm={(command) => void send(command)}
+      onDismiss={() => setDismissedConfirmation(confirmationKey)}
+      onEdit={() => { setDismissedConfirmation(confirmationKey); requestAnimationFrame(() => composer.current?.focus()); }}
+    />}
     <div className="agent-mode-switch" role="tablist" aria-label="对话模式">
       {(["chat", "work"] as ConversationMode[]).map((item) => <button
         key={item}
@@ -503,7 +517,8 @@ export function AgentPage() {
         {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
       </div>}
       <div className="chat-composer">
-        <textarea disabled={busy} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
+        {confirmation && confirmationKey === dismissedConfirmation && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy} onClick={() => { setError(""); setDismissedConfirmation(null); }}>待确认 · {confirmation.title}</button>}
+        <textarea ref={composer} disabled={busy} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }
         }} />
         <div className="chat-actions">

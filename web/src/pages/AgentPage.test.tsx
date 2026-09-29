@@ -151,11 +151,48 @@ describe("agent workbench page", () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     resetWorkspace();
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function (this: HTMLDialogElement) { this.setAttribute("open", ""); } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function (this: HTMLDialogElement) { this.removeAttribute("open"); } });
   });
 
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("requires an explicit option, dismisses without sending, and submits the server command", async () => {
+    const user = userEvent.setup();
+    const command = "批准并启动 abcdef123456 做头动QC challenge-1";
+    const onTurn = vi.fn(() => json({ conversation: conversation(), user_message: message("u2", "user", command), assistant_message: message("a2", "assistant", "已提交"), tool_call: null }));
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "请审查", {
+      confirmation_request: { title: "批准并启动计算", summary: "方案 abcdef123456", options: [
+        { label: "启动并做头动 QC", description: "生成 QC 草稿", command },
+        { label: "启动并跳过 QC", description: "记录跳过", command: "skip-command" },
+      ] },
+    })] })]), turn: onTurn });
+    render(<AgentPage />);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认选择" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "暂不执行" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onTurn).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /待确认/ }));
+    await user.click(screen.getByRole("radio", { name: /启动并做头动 QC/ }));
+    await user.click(screen.getByRole("button", { name: "确认选择" }));
+    await waitFor(() => expect(onTurn).toHaveBeenCalledTimes(1));
+    const init = onTurn.mock.calls[0] as unknown as [RequestInit];
+    expect(JSON.parse(String(init[0].body))).toMatchObject({ content: command, real_execution_confirmed: false });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("does not turn model text or an earlier confirmation into an action", async () => {
+    installFetch({ conversations: () => json([conversation({ messages: [
+      message("a1", "assistant", "old", { confirmation_request: { title: "旧确认", summary: "旧方案", options: [{ label: "启动", description: "", command: "old" }] } }),
+      message("u2", "user", "修改参数"), message("a2", "assistant", "请回复：确认方案参数 abcdef123456"),
+    ] })]) });
+    render(<AgentPage />);
+    await screen.findByText("请回复：确认方案参数 abcdef123456");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("lists every model the bound provider returns and lets the operator pick one", async () => {

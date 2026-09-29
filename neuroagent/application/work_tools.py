@@ -294,9 +294,7 @@ def build_work_tool_bindings(
         run_id, view = scoped
         if diagnose_run is None:
             return {"run_id": run_id, "status": "diagnosis_unavailable"}
-        if str(view.get("state", "")) not in {
-            "failed_retryable", "failed_terminal", "timed_out"
-        }:
+        if str(view.get("state", "")) not in {"failed_retryable", "failed_terminal", "timed_out"}:
             return {"run_id": run_id, "status": "run_not_failed"}
         diagnosis = dict(diagnose_run(run_id))
         evidence = diagnosis.pop("evidence", ())
@@ -522,6 +520,7 @@ class WorkToolLoopResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     final_text: str = ""
+    finish_reason: str | None = None
     stop_reason: str
     steps: int = Field(default=0, ge=0)
     tool_names: tuple[str, ...] = ()
@@ -627,6 +626,7 @@ class WorkToolRunner:
         )
         return WorkToolLoopResult(
             final_text=result.final_text,
+            finish_reason=result.finish_reason,
             stop_reason=result.stop_reason.value,
             steps=result.steps,
             tool_names=tuple(outcome.name for outcome in result.outcomes),

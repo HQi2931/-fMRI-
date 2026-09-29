@@ -10,6 +10,8 @@
 
 ## 通用规则
 
+Work assistant 消息的 payload 可包含 `confirmation_request: {title, summary, options: [{label, description, command}]}`。这是协调器生成的展示契约；前端仅展示最新回复的请求，用户显式选择后将 `command` 原样作为下一轮 `content` 提交。选项数量为一至三个；缺项草稿不签发确认。启动 command 包含绑定方案/QC 的一次性 challenge，服务端继续校验有效期、作用域和单次消费。普通回答文本不能生成按钮。详见 [ADR 0018](../adr/0018-work-confirmation-dialog.md)。
+
 - JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
 - 修改已有资源时，请求体会携带 `expected_*_version`、计划哈希或 revision 哈希。不匹配时失败关闭，不自动覆盖。
 - 业务错误、请求校验、框架 HTTP 错误、未匹配 API 路径和意外 `500` 都返回 `{"error": {"code", "message", "details", "trace_id"}}`；意外错误不会返回原始异常文本。每个 HTTP 响应都有 `X-Trace-ID`，客户端仍应先检查 HTTP 状态码。
@@ -181,6 +183,12 @@ Chat 与 Work 的回合请求均支持 `stream` 字段：`false`（默认）返�
 仍通过相同流事件收口。内部意图、摘要和记忆 JSON 不展示。Work 只预览顶层 answer 文本，
 完整响应经过原有结构与业务校验后才处理动作，最终消息可替换预览。
 Chat 的引用仍在完成后按本轮证据编号校验，前端以 final 的引用与正文为准。
+
+Work 失败回复在 `assistant_message.payload.model_error` 中保存安全诊断：错误 code、处理 stage、
+允许值的 finish_reason、token 用量、顶层校验字段及错误类型，已识别的 Provider 状态码或超时标记。
+不保存模型原文、字段值、未知字段名或异常原文；本地日志只记录相同诊断。
+结构不完整且 finish_reason 为 length 时提示提高输出上限；结构校验与参数草稿校验失败分别提示对应类别。
+诊断不会修改参数草稿或赋予执行权限。历史失败轮次未记录这些诊断时，不能事后从通用提示推断具体原因。
 
 ChatAgent 会把
 执行型语言转换为 `work_request` draft 并保存到消息 payload，但不会创建计划、运行 MATLAB 或调用

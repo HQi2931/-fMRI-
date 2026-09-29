@@ -136,6 +136,7 @@ def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(servi
         first = turn(client, session, "生成方案，TR是2秒", "draft-1")
         old_hash = first["assistant_message"]["payload"]["work_draft"]["hash"]
         assert first["assistant_message"]["payload"]["plan_preview"]["kind"] == "dpabi_plan_preview"
+        assert "confirmation_request" not in first["assistant_message"]["payload"]
         turn(client, session, "去掉10个时间点", "draft-2")
         third = turn(client, session, "更正，TR是3秒", "draft-3")
         stale = turn(client, session, f"确认方案参数 {old_hash[:12]}", "stale")
@@ -187,6 +188,36 @@ def test_model_cannot_even_name_a_server_only_action(service, monkeypatch):
 
     assert "未执行任务" in result["assistant_message"]["content"]
     execute.assert_not_called()
+
+
+def test_run_confirmation_options_are_server_bound(service, source_root, work_root, monkeypatch):
+    from tests.backend.conftest import make_approved_plan, make_project
+
+    configure(service, monkeypatch, [generated("propose_run_confirmation")])
+    project = make_project(service, source_root, work_root, key="options-project")
+    plan = make_approved_plan(service, project.project_id, manifest_hash="d" * 64)
+    session = service.create_conversation(
+        ConversationCreate(mode="work", project_id=project.project_id), "options-conversation"
+    )
+    service.repository.append_conversation_exchange(
+        session.conversation_id,
+        user_content="prepare",
+        assistant_content="review plan",
+        assistant_payload={"plan_revision": {
+            "plan_revision_id": plan.plan_revision_id, "plan_hash": plan.plan_hash,
+        }},
+        tool=None, workspace_path=None, preferred_profile_id=None,
+        project_id=project.project_id, active_run_id=None,
+    )
+    with TestClient(create_app(service=service)) as client:
+        result = turn(client, session.conversation_id, "请提供启动选项", "options-turn")
+    request = result["assistant_message"]["payload"]["confirmation_request"]
+    commands = [item["command"] for item in request["options"]]
+    assert len(commands) == 2
+    assert commands[0].startswith(f"批准并启动 {plan.plan_hash[:12]} 做头动QC ")
+    assert commands[1].startswith(f"批准并启动 {plan.plan_hash[:12]} 跳过QC ")
+    assert commands[0].split()[-1] != commands[1].split()[-1]
+    assert service.repository.list_runs() == []
 
 
 def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work_root):
@@ -328,6 +359,74 @@ def test_provider_failure_preserves_previous_draft(service, monkeypatch):
     assert draft["preprocessing"] == {"tr_seconds": 2, "dummy_scans": 10}
 
 
+def test_truncated_work_response_records_safe_finish_reason(service, monkeypatch, caplog):
+    value = generated("conversation")
+    object.__setattr__(
+        value,
+        "response",
+        ProviderResponse(
+            model="chosen-model",
+            content='{"answer":"incomplete',
+            finish_reason="length",
+            usage={"completion_tokens": 2048, "total_tokens": 5000},
+        ),
+    )
+    configure(service, monkeypatch, [value])
+    with TestClient(create_app(service=service)) as client:
+        failed = turn(client, create(client), "检查结构", "truncated")
+    diagnostic = failed["assistant_message"]["payload"]["model_error"]
+    assert diagnostic["code"] == "work_response_truncated"
+    assert diagnostic["finish_reason"] == "length"
+    assert diagnostic["usage"]["completion_tokens"] == 2048
+    assert "token 上限" in failed["assistant_message"]["content"]
+    assert "incomplete" not in caplog.text
+
+
+def test_work_schema_error_does_not_log_model_values_or_unknown_keys(service, monkeypatch, caplog):
+    value = generated("conversation")
+    object.__setattr__(
+        value,
+        "response",
+        ProviderResponse(
+            model="chosen-model",
+            content=json.dumps(
+                {
+                    "answer": "正常回答",
+                    "action": "conversation",
+                    "private-model-field": "synthetic-secret-content",
+                }
+            ),
+            finish_reason="stop",
+        ),
+    )
+    configure(service, monkeypatch, [value])
+    with TestClient(create_app(service=service)) as client:
+        failed = turn(client, create(client), "检查结构", "schema-error")
+    diagnostic = failed["assistant_message"]["payload"]["model_error"]
+    assert diagnostic["code"] == "work_response_invalid"
+    assert diagnostic["issues"] == [{"field": "root_or_unknown_field", "type": "extra_forbidden"}]
+    assert "synthetic-secret-content" not in caplog.text
+    assert "private-model-field" not in caplog.text
+    assert "synthetic-secret-content" not in json.dumps(diagnostic)
+
+
+def test_work_provider_error_records_status_without_private_exception_text(
+    service, monkeypatch, caplog
+):
+    from neuroagent.agent.providers import ProviderError
+
+    error = ApplicationError("chat_model_unavailable", "synthetic-private-error", status_code=503)
+    error.__cause__ = ProviderError("provider rejected request (401)")
+    configure(service, monkeypatch, [error])
+    with TestClient(create_app(service=service)) as client:
+        failed = turn(client, create(client), "检查结构", "provider-error")
+    diagnostic = failed["assistant_message"]["payload"]["model_error"]
+    assert diagnostic["code"] == "chat_model_unavailable"
+    assert diagnostic["provider_status"] == 401
+    assert diagnostic["stage"] == "model_request"
+    assert "synthetic-private-error" not in caplog.text
+
+
 def test_complete_review_binds_server_manifest_only_after_confirmation(
     service,
     monkeypatch,
@@ -371,6 +470,9 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
     assert len(intent.input_manifest_hash) == 64
     assert all(p.source == "user" for p in intent.preprocessing.provenance)
     assert "确认方案参数" in preview["assistant_message"]["content"]
+    confirmation = preview["assistant_message"]["payload"]["confirmation_request"]
+    assert confirmation["title"] == "确认方案参数"
+    assert confirmation["options"][0]["command"] == f"确认方案参数 {draft_hash(draft)[:12]}"
     assert confirmed["assistant_message"]["payload"]["work_draft"]["compiled"]
 
 
@@ -517,9 +619,9 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
             )
             assert setup["tool_call"]["status"] == "succeeded"
             review = turn(client, session, "这是我明确选择的全部ALFF参数", "full-review")
-            assert (
-                "work_draft" in review["assistant_message"]["payload"]
-            ), review["assistant_message"]["content"]
+            assert "work_draft" in review["assistant_message"]["payload"], review[
+                "assistant_message"
+            ]["content"]
             current_hash = review["assistant_message"]["payload"]["work_draft"]["hash"]
             result = turn(client, session, f"确认方案参数 {current_hash[:12]}", "compile-alff")
             payload = result["assistant_message"]["payload"]

@@ -31,6 +31,17 @@
 - 相关 Python Ruff、strict mypy、文档规范和差异空白检查通过，OpenAPI 及生成类型已同步。
 - 扩大后端检查有 2 项原有断言失败：`test_clinical_tool_result_field_is_dropped_not_fatal` 仍要求已移除的临床文本过滤，`test_work_tool_loop_answers_in_the_json_contract` 的固定目录缺少已加入的 `get_run_diagnosis`。两项均在本次修改前的 HEAD 独立副本复现，因此不归为流式变更回归；完整门禁仍未全绿。
 
+## 2026-09-29 Work 通用错误提示诊断
+
+用户明确授权不含对话、工作区或科研数据的轻量模型检查。当前 DeepSeek 配置的合成流式 JSON 请求
+返回 HTTP 200、finish_reason=stop，Work 结构校验通过；合成工具调用及后续响应均返回 HTTP 200。
+本地重建上下文的出站校验通过。没有重发原对话或处理科研数据。
+
+原失败轮次将模型请求、响应结构和参数校验异常合并，且未记录原因，因此无法从历史通用提示确定该轮具体根因。
+已增加安全的 model_error 诊断，规则见 [API 契约](../api/api-v1.md#持久化对话与工具编排)。
+Work/流式相关测试 30 项通过，覆盖输出截断、字段值保密、Provider 状态码及原有草稿保留行为；Ruff 与文档检查通过。
+本次涉及模块的 mypy 有 6 项原有错误，已从修改前 HEAD 文件副本复现，未声称完整门禁通过。
+
 ## 当前可验证的本地闭环
 
 - 项目、数据集、只读扫描、manifest、人口学对齐和数据集划分。

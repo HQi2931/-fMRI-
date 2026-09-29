@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -177,6 +178,79 @@ EXECUTION_COMMAND_PATTERN = r"批准并启动 ([a-f0-9]{12}) (做头动QC|跳过
 STAGE_CONFIRMATION_PATTERN = r"确认起始阶段 ([A-Za-z0-9_]+) ([a-f0-9]{12})"
 
 
+def _work_failure_details(
+    exc: Exception,
+    metadata: dict[str, Any],
+    stage: str,
+) -> tuple[dict[str, Any], str]:
+    """Record fixed categories and schema locations, never input or exception prose."""
+    finish = metadata.get("finish_reason")
+    if finish not in {None, "stop", "length", "tool_calls", "content_filter", "function_call"}:
+        finish = "other"
+    diagnostic: dict[str, Any] = {"stage": stage, "finish_reason": finish}
+    usage = metadata.get("usage")
+    if isinstance(usage, dict):
+        diagnostic["usage"] = {
+            key: value
+            for key, value in usage.items()
+            if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+            and isinstance(value, int)
+            and value >= 0
+        }
+    if isinstance(exc, ValidationError):
+        diagnostic["code"] = (
+            "work_response_invalid" if stage == "response_validation" else "work_draft_invalid"
+        )
+        diagnostic["issues"] = [
+            {
+                "field": str(issue["loc"][0])
+                if issue["loc"] and issue["loc"][0] in WorkInterpretation.model_fields
+                else "root_or_unknown_field",
+                "type": issue["type"],
+            }
+            for issue in exc.errors(include_input=False, include_context=False)[:20]
+        ]
+        reason = "原因：模型返回的 Work JSON 未通过结构校验，请重试。"
+    elif isinstance(exc, ApplicationError):
+        diagnostic["code"] = (
+            exc.code if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", exc.code) else "application_error"
+        )
+        diagnostic["status"] = exc.status_code
+        reason = "原因：模型请求或服务端校验失败（" + diagnostic["code"] + "），请重试。"
+    else:
+        diagnostic["code"] = "work_draft_invalid"
+        reason = "原因：模型提出的动作或参数草稿未通过校验，请重新说明需求。"
+    if (
+        finish == "length"
+        and stage == "response_validation"
+        and isinstance(exc, ValidationError)
+        and any(issue["type"] == "json_invalid" for issue in exc.errors(include_input=False))
+    ):
+        diagnostic["code"] = "work_response_truncated"
+        reason = "原因：模型输出达到 token 上限，返回内容不完整。请在模型设置中提高输出上限后重试。"
+    cause: BaseException | None = exc
+    for _ in range(6):
+        if cause is None:
+            break
+        # Match only adapter-defined status messages; never store arbitrary prose.
+        from neuroagent.agent.providers import ProviderError
+
+        if isinstance(cause, ProviderError):
+            match = re.fullmatch(r"provider rejected request \(([0-9]{3})\)", str(cause))
+            if match:
+                diagnostic["provider_status"] = int(match[1])
+                reason = (
+                    "原因：模型服务拒绝请求（HTTP "
+                    + match[1]
+                    + "），请检查连接配置和接口兼容性后重试。"
+                )
+            if getattr(cause, "timeout", False):
+                diagnostic["provider_timeout"] = True
+                reason = "原因：模型请求超时，请稍后重试或调整模型超时设置。"
+        cause = cause.__cause__
+    return diagnostic, reason
+
+
 class WorkDialogue:
     def __init__(
         self,
@@ -245,9 +319,11 @@ class WorkDialogue:
                 )
                 return replace(
                     reply(
-                        f"已确认 DPABI 起始阶段 {stage}。"
-                        "现在可以继续整理预处理参数。",
-                        {"manifest": manifest.model_dump(mode="json"), "selected_input_stage": stage},
+                        f"已确认 DPABI 起始阶段 {stage}。现在可以继续整理预处理参数。",
+                        {
+                            "manifest": manifest.model_dump(mode="json"),
+                            "selected_input_stage": stage,
+                        },
                     ),
                     project_id=project_id,
                 )
@@ -388,6 +464,8 @@ class WorkDialogue:
                 ),
             )
 
+        model_metadata: dict[str, Any] = {}
+        failure_stage = "context"
         try:
             model_context: dict[str, Any] = {
                 "question": request.content,
@@ -419,6 +497,7 @@ class WorkDialogue:
             # Preferred path: let the model read what it needs before answering.
             # The loop's final text is the same JSON contract as the single-shot
             # call, so parsing and authorization below are unchanged.
+            failure_stage = "model_request"
             raw_content, metadata, loop_metadata = await self._interpret(
                 model_context,
                 preferred_profile_id=preferred_profile_id,
@@ -440,12 +519,18 @@ class WorkDialogue:
                     ),
                     workspace_content_consent=workspace_content_consent,
                     workspace_stage_candidates=tuple(
-                        item for item in model_context["work_context"].get("workspace_stage_candidates", [])
+                        item
+                        for item in model_context["work_context"].get(
+                            "workspace_stage_candidates", []
+                        )
                         if isinstance(item, dict)
                     ),
                 ),
             )
+            model_metadata = metadata
+            failure_stage = "response_validation"
             interpreted = WorkInterpretation.model_validate_json(raw_content)
+            failure_stage = "draft_validation"
             payload: dict[str, Any] = {"model": metadata}
             if loop_metadata is not None:
                 payload["tool_loop"] = loop_metadata
@@ -464,14 +549,17 @@ class WorkDialogue:
                 and (
                     bool(model_context["work_context"].get("workspace_stage_selection_required"))
                     or selected_stage is None
-                    or selected_stage.casefold()
-                    != interpreted.recommended_input_stage.casefold()
+                    or selected_stage.casefold() != interpreted.recommended_input_stage.casefold()
                 )
             )
             if stage_recommendation_needs_confirmation:
-                candidates = list(model_context["work_context"].get("workspace_stage_candidates", []))
+                candidates = list(
+                    model_context["work_context"].get("workspace_stage_candidates", [])
+                )
                 candidate_names = {
-                    str(item.get("stage", "")).casefold() for item in candidates if isinstance(item, dict)
+                    str(item.get("stage", "")).casefold()
+                    for item in candidates
+                    if isinstance(item, dict)
                 }
                 if interpreted.recommended_input_stage.casefold() not in candidate_names:
                     return reply(
@@ -531,6 +619,17 @@ class WorkDialogue:
                             f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
                         )
                     )
+                    stage_command = payload["workspace_stage_recommendation"]["confirmation_command"]
+                    if stage_command:
+                        payload["confirmation_request"] = {
+                            "title": "确认预处理起点",
+                            "summary": interpreted.stage_reasoning or interpreted.answer,
+                            "options": [{
+                                "label": f"使用 {interpreted.recommended_input_stage}",
+                                "description": "确认当前输入阶段，继续准备方案。",
+                                "command": stage_command,
+                            }],
+                        }
                     return reply(
                         interpreted.answer
                         + "\n\n模型建议起始阶段："
@@ -539,9 +638,8 @@ class WorkDialogue:
                         + next_step,
                         payload,
                     )
-            if (
-                interpreted.action == "prepare_preprocessing_plan"
-                and bool(model_context["work_context"].get("workspace_stage_selection_required"))
+            if interpreted.action == "prepare_preprocessing_plan" and bool(
+                model_context["work_context"].get("workspace_stage_selection_required")
             ):
                 candidates = [
                     str(item.get("stage", ""))
@@ -600,6 +698,15 @@ class WorkDialogue:
                 if issues:
                     suffix = "\n\n仍需补充或修正：\n" + "\n".join(issues)
                 else:
+                    payload["confirmation_request"] = {
+                        "title": "确认方案参数",
+                        "summary": review,
+                        "options": [{
+                            "label": "确认并生成方案",
+                            "description": "登记工作区并校验、编译当前参数，不启动计算。",
+                            "command": f"确认方案参数 {draft_hash(draft)[:12]}",
+                        }],
+                    }
                     suffix = (
                         "\n\n请审查以上全部参数。确认后将登记当前工作区并校验编译方案，尚不启动计算。"
                         f"\n请回复：确认方案参数 {draft_hash(draft)[:12]}"
@@ -626,6 +733,26 @@ class WorkDialogue:
                     plan_hash=plan_hash,
                     qc_mode=QcExecutionMode.SKIP,
                 )
+                payload["confirmation_request"] = {
+                    "title": "批准并启动计算",
+                    "summary": (
+                        f"方案版本：{plan_hash[:12]}。批准后将启动当前方案的计算。"
+                        "请选择本次头动 QC 方式；此授权仅用于本次运行。"
+                        + ("\n\n" + render_draft_review(draft) if saved else "")
+                    ),
+                    "options": [
+                        {
+                            "label": "启动并做头动 QC",
+                            "description": "计算后生成头动 QC 草稿，供人工审查。",
+                            "command": execution_command(plan_hash, "做头动QC", require_id),
+                        },
+                        {
+                            "label": "启动并跳过 QC",
+                            "description": "记录跳过决定，计算后不进行本次头动 QC。",
+                            "command": execution_command(plan_hash, "跳过QC", skip_id),
+                        },
+                    ],
+                }
                 return reply(
                     "启动计算需要单独确认当前方案及 QC 选择。请审查方案后回复以下一种：\n"
                     + execution_command(plan_hash, "做头动QC", require_id)
@@ -653,10 +780,15 @@ class WorkDialogue:
                     result, payload={**result.payload, **payload}, workspace_path=workspace_path
                 )
             return reply(interpreted.answer, payload)
-        except (ApplicationError, ValidationError, ValueError):
+        except (ApplicationError, ValidationError, ValueError) as exc:
+            diagnostic, reason = _work_failure_details(exc, model_metadata, failure_stage)
+            logger.warning("Work turn rejected: %s", json.dumps(diagnostic, sort_keys=True))
             return reply(
                 "本轮模型服务不可用或返回的结构不符合要求，未更改参数草稿，也未执行任务。"
-                "请检查模型连接后重试；原有对话和草稿仍保留。"
+                + "\n\n"
+                + reason
+                + "\n原有对话和草稿仍保留。",
+                {"model_error": diagnostic},
             )
 
     async def _interpret(
@@ -696,6 +828,8 @@ class WorkDialogue:
                     "model": looped.model,
                     "context_hash": looped.context_hash,
                     "redaction_count": looped.redaction_count,
+                    "finish_reason": looped.finish_reason,
+                    "usage": looped.usage,
                 }
                 if self._parses(looped.final_text):
                     return looped.final_text, metadata, loop_metadata
@@ -721,6 +855,8 @@ class WorkDialogue:
             "model": generated.response.model,
             "context_hash": generated.context_hash,
             "redaction_count": generated.redaction_count,
+            "finish_reason": generated.response.finish_reason,
+            "usage": generated.response.usage,
         }
         if loop_metadata is not None:
             loop_metadata = {
