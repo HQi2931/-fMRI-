@@ -16,6 +16,8 @@ import { Feedback } from "../components/Ui";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { readConfirmation } from "../components/confirmation";
 import { WorkspacePanel } from "../components/WorkspacePanel";
+import { WorkDraftPanel } from "../components/WorkDraftPanel";
+import { readWorkDraft, type WorkDraftSnapshot } from "../components/workDraft";
 import { updateWorkspace, useWorkspace } from "../workspace";
 
 type ToolStep = {
@@ -34,6 +36,9 @@ type Message = {
   workspaceCitations?: Array<{ path: string; locator: string }>;
   proposal?: WorkspaceProposal;
   streamingStatus?: string;
+  workDraft?: WorkDraftSnapshot;
+  draftIssues?: string[];
+  planPreview?: unknown;
 };
 type ModelChoice = {
   key: string;
@@ -83,6 +88,9 @@ function messagesFrom(conversation?: Conversation): Message[] {
         text: item.content,
         citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
         steps: pending,
+        workDraft: readWorkDraft(item.payload.work_draft),
+        draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : [],
+        planPreview: item.payload.plan_preview,
       };
       const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
       const workspaceCitations = item.payload.workspace_citations as Array<{ path: string; locator: string }> | undefined;
@@ -131,7 +139,7 @@ function applyConversationContext(conversation: Conversation): void {
   updateWorkspace(patch);
 }
 
-function ConversationHistory({ messages, busy, onApply, onUndo }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void }) {
+function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onSaveDraft, onDirty, confirmation, onConfirmDraft }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onSaveDraft: (hash: string, patch: Record<string, unknown>) => Promise<void>; onDirty: (dirty: boolean) => void; confirmation: ReturnType<typeof readConfirmation>; onConfirmDraft: () => void }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
       <span>{item.role === "assistant" ? "Agent" : "你"}</span>
@@ -145,6 +153,7 @@ function ConversationHistory({ messages, busy, onApply, onUndo }: { messages: Me
       </ol>}
       <p>{item.text}</p>
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
+      {item.workDraft && <WorkDraftPanel key={`${item.id}:${item.workDraft.hash}`} snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly={item.id !== latestDraftId} busy={busy} onSave={onSaveDraft} onDirty={item.id === latestDraftId ? onDirty : undefined} confirmation={item.id === latestDraftId ? confirmation : null} onConfirm={onConfirmDraft} />}
       {item.workspaceCitations && <ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul>}
       {item.proposal && <details className="workspace-proposal"><summary>查看文件修改 diff（{item.proposal.proposal_hash.slice(0, 12)}）</summary><p>不可变补丁哈希：<code>{item.proposal.proposal_hash}</code></p><p>文件数：{item.proposal.edits.length} · 增加 {patchStats(item.proposal.diff).added} 行 · 删除 {patchStats(item.proposal.diff).removed} 行</p><pre>{item.proposal.diff}</pre>{item.proposal.status === "proposed" && <button className="button button-primary" type="button" disabled={busy} onClick={() => onApply(item.proposal!)}>确认应用补丁</button>}{item.proposal.status === "applied" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onUndo(item.proposal!)}>撤销本次补丁</button>}</details>}
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
@@ -194,6 +203,7 @@ export function AgentPage() {
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
+  const [draftDirty, setDraftDirty] = useState(false);
   const [error, setError] = useState("");
   const [dismissedConfirmation, setDismissedConfirmation] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -218,6 +228,7 @@ export function AgentPage() {
     ? readConfirmation(latestMessage.payload.confirmation_request) : null;
   const confirmationKey = confirmation ? `${activeConversation?.conversation_id}:${latestMessage?.message_id}` : null;
   const visibleMessages = messagesFrom(activeConversation);
+  const latestDraftId = mode === "work" && boundToSelectedWorkspace ? [...visibleMessages].reverse().find((item) => item.workDraft)?.id : undefined;
   if (pendingTurn?.mode === mode) visibleMessages.push(
     { id: "pending-user", role: "user", text: pendingTurn.user },
     { id: "pending-assistant", role: "assistant", text: pendingTurn.text, streamingStatus: pendingTurn.status },
@@ -315,6 +326,7 @@ export function AgentPage() {
   }, [activeConversation, mode, selectedModel, workspacePath]);
 
   function cache(conversation: Conversation): void {
+    setDraftDirty(false);
     setConversations((items) => [conversation, ...items.filter((item) => item.conversation_id !== conversation.conversation_id)]);
     setActiveIds((items) => ({ ...items, [conversation.mode]: conversation.conversation_id }));
     if (conversation.mode === "work") {
@@ -465,8 +477,15 @@ export function AgentPage() {
     }
   }
 
+  async function saveDraft(hash: string, patch: Record<string, unknown>): Promise<void> {
+    if (!activeConversation || busy) throw new Error("当前会话正在处理，请稍后重试");
+    setBusy(true);
+    try { const turn = await api.patchWorkDraft(activeConversation.conversation_id, hash, patch); cache(turn.conversation); }
+    finally { setBusy(false); }
+  }
+
   return <main className="agent-shell">
-    {confirmation && confirmationKey !== dismissedConfirmation && <ConfirmationDialog
+    {confirmation && !draftDirty && confirmationKey !== dismissedConfirmation && <ConfirmationDialog
       key={confirmationKey} request={confirmation} busy={busy} error={error}
       onConfirm={(command) => void send(command)}
       onDismiss={() => setDismissedConfirmation(confirmationKey)}
@@ -478,7 +497,7 @@ export function AgentPage() {
         className={mode === item ? "agent-mode active" : "agent-mode"}
         type="button"
         role="tab"
-        disabled={busy}
+        disabled={busy || draftDirty}
         aria-selected={mode === item}
         onClick={() => { setMode(item); setPrompt(""); setError(""); setPendingTurn(null); }}
       ><strong>{item === "chat" ? "Chat" : "Work"}</strong><small>{item === "chat" ? "方法问答" : "执行任务"}</small></button>)}
@@ -486,11 +505,11 @@ export function AgentPage() {
     <Feedback message={error} error={Boolean(error)} />
     <section className="conversation-panel">
       <div className="conversation-toolbar">
-        <select disabled={busy} aria-label="当前会话" value={activeIds[mode] ?? ""} onChange={(event) => {
+        <select disabled={busy || draftDirty} aria-label="当前会话" value={activeIds[mode] ?? ""} onChange={(event) => {
           const selected = conversations.find((item) => item.conversation_id === event.target.value);
           if (selected) { cache(selected); setPendingTurn(null); }
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
-        <button className="button button-secondary" type="button" disabled={busy} onClick={() => void newConversation()}>新会话</button>
+        <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => void newConversation()}>新会话</button>
       </div>
       {mode === "work" && <WorkspacePanel
         key={workspacePath}
@@ -499,7 +518,7 @@ export function AgentPage() {
         checking={workspaceChecking}
         checkError={workspaceCheckError}
         selectedStage={selectedInputStage}
-        busy={busy}
+        busy={busy || draftDirty}
         consentBusy={consentBusy}
         consentGranted={Boolean(workspaceConsent)}
         canAuthorize={canAuthorizeWorkspaceFiles}
@@ -510,21 +529,22 @@ export function AgentPage() {
       >
         {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
       </WorkspacePanel>}
-      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} />
+      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onSaveDraft={saveDraft} onDirty={setDraftDirty} confirmation={confirmation?.title === "确认方案参数" ? confirmation : null} onConfirmDraft={() => { setError(""); setDismissedConfirmation(null); }} />
       {mode === "work" && activeRun && <div className="run-inline" role="status">
         <strong>任务状态：{runStageLabel(activeRun)}</strong>
         {typeof activeRun.stage_progress === "number" && activeRun.state === "running" && <span>当前进度：{Math.round(activeRun.stage_progress * 100)}%</span>}
         {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
       </div>}
       <div className="chat-composer">
-        {confirmation && confirmationKey === dismissedConfirmation && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy} onClick={() => { setError(""); setDismissedConfirmation(null); }}>待确认 · {confirmation.title}</button>}
-        <textarea ref={composer} disabled={busy} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
+        {confirmation && confirmationKey === dismissedConfirmation && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy || draftDirty} onClick={() => { setError(""); setDismissedConfirmation(null); }}>待确认 · {confirmation.title}</button>}
+        {draftDirty && <small role="status">请先保存或放弃参数修改，再继续对话或切换会话。</small>}
+        <textarea ref={composer} disabled={busy || draftDirty} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }
         }} />
         <div className="chat-actions">
           {mode === "chat" && <label><input type="checkbox" checked={allowRemoteSearch} disabled={busy || !canSearch} onChange={(event) => setAllowRemoteSearch(event.target.checked)} />联网搜索</label>}
           <label>模型<select disabled={busy} value={selectedModelKey} onChange={(event) => setSelectedModelKey(event.target.value)}><option value="">自动选择</option>{choices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-          <button className="button button-primary" type="button" disabled={busy || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
+          <button className="button button-primary" type="button" disabled={busy || draftDirty || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
         </div>
       </div>
     </section>

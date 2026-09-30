@@ -247,6 +247,21 @@ class DpabiV82Adapter:
 
         cfg.update(_project_nuisance(parameters))
         cfg.update(_project_normalization(parameters))
+        if parameters.t1 is not None:
+            t1 = parameters.t1
+            cfg.update(
+                {
+                    "IsNeedT1CoregisterToFun": int(t1.coregister_to_functional),
+                    "IsSegment": {"disabled": 0, "segment": 1, "new_segment": 2}[
+                        t1.segmentation.value
+                    ],
+                    "IsDARTEL": int(t1.dartel),
+                }
+            )
+            if t1.affine_regularization is not None:
+                cfg["Segment"] = {
+                    "AffineRegularisationInSegmentation": t1.affine_regularization.value
+                }
         cfg.update(_project_filter(parameters))
         cfg.update(_project_scrubbing(parameters))
         cfg.update(_project_smoothing(parameters))

@@ -62,7 +62,7 @@ Work/流式相关测试 30 项通过，覆盖输出截断、字段值保密、Pr
 4. 真实 MATLAB 统计运行按冻结设计生成未校正统计图、可选校正图、效应量图、簇表、日志和软件版本证据，并由应用层组装确定性报告；任一角色缺失、哈希漂移或设计不一致都会失败关闭。下述小型合成 smoke 已验证三类 t 检验及报告合同，不代表全部数据集或统计配置已验证。
 5. Artifact API 只提供元数据，不提供文件下载。
 6. Playwright 端到端测试使用 Mock API，不是真实 FastAPI—Worker—MATLAB 端到端运行。
-7. `matlab_preprocessing` 已从冻结 SkillPlan/manifest 编译 DPARSFA 输入和 typed JobSpec，实际读取产物元数据并登记 lineage。当前范围是单会话 4D 输入；metric-only 路径限单主体。启用 Realign 的运行成功后会解析 `RealignParameter` 并登记 `qc.head_motion_report`；有指标图时自动生成 `pre_statistics` QC 草稿，无指标时生成仅供头动筛选记录的 `head_motion` 草稿。OnResults normalization 与组合指标若需不同阶段掩膜，以及没有指标输出的纯预处理 OnResults 操作，当前合同明确拒绝。T1 分割和 DARTEL 在当前 DPARSFA 非交互入口仍可能调用 GUI，因此 headless 编译器失败关闭；EPI template normalization 要求先 realign 产生 mean image，仍未包含在本次真实 smoke 中。
+7. `matlab_preprocessing` 已从冻结 SkillPlan/manifest 编译 DPARSFA 输入和 typed JobSpec，实际读取产物元数据并登记 lineage。当前范围是单会话 4D 输入；metric-only 路径限单主体。启用 Realign 的运行成功后会解析 `RealignParameter` 并登记 `qc.head_motion_report`；有指标图时自动生成 `pre_statistics` QC 草稿，无指标时生成仅供头动筛选记录的 `head_motion` 草稿。OnResults normalization 与组合指标若需不同阶段掩膜，以及没有指标输出的纯预处理 OnResults 操作，当前合同明确拒绝。2026-09-29 新增 T1 自动准备、分割和 DARTEL 的受控无 GUI 路径；仅 Mock/合成夹具验证，尚未完成真实 MATLAB 验证；EPI template normalization 要求先 realign 产生 mean image，仍未包含在本次真实 smoke 中。
 8. 指标输入与已验证掩膜两端都通过 DPABI `y_ReadRPI` 做一致的轴翻转规范化，再严格比较维度和物理网格；这一步不重采样，不接受物理空间不匹配的掩膜。新产物的网格签名从本次实际输出计算，不复用掩膜 Artifact 的自报标签。
 
 ## 2026-09-04 已执行的授权 smoke
@@ -146,3 +146,10 @@ Work/流式相关测试 30 项通过，覆盖输出截断、字段值保密、Pr
 ## 非目标
 
 本候选版不包含多用户权限、云部署、PACS、微服务、通用插件市场、长期记忆或临床诊断。输出仅用于科研流程辅助，不能替代方法学审查。
+
+
+## 2026-09-29 DPARSF 面板与 T1 一体化预处理
+
+Work 提供按 DPARSF 分组的可编辑草稿，保存经过服务端科学校验，并使用基准哈希及幂等键控制版本。修改使旧参数确认失效。T1 重定向、裁剪、配准、分割和 DARTEL 在同一次预处理运行中衔接；默认流程不要求中途人工审查。检查图作为可查看产物。
+
+Mock/合成夹具覆盖参数编辑、版本冲突、确认失效、旧方案兼容、输入配对、准备产物完整性和完整服务—Worker 流程；Mock 产物明确标为非科研结果。真实 MATLAB、T1 分割和 DARTEL 未在本轮运行，仍需单独授权验证。

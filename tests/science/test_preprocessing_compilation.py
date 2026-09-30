@@ -191,7 +191,7 @@ def test_frozen_common_plan_stages_roles_with_precise_subject_outputs() -> None:
 
 
 @pytest.mark.parametrize("mode", [2, 3])
-def test_headless_compiler_rejects_interactive_t1_normalization(mode: int) -> None:
+def test_headless_compiler_integrates_t1_preparation(mode: int) -> None:
     manifest, content = manifest_for()
     values = preprocessing_parameters().model_dump(mode="json")
     values["scrubbing"]["method"] = "nearest"
@@ -202,8 +202,10 @@ def test_headless_compiler_rejects_interactive_t1_normalization(mode: int) -> No
     )
     parameters = PreprocessingParameters.model_validate(values)
 
-    with pytest.raises(ValueError, match="not supported by the headless executor"):
-        compile_fixture(frozen_plan(manifest, parameters=parameters), manifest, content)
+    result = compile_fixture(frozen_plan(manifest, parameters=parameters), manifest, content)
+    assert result.spec.payload.t1_preparation == "reorient_crop"
+    assert result.spec.payload.metric_projection.cfg["IsNeedReorientCropT1Img"] == 0
+    assert any("/T1Img/" in op.destination_relative_path for op in result.staging_plan.operations)
 
 
 def test_epi_template_normalization_requires_realignment() -> None:

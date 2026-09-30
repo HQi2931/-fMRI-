@@ -16,6 +16,7 @@ from neuroagent.infrastructure.filesystem.demographics import read_demographics
 from neuroagent.infrastructure.filesystem.directory_picker import SystemDirectoryPicker
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.infrastructure.filesystem.t1_review import validate_t1_preparation_artifact
 from neuroagent.infrastructure.filesystem.workspace_files import WorkspaceFilePolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.infrastructure.mock_executor import MockJobExecutor
@@ -86,6 +87,7 @@ def build_service(
             max_document_bytes=resolved_settings.workspace_max_document_bytes,
         ),
         skill_registry=skill_registry,
+        t1_preparation_artifact_validator=validate_t1_preparation_artifact,
     )
 
 
@@ -100,7 +102,8 @@ def build_worker(
     resolved_executor = executor
     if resolved_executor is None:
         mock_executor = MockJobExecutor(
-            WorkflowFactory(service.skill_registry, service.tool_registry)
+            WorkflowFactory(service.skill_registry, service.tool_registry),
+            repository=service.repository,
         )
         resolved_executor = _RoutingExecutor(
             mock=mock_executor,

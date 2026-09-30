@@ -22,7 +22,7 @@
 - 前端只保留 Chat 与 Work 两种对话模式：主导航只有“对话工作台”，MATLAB/SPM/DPABI、本机目录与模型连接集中在右上角“设置”。所有业务请求都从 Work 自然语言进入类型化应用服务，不再渲染项目、数据、方案、运行、QC、统计、扩展分析页面或消息操作卡片；旧业务地址统一回到工作台且不会自动执行。
 - 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
 - 已实现：用户选择本机 MATLAB/SPM/DPABI 路径、入口探测、受控 DPABI `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消、预期产物完整性检查，以及真实统计结果的证据登记与确定性 Markdown/JSON 复现报告。
-- 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径均已完成小型合成 smoke；会触发 DPARSFA 交互提示的 T1 分割/DARTEL 在 headless 路径明确拒绝。
+- 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径已完成小型合成 smoke；T1 准备、分割/DARTEL 新增无 GUI 固定模板与输入/产物检查，真实 MATLAB 新路径尚未验证。
 - Work 在启动 DPABI 预处理或指标任务前要求用户明确选择头动 QC 或跳过 QC。选择头动 QC 时会解析本次 `RealignParameter` 并生成 QC 草稿；选择跳过时，成功登记的指标图可直接进入后续统计设计，系统仍记录跳过决定、操作者和原因。
 - 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
@@ -33,6 +33,10 @@
 当前范围和未完成项见 [MVP 范围](docs/product/mvp-scope.md)，已核实的能力与已知限制见 [验证记录](docs/development/mvp-verification.md)。
 
 ## 本地开发
+
+Work 在模型提供预处理草稿后显示 DPARSF 风格的可编辑参数面板。可以直接调整勾选项、采集参数和高级配置；保存修改只更新草稿，不调用模型或启动计算。未知参数仍需补充，建议值需审查。保存后确认当前版本才能生成方案，历史方案只读。
+
+T1 处理配置准备方式、功能像配准、Segment/New Segment 和 DARTEL。普通 T1 在独立副本上重定向、裁剪，与后续分割/DARTEL 作为同一次预处理自动执行，不增加中途审查或批准。程序核对受试者配对、文件和步骤依赖，检查图随产物保存供查看。新路径未运行真实 MATLAB 验证，不将 Mock 产物用作真实科研输入。
 
 Work 在服务端返回可确认的起始阶段、完整参数或启动选项时弹出确认窗口。审查摘要后选择本次操作，再点击“确认选择”；启动时明确选择做头动 QC 或跳过 QC。“修改要求”返回输入框，“暂不执行”关闭窗口，可从输入框上方的“待确认”重新打开。参数确认只编译方案；真实启动仍需独立的一次性授权。设计见 [ADR 0018](docs/adr/0018-work-confirmation-dialog.md)。
 

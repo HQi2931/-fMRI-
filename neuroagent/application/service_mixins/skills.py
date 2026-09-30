@@ -68,10 +68,7 @@ class SkillPlanMixin(BaseServiceMixin):
                     for relative_path in entry.functional_files
                 }
             )
-            if (
-                len(functional_stage_roots) != 1
-                or stage_rule(functional_stage_roots[0]) is None
-            ):
+            if len(functional_stage_roots) != 1 or stage_rule(functional_stage_roots[0]) is None:
                 raise InputValidationError(
                     "manifest_dpabi_input_stage_invalid",
                     "DPABI-ready manifest 必须只绑定一个受支持的功能输入 stage, "
@@ -163,10 +160,14 @@ class SkillPlanMixin(BaseServiceMixin):
                 )
 
         preprocessing = intent.preprocessing
-        if preprocessing is None or preprocessing.normalization.mode not in {
-            NormalizationMode.T1_SEGMENT,
-            NormalizationMode.DARTEL,
-        }:
+        if preprocessing is None or (
+            preprocessing.t1 is None
+            and preprocessing.normalization.mode
+            not in {
+                NormalizationMode.T1_SEGMENT,
+                NormalizationMode.DARTEL,
+            }
+        ):
             return
         missing_anatomical = [
             {
@@ -199,7 +200,12 @@ class SkillPlanMixin(BaseServiceMixin):
                 ambiguous=ambiguous_anatomical,
             )
         expected_structural_ref = f"manifest:{manifest.manifest_id}:anatomical-source"
-        if preprocessing.normalization.structural_artifact_id != expected_structural_ref:
+        structural_ref = (
+            preprocessing.t1.structural_artifact_id
+            if preprocessing.t1 is not None
+            else preprocessing.normalization.structural_artifact_id
+        )
+        if structural_ref != expected_structural_ref:
             raise InputValidationError(
                 "structural_artifact_binding_invalid",
                 "结构像引用必须由服务端冻结 manifest 绑定, 不能使用任意客户端 Artifact ID。",

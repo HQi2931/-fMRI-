@@ -491,7 +491,7 @@ def test_work_conversation_plan_request_waits_for_explicit_scientific_parameters
     body = response.json()
     assert body["tool_call"]["status"] == "awaiting_confirmation"
     assert "科研参数" in body["assistant_message"]["content"]
-    assert "没有单独的方案表单" in body["assistant_message"]["content"]
+    assert "参数面板或输入框" in body["assistant_message"]["content"]
     assert "work_cards" not in body["assistant_message"]["payload"]
 
 

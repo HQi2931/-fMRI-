@@ -77,6 +77,25 @@ def latest_payload(conversation: ConversationView, key: str) -> dict[str, Any] |
     return None
 
 
+def _draft_sources(saved: dict[str, Any] | None, patch: dict[str, Any]) -> dict[str, str]:
+    sources = dict(saved.get("sources", {})) if saved else {}
+    old = saved.get("draft", {}) if saved else {}
+
+    def mark(value: Any, prior: Any, prefix: str = "") -> None:
+        if isinstance(value, dict):
+            for name, child in value.items():
+                mark(
+                    child,
+                    prior.get(name) if isinstance(prior, dict) else None,
+                    f"{prefix}.{name}" if prefix else name,
+                )
+        elif value != prior or prefix not in sources:
+            sources[prefix] = "suggested"
+
+    mark(patch, old)
+    return sources
+
+
 def execution_command(plan_hash: str, qc: str, confirmation_id: str | None = None) -> str:
     suffix = f" {confirmation_id}" if confirmation_id else ""
     return f"批准并启动 {plan_hash[:12]} {qc}{suffix}"
@@ -619,16 +638,20 @@ class WorkDialogue:
                             f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
                         )
                     )
-                    stage_command = payload["workspace_stage_recommendation"]["confirmation_command"]
+                    stage_command = payload["workspace_stage_recommendation"][
+                        "confirmation_command"
+                    ]
                     if stage_command:
                         payload["confirmation_request"] = {
                             "title": "确认预处理起点",
                             "summary": interpreted.stage_reasoning or interpreted.answer,
-                            "options": [{
-                                "label": f"使用 {interpreted.recommended_input_stage}",
-                                "description": "确认当前输入阶段，继续准备方案。",
-                                "command": stage_command,
-                            }],
+                            "options": [
+                                {
+                                    "label": f"使用 {interpreted.recommended_input_stage}",
+                                    "description": "确认当前输入阶段，继续准备方案。",
+                                    "command": stage_command,
+                                }
+                            ],
                         }
                     return reply(
                         interpreted.answer
@@ -693,7 +716,9 @@ class WorkDialogue:
                     "hash": draft_hash(draft),
                     "workspace_path": workspace_path,
                     "compiled": False,
+                    "sources": _draft_sources(saved, interpreted.draft_patch),
                 }
+                payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
                 if issues:
                     suffix = "\n\n仍需补充或修正：\n" + "\n".join(issues)
@@ -701,11 +726,13 @@ class WorkDialogue:
                     payload["confirmation_request"] = {
                         "title": "确认方案参数",
                         "summary": review,
-                        "options": [{
-                            "label": "确认并生成方案",
-                            "description": "登记工作区并校验、编译当前参数，不启动计算。",
-                            "command": f"确认方案参数 {draft_hash(draft)[:12]}",
-                        }],
+                        "options": [
+                            {
+                                "label": "确认并生成方案",
+                                "description": "登记工作区并校验、编译当前参数，不启动计算。",
+                                "command": f"确认方案参数 {draft_hash(draft)[:12]}",
+                            }
+                        ],
                     }
                     suffix = (
                         "\n\n请审查以上全部参数。确认后将登记当前工作区并校验编译方案，尚不启动计算。"

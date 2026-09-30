@@ -26,6 +26,7 @@ from neuroagent.application.contracts import (
     RsFmriQuestionRequest,
     RunCreate,
     RunView,
+    WorkDraftUpdate,
 )
 from neuroagent.application.conversation_context import (
     ContextBudgetError,
@@ -37,7 +38,16 @@ from neuroagent.application.conversation_work import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.application.work_dialogue import WorkDialogue
+from neuroagent.application.work_dialogue import WorkDialogue, latest_payload
+from neuroagent.application.work_draft import (
+    WorkDraft,
+    draft_hash,
+    draft_issues,
+    merge_work_draft,
+    plan_preview,
+    render_draft_review,
+    validate_draft_patch,
+)
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
@@ -86,6 +96,91 @@ class ConversationMixin(BaseServiceMixin):
 
     def get_conversation(self, conversation_id: str) -> ConversationView:
         return self.repository.get_conversation(conversation_id)
+
+    def update_work_draft(
+        self, conversation_id: str, request: WorkDraftUpdate, idempotency_key: str
+    ) -> ConversationTurnView:
+        def act() -> ConversationTurnView:
+            conversation = self.repository.get_conversation(conversation_id)
+            if conversation.mode is not ConversationMode.WORK:
+                raise InputValidationError("work_draft_mode_required", "只能编辑 Work 方案草稿。")
+            saved = latest_payload(conversation, "work_draft")
+            if saved is None:
+                raise ConflictError("work_draft_missing", "请先通过对话创建参数草稿。")
+            if (
+                not conversation.workspace_path
+                or saved.get("workspace_path") != conversation.workspace_path
+            ):
+                raise ConflictError(
+                    "work_draft_workspace_changed", "草稿与当前工作区不一致，请重新准备。"
+                )
+            draft = WorkDraft.model_validate(saved["draft"])
+            if request.base_hash != draft_hash(draft):
+                raise ConflictError("work_draft_changed", "参数草稿已更新，请核对最新版本后重试。")
+            try:
+                validate_draft_patch(request.patch)
+                updated = merge_work_draft(draft, request.patch)
+            except ValueError as exc:
+                raise InputValidationError(
+                    "work_draft_patch_invalid", "修改包含未知字段或不合法的参数结构。"
+                ) from exc
+            issues = draft_issues(updated)
+            sources = dict(saved.get("sources", {}))
+
+            def mark(value: Any, prefix: str = "") -> None:
+                if isinstance(value, dict):
+                    for name, child in value.items():
+                        mark(child, f"{prefix}.{name}" if prefix else name)
+                else:
+                    sources[prefix] = "user"
+
+            mark(request.patch)
+            payload: dict[str, Any] = {
+                "work_draft": {
+                    "draft": updated.model_dump(mode="json"),
+                    "hash": draft_hash(updated),
+                    "workspace_path": conversation.workspace_path,
+                    "compiled": False,
+                    "sources": sources,
+                },
+                "draft_issues": list(issues),
+                "plan_preview": plan_preview(updated),
+            }
+            review = render_draft_review(updated)
+            if not issues:
+                payload["confirmation_request"] = {
+                    "title": "确认方案参数",
+                    "summary": review,
+                    "options": [
+                        {
+                            "label": "确认并生成方案",
+                            "description": "编译当前参数，不启动计算。",
+                            "command": f"确认方案参数 {draft_hash(updated)[:12]}",
+                        }
+                    ],
+                }
+            stored, user, assistant, tool = self.repository.append_conversation_exchange(
+                conversation_id,
+                user_content="已在参数面板保存修改。",
+                assistant_content="参数草稿已保存，请审查后确认。",
+                assistant_payload=payload,
+                tool=None,
+                workspace_path=conversation.workspace_path,
+                preferred_profile_id=conversation.preferred_profile_id,
+                project_id=conversation.project_id,
+                active_run_id=conversation.active_run_id,
+            )
+            return ConversationTurnView(
+                conversation=stored, user_message=user, assistant_message=assistant, tool_call=tool
+            )
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:work-draft",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationTurnView,
+            action=act,
+        )
 
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
         return self.repository.get_conversation_context(conversation_id)

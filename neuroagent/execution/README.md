@@ -19,4 +19,6 @@
 - 统计软件证据来自运行时 MATLAB/SPM 版本和 DPABI 源码 Release 标记；效应量使用冻结设计矩阵的对比方差，见 [ADR 0007](../../docs/adr/0007-adjusted-statistical-effects.md)。
 - 指标影像与掩膜通过 DPABI `y_ReadRPI` 做相同轴方向规范化后核对维度和物理网格；仅做轴翻转，不重采样。
 
-每次 MATLAB 作业必须使用独立运行目录。真实运行只接受验证后的结构化 JobSpec，且需调用方显式授权。常规测试不启动 MATLAB；明确 opt-in 的仓库外小型合成 smoke 记录在 [验证文档](../../docs/development/mvp-verification.md)。预处理当前限单会话 4D 输入，metric-only 限单主体；需要不同阶段掩膜的 OnResults normalization 与组合指标方案暂时拒绝；可能触发 DPARSFA GUI 的 T1 分割/DARTEL 在 headless 编译时失败关闭。
+每次 MATLAB 作业必须使用独立运行目录。真实运行只接受验证后的结构化 JobSpec，且需调用方显式授权。常规测试不启动 MATLAB；明确 opt-in 的仓库外小型合成 smoke 记录在 [验证文档](../../docs/development/mvp-verification.md)。预处理当前限单会话 4D 输入，metric-only 限单主体；需要不同阶段掩膜的 OnResults normalization 与组合指标方案暂时拒绝。
+
+T1 准备默认作为同一个已批准预处理作业的第一阶段自动执行，没有中途审查或额外批准。仅在 staging 副本上通过固定且引用完整路径的模板调用 DPABI 所附 legacy dcm2nii 重定向/裁剪工具，验证真实新建裁剪输出和 3D 头信息，保留原始影像；不使用当前源码中与旧参数不兼容的 dcm2niix 包装器。可选 PNG 三视图标注体素轴、世界坐标仿射和原点十字线，供结果检查。Segment/New Segment 与标准化分开建模，DARTEL 要求 New Segment；固定模板验证组织图、DARTEL 输入、形变场与六级模板，登记冻结集合谱系，始终关闭 GUI。高级独立准备接口仍可供显式分阶段操作。真实 T1/DARTEL 路径尚未经过 MATLAB smoke 验证。

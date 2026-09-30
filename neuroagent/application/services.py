@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
@@ -58,6 +58,7 @@ from neuroagent.application.service_mixins import (
     StatisticsMixin,
 )
 from neuroagent.application.settings import Settings
+from neuroagent.application.t1_preparation import T1PreparationMixin
 from neuroagent.application.work_dialogue import WorkDialogue
 from neuroagent.application.work_tools import (
     WorkToolRunner,
@@ -93,6 +94,7 @@ from neuroagent.tools.registry import build_default_tool_registry
 
 
 class NeuroAgentService(
+    T1PreparationMixin,
     ConversationMixin,
     ProjectDatasetMixin,
     PlanApprovalMixin,
@@ -531,8 +533,16 @@ class NeuroAgentService(
         workspace_picker: WorkspacePickerPort | None = None,
         workspace_file_factory: Any | None = None,
         skill_registry: SkillRegistry | None = None,
+        t1_preparation_artifact_validator: Callable[[Path, str], None] | None = None,
     ) -> None:
         self.settings = settings
+
+        def unavailable_t1_validator(path: Path, role: str) -> None:
+            raise InputValidationError("t1_validator_unavailable", "T1 产物检查器未配置。")
+
+        self.t1_preparation_artifact_validator = (
+            t1_preparation_artifact_validator or unavailable_t1_validator
+        )
         self.database = database
         self.repository = repository
         self.path_policy = path_policy

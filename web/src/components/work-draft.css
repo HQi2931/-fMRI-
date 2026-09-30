@@ -1,0 +1,18 @@
+.work-draft-panel { border: 1px solid var(--line, #d4dce6); border-radius: 12px; padding: 16px; margin-top: 12px; background: var(--panel, #fff); color: var(--ink, #223348); }
+.work-draft-panel h3 { margin: 0 0 8px; }
+.work-draft-panel p { font-size: 13px; white-space: normal; }
+.work-draft-panel details { border-top: 1px solid #e1e6ed; padding: 10px 0; }
+.work-draft-panel summary { cursor: pointer; font-weight: 600; }
+.draft-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 12px 18px; margin-top: 12px; }
+.draft-field { display: grid; align-content: start; gap: 4px; }
+.draft-field label { font-size: 13px; font-weight: 600; }
+.draft-field small { color: #64748b; font-size: 12px; }
+.draft-field input, .draft-field select { min-width: 0; width: 100%; border: 1px solid #c3cdd9; border-radius: 5px; padding: 7px; background: #fff; color: #24364a; box-sizing: border-box; }
+.draft-field input:disabled, .draft-field select:disabled { background: #f1f4f8; color: #748091; }
+.draft-metrics, .draft-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 0; }
+.draft-metrics label { display: inline-flex; gap: 6px; align-items: center; }
+.draft-actions span { font-size: 12px; margin-right: auto; }
+.work-draft-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto; }
+.work-draft-panel textarea { width: 100%; min-height: 140px; box-sizing: border-box; }
+.work-draft-panel .draft-error { color: #a52424; }
+.draft-help { color: #64748b; }

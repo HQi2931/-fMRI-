@@ -39,6 +39,41 @@ def test_partial_merge_preserves_values_and_clears_confirmation() -> None:
     assert merge_work_draft(draft, {}).confirmed_hash == draft.confirmed_hash
 
 
+def test_t1_symbolic_source_binds_only_at_user_confirmation() -> None:
+    draft = merge_work_draft(
+        complete_draft(),
+        {
+            "preprocessing": {
+                "normalization": {
+                    "mode": 3,
+                    "structural_artifact_id": "workspace:anatomical-source",
+                },
+                "t1": {
+                    "preparation": "reorient_crop",
+                    "coregister_to_functional": True,
+                    "segmentation": "new_segment",
+                    "affine_regularization": "mni",
+                    "dartel": True,
+                },
+            }
+        },
+    )
+    intent = confirmed_skill_intent(
+        draft,
+        project_id="project",
+        dataset_ref="dataset",
+        input_manifest_hash="a" * 64,
+        reviewed_hash=draft_hash(draft),
+        user_confirmation_ref="user-confirmation",
+        structural_artifact_id="manifest:server-manifest:anatomical-source",
+    )
+    assert (
+        intent.preprocessing.t1.structural_artifact_id
+        == "manifest:server-manifest:anatomical-source"
+    )
+    assert draft.preprocessing["t1"]["structural_artifact_id"] == "workspace:anatomical-source"
+
+
 def test_model_cannot_supply_confirmation_or_provenance() -> None:
     with pytest.raises(ValueError, match="确认"):
         merge_work_draft(WorkDraft(), {"confirmed_hash": "forged"})

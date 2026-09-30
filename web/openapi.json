@@ -4471,6 +4471,16 @@
           "smoothing": {
             "$ref": "#/components/schemas/SmoothingParameters"
           },
+          "t1": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/T1Parameters"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "temporal_filter": {
             "$ref": "#/components/schemas/TemporalFilteringParameters"
           },
@@ -5712,6 +5722,19 @@
             "default": false,
             "title": "Real Execution Confirmed",
             "type": "boolean"
+          },
+          "t1_preparation_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T1 Preparation Run Id"
           },
           "workspace_mode": {
             "$ref": "#/components/schemas/ExecutionWorkspaceMode",
@@ -7539,6 +7562,240 @@
         "title": "SubjectManifestEntry",
         "type": "object"
       },
+      "T1Parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "affine_regularization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AffineRegularization"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coregister_to_functional": {
+            "title": "Coregister To Functional",
+            "type": "boolean"
+          },
+          "dartel": {
+            "title": "Dartel",
+            "type": "boolean"
+          },
+          "preparation": {
+            "$ref": "#/components/schemas/T1Preparation"
+          },
+          "segmentation": {
+            "$ref": "#/components/schemas/T1Segmentation"
+          },
+          "structural_artifact_id": {
+            "minLength": 1,
+            "title": "Structural Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preparation",
+          "structural_artifact_id",
+          "coregister_to_functional",
+          "segmentation",
+          "affine_regularization",
+          "dartel"
+        ],
+        "title": "T1Parameters",
+        "type": "object"
+      },
+      "T1Preparation": {
+        "enum": [
+          "reorient_crop",
+          "prepared"
+        ],
+        "title": "T1Preparation",
+        "type": "string"
+      },
+      "T1PreparationReviewCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "crop_confirmed": {
+            "title": "Crop Confirmed",
+            "type": "boolean"
+          },
+          "evidence_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Evidence Hash",
+            "type": "string"
+          },
+          "expected_run_version": {
+            "minimum": 1.0,
+            "title": "Expected Run Version",
+            "type": "integer"
+          },
+          "orientation_confirmed": {
+            "title": "Orientation Confirmed",
+            "type": "boolean"
+          },
+          "origin_confirmed": {
+            "title": "Origin Confirmed",
+            "type": "boolean"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_run_version",
+          "evidence_hash",
+          "approved",
+          "orientation_confirmed",
+          "crop_confirmed",
+          "origin_confirmed",
+          "actor",
+          "reason"
+        ],
+        "title": "T1PreparationReviewCreate",
+        "type": "object"
+      },
+      "T1PreparationReviewView": {
+        "additionalProperties": false,
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "evidence_hash": {
+            "title": "Evidence Hash",
+            "type": "string"
+          },
+          "manifest_hash": {
+            "title": "Manifest Hash",
+            "type": "string"
+          },
+          "non_scientific": {
+            "default": false,
+            "title": "Non Scientific",
+            "type": "boolean"
+          },
+          "review_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Record Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "subject_artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Subject Artifacts",
+            "type": "object"
+          },
+          "subject_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subject Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "manifest_hash",
+          "subject_ids",
+          "artifact_ids",
+          "evidence_hash"
+        ],
+        "title": "T1PreparationReviewView",
+        "type": "object"
+      },
+      "T1PreparationRunCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_backend": {
+            "$ref": "#/components/schemas/ExecutionBackend",
+            "default": "mock"
+          },
+          "expected_plan_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Plan Hash",
+            "type": "string"
+          },
+          "max_attempts": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "mock_delay_ms": {
+            "default": 0,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Mock Delay Ms",
+            "type": "integer"
+          },
+          "mock_outcome": {
+            "$ref": "#/components/schemas/MockOutcome",
+            "default": "succeed"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "real_execution_confirmed": {
+            "default": false,
+            "title": "Real Execution Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_plan_hash"
+        ],
+        "title": "T1PreparationRunCreate",
+        "type": "object"
+      },
+      "T1Segmentation": {
+        "enum": [
+          "disabled",
+          "segment",
+          "new_segment"
+        ],
+        "title": "T1Segmentation",
+        "type": "string"
+      },
       "TableColumnProfile": {
         "additionalProperties": false,
         "properties": {
@@ -7845,6 +8102,28 @@
           "severity"
         ],
         "title": "ValidationIssue",
+        "type": "object"
+      },
+      "WorkDraftUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "base_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Base Hash",
+            "type": "string"
+          },
+          "patch": {
+            "additionalProperties": true,
+            "maxProperties": 32,
+            "title": "Patch",
+            "type": "object"
+          }
+        },
+        "required": [
+          "base_hash",
+          "patch"
+        ],
+        "title": "WorkDraftUpdate",
         "type": "object"
       },
       "WorkflowState": {
@@ -9908,6 +10187,119 @@
           }
         },
         "summary": "Send Conversation Turn",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/work-draft": {
+      "patch": {
+        "operationId": "update_work_draft_api_v1_conversations__conversation_id__work_draft_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkDraftUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationTurnView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Update Work Draft",
         "tags": [
           "agent"
         ]
@@ -12981,6 +13373,119 @@
         ]
       }
     },
+    "/api/v1/plans/{plan_revision_id}/t1-preparation-runs": {
+      "post": {
+        "operationId": "create_t1_preparation_run_api_v1_plans__plan_revision_id__t1_preparation_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_revision_id",
+            "required": true,
+            "schema": {
+              "title": "Plan Revision Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/T1PreparationRunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Create T1 Preparation Run",
+        "tags": [
+          "t1-preparation"
+        ]
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "operationId": "list_projects_api_v1_projects_get",
@@ -15187,6 +15692,308 @@
         "summary": "Retry Run",
         "tags": [
           "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/t1-preparation-artifacts/{artifact_id}/preview": {
+      "get": {
+        "operationId": "t1_preparation_preview_api_v1_runs__run_id__t1_preparation_artifacts__artifact_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "T1 Preparation Preview",
+        "tags": [
+          "t1-preparation"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/t1-preparation-review": {
+      "get": {
+        "operationId": "get_t1_preparation_review_api_v1_runs__run_id__t1_preparation_review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/T1PreparationReviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get T1 Preparation Review",
+        "tags": [
+          "t1-preparation"
+        ]
+      },
+      "post": {
+        "operationId": "review_t1_preparation_api_v1_runs__run_id__t1_preparation_review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/T1PreparationReviewCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/T1PreparationReviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Review T1 Preparation",
+        "tags": [
+          "t1-preparation"
         ]
       }
     },

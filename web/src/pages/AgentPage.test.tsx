@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -105,6 +105,7 @@ type Options = {
   workspaceConsents?: () => Promise<Response>;
   grantWorkspaceConsent?: () => Promise<Response>;
   turn?: (init?: RequestInit) => Promise<Response>;
+  draftPatch?: (init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -126,6 +127,7 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/conversations")) {
       return (options.conversations ?? (() => json([conversation()])))();
     }
+    if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/turns")) {
       if (options.turn) return options.turn(init);
       const current = conversation({
@@ -158,6 +160,24 @@ describe("agent workbench page", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("embeds and saves the latest structured draft while preserving historical read-only panels", async () => {
+    const draft = { preprocessing: { tr_seconds: 2 }, requested_metrics: [] };
+    const payload = { work_draft: { draft, hash: "a".repeat(64), workspace_path: "D:/demo-work", compiled: false }, draft_issues: ["study_protocol_ref：尚未提供"] };
+    const first = message("a1", "assistant", "参数建议", payload);
+    const changed = message("a2", "assistant", "修改已保存", { ...payload, work_draft: { ...payload.work_draft, hash: "b".repeat(64), draft: { ...draft, preprocessing: { tr_seconds: 3 } } } });
+    const patch = vi.fn((init?: RequestInit) => { expect(init?.method).toBe("PATCH"); return json({ conversation: conversation({ messages: [first, changed] }), user_message: message("u2", "user", "参数修改"), assistant_message: changed, tool_calls: [], tool_call: null }); });
+    installFetch({ conversations: () => json([conversation({ messages: [first] })]), draftPatch: patch });
+    render(<AgentPage />);
+    const panel = await screen.findByRole("region", { name: "预处理方案参数" });
+    fireEvent.change(within(panel).getByLabelText("TR (s)"), { target: { value: "3" } });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    await userEvent.click(within(panel).getByRole("button", { name: "保存修改" }));
+    await screen.findByText("修改已保存");
+    expect(JSON.parse(String(patch.mock.calls[0]?.[0]?.body))).toEqual({ base_hash: "a".repeat(64), patch: { preprocessing: { tr_seconds: 3 } } });
+    expect(within(screen.getByRole("region", { name: "历史预处理方案（只读）" })).getByLabelText("TR (s)")).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: "预处理方案参数" })).getByLabelText("TR (s)")).toHaveValue(3);
   });
 
   it("requires an explicit option, dismisses without sending, and submits the server command", async () => {

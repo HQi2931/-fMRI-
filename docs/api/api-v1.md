@@ -10,6 +10,18 @@
 
 ## 通用规则
 
+### Work 参数编辑与 T1 预处理
+
+正常预处理将 T1 准备、配准、分割/DARTEL 合并到一次运行，不要求单独准备运行或人工审查。以下独立准备/审查接口仅用于可选高级操作。
+
+- `PATCH /conversations/{conversation_id}/work-draft` 接受 `{base_hash, patch}`，返回 `ConversationTurnView`。必须提供幂等键；只更新当前 Work/工作区草稿，不调用模型、批准或运行。未知字段和来源/确认字段拒绝；数值或依赖问题保存在 `draft_issues`，问题未解决时不提供确认请求。过期哈希返回 `work_draft_changed`（409）。
+- `work_draft.sources` 按点分字段路径标记 `suggested` 或 `user`，用于区分待审查建议与用户修改；不代替科研来源与审批证据。变更后旧参数确认失效，`compiled=false`。
+- `POST /plans/{plan_revision_id}/t1-preparation-runs` 在已批准的冻结方案上单独排队 T1 准备；默认 Mock，MATLAB 必须明确 `real_execution_confirmed=true`。返回 `RunView`。
+- `GET /runs/{run_id}/t1-preparation-review` 返回准备清单、逐受试者产物、证据哈希及最新审查状态；实际文件、头信息和检查图验证失败时拒绝返回可确认结果。
+- `POST /runs/{run_id}/t1-preparation-review` 接受运行版本、证据哈希、通过/退回、方向/裁剪/原点确认、操作者和理由。通过要求三个检查均确认；最新退回撤销先前认可。
+- `GET /runs/{run_id}/t1-preparation-artifacts/{artifact_id}/preview` 仅提供经校验的准备检查图或头信息证据。
+- 可选的 `RunCreate.t1_preparation_run_id` 用于复用已审查准备运行；服务端核对 manifest、受试者顺序、真实文件及来源。未指定时在本次运行中自动准备 T1。Mock 准备证据不可用于 MATLAB。
+
 Work assistant 消息的 payload 可包含 `confirmation_request: {title, summary, options: [{label, description, command}]}`。这是协调器生成的展示契约；前端仅展示最新回复的请求，用户显式选择后将 `command` 原样作为下一轮 `content` 提交。选项数量为一至三个；缺项草稿不签发确认。启动 command 包含绑定方案/QC 的一次性 challenge，服务端继续校验有效期、作用域和单次消费。普通回答文本不能生成按钮。详见 [ADR 0018](../adr/0018-work-confirmation-dialog.md)。
 
 - JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。

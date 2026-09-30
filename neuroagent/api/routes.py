@@ -79,6 +79,7 @@ from neuroagent.application.contracts import (
     StatisticalResultDetailView,
     StatisticalResultView,
     StatisticsRunCreate,
+    WorkDraftUpdate,
     WorkflowState,
     WorkspaceChangeProposal,
     WorkspaceCheckRequest,
@@ -339,6 +340,17 @@ def get_literature_paper(paper_id: str, request: Request) -> PaperIngestResult:
 )
 def list_literature_papers(request: Request) -> list[PaperIngestResult]:
     return service_from(request).literature.list()
+
+
+@router.patch(
+    "/conversations/{conversation_id}/work-draft",
+    response_model=ConversationTurnView,
+    tags=["agent"],
+)
+def update_work_draft(
+    conversation_id: str, body: WorkDraftUpdate, request: Request, idempotency_key: IdempotencyKey
+) -> ConversationTurnView:
+    return service_from(request).update_work_draft(conversation_id, body, idempotency_key)
 
 
 @router.post(

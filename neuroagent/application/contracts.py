@@ -401,6 +401,7 @@ class QcExecutionMode(StrEnum):
 
 
 class RunCreate(StrictModel):
+    t1_preparation_run_id: str | None = Field(default=None, min_length=1, max_length=64)
     project_id: str
     plan_revision_id: str
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -1116,6 +1117,20 @@ class ConversationView(StrictModel):
     updated_at: datetime
     messages: list[ConversationMessageView] = Field(default_factory=list)
     tool_calls: list[ConversationToolCallView] = Field(default_factory=list)
+
+
+class WorkDraftUpdate(StrictModel):
+    base_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    patch: dict[str, Any] = Field(max_length=32)
+
+    @field_validator("patch")
+    @classmethod
+    def bounded_patch(cls, value: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        if len(json.dumps(value, ensure_ascii=False, allow_nan=False)) > 64_000:
+            raise ValueError("draft patch exceeds size limit")
+        return value
 
 
 class ConversationTurnCreate(StrictModel):

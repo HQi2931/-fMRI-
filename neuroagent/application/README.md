@@ -10,6 +10,9 @@
 
 当前能力：
 
+- T1 重定向、裁剪与后续分割/DARTEL 合并为一次预处理运行；`t1_preparation.py` 的独立准备与审查 API 仅供可选高级操作，不是正常流程前置门禁；
+- Work 参数面板通过幂等 PATCH 编辑草稿，保存不调用模型；版本冲突拒绝，草稿修改使旧确认失效；
+
 - `services.py` 与 `service_mixins/` 组成应用门面，管理 `PlanRevision` 生命周期与追加式审批记录；
 - `contracts.py` 定义传输无关的公共契约；`ports.py` 声明执行器、仓储和环境等窄端口；
 - `conversation_work.py`、`work_dialogue.py`、`work_draft.py` 把 Work 自然语言收敛为受限动作与未批准草稿；

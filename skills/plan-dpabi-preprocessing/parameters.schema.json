@@ -49,12 +49,26 @@
         "temporal_filter": {"$ref": "#/$defs/temporal_filter"},
         "scrubbing": {"$ref": "#/$defs/scrubbing"},
         "smoothing": {"$ref": "#/$defs/smoothing"},
+        "t1": {"oneOf": [{"$ref": "#/$defs/t1"}, {"type": "null"}]},
         "provenance": {
           "type": "array",
           "minItems": 11,
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/provenance"}
         }
+      }
+    },
+    "t1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preparation", "structural_artifact_id", "coregister_to_functional", "segmentation", "affine_regularization", "dartel"],
+      "properties": {
+        "preparation": {"enum": ["reorient_crop", "prepared"]},
+        "structural_artifact_id": {"type": "string", "minLength": 1},
+        "coregister_to_functional": {"type": "boolean"},
+        "segmentation": {"enum": ["disabled", "segment", "new_segment"]},
+        "affine_regularization": {"enum": ["mni", "eastern", null]},
+        "dartel": {"type": "boolean"}
       }
     },
     "slice_timing": {

@@ -9,6 +9,7 @@ import json
 from copy import deepcopy
 from typing import Any, Literal
 
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from neuroagent.application.contracts import SkillPlanIntent
@@ -95,9 +96,67 @@ def merge_work_draft(draft: WorkDraft, patch: dict[str, Any]) -> WorkDraft:
         return result
 
     updated = WorkDraft.model_validate(merge(draft.model_dump(mode="json"), patch))
+    t1 = updated.preprocessing.get("t1")
+    if isinstance(t1, dict) and "structural_artifact_id" not in t1:
+        t1["structural_artifact_id"] = "workspace:anatomical-source"
     if draft_hash(updated) != draft_hash(draft):
         updated.confirmed_hash = None
     return updated
+
+
+def validate_draft_patch(patch: dict[str, Any]) -> None:
+    """Reject hidden fields and malformed shape, allowing incomplete scientific choices."""
+    schema = draft_schema()
+    schema.pop("required", None)
+
+    def bounded(value: Any, depth: int = 0) -> None:
+        if depth > 12:
+            raise ValueError("draft patch nesting exceeds limit")
+        if isinstance(value, dict):
+            if len(value) > 100:
+                raise ValueError("draft patch object exceeds limit")
+            for key, child in value.items():
+                if key in {"provenance", "confirmed_hash"}:
+                    raise ValueError("server-owned draft field")
+                bounded(child, depth + 1)
+        elif isinstance(value, list):
+            if len(value) > 4096:
+                raise ValueError("draft patch array exceeds limit")
+            for child in value:
+                bounded(child, depth + 1)
+
+    bounded(patch)
+
+    # Partial objects are legal; semantic/numeric issues are returned with the saved draft.
+    def shape_only(value: Any) -> None:
+        if isinstance(value, dict):
+            for name in (
+                "required",
+                "enum",
+                "const",
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+                "minItems",
+                "maxItems",
+                "minLength",
+                "maxLength",
+                "pattern",
+                "minProperties",
+                "maxProperties",
+            ):
+                value.pop(name, None)
+            for child in value.values():
+                shape_only(child)
+        elif isinstance(value, list):
+            for child in value:
+                shape_only(child)
+
+    shape_only(schema)
+    if next(Draft202012Validator(schema).iter_errors(patch), None) is not None:
+        raise ValueError("invalid draft patch shape")
 
 
 def draft_issues(draft: WorkDraft) -> tuple[str, ...]:
@@ -133,7 +192,7 @@ def draft_issues(draft: WorkDraft) -> tuple[str, ...]:
             continue
         # Even fields with domain defaults must be explicitly reviewed in a draft.
         for field in model.model_fields:
-            if field != "provenance" and field not in values:
+            if field not in {"provenance", "t1"} and field not in values:
                 issues.append(f"{name}.{field}：尚未提供（停用项也需明确填写 null 或 false）")
         try:
             model.model_validate({**values, "provenance": []})
@@ -178,6 +237,46 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
             "evidence": "typed_preprocessing_parameters",
         },
     ]
+    t1 = preprocessing.get("t1")
+    if isinstance(t1, dict):
+        t1_steps = [
+            {
+                "step_id": "prepare_t1",
+                "label": "T1 重定向与裁剪（预处理内自动执行）",
+                "status": "planned"
+                if t1.get("preparation") == "reorient_crop"
+                else "requires_verified_input",
+                "evidence": "draft.preprocessing.t1",
+            },
+        ]
+        if t1.get("coregister_to_functional"):
+            t1_steps.append(
+                {
+                    "step_id": "coregister_t1",
+                    "label": "T1 配准到功能像",
+                    "status": "planned",
+                    "evidence": "draft.preprocessing.t1",
+                }
+            )
+        if t1.get("segmentation") not in {None, "disabled"}:
+            t1_steps.append(
+                {
+                    "step_id": "segment_t1",
+                    "label": "T1 " + str(t1["segmentation"]),
+                    "status": "planned",
+                    "evidence": "draft.preprocessing.t1",
+                }
+            )
+        if t1.get("dartel"):
+            t1_steps.append(
+                {
+                    "step_id": "dartel_template",
+                    "label": "DARTEL 模板与逐受试者形变场",
+                    "status": "planned",
+                    "evidence": "frozen_subject_manifest",
+                }
+            )
+        common_steps[1:1] = t1_steps
     if preprocessing:
         if smoothing_timing not in {None, "disabled"}:
             common_steps.append(
@@ -274,6 +373,7 @@ def confirmed_skill_intent(
     input_manifest_hash: str,
     reviewed_hash: str,
     user_confirmation_ref: str,
+    structural_artifact_id: str | None = None,
 ) -> SkillPlanIntent:
     """Call only for an explicit user review confirmation, never model output.
 
@@ -303,6 +403,15 @@ def confirmed_skill_intent(
             ],
         }
 
+    preprocessing = confirmed(draft.preprocessing)
+    if preprocessing is not None and structural_artifact_id is not None:
+        for section in ("t1", "normalization"):
+            settings = preprocessing.get(section)
+            if (
+                isinstance(settings, dict)
+                and settings.get("structural_artifact_id") == "workspace:anatomical-source"
+            ):
+                settings["structural_artifact_id"] = structural_artifact_id
     return SkillPlanIntent.model_validate(
         {
             "project_id": project_id,
@@ -312,7 +421,7 @@ def confirmed_skill_intent(
             "primary_outputs": draft.primary_outputs,
             "study_protocol_ref": draft.study_protocol_ref,
             "request_preprocessing": True,
-            "preprocessing": confirmed(draft.preprocessing),
+            "preprocessing": preprocessing,
             "alff_falff": confirmed(draft.alff_falff),
             "reho": confirmed(draft.reho),
         }
@@ -320,6 +429,11 @@ def confirmed_skill_intent(
 
 
 _LABELS = {
+    "t1": "T1 结构像处理",
+    "preparation": "T1 输入准备方式",
+    "coregister_to_functional": "T1 配准到功能像",
+    "segmentation": "组织分割方法",
+    "dartel": "DARTEL 模板构建",
     "options_source": "校正选项来源",
     "polynomial_trend": "多项式趋势阶数",
     "head_motion_model": "头动回归模型",

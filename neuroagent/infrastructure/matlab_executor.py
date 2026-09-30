@@ -17,6 +17,7 @@ from neuroagent.application.environment_lock import (
 )
 from neuroagent.application.ports import ExecutionResult, RepositoryPort
 from neuroagent.application.settings import Settings
+from neuroagent.application.t1_preparation import resolve_reviewed_t1_bindings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage, MetricScaling
 from neuroagent.domain.fmri.dpabi_stages import stage_rule, verified_source_version
 from neuroagent.domain.fmri.metrics import MetricMaskSource, SmoothingTiming, TemporalFilterTiming
@@ -32,9 +33,15 @@ from neuroagent.execution.models import (
     MatlabJobStatus,
     PreprocessingJobPayload,
 )
-from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
+from neuroagent.execution.preprocessing import (
+    PreprocessingCompilation,
+    ReviewedT1Binding,
+    compile_preprocessing,
+)
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.infrastructure.filesystem.t1_geometry import verify_t1_geometry
+from neuroagent.infrastructure.filesystem.t1_review import validate_t1_preparation_artifact
 from neuroagent.skills.models import SkillPlan, stable_hash
 from neuroagent.tools.input_staging import (
     InputFormat,
@@ -180,8 +187,11 @@ class MatlabJobExecutor:
             attempt = Path(tempfile.mkdtemp(prefix="attempt-", dir=attempts))
             spec = spec.model_copy(update={"run_id": attempt.name})
             if compilation is not None:
+                assert isinstance(spec.payload, PreprocessingJobPayload)
                 compilation = replace(compilation, spec=spec)
                 if payload.get("workspace_mode") == "in_place":
+                    if spec.payload.t1_preparation is not None:
+                        raise ValueError("T1 stages require isolated staging")
                     frozen = self._repository.get_plan(run.plan_revision_id)
                     plan = SkillPlan.model_validate(frozen.plan["skill_plan"])
                     dataset = self._repository.get_dataset(plan.dataset_ref)
@@ -241,28 +251,24 @@ class MatlabJobExecutor:
                     cfg["StartingDirName"] = stage
                     cfg = _apply_verified_stage_resume(cfg, stage)
                     predicted_stage = _predict_dpabi_stage(stage, cfg)
-                    if predicted_stage != stage and (
-                        preprocessing_workspace / predicted_stage
-                    ).exists():
-                        raise ValueError(
-                            f"DPABI output stage already exists: {predicted_stage}"
-                        )
                     if (
-                        (cfg.get("IsCalALFF", 0) or cfg.get("IsCalReHo", 0))
-                        and (preprocessing_workspace / "Results").exists()
+                        predicted_stage != stage
+                        and (preprocessing_workspace / predicted_stage).exists()
                     ):
+                        raise ValueError(f"DPABI output stage already exists: {predicted_stage}")
+                    if (cfg.get("IsCalALFF", 0) or cfg.get("IsCalReHo", 0)) and (
+                        preprocessing_workspace / "Results"
+                    ).exists():
                         raise ValueError("DPABI Results directory already exists")
                     needs_realign_evidence = (
                         selected_rule is not None
                         and selected_rule.requires_realign_parameters
-                        and (
-                            downstream_needs_realign
-                            or str(run.qc_mode or "require") != "skip"
-                        )
+                        and (downstream_needs_realign or str(run.qc_mode or "require") != "skip")
                     )
-                    if needs_realign_evidence and not (
-                        preprocessing_workspace / "RealignParameter"
-                    ).is_dir():
+                    if (
+                        needs_realign_evidence
+                        and not (preprocessing_workspace / "RealignParameter").is_dir()
+                    ):
                         raise ValueError(
                             "selected DPABI checkpoint requires RealignParameter for "
                             "the requested downstream operation or QC"
@@ -351,11 +357,20 @@ class MatlabJobExecutor:
             for artifact in result.registered_artifacts
         )
         if compilation is not None:
+            assert isinstance(compilation.spec.payload, PreprocessingJobPayload)
             try:
-                artifacts = self._preprocessing_lineage(
-                    artifacts, compilation, result.rendered.run_directory
-                )
-                if str(run.qc_mode or "require") != "skip":
+                if compilation.spec.payload.preparation_only:
+                    artifacts = self._t1_preparation_lineage(
+                        artifacts, compilation, result.rendered.run_directory
+                    )
+                else:
+                    artifacts = self._preprocessing_lineage(
+                        artifacts, compilation, result.rendered.run_directory
+                    )
+                if (
+                    not compilation.spec.payload.preparation_only
+                    and str(run.qc_mode or "require") != "skip"
+                ):
                     try:
                         artifacts = (
                             *artifacts,
@@ -411,14 +426,9 @@ class MatlabJobExecutor:
         # QC provenance must describe what this run actually executed.
         current_realign = bool(cfg.get("IsRealign", 0))
         selected_stage = cfg.get("StartingDirName")
+        selected_rule = stage_rule(selected_stage) if isinstance(selected_stage, str) else None
         prior_realign = bool(
-            isinstance(selected_stage, str)
-            and "realignment"
-            in (
-                stage_rule(selected_stage).completed_steps
-                if stage_rule(selected_stage)
-                else ()
-            )
+            selected_rule is not None and "realignment" in selected_rule.completed_steps
         )
         if not current_realign and not prior_realign:
             return ()
@@ -687,7 +697,104 @@ class MatlabJobExecutor:
             approval_record_id=approval.approval_id,
             mask_binding=mask_binding,
             input_binding=input_binding,
+            preparation_only=payload.get("operation") == "t1_preparation",
+            reviewed_t1_bindings=self._reviewed_t1_bindings(
+                payload, plan, tuple(subject.subject_id for subject in manifest.subjects)
+            ),
         )
+
+    def _reviewed_t1_bindings(
+        self, payload: dict[str, Any], plan: SkillPlan, subject_ids: tuple[str, ...]
+    ) -> tuple[ReviewedT1Binding, ...]:
+        bindings = tuple(
+            ReviewedT1Binding.model_validate(value)
+            for value in payload.get("reviewed_t1_bindings", ())
+        )
+        for preparation_id in {binding.preparation_run_id for binding in bindings}:
+            resolved = tuple(
+                ReviewedT1Binding.model_validate(value)
+                for value in resolve_reviewed_t1_bindings(
+                    self._repository,
+                    validate_t1_preparation_artifact,
+                    preparation_id,
+                    plan.input_manifest_hash,
+                    subject_ids,
+                )
+            )
+            if bindings != resolved:
+                raise ValueError("T1 bindings differ from current reviewed evidence")
+        for binding in bindings:
+            artifact = self._repository.get_artifact(binding.artifact_id)
+            preparation = self._repository.get_run(binding.preparation_run_id)
+            if (
+                preparation.project_id != plan.project_id
+                or artifact.run_id != preparation.run_id
+                or artifact.artifact_type != "preprocessing.t1_prepared"
+                or artifact.checksum != binding.sha256
+                or artifact.size_bytes != binding.size_bytes
+                or artifact.relative_path != binding.relative_path
+            ):
+                raise ValueError("reviewed T1 binding differs from registered artifact")
+            events = [
+                event
+                for event in self._repository.list_events(preparation.run_id)
+                if event.event_type == "T1PreparationReviewed"
+            ]
+            if not events:
+                raise ValueError("T1 preparation review is missing")
+            review = events[-1].payload
+            if (
+                review.get("review_record_id") != binding.review_record_id
+                or review.get("approved") is not True
+                or review.get("manifest_hash") != plan.input_manifest_hash
+                or binding.artifact_id not in review.get("artifact_ids", ())
+                or not all(
+                    review.get(key) is True
+                    for key in ("orientation_confirmed", "crop_confirmed", "origin_confirmed")
+                )
+            ):
+                raise ValueError("T1 preparation review does not authorize this artifact")
+        return bindings
+
+    def _t1_preparation_lineage(
+        self,
+        artifacts: tuple[dict[str, Any], ...],
+        compilation: PreprocessingCompilation,
+        root: Path,
+    ) -> tuple[dict[str, Any], ...]:
+        evidence = json.loads((root / "output/t1-preparation-evidence.json").read_text())
+        if evidence.get("operation") != "t1_preparation":
+            raise ValueError("invalid T1 preparation evidence")
+        rows = evidence["outputs"]
+        if isinstance(rows, dict):
+            rows = [rows]
+        expected = tuple(subject.subject_id for subject in compilation.subjects)
+        if tuple(row["subject_id"] for row in rows) != expected:
+            raise ValueError("T1 preparation subjects differ")
+        for row in rows:
+            metadata = row["metadata"]
+            if metadata["volume_count"] != 1 or len(metadata["dimensions"]) != 3:
+                raise ValueError("prepared T1 must be 3D")
+            subject = row["subject_id"]
+            paths = {row["relative_path"], row["review_image"]}
+            if any(not path.startswith(f"output/t1/{subject}/") for path in paths):
+                raise ValueError("T1 preparation path differs from subject")
+            if row["relative_path"] not in {artifact["relative_path"] for artifact in artifacts}:
+                raise ValueError("T1 preparation products missing")
+            verify_t1_geometry(root / row["relative_path"], metadata)
+            for artifact in artifacts:
+                if artifact["relative_path"] in paths:
+                    validate_t1_preparation_artifact(
+                        root / artifact["relative_path"], artifact["artifact_type"]
+                    )
+                    artifact["provenance"].update(
+                        subject_id=subject,
+                        manifest_hash=compilation.spec.input_manifest_hash,
+                        metadata=metadata,
+                        operation="t1_preparation",
+                        evidence_hash=stable_hash(evidence),
+                    )
+        return artifacts
 
     def _preprocessing_lineage(
         self,
@@ -695,6 +802,9 @@ class MatlabJobExecutor:
         compilation: PreprocessingCompilation,
         root: Path,
     ) -> tuple[dict[str, Any], ...]:
+        assert isinstance(compilation.spec.payload, PreprocessingJobPayload)
+        if compilation.spec.payload.t1_preparation is not None:
+            artifacts = self._t1_preparation_lineage(artifacts, compilation, root)
         evidence = json.loads((root / "output/preprocessing-evidence.json").read_text())
         rows = evidence["outputs"]
         if isinstance(rows, dict):
@@ -708,6 +818,24 @@ class MatlabJobExecutor:
         for artifact in artifacts:
             path = artifact["relative_path"]
             if path not in outputs:
+                if artifact["artifact_type"].startswith(
+                    ("preprocessing.tissue_", "preprocessing.dartel_")
+                ):
+                    artifact["provenance"].update(
+                        manifest_hash=compilation.spec.input_manifest_hash,
+                        subject_ids=list(compilation.spec.payload.subject_ids),
+                        subject_id=(
+                            None
+                            if artifact["artifact_type"] == "preprocessing.dartel_template"
+                            else PurePosixPath(path).parent.name
+                        ),
+                        source_artifact_ids=[
+                            binding.artifact_id
+                            for binding in compilation.spec.artifact_bindings
+                            if "/T1Img/" in binding.relative_path
+                        ],
+                        cohort_hash=stable_hash(compilation.spec.payload.subject_ids),
+                    )
                 continue
             output = outputs[path]
             row = by_path[path]

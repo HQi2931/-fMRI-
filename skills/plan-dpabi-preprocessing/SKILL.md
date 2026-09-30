@@ -7,7 +7,7 @@ description: Build and review a structured DPABI V8.2 preprocessing plan from a 
 
 1. Read `skill.yaml` and validate structured values with `parameters.schema.json`.
 2. Require a frozen manifest, a reviewed base DPARSFA configuration artifact, and provenance for every scientific parameter. Record explicit choices for dummy scans, slice timing/order/reference, realignment, nuisance regression and head motion, GSR, normalization, detrending, filtering, scrubbing, and smoothing; disabled operations are explicit values rather than omitted defaults.
-3. Check MATLAB R2023b, SPM12, and DPABI V8.2 compatibility. Treat software validity, technical validity, and scientific suitability as separate results.
+3. Check configured MATLAB/SPM/DPABI entry points and source compatibility, not hardcoded version labels. Treat software validity, technical validity, and scientific suitability as separate results. T1 preparation, coregistration, Segment/New Segment and DARTEL are explicit choices within the same preprocessing run; pair anatomy and functional input per frozen subject. DARTEL requires New Segment. Check input, output and cohort hashes automatically; do not add intermediate human approvals.
 4. Classify DICOM, BIDS NIfTI, plain NIfTI, and DPABI-ready inputs read-only. Copy only manifest-bound files into staging. For DICOM, emit a typed `DPABI_BIDS_Converter_run` plan but do not execute it.
 5. Compile only registered capabilities. Never emit free MATLAB, shell commands, absolute output paths, state transitions, or implicit scientific defaults.
 6. Produce a dry-run preview containing inputs, ordered steps, parameter sources, expected artifacts, QC gates, version locks, and unresolved questions.

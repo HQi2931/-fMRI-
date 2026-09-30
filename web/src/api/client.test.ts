@@ -11,6 +11,15 @@ describe("API client", () => {
     );
     await expect(api.health()).resolves.toEqual({ status: "ok", version: "0.1.0" });
   });
+  it("patches a work draft with revision guard and an idempotency key", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ conversation: {} }), { status: 200 }));
+    await api.patchWorkDraft("work / 1", "hash", { preprocessing: { detrend: false } });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/conversations/work%20%2F%201/work-draft");
+    const init = fetchMock.mock.calls[0][1];
+    expect(init?.method).toBe("PATCH");
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+    expect(JSON.parse(String(init?.body))).toEqual({ base_hash: "hash", patch: { preprocessing: { detrend: false } } });
+  });
 
   it("converts a failed response to ApiError", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

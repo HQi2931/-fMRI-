@@ -424,6 +424,8 @@ function patch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T>
 
 export const api = {
   streamConversationTurn,
+  patchWorkDraft: (conversationId: string, baseHash: string, draftPatch: Record<string, unknown>, signal?: AbortSignal) =>
+    patch<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-draft`, { base_hash: baseHash, patch: draftPatch }, signal),
   papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
   uploadPaper: (file: File) => {
     const body = new FormData();

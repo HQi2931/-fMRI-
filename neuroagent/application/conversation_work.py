@@ -185,12 +185,8 @@ class ConversationWorkCoordinator:
                 for item in subject_items
                 if isinstance(item, dict)
             ),
-            "issues": list(profile.get("issues", []))[:20]
-            if isinstance(profile, dict)
-            else [],
-            "warnings": list(profile.get("warnings", []))[:20]
-            if isinstance(profile, dict)
-            else [],
+            "issues": list(profile.get("issues", []))[:20] if isinstance(profile, dict) else [],
+            "warnings": list(profile.get("warnings", []))[:20] if isinstance(profile, dict) else [],
             "input_stage": content.get("input_stage"),
             "selected_input_stage": content.get("selected_input_stage"),
             "output_directories": list(content.get("output_directories", []))[:20],
@@ -300,9 +296,7 @@ class ConversationWorkCoordinator:
                 ).hexdigest(),
                 "stage": stage,
                 "intent_length": len(intent or ""),
-                "reasoning_hash": hashlib.sha256(
-                    (reasoning or "").encode("utf-8")
-                ).hexdigest(),
+                "reasoning_hash": hashlib.sha256((reasoning or "").encode("utf-8")).hexdigest(),
                 "question_count": len(questions),
             },
         )
@@ -497,6 +491,7 @@ class ConversationWorkCoordinator:
                 input_manifest_hash=manifest.content_hash,
                 reviewed_hash=draft_hash(draft),
                 user_confirmation_ref=user_confirmation_ref,
+                structural_artifact_id=f"manifest:{manifest.manifest_id}:anatomical-source",
             )
             resolved = self._prepare_preprocessing_plan(
                 request.model_copy(
@@ -622,7 +617,7 @@ class ConversationWorkCoordinator:
             return WorkActionResult(
                 assistant_content=(
                     "生成方案前必须提交完整的科研参数、参数来源证据和当前项目版本。"
-                    "当前页面没有单独的方案表单，请直接在输入框中补充这些信息；"
+                    "可以在参数面板或输入框中补充这些信息；"
                     "系统不会根据对话猜测 TR、频段或预处理选择。"
                 ),
                 tool={
@@ -640,9 +635,8 @@ class ConversationWorkCoordinator:
         if dataset.current_manifest_id is not None:
             manifest = self._repository.get_manifest(dataset.current_manifest_id)
             manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
-            if (
-                manifest.profile.kind.value == "dpabi_ready"
-                and not manifest_content.get("selected_input_stage")
+            if manifest.profile.kind.value == "dpabi_ready" and not manifest_content.get(
+                "selected_input_stage"
             ):
                 return WorkActionResult(
                     "DPABI 工作区尚未确认起始 stage。请先审查模型建议和候选目录，"
@@ -1116,13 +1110,21 @@ class ConversationWorkCoordinator:
                 f"{idempotency_key}:approval",
             )
             plan = self._repository.get_plan(plan.plan_revision_id)
+        frozen_values = dict(plan.plan.get("skill_plan", {}).get("resolved_parameters", []))
+        frozen_preprocessing = frozen_values.get("preprocessing", {})
+        has_t1 = isinstance(frozen_preprocessing, dict) and (
+            isinstance(frozen_preprocessing.get("t1"), dict)
+            or frozen_preprocessing.get("normalization", {}).get("mode") in {2, 3}
+        )
         run = self._create_run(
             RunCreate(
                 project_id=project_id,
                 plan_revision_id=request.plan_revision_id,
                 expected_plan_hash=request.expected_plan_hash,
                 execution_backend=ExecutionBackend.MATLAB,
-                workspace_mode=ExecutionWorkspaceMode.IN_PLACE,
+                workspace_mode=(
+                    ExecutionWorkspaceMode.ISOLATED if has_t1 else ExecutionWorkspaceMode.IN_PLACE
+                ),
                 real_execution_confirmed=True,
                 qc_mode=qc_mode,
             ),
@@ -1343,13 +1345,13 @@ class ConversationWorkCoordinator:
             "plan_revision": resolved.plan_revision.model_dump(mode="json"),
         }
         assistant_content = (
-                "已从独立 DemoData 副本冻结单受试者方案：TR 2.0 秒、234 时间点、"
-                "不删除初始点；Slice Timing 开启（奇数层后偶数层，参考层 33）；"
-                "Realign 使用 DPABI Jobmat；协变量回归、标准化、去趋势、时序滤波、"
-                "Scrubbing 和平滑全部关闭；计算 raw ALFF，频段 0.01–0.08 Hz，"
-                "使用 DPABI 自动掩膜。该方案仅用于技术兼容性检查。"
-                "复核无误后，请使用下方服务端签发的一次性确认指令。"
-            )
+            "已从独立 DemoData 副本冻结单受试者方案：TR 2.0 秒、234 时间点、"
+            "不删除初始点；Slice Timing 开启（奇数层后偶数层，参考层 33）；"
+            "Realign 使用 DPABI Jobmat；协变量回归、标准化、去趋势、时序滤波、"
+            "Scrubbing 和平滑全部关闭；计算 raw ALFF，频段 0.01–0.08 Hz，"
+            "使用 DPABI 自动掩膜。该方案仅用于技术兼容性检查。"
+            "复核无误后，请使用下方服务端签发的一次性确认指令。"
+        )
         if conversation_id is not None:
             require_id = self.create_confirmation_challenge(
                 conversation_id=conversation_id,

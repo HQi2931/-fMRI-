@@ -8,8 +8,9 @@ must carry the parameters that DPABI will consume.
 from __future__ import annotations
 
 from enum import IntEnum, StrEnum
+from typing import Any, cast
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from neuroagent.domain.fmri.artifacts import FrequencyBand, FrozenModel
 from neuroagent.domain.fmri.metrics import (
@@ -93,6 +94,34 @@ class AffineRegularization(StrEnum):
 class SmoothingMethod(IntEnum):
     SPM = 1
     DARTEL = 2
+
+
+class T1Preparation(StrEnum):
+    REORIENT_CROP = "reorient_crop"
+    PREPARED = "prepared"
+
+
+class T1Segmentation(StrEnum):
+    DISABLED = "disabled"
+    SEGMENT = "segment"
+    NEW_SEGMENT = "new_segment"
+
+
+class T1Parameters(FrozenModel):
+    preparation: T1Preparation
+    structural_artifact_id: str = Field(min_length=1)
+    coregister_to_functional: bool
+    segmentation: T1Segmentation
+    affine_regularization: AffineRegularization | None
+    dartel: bool
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> T1Parameters:
+        if self.dartel and self.segmentation is not T1Segmentation.NEW_SEGMENT:
+            raise ValueError("DARTEL requires New Segment")
+        if (self.segmentation is T1Segmentation.DISABLED) != (self.affine_regularization is None):
+            raise ValueError("segmentation requires explicit affine regularization")
+        return self
 
 
 class SliceTimingParameters(FrozenModel):
@@ -325,7 +354,15 @@ class PreprocessingParameters(FrozenModel):
     temporal_filter: TemporalFilteringParameters
     scrubbing: ScrubbingParameters
     smoothing: SmoothingParameters
+    t1: T1Parameters | None = None
     provenance: tuple[ParameterProvenance, ...]
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_shape(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        value = cast(dict[str, Any], handler(self))
+        if self.t1 is None:
+            value.pop("t1", None)
+        return value
 
     @model_validator(mode="after")
     def validate_pipeline_choices(self) -> PreprocessingParameters:
@@ -376,11 +413,44 @@ class PreprocessingParameters(FrozenModel):
             and regressor.mask_source is TissueMaskSource.SEGMENT
             for regressor in (self.nuisance.white_matter, self.nuisance.csf)
         )
-        if segment_masks and self.normalization.mode not in {
-            NormalizationMode.T1_SEGMENT,
-            NormalizationMode.DARTEL,
-        }:
+        if (
+            segment_masks
+            and not (self.t1 and self.t1.segmentation is not T1Segmentation.DISABLED)
+            and self.normalization.mode
+            not in {
+                NormalizationMode.T1_SEGMENT,
+                NormalizationMode.DARTEL,
+            }
+        ):
             raise ValueError("Segment tissue masks require T1 segmentation or DARTEL")
+        if self.t1 is not None:
+            if self.t1.coregister_to_functional and not self.realignment.enabled:
+                raise ValueError("T1 coregistration requires realignment mean-image evidence")
+            if (
+                segment_masks
+                or self.normalization.mode
+                in {NormalizationMode.T1_SEGMENT, NormalizationMode.DARTEL}
+            ) and not self.t1.coregister_to_functional:
+                raise ValueError(
+                    "functional T1 normalization or tissue masks require coregistration"
+                )
+            if (
+                self.normalization.mode is NormalizationMode.T1_SEGMENT
+                and self.t1.segmentation is not T1Segmentation.SEGMENT
+            ):
+                raise ValueError("T1 Segment normalization requires Segment")
+            if self.normalization.mode is NormalizationMode.DARTEL and not self.t1.dartel:
+                raise ValueError("DARTEL normalization requires template construction")
+            if (
+                self.normalization.structural_artifact_id is not None
+                and self.normalization.structural_artifact_id != self.t1.structural_artifact_id
+            ):
+                raise ValueError("T1 and normalization structural bindings differ")
+            if (
+                self.normalization.affine_regularization is not None
+                and self.normalization.affine_regularization != self.t1.affine_regularization
+            ):
+                raise ValueError("T1 and normalization affine regularization differ")
         if self.nuisance.enabled:
             compcor_counts = {
                 regressor.compcor_components
@@ -410,6 +480,7 @@ class PreprocessingParameters(FrozenModel):
                 "temporal_filter",
                 "scrubbing",
                 "smoothing",
+                *({"t1"} if self.t1 is not None else set()),
             },
         )
         return self
