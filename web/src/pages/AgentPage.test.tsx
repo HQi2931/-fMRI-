@@ -107,6 +107,7 @@ type Options = {
   grantWorkspaceConsent?: () => Promise<Response>;
   turn?: (init?: RequestInit) => Promise<Response>;
   draftPatch?: (init?: RequestInit) => Promise<Response>;
+  confirmation?: (init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -130,6 +131,7 @@ function installFetch(options: Options = {}) {
       return (options.conversations ?? (() => json([conversation()])))();
     }
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
+    if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();
     if (path.endsWith("/turns")) {
       if (options.turn) return options.turn(init);
       const current = conversation({
@@ -145,6 +147,8 @@ function installFetch(options: Options = {}) {
         tool_call: null,
       });
     }
+    if (path.includes("/runs/") && (path.endsWith("/artifacts") || path.endsWith("/events"))) return json([]);
+    if (path.includes("/plans/")) return json({});
     if (path.includes("/runs/")) return (options.run ?? (() => json({})))();
     return notFound();
   });
@@ -182,37 +186,46 @@ describe("agent workbench page", () => {
     installFetch({ conversations: () => json([conversation({ messages: [first] })]), draftPatch: patch });
     render(<AgentPage />);
     const panel = await screen.findByRole("region", { name: "预处理方案参数" });
-    fireEvent.change(within(panel).getByLabelText("TR (s)"), { target: { value: "3" } });
+    expect(screen.getByRole("complementary", { name: "当前方案审查" })).toContainElement(panel);
+    fireEvent.change(within(panel).getByLabelText("重复时间 TR（秒）"), { target: { value: "3" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     await userEvent.click(within(panel).getByRole("button", { name: "保存修改" }));
     await screen.findByText("修改已保存");
     expect(JSON.parse(String(patch.mock.calls[0]?.[0]?.body))).toEqual({ base_hash: "a".repeat(64), patch: { preprocessing: { tr_seconds: 3 } } });
-    expect(within(screen.getByRole("region", { name: "历史预处理方案（只读）" })).getByLabelText("TR (s)")).toBeDisabled();
-    expect(within(screen.getByRole("region", { name: "预处理方案参数" })).getByLabelText("TR (s)")).toHaveValue(3);
+    const history = screen.getByText("历史方案").closest("details")!;
+    expect(history).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("历史方案"));
+    expect(within(screen.getByRole("region", { name: "历史预处理方案（只读）" })).getByLabelText("重复时间 TR（秒）")).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: "预处理方案参数" })).getByLabelText("重复时间 TR（秒）")).toHaveValue(3);
   });
 
-  it("requires an explicit option, dismisses without sending, and submits the server command", async () => {
+  it("opens confirmation only on request and submits the selected server action without calling the model", async () => {
     const user = userEvent.setup();
     const command = "批准并启动 abcdef123456 做头动QC challenge-1";
-    const onTurn = vi.fn(() => json({ conversation: conversation(), user_message: message("u2", "user", command), assistant_message: message("a2", "assistant", "已提交"), tool_call: null }));
+    const onTurn = vi.fn();
+    const confirm = vi.fn(() => json({ conversation: conversation(), user_message: message("u2", "user", "启动并做头动 QC"), assistant_message: message("a2", "assistant", "已提交"), tool_call: null }));
     installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "请审查", {
       confirmation_request: { title: "批准并启动计算", summary: "方案 abcdef123456", options: [
         { label: "启动并做头动 QC", description: "生成 QC 草稿", command },
         { label: "启动并跳过 QC", description: "记录跳过", command: "skip-command" },
       ] },
-    })] })]), turn: onTurn });
+    })] })]), turn: onTurn, confirmation: confirm });
     render(<AgentPage />);
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    await screen.findByText("请审查");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /待确认/ }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认选择" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "暂不执行" }));
+    await user.click(screen.getByRole("button", { name: "保留方案" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(onTurn).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /待确认/ }));
     await user.click(screen.getByRole("radio", { name: /启动并做头动 QC/ }));
     await user.click(screen.getByRole("button", { name: "确认选择" }));
-    await waitFor(() => expect(onTurn).toHaveBeenCalledTimes(1));
-    const init = onTurn.mock.calls[0] as unknown as [RequestInit];
-    expect(JSON.parse(String(init[0].body))).toMatchObject({ content: command, real_execution_confirmed: false });
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    const init = confirm.mock.calls[0] as unknown as [RequestInit];
+    expect(JSON.parse(String(init[0].body))).toEqual({ command, expected_draft_hash: null });
+    expect(onTurn).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
@@ -224,6 +237,50 @@ describe("agent workbench page", () => {
     render(<AgentPage />);
     await screen.findByText("请回复：确认方案参数 abcdef123456");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("reviews the current plan before confirming its exact revision through the deterministic endpoint", async () => {
+    const hash = "c".repeat(64);
+    const command = "确认方案参数 current-opaque-command";
+    const draft = { hash, version: 3, draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: ["alff"] }, compiled: false };
+    const confirm = vi.fn((init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      return json({ conversation: conversation({ messages: [message("a2", "assistant", "当前方案已确认")] }), user_message: message("u2", "user", "确认当前方案"), assistant_message: message("a2", "assistant", "当前方案已确认"), tool_calls: [], tool_call: null });
+    });
+    const onTurn = vi.fn();
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "请核对科学参数", { work_draft: draft, draft_issues: [], confirmation_request: { title: "确认方案", summary: "ALFF，TR 2 秒，当前方案第 3 版", options: [{ label: "确认当前方案", description: "记录审查并生成执行方案", command }] } })] })]), confirmation: confirm, turn: onTurn });
+    render(<AgentPage />);
+    await screen.findByRole("complementary", { name: "当前方案审查" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "收起方案" }));
+    expect(screen.queryByRole("complementary", { name: "当前方案审查" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "查看当前方案 · 第 3 版" }));
+    const plan = screen.getByRole("complementary", { name: "当前方案审查" });
+    expect(within(plan).getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
+    await userEvent.click(within(plan).getByRole("button", { name: "确认当前方案" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认当前方案" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+    expect(JSON.parse(String(confirm.mock.calls[0][0]?.body))).toEqual({ command, expected_draft_hash: hash });
+    expect(onTurn).not.toHaveBeenCalled();
+    expect(await screen.findByText("当前方案已确认")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("reconnects an interrupted run observation and restores results without starting another computation", async () => {
+    const run = vi.fn()
+      .mockRejectedValueOnce(new TypeError("暂时断网"))
+      .mockImplementation(() => json({ run_id: "run-1", project_id: null, plan_revision_id: "plan-1", state: "qc_review", version: 3, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "pending", stage: "qc_review", stage_progress: 1, created_at: now, updated_at: now }));
+    const fetchSpy = installFetch({ conversations: () => json([conversation({ active_run_id: "run-1", messages: [message("a1", "assistant", "计算已提交")] })]), run });
+    render(<AgentPage />);
+    expect(await screen.findByText(/运行状态连接中断/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "重新连接" }));
+    expect(await screen.findByRole("heading", { name: "计算完成 · 待 QC 审查" })).toBeInTheDocument();
+    expect(screen.getByText("指标计算已完成，科学质量审查尚未通过。")).toBeInTheDocument();
+    expect(screen.queryByText(/运行状态连接中断/)).not.toBeInTheDocument();
+    expect(fetchSpy.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
+    expect(fetchSpy.mock.calls.filter(([input]) => /^\/api\/v1\/runs\/run-1$/.test(pathOf(input))).length).toBeGreaterThanOrEqual(2);
   });
 
   it("lists every model the bound provider returns and lets the operator pick one", async () => {
@@ -414,8 +471,9 @@ describe("agent workbench page", () => {
 
     render(<AgentPage />);
 
-    expect(await screen.findByText("任务状态：staging")).toBeInTheDocument();
-    expect(screen.getByText("当前进度：42%")).toBeInTheDocument();
+    expect(await screen.findByText("当前阶段：准备输入")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "运行与结果" })).toHaveTextContent("计算中");
+    expect(screen.queryByText("当前进度：42%")).not.toBeInTheDocument();
   });
 
   it("sends a prompt with Enter and keeps the returned conversation", async () => {
@@ -476,6 +534,7 @@ describe("agent workbench page", () => {
 
     render(<AgentPage />);
 
+    await userEvent.click(await screen.findByText("查看工具检查详情（2 项）"));
     const steps = await screen.findByRole("list", { name: "Agent 工具步骤" });
     expect(steps.querySelectorAll("li")).toHaveLength(2);
     // Step order is the order the loop ran, not insertion order in the response.

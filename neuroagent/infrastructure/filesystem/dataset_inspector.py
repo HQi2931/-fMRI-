@@ -8,6 +8,7 @@ import re
 import struct
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from neuroagent.application.contracts import (
@@ -217,6 +218,7 @@ class DatasetInspector:
         report_only: bool = False,
         selected_input_stage: str | None = None,
     ) -> dict[str, Any]:
+        inspection_started = perf_counter()
         all_files = sorted((item for item in source_path.rglob("*") if item.is_file()), key=str)
         if len(all_files) > self._max_files:
             raise InputValidationError(
@@ -227,6 +229,7 @@ class DatasetInspector:
             )
         for path in all_files:
             self._path_policy.relative_source_path(path, source_path)
+        inventory_ms = (perf_counter() - inspection_started) * 1000
 
         nifti = [path for path in all_files if _is_nifti(path)]
         dicom = [path for path in all_files if _is_dicom(path)]
@@ -362,7 +365,7 @@ class DatasetInspector:
         unclassified_bids_nifti = 0
         inventory_only_dpabi_nifti = 0
         inventory_only_plain_nifti = 0
-        # The immutable revision covers every regular file, including BIDS JSON
+        # A frozen revision covers every regular file, including BIDS JSON
         # sidecars and participants metadata.  Otherwise a scientifically
         # meaningful source change could leave the approved manifest hash
         # unchanged.  Paths stay relative and source files are opened read-only.
@@ -371,7 +374,11 @@ class DatasetInspector:
         invalid_nifti_files: list[str] = []
         for path in all_files:
             relative = self._path_policy.relative_source_path(path, source_path)
-            file_hashes[relative] = sha256_file(path)
+            # Report-only discovery is not an executable frozen manifest.  Do
+            # not reread all image bytes on every ordinary conversation turn.
+            # Strict inspection and Worker preflight retain full integrity checks.
+            if not report_only:
+                file_hashes[relative] = sha256_file(path)
             file_sizes[relative] = path.stat().st_size
             if path in nifti and not _nifti_header_is_readable(path):
                 invalid_nifti_files.append(relative)
@@ -565,7 +572,7 @@ class DatasetInspector:
             issues=issues,
             warnings=warnings,
         )
-        return {
+        content: dict[str, Any] = {
             "profile": profile.model_dump(mode="json"),
             "subjects": [entry.model_dump(mode="json") for entry in subjects],
             "input_stage": selected_dpabi_stage_root,
@@ -581,6 +588,18 @@ class DatasetInspector:
                 if name.lower() in {"results", "output", "outputs", "qc", "derivatives"}
             ),
             "invalid_nifti_files": sorted(invalid_nifti_files),
-            "file_hashes": dict(sorted(file_hashes.items())),
+            # None makes report-only content fail closed if a caller attempts
+            # to use it as frozen execution evidence.  An empty dict would
+            # silently pass the Worker's file-hash iteration.
+            "file_hashes": None if report_only else dict(sorted(file_hashes.items())),
             "file_sizes": dict(sorted(file_sizes.items())),
         }
+        if report_only:
+            # Timings are operational telemetry, never part of the deterministic
+            # frozen input content hashed by plan compilation and execution.
+            content["inspection_timing_ms"] = round(
+                (perf_counter() - inspection_started) * 1000, 3
+            )
+            content["inventory_ms"] = round(inventory_ms, 3)
+            content["hashing_ms"] = 0.0
+        return content

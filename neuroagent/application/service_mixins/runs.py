@@ -900,6 +900,19 @@ class RunMixin(BaseServiceMixin):
     def get_artifact(self, artifact_id: str) -> ArtifactView:
         return self.repository.get_artifact(artifact_id)
 
+    def artifact_content_path(self, artifact_id: str) -> Path:
+        from neuroagent.application.artifact_content import artifact_content_path
+
+        artifact = self.repository.get_artifact(artifact_id)
+        run = self.repository.get_run(artifact.run_id)
+        project = self.repository.get_project(run.project_id)
+        return artifact_content_path(artifact, run, project)
+
+    def artifact_preview_png(self, artifact_id: str) -> bytes:
+        from neuroagent.application.artifact_content import nifti_preview_png
+
+        return nifti_preview_png(self.artifact_content_path(artifact_id))
+
     def list_run_events(self, run_id: str, after_event_id: int = 0) -> list[RuntimeEventView]:
         self.repository.get_run(run_id)
         return self.repository.list_events(run_id, after_event_id)

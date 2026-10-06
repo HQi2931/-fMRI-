@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, cast
 
 from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from neuroagent.api.conversation_stream import conversation_stream_response
 from neuroagent.application.contracts import (
@@ -79,8 +79,10 @@ from neuroagent.application.contracts import (
     StatisticalResultDetailView,
     StatisticalResultView,
     StatisticsRunCreate,
+    WorkConfirmationCreate,
     WorkDraftUpdate,
     WorkflowState,
+    WorkReviewCreate,
     WorkspaceChangeProposal,
     WorkspaceCheckRequest,
     WorkspaceCheckView,
@@ -351,6 +353,34 @@ def update_work_draft(
     conversation_id: str, body: WorkDraftUpdate, request: Request, idempotency_key: IdempotencyKey
 ) -> ConversationTurnView:
     return service_from(request).update_work_draft(conversation_id, body, idempotency_key)
+
+
+@router.post(
+    "/conversations/{conversation_id}/work-confirmation",
+    response_model=ConversationTurnView,
+    tags=["agent"],
+)
+async def confirm_work_action(
+    conversation_id: str,
+    body: WorkConfirmationCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationTurnView:
+    return await service_from(request).confirm_work_action(conversation_id, body, idempotency_key)
+
+
+@router.post(
+    "/conversations/{conversation_id}/work-review",
+    response_model=ConversationTurnView,
+    tags=["agent"],
+)
+def prepare_work_review(
+    conversation_id: str,
+    body: WorkReviewCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationTurnView:
+    return service_from(request).prepare_work_review(conversation_id, body, idempotency_key)
 
 
 @router.post(
@@ -807,6 +837,21 @@ def list_artifacts(run_id: str, request: Request) -> list[ArtifactView]:
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactView, tags=["artifacts"])
 def get_artifact(artifact_id: str, request: Request) -> ArtifactView:
     return service_from(request).get_artifact(artifact_id)
+
+
+@router.get("/artifacts/{artifact_id}/content", response_class=FileResponse, tags=["artifacts"])
+def download_artifact(artifact_id: str, request: Request) -> FileResponse:
+    path = service_from(request).artifact_content_path(artifact_id)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+@router.get("/artifacts/{artifact_id}/preview.png", response_class=Response, tags=["artifacts"])
+def preview_artifact(artifact_id: str, request: Request) -> Response:
+    return Response(
+        service_from(request).artifact_preview_png(artifact_id),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/runs/{run_id}/events", tags=["runs"])

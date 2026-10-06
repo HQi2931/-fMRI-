@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -261,10 +262,12 @@ class ControlledMatlabExecutor:
         *,
         allow_real_execution: bool = False,
         preprocessing_workspace: Path | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> None:
         self._renderer = renderer
         self._environment = environment
         self._allowed_work_root = allowed_work_root
+        self._on_output = on_output
         self._allow_real_execution = allow_real_execution
         self._preprocessing_workspace = preprocessing_workspace
 
@@ -317,7 +320,26 @@ class ControlledMatlabExecutor:
                 creationflags=creation_flags,
             )
             deadline = time.monotonic() + job.timeout_seconds
+            output_cursor = 0
+
+            def publish_output() -> None:
+                nonlocal output_cursor
+                if self._on_output is None:
+                    return
+                with stdout_path.open("rb") as reader:
+                    reader.seek(output_cursor)
+                    chunk = reader.read(64 * 1024)
+                    output_cursor += len(chunk)
+                if chunk:
+                    try:
+                        self._on_output(chunk.decode("utf-8", errors="replace"))
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "MATLAB progress publication unavailable"
+                        )
+
             while process.poll() is None:
+                publish_output()
                 if is_cancelled():
                     requested_status = MatlabJobStatus.CANCELLED
                     _terminate_process_tree(process)
@@ -340,6 +362,8 @@ class ControlledMatlabExecutor:
                 ) from exc
             _append_communicated_output(stdout_log, communicated_stdout)
             _append_communicated_output(stderr_log, communicated_stderr)
+            stdout_log.flush()
+            publish_output()
 
         stdout = _read_bounded_log(stdout_path)
         stderr = _read_bounded_log(stderr_path)

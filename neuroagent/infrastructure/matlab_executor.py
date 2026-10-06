@@ -36,6 +36,7 @@ from neuroagent.execution.preprocessing import (
     PreprocessingCompilation,
     compile_preprocessing,
 )
+from neuroagent.execution.progress import MatlabProgressObserver
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.infrastructure.filesystem.t1_artifacts import validate_t1_artifact
@@ -299,12 +300,26 @@ class MatlabJobExecutor:
                     )
                     spec = compilation.spec.model_copy(update={"payload": in_place_payload})
                     compilation = replace(compilation, spec=spec)
+
+            def publish_phase(phase: str, state: str) -> None:
+                self._repository.append_event(
+                    project_id=run.project_id,
+                    run_id=run.run_id,
+                    event_type="MatlabPhaseStarted"
+                    if state == "started"
+                    else "MatlabPhaseFinished",
+                    severity="info",
+                    payload={"phase": phase, "attempt": run.attempt},
+                )
+
+            observer = MatlabProgressObserver(publish_phase)
             executor = ControlledMatlabExecutor(
                 self._renderer,
                 environment,
                 attempts,
                 allow_real_execution=self._settings.enable_real_execution,
                 preprocessing_workspace=preprocessing_workspace,
+                on_output=observer.feed,
             )
             rendered = executor.dry_run(spec).rendered
             self._stage_inputs(run_id, rendered.run_directory, spec)
@@ -341,21 +356,39 @@ class MatlabJobExecutor:
             MatlabJobStatus.FAILED: "failed_retryable",
             MatlabJobStatus.DRY_RUN: "failed_terminal",
         }[result.status]
+        log_artifacts = self._execution_log_artifacts(
+            result.rendered.run_directory, result.job_hash
+        )
         if status != "succeeded":
-            return ExecutionResult(status=status, error=result.stderr or "MATLAB execution failed")
-        artifacts: tuple[dict[str, Any], ...] = tuple(
-            {
-                "artifact_type": artifact.artifact_type,
-                "relative_path": artifact.relative_path,
-                "checksum": artifact.sha256,
-                "size_bytes": artifact.size_bytes,
-                "provenance": {
-                    "executor": "controlled_matlab",
-                    "job_hash": result.job_hash,
-                    "plan_hash": spec.plan_hash,
-                },
-            }
-            for artifact in result.registered_artifacts
+            return ExecutionResult(
+                status=status,
+                error=result.stderr or "MATLAB execution failed",
+                artifacts=tuple(
+                    {
+                        **item,
+                        "relative_path": (
+                            PurePosixPath("attempts") / attempt.name / item["relative_path"]
+                        ).as_posix(),
+                    }
+                    for item in log_artifacts
+                ),
+            )
+        artifacts: tuple[dict[str, Any], ...] = (
+            tuple(
+                {
+                    "artifact_type": artifact.artifact_type,
+                    "relative_path": artifact.relative_path,
+                    "checksum": artifact.sha256,
+                    "size_bytes": artifact.size_bytes,
+                    "provenance": {
+                        "executor": "controlled_matlab",
+                        "job_hash": result.job_hash,
+                        "plan_hash": spec.plan_hash,
+                    },
+                }
+                for artifact in result.registered_artifacts
+            )
+            + log_artifacts
         )
         if compilation is not None:
             assert isinstance(compilation.spec.payload, PreprocessingJobPayload)
@@ -363,9 +396,7 @@ class MatlabJobExecutor:
                 artifacts = self._preprocessing_lineage(
                     artifacts, compilation, result.rendered.run_directory
                 )
-                if (
-                    str(run.qc_mode or "require") != "skip"
-                ):
+                if str(run.qc_mode or "require") != "skip":
                     try:
                         artifacts = (
                             *artifacts,
@@ -404,6 +435,23 @@ class MatlabJobExecutor:
             },
             artifacts=artifacts,
         )
+
+    @staticmethod
+    def _execution_log_artifacts(root: Path, job_hash: str) -> tuple[dict[str, Any], ...]:
+        rows = []
+        for path in sorted((root / "logs").rglob("matlab.*.log")):
+            if path.is_file() and not path.is_symlink():
+                data = path.read_bytes()
+                rows.append(
+                    {
+                        "artifact_type": "execution.matlab_log",
+                        "relative_path": path.relative_to(root).as_posix(),
+                        "checksum": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                        "provenance": {"executor": "controlled_matlab", "job_hash": job_hash},
+                    }
+                )
+        return tuple(rows)
 
     @staticmethod
     def _head_motion_qc_artifacts(

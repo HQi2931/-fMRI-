@@ -90,6 +90,7 @@
 - [计划 0008：语义长期记忆](plans/0008-semantic-long-term-memory.md)
 - [计划 0009：Agent 控制面与执行授权加固](plans/0009-agent-control-plane-hardening.md)
 - [计划 0010：Chat 与 Work 对话流式响应](plans/0010-conversation-streaming.md)
+- [计划 0012：Work 对话与方案审查体验优化](plans/0012-work-conversation-ux.md)
 - [Chat / Work 模型理解与参数补全](plans/conversation-model-understanding.md)
 
 ### 决策记录（ADR）
@@ -110,6 +111,7 @@
 - [ADR 0019：对话正文流式预览与事务收口](adr/0019-conversation-streaming.md)
 - [ADR 0020：DPARSF 参数面板与 T1 准备审查（已被 ADR 0021 取代）](adr/0020-dparsf-draft-and-t1-review.md)
 - [ADR 0021：DPABI 预处理单次运行](adr/0021-single-pass-dpabi-preprocessing.md)
+- [ADR 0022：Work 候选方案与直接界面确认](adr/0022-work-review-and-direct-confirmation.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

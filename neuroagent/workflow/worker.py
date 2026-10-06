@@ -252,6 +252,15 @@ class SQLiteWorker:
                 self._record_lease_lost(run.project_id, run_id, job_id)
             return True
 
+        if result.status != "succeeded" and result.artifacts:
+            logs = tuple(
+                item
+                for item in result.artifacts
+                if item.get("artifact_type") == "execution.matlab_log"
+            )
+            if logs:
+                self._repository.register_artifacts(run.project_id, run_id, logs)
+
         if result.status == "cancelled":
             self._repository.append_event(
                 project_id=run.project_id,

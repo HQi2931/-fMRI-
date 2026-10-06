@@ -78,6 +78,12 @@ def draft_schema() -> dict[str, Any]:
                 remove_defaults(child)
 
     remove_defaults(schema)
+    for name, choices in (
+        ("NormalizationMode", ["disabled", "epi_template", "t1_segment", "dartel"]),
+        ("HeadMotionModel", ["disabled", "rigid_6", "friston_24"]),
+    ):
+        original = schema["$defs"][name]
+        schema["$defs"][name] = {"anyOf": [original, {"type": "string", "enum": choices}]}
     return schema
 
 
@@ -246,7 +252,10 @@ def planning_decisions(draft: WorkDraft, sources: dict[str, str] | None = None) 
             if name not in values:
                 choices.append({"path": path, "status": "missing"})
                 continue
-            source = sources.get(path, "unattributed")
+            source = sources.get(path) or next(
+                (value for key, value in sources.items() if key.startswith(path + ".")),
+                "unattributed",
+            )
             choices.append(
                 {
                     "path": path,
@@ -447,6 +456,7 @@ def confirmed_skill_intent(
     reviewed_hash: str,
     user_confirmation_ref: str,
     structural_artifact_id: str | None = None,
+    proposal: bool = False,
 ) -> SkillPlanIntent:
     """Call only for an explicit user review confirmation, never model output.
 
@@ -469,7 +479,7 @@ def confirmed_skill_intent(
             "provenance": [
                 {
                     "name": name,
-                    "source": "user",
+                    "source": "proposal" if proposal else "user",
                     "evidence_ref": f"{user_confirmation_ref}#draft={reviewed_hash}",
                 }
                 for name in sorted(values)
@@ -573,70 +583,71 @@ _LABELS = {
 
 
 def render_draft_review(draft: WorkDraft, sources: dict[str, str] | None = None) -> str:
-    """Render every value, including nested disabled choices, for user review."""
-    preview = plan_preview(draft)
+    """A brief human summary; complete parameters belong to the review panel."""
+    from neuroagent.application.work_presentation import human_issue
+
+    metrics = "、".join(item.value.upper() for item in draft.requested_metrics) or "预处理"
     lines = [
-        "方案草稿（尚未批准执行）",
-        f"草稿校验码：{draft_hash(draft)}",
-        "",
-        "执行方案预览（服务端确定性生成）",
+        f"已整理{metrics}方案草稿，可在方案区域审查和修改。",
     ]
-    lines.append(f"- 状态：{preview['status']}；当前仅供审查，不会启动计算")
-    lines.append(
-        "- 公共步骤：" + " → ".join(str(item["label"]) for item in preview["common_steps"])
-    )
-    if preview["branches"]:
-        lines.append("- 指标分支：")
-        for branch in preview["branches"]:
-            lines.append(
-                "  - "
-                + str(branch["label"])
-                + "：消费"
-                + str(branch["consumes"])
-                + "；步骤 "
-                + " → ".join(str(step) for step in branch["steps"])
-            )
-            if branch.get("warning"):
-                lines.append("    - 约束：" + str(branch["warning"]))
-    else:
-        lines.append("- 指标分支：尚未选择")
-
-    if sources:
-        lines.append("参数状态（当前草稿，尚未核实或批准）：")
-        for choice in planning_decisions(draft, sources)["choices"]:
-            label = {
-                "user_draft": "用户编辑",
-                "proposed": "模型建议",
-                "conflict": "校验冲突",
-            }.get(choice["status"])
-            if label and (choice["status"] != "proposed" or choice.get("source") == "suggested"):
-                lines.append(f"- {choice['path']}：{label}")
-
-    def render(values: dict[str, Any], depth: int = 0) -> None:
-        for key, value in values.items():
-            label = f"{_LABELS.get(key, key)}（{key}）" if key in _LABELS else key
-            prefix = "  " * depth + "- " + label + "："
-            if isinstance(value, dict):
-                lines.append(prefix)
-                render(value, depth + 1)
-            else:
-                text = (
-                    "是"
-                    if value is True
-                    else "否"
-                    if value is False
-                    else (
-                        "null（明确未设置/不适用；缺失项见下方）"
-                        if value is None
-                        else json.dumps(value, ensure_ascii=False)
-                    )
-                )
-                lines.append(prefix + text)
-
-    render(draft.model_dump(mode="json", exclude={"confirmed_hash"}))
+    values = draft.preprocessing
+    summary = []
+    if values.get("tr_seconds") is not None:
+        summary.append(f"TR {values['tr_seconds']} 秒")
+    if values.get("expected_time_points") is not None:
+        summary.append(f"{values['expected_time_points']} 个时间点")
+    if summary:
+        lines.append("、".join(summary) + "。扫描事实以读取证据为准。")
     issues = draft_issues(draft)
     if issues:
-        lines.append("待补充或修正：\n" + "\n".join(f"- {issue}" for issue in issues))
+        lines.append(f"还有 {len(issues)} 项需要处理，主要问题：")
+        lines.extend(f"- {human_issue(issue)}" for issue in issues[:3])
     else:
-        lines.append("参数已完整。请审阅全部科学选择后明确确认；确认仅用于生成受控方案。")
+        lines.append("参数结构检查通过。完成科学校验后可确认启动计算。")
     return "\n".join(lines)
+
+
+def review_issues(draft: WorkDraft, facts: dict[str, Any] | None = None) -> tuple[str, ...]:
+    from neuroagent.application.work_presentation import leaf_values
+
+    issues = list(draft_issues(draft))
+    values = leaf_values(draft.model_dump(mode="json"))
+    for path, fact in (facts or {}).items():
+        value = values.get(path)
+        if value is not None and value != fact:
+            issues.append(f"{path}：当前选择 {value}，读取数据为 {fact}，请核实后修改。")
+    return tuple(issues)
+
+
+def draft_snapshot(
+    draft: WorkDraft,
+    *,
+    workspace_path: str | None,
+    sources: dict[str, str],
+    prior: dict[str, Any] | None = None,
+    facts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from neuroagent.application.work_presentation import draft_delta, leaf_values
+
+    values = draft.model_dump(mode="json")
+    facts = facts or {}
+    issues = review_issues(draft, facts)
+    states = {
+        path: "verified" if path in facts and facts[path] == value else "review_pending"
+        for path, value in leaf_values(values).items()
+    }
+    for path in facts:
+        if path in states and leaf_values(values)[path] != facts[path]:
+            states[path] = "conflict"
+    return {
+        "draft": values,
+        "hash": draft_hash(draft),
+        "workspace_path": workspace_path,
+        "compiled": False,
+        "sources": sources,
+        "facts": facts,
+        "field_states": states,
+        "version": int((prior or {}).get("version", 0)) + 1,
+        "changes": draft_delta((prior or {}).get("draft", {}), values),
+        "review_issues": list(issues),
+    }

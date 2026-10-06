@@ -12,10 +12,18 @@
 
 ### Work 参数编辑与 T1 预处理
 
+Work 体验优化新增以下接口（阶段实现，完整交互验收见计划 0012）：
+
+- `POST /conversations/{conversation_id}/work-confirmation`：接受 `{command, expected_draft_hash?}`，需幂等键；只接受服务端签发的选项，复用原有授权路径，不调用模型理解启动意图。版本或选项变化返回冲突。
+- `POST /conversations/{conversation_id}/work-review`：接受 `{base_hash}`，需幂等键；重新准备当前完整方案或更新启动确认，不直接创建运行。
+- `GET /artifacts/{artifact_id}/content` 与 `/preview.png`：按注册产物编号下载或生成有限 NIfTI 预览，检查路径边界、文件大小和内容哈希；预览不替代空间配准或科学 QC。
+
+候选编译使用独立 `proposal` 来源，不等同于用户批准。草稿保存可自动编译完整候选，`compiled` 状态由实际校验结果决定；启动仍须显式确认。来源、事实、版本和字段状态保存在结构化草稿中，普通回复不再递归展开内部字段。
+
 正常预处理将 T1 准备、配准、分割/DARTEL 与指标计算合并到一次运行，不提供中途准备审查接口。
 
-- `PATCH /conversations/{conversation_id}/work-draft` 接受 `{base_hash, patch}`，返回 `ConversationTurnView`。必须提供幂等键；只更新当前 Work/工作区草稿，不调用模型、批准或运行。未知字段和来源/确认字段拒绝；数值或依赖问题保存在 `draft_issues`，问题未解决时不提供确认请求。过期哈希返回 `work_draft_changed`（409）。
-- `work_draft.sources` 按点分字段路径标记 `suggested` 或 `user`，用于区分待审查建议与用户修改；不代替科研来源与审批证据。变更后旧参数确认失效，`compiled=false`。
+- `PATCH /conversations/{conversation_id}/work-draft` 接受 `{base_hash, patch}`，返回 `ConversationTurnView`。必须提供幂等键；更新当前 Work/工作区草稿并在条件满足时编译候选，不调用模型、批准或运行。未知字段和来源/确认字段拒绝；数值或依赖问题保存在 `draft_issues`，问题未解决时不提供确认请求。过期哈希返回 `work_draft_changed`（409）。
+- `work_draft.sources` 按点分字段路径保存来源，用于区分待审查建议、用户修改与数据事实；不代替科研来源与审批证据。变更后旧确认失效，候选须重新校验和编译。
 
 Work assistant 消息的 payload 可包含 `confirmation_request: {title, summary, options: [{label, description, command}]}`。这是协调器生成的展示契约；前端仅展示最新回复的请求，用户显式选择后将 `command` 原样作为下一轮 `content` 提交。选项数量为一至三个；缺项草稿不签发确认。启动 command 包含绑定方案/QC 的一次性 challenge，服务端继续校验有效期、作用域和单次消费。普通回答文本不能生成按钮。详见 [ADR 0018](../adr/0018-work-confirmation-dialog.md)。
 

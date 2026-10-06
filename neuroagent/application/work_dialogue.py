@@ -30,12 +30,19 @@ from neuroagent.application.work_actions import (
 from neuroagent.application.work_draft import (
     WorkDraft,
     draft_hash,
-    draft_issues,
     draft_schema,
+    draft_snapshot,
     merge_work_draft,
     plan_preview,
     planning_decisions,
     render_draft_review,
+    review_issues,
+)
+from neuroagent.application.work_presentation import (
+    constrained_patch,
+    leaf_values,
+    observed_facts,
+    set_value,
 )
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
 from neuroagent.context.engine import RegexTokenCounter
@@ -320,6 +327,7 @@ class WorkDialogue:
         if stage_confirmation:
             if self.confirm_workspace_stage is None or not workspace_path:
                 return reply("当前服务不能确认工作区起始阶段。")
+            confirm_stage = self.confirm_workspace_stage
             dataset_payload = latest_payload(conversation, "dataset")
             candidates = list(packet.work_context.get("workspace_stage_candidates", []))
             stage = stage_confirmation[1]
@@ -348,13 +356,35 @@ class WorkDialogue:
                     bound_dataset = registration_payload.get("dataset")
                     if not bound_dataset:
                         return registered
-                manifest = self.confirm_workspace_stage(
+                manifest = confirm_stage(
                     dataset_id=str(bound_dataset["dataset_id"]),
                     workspace_path=workspace_path,
                     selected_input_stage=stage,
                     token=expected_token,
                     idempotency_key=idempotency_key,
                 )
+                if saved and not review_issues(draft, saved.get("facts")):
+                    compiled = self._compile(
+                        conversation,
+                        request,
+                        draft,
+                        workspace_path,
+                        bound_project_id,
+                        idempotency_key + ":review",
+                        proposal=True,
+                        dataset_id=str(bound_dataset["dataset_id"]),
+                        snapshot=saved,
+                    )
+                    return replace(
+                        compiled,
+                        payload={
+                            **registration_payload,
+                            "manifest": manifest.model_dump(mode="json"),
+                            "selected_input_stage": stage,
+                            "stage_selection_required": False,
+                            **compiled.payload,
+                        },
+                    )
                 return replace(
                     reply(
                         f"已确认 DPABI 起始阶段 {stage}。现在可以继续整理预处理参数。",
@@ -374,7 +404,7 @@ class WorkDialogue:
                 return reply("草稿已变化或工作区不匹配，请先查看当前参数草稿并确认最新版本。")
             if saved.get("compiled"):
                 return reply("该参数草稿已经编译，请审查方案后单独确认运行。")
-            issues = draft_issues(draft)
+            issues = review_issues(draft, saved.get("facts"))
             if issues:
                 return reply("参数尚未完整，暂不能编译：\n" + "\n".join(issues))
             return replace(
@@ -400,6 +430,17 @@ class WorkDialogue:
             )
         if start:
             if start_confirmation_used:
+                run_id = (saved or {}).get("consumed_run_id")
+                if run_id:
+                    result = self.coordinator.execute(
+                        request.model_copy(update={"action": ConversationAction.GET_PROGRESS}),
+                        workspace_path=workspace_path,
+                        project_id=project_id,
+                        active_run_id=str(run_id),
+                        idempotency_key=idempotency_key,
+                        conversation_id=conversation.conversation_id,
+                    )
+                    return replace(result, payload={**result.payload, "work_draft": saved})
                 return reply(
                     "该启动确认已经使用过，不会再次排队。"
                     "如需重新运行，请先重新确认并编译参数草稿，再使用新生成的启动指令。"
@@ -444,10 +485,11 @@ class WorkDialogue:
                     payload={
                         **result.payload,
                         "work_draft": {
+                            **(saved or {}),
                             "draft": (saved or {}).get("draft") or {},
                             "hash": (saved or {}).get("hash"),
                             "workspace_path": (saved or {}).get("workspace_path") or workspace_path,
-                            "compiled": False,
+                            "compiled": True,
                             "consumed": True,
                             "consumed_run_id": result.active_run_id,
                         },
@@ -604,7 +646,8 @@ class WorkDialogue:
                     or selected_stage.casefold() != interpreted.recommended_input_stage.casefold()
                 )
             )
-            if stage_recommendation_needs_confirmation:
+            recommended_stage = interpreted.recommended_input_stage
+            if stage_recommendation_needs_confirmation and recommended_stage is not None:
                 candidates = list(
                     model_context["work_context"].get("workspace_stage_candidates", [])
                 )
@@ -613,7 +656,7 @@ class WorkDialogue:
                     for item in candidates
                     if isinstance(item, dict)
                 }
-                if interpreted.recommended_input_stage.casefold() not in candidate_names:
+                if recommended_stage.casefold() not in candidate_names:
                     return reply(
                         "模型建议的 DPABI 起始阶段不在服务端本轮候选清单中，已拒绝该建议；请重新读取工作区阶段。",
                         payload,
@@ -623,22 +666,21 @@ class WorkDialogue:
                         item
                         for item in candidates
                         if isinstance(item, dict)
-                        and str(item.get("stage", "")).casefold()
-                        == interpreted.recommended_input_stage.casefold()
+                        and str(item.get("stage", "")).casefold() == recommended_stage.casefold()
                     ),
                     None,
                 )
                 if selected_candidate is None or not bool(
                     selected_candidate.get("selectable", False)
                 ):
-                    issues = (
+                    stage_issues = (
                         selected_candidate.get("issues")
                         if isinstance(selected_candidate, dict)
                         else None
                     ) or ["候选阶段当前不可执行"]
                     return reply(
                         "模型建议的 DPABI 起始阶段已被服务端判定为不可执行："
-                        + "；".join(str(issue) for issue in issues),
+                        + "；".join(str(issue) for issue in stage_issues),
                         payload,
                     )
                 if workspace_path and candidates:
@@ -656,7 +698,7 @@ class WorkDialogue:
                         conversation_id=conversation.conversation_id,
                         project_id=project_id,
                         workspace_path=workspace_path,
-                        stage=interpreted.recommended_input_stage,
+                        stage=recommended_stage,
                         intent=interpreted.stage_intent,
                         reasoning=interpreted.stage_reasoning,
                         questions=list(interpreted.stage_questions),
@@ -684,16 +726,19 @@ class WorkDialogue:
                                 }
                             ],
                         }
-                    return reply(
-                        interpreted.answer
-                        + "\n\n模型建议起始阶段："
-                        + interpreted.recommended_input_stage
-                        + "。"
-                        + next_step,
-                        payload,
-                    )
-            if interpreted.action == "prepare_preprocessing_plan" and bool(
-                model_context["work_context"].get("workspace_stage_selection_required")
+                    if interpreted.action != "prepare_preprocessing_plan":
+                        return reply(
+                            interpreted.answer
+                            + "\n\n模型建议起始阶段："
+                            + recommended_stage
+                            + "。"
+                            + next_step,
+                            payload,
+                        )
+            if (
+                interpreted.action == "prepare_preprocessing_plan"
+                and not interpreted.draft_patch
+                and bool(model_context["work_context"].get("workspace_stage_selection_required"))
             ):
                 candidates = [
                     str(item.get("stage", ""))
@@ -739,23 +784,57 @@ class WorkDialogue:
                     payload,
                 )
             if interpreted.action == "prepare_preprocessing_plan":
-                draft = merge_work_draft(draft, interpreted.draft_patch)
-                issues = draft_issues(draft)
-                sources = _draft_sources(saved, interpreted.draft_patch)
+                patch, sources, blocked = constrained_patch(
+                    draft.model_dump(mode="json"),
+                    (saved or {}).get("sources", {}),
+                    interpreted.draft_patch,
+                    request.content,
+                )
+                facts = {**(saved or {}).get("facts", {}), **observed_facts(loop_metadata)}
+                for path, value in facts.items():
+                    if sources.get(path) != "user":
+                        set_value(patch, path, value)
+                draft = merge_work_draft(draft, patch)
+                for path, value in facts.items():
+                    if (
+                        leaf_values(draft.model_dump(mode="json")).get(path) == value
+                        and sources.get(path) != "user"
+                    ):
+                        sources[path] = "system" if path.endswith("slice_order") else "data"
+                issues = review_issues(draft, facts)
                 review = render_draft_review(draft, sources)
-                payload["work_draft"] = {
-                    "draft": draft.model_dump(mode="json"),
-                    "hash": draft_hash(draft),
-                    "workspace_path": workspace_path,
-                    "compiled": False,
-                    "sources": sources,
-                }
+                snapshot = draft_snapshot(
+                    draft,
+                    workspace_path=workspace_path,
+                    sources=sources,
+                    prior=saved,
+                    facts=facts,
+                )
+                payload["work_draft"] = snapshot
                 payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
-                if issues:
-                    suffix = "\n\n仍需补充或修正：\n" + "\n".join(issues)
-                else:
+                if (
+                    not issues
+                    and selected_stage
+                    and not model_context["work_context"].get("workspace_stage_selection_required")
+                ):
+
+                    def prepare_review() -> WorkActionResult:
+                        result = self._compile(
+                            conversation,
+                            request,
+                            draft,
+                            workspace_path,
+                            project_id,
+                            idempotency_key + ":review",
+                            proposal=True,
+                            snapshot=snapshot,
+                        )
+                        return replace(result, payload={**payload, **result.payload})
+
+                    return replace(reply(review, payload), commit=prepare_review)
+                if not issues and "confirmation_request" not in payload:
                     payload["confirmation_request"] = {
                         "title": "确认方案参数",
                         "summary": review,
@@ -767,11 +846,12 @@ class WorkDialogue:
                             }
                         ],
                     }
-                    suffix = (
-                        "\n\n请审查以上全部参数。确认后将登记当前工作区并校验编译方案，尚不启动计算。"
-                        f"\n请回复：确认方案参数 {draft_hash(draft)[:12]}"
-                    )
-                return reply(interpreted.answer + "\n\n" + review + suffix, payload)
+                if blocked:
+                    payload["preserved_user_choices"] = blocked
+                    review += "\n已保留你明确指定的参数；未采用与这些选择冲突的模型建议。"
+                # The structured panel carries every value and problem. Avoid
+                # repeating the model's potentially stale parameter narrative.
+                return reply(review, payload)
             if interpreted.action == "propose_run_confirmation":
                 if not plan_data or (saved and not saved.get("compiled")):
                     return reply("请先补全并确认参数草稿，生成可审查的方案后再启动。", payload)
@@ -814,10 +894,7 @@ class WorkDialogue:
                     ],
                 }
                 return reply(
-                    "启动计算需要单独确认当前方案及 QC 选择。请审查方案后回复以下一种：\n"
-                    + execution_command(plan_hash, "做头动QC", require_id)
-                    + "\n"
-                    + execution_command(plan_hash, "跳过QC", skip_id),
+                    "方案已准备好。请在方案区域审查本次参数和 QC 选择，然后确认启动计算。",
                     payload,
                 )
             target = dispatch_target(interpreted.action)
@@ -926,6 +1003,15 @@ class WorkDialogue:
             if key not in {"context_window_tokens", "max_output_tokens"}
         }
         if loop_metadata is not None:
+            fallback_context["work_context"] = {
+                **fallback_context.get("work_context", {}),
+                "successful_read_evidence": [
+                    call.get("output")
+                    for call in loop_metadata.get("calls", [])
+                    if call.get("tool_name") == "read_workspace_content"
+                    and call.get("status") == "succeeded"
+                ][-5:],
+            }
             fallback_context["question"] = str(fallback_context["question"]) + (
                 "\n本轮只重试一次结构化回复：返回简洁的 answer、action 和增量 draft_patch，"
                 "省略没有内容的可选字段。"
@@ -970,6 +1056,10 @@ class WorkDialogue:
         workspace_path: str | None,
         project_id: str | None,
         idempotency_key: str,
+        *,
+        proposal: bool = False,
+        dataset_id: str | None = None,
+        snapshot: dict[str, Any] | None = None,
     ) -> WorkActionResult:
         """Render a user-confirmed draft into a reviewable plan.
 
@@ -979,7 +1069,7 @@ class WorkDialogue:
         """
 
         dataset_data = latest_payload(conversation, "dataset")
-        dataset_id = dataset_data.get("dataset_id") if dataset_data else None
+        dataset_id = dataset_id or (dataset_data.get("dataset_id") if dataset_data else None)
         if not isinstance(dataset_id, str):
             skill = latest_payload(conversation, "skill_plan")
             ref = skill.get("dataset_ref") if skill else None
@@ -996,9 +1086,11 @@ class WorkDialogue:
                 f"conversation:{conversation.conversation_id}:turn:{conversation.version + 1}"
             ),
             idempotency_key=idempotency_key,
+            proposal=proposal,
         )
         payload = dict(result.payload)
         payload["work_draft"] = {
+            **(snapshot or latest_payload(conversation, "work_draft") or {}),
             "draft": draft.model_dump(mode="json"),
             "hash": draft_hash(draft),
             "workspace_path": workspace_path,
@@ -1013,14 +1105,43 @@ class WorkDialogue:
                 workspace_path=workspace_path,
                 active_run_id=conversation.active_run_id,
             )
+        plan = payload["plan_revision"]
+        qc_mode = (
+            QcExecutionMode.REQUIRE if draft.qc_mode == "head_motion" else QcExecutionMode.SKIP
+        )
+        confirmation_id = self.coordinator.create_confirmation_challenge(
+            conversation_id=conversation.conversation_id,
+            project_id=str(result.project_id or project_id),
+            plan_revision_id=str(plan["plan_revision_id"]),
+            plan_hash=str(plan["plan_hash"]),
+            qc_mode=qc_mode,
+        )
+        payload["confirmation_request"] = {
+            "title": "确认并启动计算",
+            "summary": (
+                "当前方案已通过科学校验。确认后将启动本机 MATLAB 计算。"
+                + (
+                    "计算后生成头动 QC，等待人工审查。"
+                    if draft.qc_mode == "head_motion"
+                    else "本次明确跳过头动 QC。"
+                )
+            ),
+            "options": [
+                {
+                    "label": "确认并启动计算",
+                    "description": "仅授权本次方案与所选 QC 方式。",
+                    "command": execution_command(
+                        str(plan["plan_hash"]),
+                        "做头动QC" if draft.qc_mode == "head_motion" else "跳过QC",
+                        confirmation_id,
+                    ),
+                }
+            ],
+        }
         return replace(
             result,
             payload=payload,
             workspace_path=workspace_path,
             active_run_id=conversation.active_run_id,
-            assistant_content=result.assistant_content
-            + "\n\n"
-            + render_draft_review(draft)
-            + "\n\n本次仅生成方案。确认启动时请单独回复：\n"
-            + "请先让系统签发一次性确认指令，再原样回复该指令。",
+            assistant_content="方案已通过科学校验，请审查关键参数及执行流程，再确认启动计算。",
         )

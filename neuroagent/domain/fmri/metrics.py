@@ -22,6 +22,7 @@ class MetricKind(StrEnum):
 
 
 class ParameterSource(StrEnum):
+    PROPOSAL = "proposal"
     USER = "user"
     STUDY_PROTOCOL = "study_protocol"
     DATASET_METADATA = "dataset_metadata"

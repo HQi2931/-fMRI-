@@ -114,14 +114,15 @@ def test_confirmation_binds_review_and_generates_user_evidence() -> None:
         confirmed_skill_intent(draft, **arguments)
 
 
-def test_review_contains_every_nested_choice_and_hash_is_order_independent() -> None:
+def test_review_is_concise_and_full_choices_remain_structured() -> None:
     draft = complete_draft()
     review = render_draft_review(draft)
-    assert draft_hash(draft) in review
-    for key in draft.preprocessing:
-        assert key in review
-    assert "enabled" in review
-    assert "tr_seconds" in review
+    assert draft_hash(draft) not in review
+    assert "enabled" not in review
+    assert "tr_seconds" not in review
+    assert "TR 2.0 秒" in review
+    assert len(review) < 500
+    assert all(key in draft.model_dump()["preprocessing"] for key in draft.preprocessing)
     preview = plan_preview(draft)
     assert preview["kind"] == "dpabi_plan_preview"
     assert preview["provisional"] is True
@@ -191,7 +192,8 @@ def test_planning_decisions_separate_user_edits_suggestions_and_conflicts() -> N
     assert choices["reho.cluster_voxels"]["source"] == "suggested"
     assert "核实" in report["note"]
     review = render_draft_review(draft, {"reho.cluster_voxels": "suggested"})
-    assert "reho.cluster_voxels" in review and "模型建议" in review
+    assert "reho.cluster_voxels" not in review
+    assert "方案区域" in review
 
     corrected = planning_decisions(
         WorkDraft(preprocessing={"tr_seconds": 2.0}),

@@ -459,6 +459,7 @@ class ConversationWorkCoordinator:
         conversation_id: str,
         user_confirmation_ref: str,
         idempotency_key: str,
+        proposal: bool = False,
     ) -> WorkActionResult:
         """Bind a user-reviewed draft to the frozen dataset and compile a plan.
 
@@ -514,6 +515,7 @@ class ConversationWorkCoordinator:
                 reviewed_hash=draft_hash(draft),
                 user_confirmation_ref=user_confirmation_ref,
                 structural_artifact_id=f"manifest:{manifest.manifest_id}:anatomical-source",
+                proposal=proposal,
             )
             resolved = self._prepare_preprocessing_plan(
                 request.model_copy(

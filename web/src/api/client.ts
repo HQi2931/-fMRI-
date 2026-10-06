@@ -426,6 +426,10 @@ export const api = {
   streamConversationTurn,
   patchWorkDraft: (conversationId: string, baseHash: string, draftPatch: Record<string, unknown>, signal?: AbortSignal) =>
     patch<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-draft`, { base_hash: baseHash, patch: draftPatch }, signal),
+  confirmWorkAction: (conversationId: string, command: string, expectedDraftHash: string | null, signal?: AbortSignal) =>
+    post<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-confirmation`, { command, expected_draft_hash: expectedDraftHash }, signal),
+  prepareWorkReview: (conversationId: string, baseHash: string, signal?: AbortSignal) =>
+    post<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-review`, { base_hash: baseHash }, signal),
   papers: (signal?: AbortSignal) => request<PaperIngestResult[]>("/literature/papers", { signal }),
   uploadPaper: (file: File) => {
     const body = new FormData();

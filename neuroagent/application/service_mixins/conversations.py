@@ -22,11 +22,14 @@ from neuroagent.application.contracts import (
     MemoryCreate,
     MemoryUpdate,
     MemoryView,
+    QcExecutionMode,
     RsFmriAnswerView,
     RsFmriQuestionRequest,
     RunCreate,
     RunView,
+    WorkConfirmationCreate,
     WorkDraftUpdate,
+    WorkReviewCreate,
 )
 from neuroagent.application.conversation_context import (
     ContextBudgetError,
@@ -38,15 +41,16 @@ from neuroagent.application.conversation_work import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.application.work_dialogue import WorkDialogue, latest_payload
+from neuroagent.application.work_dialogue import WorkDialogue, execution_command, latest_payload
 from neuroagent.application.work_draft import (
     WorkDraft,
     draft_hash,
-    draft_issues,
+    draft_snapshot,
     merge_work_draft,
     plan_preview,
     planning_decisions,
     render_draft_review,
+    review_issues,
     validate_draft_patch,
 )
 from neuroagent.chat.agent import ChatAgent
@@ -125,7 +129,7 @@ class ConversationMixin(BaseServiceMixin):
                 raise InputValidationError(
                     "work_draft_patch_invalid", "修改包含未知字段或不合法的参数结构。"
                 ) from exc
-            issues = draft_issues(updated)
+            issues = review_issues(updated, saved.get("facts"))
             sources = dict(saved.get("sources", {}))
 
             def mark(value: Any, prefix: str = "") -> None:
@@ -137,13 +141,13 @@ class ConversationMixin(BaseServiceMixin):
 
             mark(request.patch)
             payload: dict[str, Any] = {
-                "work_draft": {
-                    "draft": updated.model_dump(mode="json"),
-                    "hash": draft_hash(updated),
-                    "workspace_path": conversation.workspace_path,
-                    "compiled": False,
-                    "sources": sources,
-                },
+                "work_draft": draft_snapshot(
+                    updated,
+                    workspace_path=conversation.workspace_path,
+                    sources=sources,
+                    prior=saved,
+                    facts=saved.get("facts"),
+                ),
                 "draft_issues": list(issues),
                 "plan_preview": plan_preview(updated),
                 "planning_decisions": planning_decisions(updated, sources),
@@ -161,10 +165,24 @@ class ConversationMixin(BaseServiceMixin):
                         }
                     ],
                 }
+                dataset = latest_payload(conversation, "dataset")
+                if dataset and conversation.project_id:
+                    result = self.work_dialogue._compile(
+                        conversation,
+                        ConversationTurnCreate(content="准备更新后的方案审查"),
+                        updated,
+                        conversation.workspace_path,
+                        conversation.project_id,
+                        idempotency_key + ":review",
+                        proposal=True,
+                        snapshot=payload["work_draft"],
+                    )
+                    payload.update(result.payload)
+                    review = result.assistant_content
             stored, user, assistant, tool = self.repository.append_conversation_exchange(
                 conversation_id,
                 user_content="已在参数面板保存修改。",
-                assistant_content="参数草稿已保存，请审查后确认。",
+                assistant_content=review,
                 assistant_payload=payload,
                 tool=None,
                 workspace_path=conversation.workspace_path,
@@ -178,6 +196,128 @@ class ConversationMixin(BaseServiceMixin):
 
         return self._idempotent(
             scope=f"conversations:{conversation_id}:work-draft",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationTurnView,
+            action=act,
+        )
+
+    async def confirm_work_action(
+        self,
+        conversation_id: str,
+        request: WorkConfirmationCreate,
+        idempotency_key: str,
+    ) -> ConversationTurnView:
+        # Do not let arbitrary client text or a boolean create new authority.
+        # A retry uses the original turn key so response loss remains idempotent.
+        conversation = self.repository.get_conversation(conversation_id)
+        if conversation.mode is not ConversationMode.WORK:
+            raise InputValidationError(
+                "work_confirmation_mode_required", "此操作仅用于 Work 会话。"
+            )
+        saved = latest_payload(conversation, "work_draft")
+        if request.expected_draft_hash and (
+            not saved or saved.get("hash") != request.expected_draft_hash
+        ):
+            raise ConflictError("work_draft_changed", "方案已更新，请审查最新版本。")
+        confirmation = latest_payload(conversation, "confirmation_request")
+        commands = [item.get("command") for item in (confirmation or {}).get("options", [])]
+        if request.command not in commands:
+            raise ConflictError("work_confirmation_changed", "确认操作已更新，请重新审查方案。")
+        return await self.send_conversation_turn(
+            conversation_id,
+            ConversationTurnCreate(content=request.command),
+            idempotency_key,
+        )
+
+    def prepare_work_review(
+        self,
+        conversation_id: str,
+        request: WorkReviewCreate,
+        idempotency_key: str,
+    ) -> ConversationTurnView:
+        def act() -> ConversationTurnView:
+            conversation = self.repository.get_conversation(conversation_id)
+            saved = latest_payload(conversation, "work_draft")
+            if conversation.mode is not ConversationMode.WORK or not saved:
+                raise ConflictError("work_draft_missing", "请先准备 Work 方案。")
+            draft = WorkDraft.model_validate(saved["draft"])
+            if (
+                saved.get("workspace_path") != conversation.workspace_path
+                or draft_hash(draft) != request.base_hash
+            ):
+                raise ConflictError("work_draft_changed", "工作区或方案已更新，请审查最新版本。")
+            if saved.get("consumed"):
+                raise ConflictError("work_review_already_started", "此方案已启动，请查看运行卡片。")
+            issues = review_issues(draft, saved.get("facts"))
+            if issues:
+                raise ConflictError("work_review_incomplete", "请先处理方案中的待填写或冲突项。")
+            plan_data = latest_payload(conversation, "plan_revision")
+            if saved.get("compiled") and plan_data and conversation.project_id:
+                plan = self.repository.get_plan(str(plan_data["plan_revision_id"]))
+                qc = (
+                    QcExecutionMode.REQUIRE
+                    if draft.qc_mode == "head_motion"
+                    else QcExecutionMode.SKIP
+                )
+                challenge = self.conversation_work.create_confirmation_challenge(
+                    conversation_id=conversation_id,
+                    project_id=conversation.project_id,
+                    plan_revision_id=plan.plan_revision_id,
+                    plan_hash=plan.plan_hash,
+                    qc_mode=qc,
+                )
+                result = WorkActionResult(
+                    "方案保持原版本，启动确认已更新。请审查后确认本次计算。",
+                    payload={
+                        "work_draft": saved,
+                        "plan_revision": plan.model_dump(mode="json"),
+                        "confirmation_request": {
+                            "title": "确认并启动计算",
+                            "summary": "确认后启动本机 MATLAB 计算，"
+                            "沿用当前方案及已选择的 QC 方式。",
+                            "options": [
+                                {
+                                    "label": "确认并启动计算",
+                                    "description": "仅用于本次运行。",
+                                    "command": execution_command(
+                                        plan.plan_hash,
+                                        "做头动QC" if draft.qc_mode == "head_motion" else "跳过QC",
+                                        challenge,
+                                    ),
+                                }
+                            ],
+                        },
+                    },
+                )
+            else:
+                result = self.work_dialogue._compile(
+                    conversation,
+                    ConversationTurnCreate(content="重新校验当前方案"),
+                    draft,
+                    conversation.workspace_path,
+                    conversation.project_id,
+                    idempotency_key,
+                    proposal=True,
+                    snapshot=saved,
+                )
+            stored, user, assistant, tool = self.repository.append_conversation_exchange(
+                conversation_id,
+                user_content="重新校验当前方案与启动确认。",
+                assistant_content=result.assistant_content,
+                assistant_payload=result.payload,
+                tool=result.tool,
+                workspace_path=conversation.workspace_path,
+                preferred_profile_id=conversation.preferred_profile_id,
+                project_id=result.project_id or conversation.project_id,
+                active_run_id=conversation.active_run_id,
+            )
+            return ConversationTurnView(
+                conversation=stored, user_message=user, assistant_message=assistant, tool_call=tool
+            )
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:work-review",
             key=idempotency_key,
             request=request,
             response_type=ConversationTurnView,

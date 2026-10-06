@@ -25,6 +25,6 @@
   },
   "$defs": {
     "fwhm": {"oneOf": [{"type": "null"}, {"type": "array", "prefixItems": [{"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}], "items": false}]},
-    "provenance": {"type": "object", "additionalProperties": false, "required": ["name", "source", "evidence_ref"], "properties": {"name": {"type": "string", "minLength": 1}, "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset"]}, "evidence_ref": {"type": "string", "minLength": 1}}}
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["name", "source", "evidence_ref"], "properties": {"name": {"type": "string", "minLength": 1}, "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset", "proposal"]}, "evidence_ref": {"type": "string", "minLength": 1}}}
   }
 }

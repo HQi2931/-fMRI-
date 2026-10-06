@@ -1,0 +1,13 @@
+.work-review-layout { display: grid; gap: 1.25rem; align-items: start; }
+.work-review-layout.has-plan { grid-template-columns: minmax(0, 1fr) minmax(380px, 46%); }
+.work-dialogue-region, .work-plan-region { min-width: 0; }
+.work-plan-region { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1rem; max-height: 76vh; overflow: auto; position: sticky; top: 1rem; }
+.work-plan-heading { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+.work-plan-heading h2 { margin: 0; font-size: 1.1rem; }
+.conversation-text p { white-space: pre-wrap; margin: .65rem 0; line-height: 1.65; }
+.chat-technical { font-size: .8rem; color: var(--muted); }
+@media (max-width: 980px) {
+  .work-review-layout.has-plan { grid-template-columns: 1fr; }
+  .work-plan-region { position: fixed; inset: 0; z-index: 50; max-height: 100dvh; border-radius: 0; overflow: auto; padding: 1.25rem; }
+  .work-plan-heading { position: sticky; top: -1.25rem; background: var(--panel); padding: 1rem 0; z-index: 2; }
+}

@@ -1132,6 +1132,17 @@ class WorkDraftUpdate(StrictModel):
         return value
 
 
+class WorkConfirmationCreate(StrictModel):
+    """UI selection of a server-issued action, never model-generated authority."""
+
+    command: str = Field(min_length=1, max_length=500)
+    expected_draft_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class WorkReviewCreate(StrictModel):
+    base_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class ConversationTurnCreate(StrictModel):
     paper_ids: tuple[str, ...] = ()
     content: str = Field(min_length=1, max_length=8_000, pattern=r"\S")

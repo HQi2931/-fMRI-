@@ -262,7 +262,7 @@
       "required": ["name", "source", "evidence_ref"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset"]},
+        "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset", "proposal"]},
         "evidence_ref": {"type": "string", "minLength": 1}
       }
     }

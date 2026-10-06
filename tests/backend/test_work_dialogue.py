@@ -175,12 +175,12 @@ def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(servi
         old_hash = first["assistant_message"]["payload"]["work_draft"]["hash"]
         assert first["assistant_message"]["payload"]["plan_preview"]["kind"] == "dpabi_plan_preview"
         decisions = first["assistant_message"]["payload"]["planning_decisions"]
-        assert "preprocessing.tr_seconds：模型建议" in first["assistant_message"]["content"]
+        assert "preprocessing.tr_seconds" not in first["assistant_message"]["content"]
         assert (
             next(
                 item for item in decisions["choices"] if item["path"] == "preprocessing.tr_seconds"
             )["status"]
-            == "proposed"
+            == "user_draft"
         )
         assert "confirmation_request" not in first["assistant_message"]["payload"]
         turn(client, session, "去掉10个时间点", "draft-2")
@@ -508,6 +508,11 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
         )
     )
     monkeypatch.setattr(service.conversation_work, "_prepare_preprocessing_plan", compile_plan)
+    monkeypatch.setattr(
+        service.conversation_work,
+        "create_confirmation_challenge",
+        Mock(return_value="test-challenge"),
+    )
     with TestClient(create_app(service=service)) as client:
         session = create(client, source_root)
         preview = turn(client, session, "按我提供的完整参数准备方案", "review")
@@ -516,13 +521,13 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
         confirmed = turn(client, session, f"确认方案参数 {draft_hash(draft)[:12]}", "confirm")
         repeated = turn(client, session, f"确认方案参数 {draft_hash(draft)[:12]}", "confirm")
     assert confirmed == repeated
-    assert "方案已生成" in confirmed["assistant_message"]["content"], confirmed
+    assert "方案已通过科学校验" in confirmed["assistant_message"]["content"], confirmed
     compile_plan.assert_called_once()
     intent = compile_plan.call_args.args[0].skill_plan_intent
     assert intent.project_id == service.list_projects()[0].project_id
     assert len(intent.input_manifest_hash) == 64
     assert all(p.source == "user" for p in intent.preprocessing.provenance)
-    assert "确认方案参数" in preview["assistant_message"]["content"]
+    assert "确认方案参数" not in preview["assistant_message"]["content"]
     confirmation = preview["assistant_message"]["payload"]["confirmation_request"]
     assert confirmation["title"] == "确认方案参数"
     assert confirmation["options"][0]["command"] == f"确认方案参数 {draft_hash(draft)[:12]}"
@@ -675,15 +680,20 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
             assert "work_draft" in review["assistant_message"]["payload"], review[
                 "assistant_message"
             ]["content"]
-            current_hash = review["assistant_message"]["payload"]["work_draft"]["hash"]
-            result = turn(client, session, f"确认方案参数 {current_hash[:12]}", "compile-alff")
-            payload = result["assistant_message"]["payload"]
-            assert "plan_revision" in payload, result["assistant_message"]["content"]
+            payload = review["assistant_message"]["payload"]
+            assert "plan_revision" in payload, review["assistant_message"]["content"]
             assert payload["plan_revision"]["state"] == "awaiting_approval"
             assert dict(payload["skill_plan"]["resolved_parameters"])["alff_falff"][
                 "requested_metrics"
             ] == ["alff"]
             assert service.repository.list_runs() == []
+            assert payload["confirmation_request"]["title"] == "确认并启动计算"
+            assert all(
+                p["source"] == "proposal"
+                for p in dict(payload["skill_plan"]["resolved_parameters"])["preprocessing"][
+                    "provenance"
+                ]
+            )
     finally:
         service.close()
 

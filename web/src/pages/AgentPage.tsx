@@ -17,8 +17,10 @@ import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { readConfirmation } from "../components/confirmation";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import { WorkDraftPanel } from "../components/WorkDraftPanel";
+import { WorkRunPanel } from "../components/WorkRunPanel";
 import { readWorkDraft, type WorkDraftSnapshot } from "../components/workDraft";
 import { updateWorkspace, useWorkspace } from "../workspace";
+import "./agent-work.css";
 
 type ToolStep = {
   key: string;
@@ -79,7 +81,9 @@ function messagesFrom(conversation?: Conversation): Message[] {
         return {
           id: item.message_id,
           role: "user" as const,
-          text: item.content,
+          text: item.content.startsWith("批准并启动 ") ? "已确认本次方案并启动计算。"
+            : item.content.startsWith("确认起始阶段 ") ? "已确认预处理起始阶段。"
+            : item.content.startsWith("确认方案参数 ") ? "已审查方案参数。" : item.content,
         };
       }
       const message: Message = {
@@ -148,21 +152,23 @@ function applyConversationContext(conversation: Conversation): void {
   updateWorkspace(patch);
 }
 
-function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onSaveDraft, onDirty, confirmation, onConfirmDraft }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onSaveDraft: (hash: string, patch: Record<string, unknown>) => Promise<void>; onDirty: (dirty: boolean) => void; confirmation: ReturnType<typeof readConfirmation>; onConfirmDraft: () => void }) {
+function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onOpenPlan }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onOpenPlan: () => void }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
       <span>{item.role === "assistant" ? "Agent" : "你"}</span>
-      {item.steps && item.steps.length > 0 && <ol className="chat-tool-steps" aria-label="Agent 工具步骤">
+      {item.steps && item.steps.length > 0 && <details className="chat-technical"><summary>查看工具检查详情（{item.steps.length} 项）</summary><ol className="chat-tool-steps" aria-label="Agent 工具步骤">
         {item.steps.map((step) => <li key={step.key} data-tier={step.tier ?? "unknown"} data-status={step.status}>
           <code>{step.name}</code>
           {step.tier && <span className="tool-tier">{step.tier}</span>}
           <span className="tool-status">{step.status}</span>
           {step.durationMs !== null && <span className="tool-duration">{step.durationMs} ms</span>}
         </li>)}
-      </ol>}
-      <p>{item.text}</p>
+      </ol></details>}
+      <div className="conversation-text">{item.text.split(/\n\s*\n/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
-      {item.workDraft && <WorkDraftPanel key={`${item.id}:${item.workDraft.hash}`} snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly={item.id !== latestDraftId} busy={busy} onSave={onSaveDraft} onDirty={item.id === latestDraftId ? onDirty : undefined} confirmation={item.id === latestDraftId ? confirmation : null} onConfirm={onConfirmDraft} />}
+      {item.workDraft && (item.id === latestDraftId
+        ? <button className="button button-secondary" type="button" onClick={onOpenPlan}>查看当前方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</button>
+        : <details><summary>历史方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</summary><WorkDraftPanel snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly onSave={async () => {}} /></details>)}
       {item.workspaceCitations && <ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul>}
       {item.proposal && <details className="workspace-proposal"><summary>查看文件修改 diff（{item.proposal.proposal_hash.slice(0, 12)}）</summary><p>不可变补丁哈希：<code>{item.proposal.proposal_hash}</code></p><p>文件数：{item.proposal.edits.length} · 增加 {patchStats(item.proposal.diff).added} 行 · 删除 {patchStats(item.proposal.diff).removed} 行</p><pre>{item.proposal.diff}</pre>{item.proposal.status === "proposed" && <button className="button button-primary" type="button" disabled={busy} onClick={() => onApply(item.proposal!)}>确认应用补丁</button>}{item.proposal.status === "applied" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onUndo(item.proposal!)}>撤销本次补丁</button>}</details>}
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
@@ -180,14 +186,6 @@ function modelChoice(profile: ModelProfile, model: string): ModelChoice {
     label: `${provider} · ${model}`,
     capabilities: profile.profile.capabilities,
   };
-}
-
-function runStageLabel(run: Run): string {
-  if (run.state === "qc_review") return "等待 QC 审核";
-  if (run.state === "succeeded" && run.qc_status === "skipped") return "已完成 · 已跳过 QC";
-  if (run.state === "succeeded") return "已完成";
-  if (["failed_terminal", "timed_out", "cancelled"].includes(run.state)) return "已结束";
-  return run.stage;
 }
 
 function patchStats(diff: string): { added: number; removed: number } {
@@ -214,7 +212,10 @@ export function AgentPage() {
   const [busy, setBusy] = useState(false);
   const [draftDirty, setDraftDirty] = useState(false);
   const [error, setError] = useState("");
-  const [dismissedConfirmation, setDismissedConfirmation] = useState<string | null>(null);
+  const [openedConfirmation, setOpenedConfirmation] = useState<string | null>(null);
+  const [planOpen, setPlanOpen] = useState(true);
+  const [pollNonce, setPollNonce] = useState(0);
+  const [runConnectionMessage, setRunConnectionMessage] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null);
   const turnController = useRef<AbortController | null>(null);
   const [pendingTurn, setPendingTurn] = useState<{ mode: ConversationMode; user: string; text: string; status: string } | null>(null);
@@ -238,6 +239,7 @@ export function AgentPage() {
   const confirmationKey = confirmation ? `${activeConversation?.conversation_id}:${latestMessage?.message_id}` : null;
   const visibleMessages = messagesFrom(activeConversation);
   const latestDraftId = mode === "work" && boundToSelectedWorkspace ? [...visibleMessages].reverse().find((item) => item.workDraft)?.id : undefined;
+  const currentDraftMessage = visibleMessages.find((item) => item.id === latestDraftId);
   if (pendingTurn?.mode === mode) visibleMessages.push(
     { id: "pending-user", role: "user", text: pendingTurn.user },
     { id: "pending-assistant", role: "assistant", text: pendingTurn.text, streamingStatus: pendingTurn.status },
@@ -283,20 +285,27 @@ export function AgentPage() {
     if (!runId) { setActiveRun(null); return; }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const terminal = new Set(["succeeded", "failed_terminal", "timed_out", "cancelled", "qc_review"]);
+    const terminal = new Set(["succeeded", "failed_retryable", "failed_terminal", "timed_out", "cancelled", "qc_review"]);
+    let failures = 0;
     const poll = async () => {
       try {
         const run = await api.run(runId, controller.signal);
         setActiveRun(run);
+        failures = 0;
+        setRunConnectionMessage("");
         updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
         if (!terminal.has(run.state)) timer = setTimeout(() => void poll(), 2000);
-      } catch (caught) {
-        if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
+      } catch {
+        if (!controller.signal.aborted) {
+          failures += 1;
+          setRunConnectionMessage(failures < 6 ? "运行状态连接中断，正在重新连接…" : "暂时无法获取运行状态，请重新连接。计算可能仍在继续。");
+          if (failures < 6) timer = setTimeout(() => void poll(), Math.min(1000 * 2 ** failures, 15_000));
+        }
       }
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.active_run_id, mode, workspace.runId]);
+  }, [activeConversation?.active_run_id, mode, workspace.runId, pollNonce]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -461,11 +470,17 @@ export function AgentPage() {
       setPendingTurn(null);
       setError("等待回答已超过 5 分钟，请刷新会话查看已保存结果后重试。");
     }, 300_000);
-    setPendingTurn({ mode, user: content, text: "", status: "正在生成回答…" });
+    const confirmationLabel = confirmation?.options.find((option) => option.command === content)?.label;
+    setPendingTurn({ mode, user: confirmationLabel ?? content, text: "", status: confirmationCommand ? "正在核对方案并提交操作…" : "正在生成回答…" });
     setPrompt(""); setBusy(true); setError("");
     try {
       const conversationId = await ensureConversation(mode);
       if (controller.signal.aborted) return;
+      if (confirmationCommand) {
+        const turn = await api.confirmWorkAction(conversationId, confirmationCommand, currentDraftMessage?.workDraft?.hash ?? null, controller.signal);
+        if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); setOpenedConfirmation(null); }
+        return;
+      }
       const turn = await api.streamConversationTurn(conversationId, {
         content,
         workspace_path: mode === "work" ? workspacePath.trim() || null : null,
@@ -530,12 +545,20 @@ export function AgentPage() {
     finally { setBusy(false); }
   }
 
+  async function prepareReview(): Promise<void> {
+    if (!activeConversation || !currentDraftMessage?.workDraft || busy || draftDirty) return;
+    setBusy(true); setError("");
+    try { cache((await api.prepareWorkReview(activeConversation.conversation_id, currentDraftMessage.workDraft.hash)).conversation); }
+    catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
   return <main className="agent-shell">
-    {confirmation && !draftDirty && confirmationKey !== dismissedConfirmation && <ConfirmationDialog
+    {confirmation && !draftDirty && confirmationKey === openedConfirmation && <ConfirmationDialog
       key={confirmationKey} request={confirmation} busy={busy} error={error}
       onConfirm={(command) => void send(command)}
-      onDismiss={() => setDismissedConfirmation(confirmationKey)}
-      onEdit={() => { setDismissedConfirmation(confirmationKey); requestAnimationFrame(() => composer.current?.focus()); }}
+      onDismiss={() => { setOpenedConfirmation(null); }}
+      onEdit={() => { setOpenedConfirmation(null); setPlanOpen(true); requestAnimationFrame(() => composer.current?.focus()); }}
     />}
     <div className="agent-mode-switch" role="tablist" aria-label="对话模式">
       {(["chat", "work"] as ConversationMode[]).map((item) => <button
@@ -556,6 +579,9 @@ export function AgentPage() {
           if (selected) { cache(selected); setPendingTurn(null); }
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
         <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => void newConversation()}>新会话</button>
+        {activeConversation && <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => {
+          setError(""); void api.conversation(activeConversation.conversation_id).then(cache).catch((caught) => setError(describeError(caught)));
+        }}>刷新会话</button>}
       </div>
       {mode === "work" && <WorkspacePanel
         key={workspacePath}
@@ -577,14 +603,19 @@ export function AgentPage() {
       >
         {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
       </WorkspacePanel>}
-      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onSaveDraft={saveDraft} onDirty={setDraftDirty} confirmation={confirmation?.title === "确认方案参数" ? confirmation : null} onConfirmDraft={() => { setError(""); setDismissedConfirmation(null); }} />
-      {mode === "work" && activeRun && <div className="run-inline" role="status">
-        <strong>任务状态：{runStageLabel(activeRun)}</strong>
-        {typeof activeRun.stage_progress === "number" && activeRun.state === "running" && <span>当前进度：{Math.round(activeRun.stage_progress * 100)}%</span>}
-        {activeRun.error && <details><summary>失败原因</summary><pre>{activeRun.error}</pre></details>}
-      </div>}
+      <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
+      <div className="work-dialogue-region"><ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} />
+      {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
+      {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
+      </div>
+      {mode === "work" && currentDraftMessage?.workDraft && planOpen && <aside className="work-plan-region" aria-label="当前方案审查">
+        <div className="work-plan-heading"><h2>当前方案</h2><button type="button" disabled={draftDirty} onClick={() => setPlanOpen(false)}>收起方案</button></div>
+        <WorkDraftPanel key={`${currentDraftMessage.id}:${currentDraftMessage.workDraft.hash}`} snapshot={currentDraftMessage.workDraft} issues={currentDraftMessage.draftIssues} preview={currentDraftMessage.planPreview} busy={busy} onSave={saveDraft} onDirty={setDraftDirty} confirmation={confirmation} confirmLabel={confirmation?.options.length === 1 ? confirmation.options[0].label : "审查并继续"} onConfirm={() => { setError(""); setOpenedConfirmation(confirmationKey); }} />
+        <button className="button button-secondary" type="button" disabled={busy || draftDirty || Boolean(currentDraftMessage.draftIssues?.length)} onClick={() => void prepareReview()}>重新校验方案与启动确认</button>
+      </aside>}
+      </div>
       <div className="chat-composer">
-        {confirmation && confirmationKey === dismissedConfirmation && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy || draftDirty} onClick={() => { setError(""); setDismissedConfirmation(null); }}>待确认 · {confirmation.title}</button>}
+        {confirmation && openedConfirmation !== confirmationKey && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy || draftDirty} onClick={() => { setError(""); setOpenedConfirmation(confirmationKey); }}>待确认 · {confirmation.title}</button>}
         {draftDirty && <small role="status">请先保存或放弃参数修改，再继续对话或切换会话。</small>}
         <textarea ref={composer} disabled={busy || draftDirty} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }

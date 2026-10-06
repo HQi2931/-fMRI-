@@ -10,6 +10,8 @@
 
 当前能力：
 
+- Work 提供独立的方案审查与确认接口，产物提供按编号校验的下载和有限图像预览；契约与阶段验证边界见 [API v1](../../docs/api/api-v1.md)。
+
 - `create_app()` 装配路由、统一错误处理与 `X-Trace-ID`；
 - 业务错误、请求校验错误、未匹配路径和意外 `500` 统一返回 `{"error": {"code", "message", "details", "trace_id"}}`；
 - SSE 通过 `/runs/{id}/events` 提供可续传的运行事件；
