@@ -32,7 +32,8 @@ def test_partial_merge_preserves_values_and_clears_confirmation() -> None:
     draft = WorkDraft(preprocessing={"nuisance": {"enabled": True, "timing": "after_realign"}})
     draft.confirmed_hash = draft_hash(draft)
     changed = merge_work_draft(draft, {"preprocessing": {"nuisance": {"enabled": False}}})
-    assert changed.preprocessing["nuisance"] == {"enabled": False, "timing": "after_realign"}
+    assert changed.preprocessing["nuisance"]["enabled"] is False
+    assert changed.preprocessing["nuisance"]["timing"] == "after_realign"
     assert changed.confirmed_hash is None
     assert draft.preprocessing["nuisance"]["enabled"] is True
     changed = merge_work_draft(changed, {"preprocessing": {"nuisance": {"timing": None}}})

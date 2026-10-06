@@ -1717,7 +1717,7 @@ export interface components {
          * ConversationToolStatus
          * @enum {string}
          */
-        ConversationToolStatus: "succeeded" | "failed" | "awaiting_confirmation";
+        ConversationToolStatus: "succeeded" | "failed" | "rejected" | "awaiting_confirmation";
         /** ConversationTurnCreate */
         ConversationTurnCreate: {
             /** @default auto */

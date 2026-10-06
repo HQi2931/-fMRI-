@@ -15,6 +15,7 @@
 Work 体验优化新增以下接口（阶段实现，完整交互验收见计划 0012）：
 
 - `POST /conversations/{conversation_id}/work-confirmation`：接受 `{command, expected_draft_hash?}`，需幂等键；只接受服务端签发的选项，复用原有授权路径，不调用模型理解启动意图。版本或选项变化返回冲突。
+- 确认接口使用独立于普通回合的幂等作用域，绑定完整请求体；相同请求与键先返回已保存响应，再对新操作检查版本。响应正文解码失败时客户端保留原键，重试不创建第二个运行。批准、运行创建与挑战消费在同一事务内提交。
 - `POST /conversations/{conversation_id}/work-review`：接受 `{base_hash}`，需幂等键；重新准备当前完整方案或更新启动确认，不直接创建运行。
 - `GET /artifacts/{artifact_id}/content` 与 `/preview.png`：按注册产物编号下载或生成有限 NIfTI 预览，检查路径边界、文件大小和内容哈希；预览不替代空间配准或科学 QC。
 
@@ -30,7 +31,7 @@ Work assistant 消息的 payload 可包含 `confirmation_request: {title, summar
 - JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
 - 修改已有资源时，请求体会携带 `expected_*_version`、计划哈希或 revision 哈希。不匹配时失败关闭，不自动覆盖。
 - 业务错误、请求校验、框架 HTTP 错误、未匹配 API 路径和意外 `500` 都返回 `{"error": {"code", "message", "details", "trace_id"}}`；意外错误不会返回原始异常文本。每个 HTTP 响应都有 `X-Trace-ID`，客户端仍应先检查 HTTP 状态码。
-- 下表中的 Artifact 接口只返回元数据、相对路径、校验和与 provenance。当前没有 Artifact 文件下载接口。
+- Artifact 列表返回元数据、相对路径、校验和与 provenance；下载和预览通过上述按产物编号验证的接口提供。
 
 幂等请求按以下规则恢复：
 
@@ -97,6 +98,8 @@ Work assistant 消息的 payload 可包含 `confirmation_request: {title, summar
 `GET /conversations/{id}` 的 `tool_calls` 按 `created_at`、`step_index`、`tool_call_id` 排序，因此
 循环步进的展示顺序等于执行顺序。`POST .../turns` 的响应同时提供 `tool_call`（单次记录）与
 `tool_calls`（本次循环步进，可能为空）。
+
+工具状态包含 `rejected`，用于保存未获允许的工具请求及其诊断；拒绝不会授予执行权限，也不会阻断后续有效回合的持久化。
 
 `work` 回合由服务端确定性协调器解析为闭集 `ConversationAction`，再调用既有应用服务。客户端不再提交 `card_kind`，服务端也不暴露卡片能力目录、任意组件名、脚本或执行代码。缺少参数的请求返回待确认工具记录和明确缺项；解释或未知请求只返回说明，不产生业务写入。
 

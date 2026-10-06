@@ -10,12 +10,21 @@ const RUN_LABELS: Record<string, string> = {
 const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归" };
 const activeStates = new Set(["queued", "running", "cancelling"]);
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
+const ARTIFACT_LABELS: Record<string, string> = {
+  "metric.alff": "ALFF 指标图", "metric.alff.raw": "原始 ALFF", "metric.alff.global_mean": "均值归一化 ALFF", "metric.alff.z_score": "z 标准化 ALFF",
+  "metric.falff.raw": "原始 fALFF", "metric.reho.raw": "原始 ReHo",
+  "preprocessing.functional_timeseries": "预处理功能时序", "preprocessing.brain_mask": "脑掩膜", "preprocessing.tissue_probability": "组织概率图",
+  "preprocessing.t1_prepared": "已准备的 T1", "preprocessing.t1_inspection_image": "T1 检查图", "preprocessing.t1_preparation_evidence": "T1 处理记录",
+  "preprocessing.metadata_evidence": "处理谱系记录", "preprocessing.execution_log": "计算记录", "execution.matlab_log": "MATLAB 日志",
+  "qc.head_motion_report": "头动 QC 报告", "qc.head_motion_failure": "头动 QC 诊断",
+};
+const artifactLabel = (artifact: Artifact) => ARTIFACT_LABELS[artifact.artifact_type] ?? "计算产物";
 
 function ImagePreview({ artifact }: { artifact: Artifact }) {
   const [failed, setFailed] = useState(false);
   const nifti = /\.nii(\.gz)?$/i.test(artifact.relative_path);
   if (failed) return <p>此图像无法预览，请下载文件检查。</p>;
-  return <figure><img loading="lazy" alt={`${artifact.artifact_type} 结果预览`} src={nifti ? `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/preview.png` : contentUrl(artifact)} onError={() => setFailed(true)} />
+  return <figure><img loading="lazy" alt={`${artifactLabel(artifact)} 结果预览`} src={nifti ? `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/preview.png` : contentUrl(artifact)} onError={() => setFailed(true)} />
     <figcaption>{nifti ? "首个体积的中间轴向切片 · 原始体素坐标 · 自动灰度显示，仅供检查" : "注册图像预览"}</figcaption></figure>;
 }
 
@@ -45,14 +54,16 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
         const review = typeof reviewId === "string" ? await api.qcReview(reviewId, controller.signal) : null;
         const report = artifacts.find((artifact) => artifact.artifact_type === "qc.head_motion_report" && artifact.size_bytes <= 5 * 1024 * 1024);
         let qcSubjects: Array<Record<string, unknown>> = [];
+        let reportError = "";
         if (report) {
-          const response = await fetch(contentUrl(report), { signal: controller.signal });
-          if (response.ok) {
+          try {
+            const response = await fetch(contentUrl(report), { signal: controller.signal });
+            if (!response.ok) throw new Error("QC 报告读取失败");
             const qc: unknown = await response.json();
             if (qc && typeof qc === "object" && "subjects" in qc && Array.isArray(qc.subjects)) qcSubjects = qc.subjects.filter((subject): subject is Record<string, unknown> => Boolean(subject) && typeof subject === "object");
-          }
+          } catch { reportError = "自动 QC 报告暂时无法读取。计算产物仍可查看和下载，请重新加载详情或检查报告文件。"; }
         }
-        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, qcSubjects }); setError(""); }
+        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, qcSubjects }); setError(reportError); }
       } catch (caught) {
         if (!controller.signal.aborted) setError(`运行详情暂时不可用：${describeError(caught)}`);
       }
@@ -69,10 +80,12 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const current = data?.runId === run.run_id ? data : null;
   const events = current?.events ?? [];
   const artifacts = current?.artifacts ?? [];
+  const gallery = artifacts.filter((artifact) => artifact.artifact_type.startsWith("metric.") && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path)).slice(0, 3);
   const review = current?.review;
   const elapsed = elapsedLabel(events, now);
   const phaseEvent = [...events].reverse().find((event) => ["MatlabPhaseStarted", "MatlabPhaseFinished"].includes(event.event_type) && event.payload.attempt === run.attempt);
-  const observedPhase = phaseEvent?.event_type === "MatlabPhaseStarted" ? String(phaseEvent.payload.phase) : run.stage;
+  const observedPhase = phaseEvent?.event_type === "MatlabPhaseStarted" ? String(phaseEvent.payload.phase) : run.state === "running" && run.stage === "queued" ? "running" : run.stage;
+  const completedPhases = [...new Set(events.filter((event) => event.event_type === "MatlabPhaseFinished" && event.payload.attempt === run.attempt).map((event) => String(event.payload.phase)))];
   const finished = [...events].reverse().find((event) => event.event_type === "RunStageFinished" && event.payload.stage === "running");
   const mock = artifacts.some((artifact) => artifact.provenance.non_scientific === true || String(artifact.provenance.executor ?? "").includes("mock")) || events.some((event) => event.payload.execution_backend === "mock");
   async function action(kind: "cancel" | "retry" | "qc" | "approve") {
@@ -96,6 +109,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     <header><h3>{RUN_LABELS[run.state] ?? run.state}</h3><span>第 {run.attempt} 次执行</span></header>
     {mock && <p className="work-run-warning">Mock 演示结果 · 非科学产物，不能用于科研结论。</p>}
     {activeStates.has(run.state) && <p role="status">当前阶段：{PHASE_LABELS[observedPhase] ?? "MATLAB 计算中"}{elapsed && ` · 已运行 ${elapsed}`}</p>}
+    {completedPhases.length > 0 && <p>已观察到完成：{completedPhases.map((phase) => PHASE_LABELS[phase] ?? "处理步骤").join("、")}</p>}
     {!activeStates.has(run.state) && elapsed && <p>计算耗时：{elapsed}</p>}
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
     {run.state === "qc_review" && <p>指标计算已完成，科学质量审查尚未通过。</p>}
@@ -108,8 +122,9 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       {run.state === "cancelling" && <span>正在等待执行器确认取消。</span>}
     </div>
     {artifacts.length > 0 && <div className="work-run-results"><h4>结果与记录（{artifacts.length}）</h4>
-      {artifacts.map((artifact) => <details key={artifact.artifact_id}><summary>{artifact.artifact_type} · {artifact.relative_path.split("/").at(-1)}</summary>
-        {/\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path) && <ImagePreview artifact={artifact} />}
+      {gallery.length > 0 && <div className="work-run-gallery">{gallery.map((artifact) => <div key={artifact.artifact_id}><strong>{artifactLabel(artifact)}</strong><ImagePreview artifact={artifact} /></div>)}</div>}
+      {artifacts.map((artifact) => <details key={artifact.artifact_id}><summary>{artifactLabel(artifact)} · {artifact.relative_path.split("/").at(-1)}</summary>
+        {!gallery.includes(artifact) && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path) && <ImagePreview artifact={artifact} />}
         <a href={contentUrl(artifact)} download>下载产物</a><p>文件大小：{artifact.size_bytes.toLocaleString()} 字节 · 下载前自动验证完整性</p>
       </details>)}
     </div>}

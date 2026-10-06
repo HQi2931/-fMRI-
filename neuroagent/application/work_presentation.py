@@ -51,7 +51,7 @@ def semantic_patch(patch: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def explicit_user_patch(text: str) -> dict[str, Any]:
+def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str, Any]:
     """Recognize only unambiguous current user choices, never model assertions."""
     patch: dict[str, Any] = {}
     if re.search(r"什么|为什么|区别|是否|可否", text) and not re.search(r"改为|改成|设为", text):
@@ -96,8 +96,39 @@ def explicit_user_patch(text: str) -> dict[str, Any]:
         set_value(patch, "preprocessing.normalization.mode", 2)
         set_value(patch, "preprocessing.t1.segmentation", "segment")
         set_value(patch, "preprocessing.t1.dartel", False)
-    if re.search(r"(?:使用|采用|用|选择)\s*Friston[-\s]?24", text, re.I):
+    if re.search(r"Friston[-\s]?24", text, re.I) and not re.search(
+        r"(?:不要|不|别)(?:采用|使用|用|做)?\s*Friston", text, re.I
+    ):
         set_value(patch, "preprocessing.nuisance.head_motion_model", 4)
+    if re.search(r"不(?:做|用|进行|采用)?\s*(?:全局信号回归|GSR\b)", text, re.I):
+        set_value(
+            patch,
+            "preprocessing.nuisance.global_signal",
+            {
+                "enabled": False,
+                "mask_source": None,
+                "method": None,
+            },
+        )
+    if re.search(r"(?:去噪|回归).{0,40}线性趋势", text):
+        set_value(patch, "preprocessing.nuisance.polynomial_trend", 1)
+    for expression, tissue in (
+        (r"(?:白质|WM).{0,12}均值回归", "white_matter"),
+        (r"(?:脑脊液|CSF).{0,8}均值回归", "csf"),
+    ):
+        if re.search(expression, text, re.I):
+            set_value(patch, f"preprocessing.nuisance.{tissue}.enabled", True)
+            set_value(patch, f"preprocessing.nuisance.{tissue}.method", "mean")
+    band = re.search(
+        r"(?:ALFF\s*)?频段\s*(\d+(?:\.\d+)?)\s*[-–—~至]\s*(\d+(?:\.\d+)?)\s*Hz", text, re.I
+    )
+    if band:
+        path = "reho.temporal_filter_band" if metrics == ["reho"] else "alff_falff.frequency_band"
+        set_value(
+            patch,
+            path,
+            {"low_hz": float(band[1]), "high_hz": float(band[2])},
+        )
     smooth = re.search(
         r"(?:结果(?:图)?平滑|平滑)(?:核)?(?:改为|改成|设为|设置为|采用|使用|为|\s)*"
         r"\s*(\d+(?:\.\d+)?)\s*mm\b",
@@ -105,12 +136,21 @@ def explicit_user_patch(text: str) -> dict[str, Any]:
         re.I,
     )
     if smooth and not re.search(r"不(?:做|用|进行)?\s*(?:结果(?:图)?)?平滑", text):
-        set_value(patch, "alff_falff.result_smoothing", True)
-        set_value(patch, "alff_falff.result_smoothing_fwhm_mm", [float(smooth[1])] * 3)
+        selected = metrics or []
+        if re.search(r"\bReHo\b", text, re.I) and not re.search(r"\b(?:ALFF|fALFF)\b", text, re.I):
+            selected = ["reho"]
+        elif re.search(r"\b(?:ALFF|fALFF)\b", text, re.I):
+            selected = ["alff"]
+        for section in ["reho"] if selected == ["reho"] else ["alff_falff"]:
+            name = "smooth_reho" if section == "reho" else "result_smoothing"
+            set_value(patch, f"{section}.{name}", True)
+            set_value(patch, f"{section}.{name}_fwhm_mm", [float(smooth[1])] * 3)
     # A plain request for ALFF does not authorize adding fALFF/ReHo. Explanatory
     # questions and negated requests are deliberately not parsed as choices.
-    if re.search(r"(?:计算|做|运行|只要|仅做|只做).{0,6}\bALFF\b", text, re.I) and not re.search(
-        r"fALFF|ReHo|不要|不计算|不做|什么|为何|为什么",
+    if re.search(
+        r"(?:计算|完成|做|运行|只要|仅做|只做).{0,6}\bALFF\b", text, re.I
+    ) and not re.search(
+        r"fALFF|ReHo|(?:不要|不计算|不做)\s*ALFF|什么|为何|为什么",
         text,
         re.I,
     ):
@@ -127,7 +167,15 @@ def constrained_patch(
     text: str,
 ) -> tuple[dict[str, Any], dict[str, str], list[str]]:
     patch = semantic_patch(proposed)
-    user = explicit_user_patch(text)
+    user = explicit_user_patch(
+        text, old.get("requested_metrics") or proposed.get("requested_metrics")
+    )
+    if (user.get("reho") or {}).get("smooth_reho") and (old.get("reho") or {}).get(
+        "global_result_smoothing"
+    ):
+        change = user["reho"]
+        change["global_result_smoothing"] = change.pop("smooth_reho")
+        change["global_result_smoothing_fwhm_mm"] = change.pop("smooth_reho_fwhm_mm")
     old_values = leaf_values(old)
     user_values = leaf_values(user)
     blocked: list[str] = []
@@ -203,8 +251,9 @@ def observed_facts(metadata: dict[str, Any] | None) -> dict[str, Any]:
     # silently choose the last file for a shared draft.
     return {
         path: values[0]
-        for path, values in observations.items()
         if all(v == values[0] for v in values)
+        else {"conflicting_values": list(dict.fromkeys(json.dumps(v) for v in values))}
+        for path, values in observations.items()
     }
 
 
@@ -232,3 +281,65 @@ def draft_delta(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]
         for path in sorted(set(before) | set(after))
         if before.get(path) != after.get(path) and path != "confirmed_hash"
     ]
+
+
+def complete_inactive_parameters(values: dict[str, Any]) -> dict[str, Any]:
+    """Fill absent inactive slots only; retain conflicting explicit settings."""
+    result = deepcopy(values)
+    preprocessing = result.get("preprocessing") or {}
+    slots: tuple[str, ...]
+
+    def inactive(config: Any, names: tuple[str, ...]) -> None:
+        if isinstance(config, dict):
+            for name in names:
+                config.setdefault(name, None)
+
+    for name, slots in (
+        ("slice_timing", ("slice_count", "slice_order", "reference_slice")),
+        ("realignment", ("options_source",)),
+        ("scrubbing", ("timing", "censoring", "method")),
+        (
+            "nuisance",
+            (
+                "timing",
+                "polynomial_trend",
+                "head_motion_model",
+                "head_motion_scrubbing",
+                "white_matter",
+                "csf",
+                "global_signal",
+                "warp_masks_to_individual_space",
+                "add_mean_back",
+            ),
+        ),
+    ):
+        config = preprocessing.get(name)
+        if isinstance(config, dict) and config.get("enabled") is False:
+            inactive(config, slots)
+    for name, slots in (
+        ("temporal_filter", ("frequency_band", "add_mean_back")),
+        ("smoothing", ("method", "fwhm_mm")),
+    ):
+        config = preprocessing.get(name)
+        if isinstance(config, dict) and config.get("timing") == "disabled":
+            inactive(config, slots)
+    nuisance = preprocessing.get("nuisance") or {}
+    for name in ("white_matter", "csf"):
+        tissue = nuisance.get(name)
+        if isinstance(tissue, dict):
+            if tissue.get("enabled") is False:
+                inactive(tissue, ("mask_source", "mask_threshold", "method", "compcor_components"))
+            elif tissue.get("method") == "mean":
+                inactive(tissue, ("compcor_components",))
+    signal = nuisance.get("global_signal")
+    if isinstance(signal, dict) and signal.get("enabled") is False:
+        inactive(signal, ("mask_source", "method"))
+    for name in ("alff_falff", "reho"):
+        config = result.get(name)
+        if isinstance(config, dict):
+            if config.get("mask_source") == "dpabi_auto":
+                inactive(config, ("mask_artifact_id",))
+            for flag in ("result_smoothing", "smooth_reho", "global_result_smoothing"):
+                if config.get(flag) is False:
+                    inactive(config, (f"{flag}_fwhm_mm",))
+    return result

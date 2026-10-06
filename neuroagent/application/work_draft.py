@@ -101,7 +101,11 @@ def merge_work_draft(draft: WorkDraft, patch: dict[str, Any]) -> WorkDraft:
                 result[key] = deepcopy(value)
         return result
 
-    updated = WorkDraft.model_validate(merge(draft.model_dump(mode="json"), patch))
+    from neuroagent.application.work_presentation import complete_inactive_parameters
+
+    updated = WorkDraft.model_validate(
+        complete_inactive_parameters(merge(draft.model_dump(mode="json"), patch))
+    )
     t1 = updated.preprocessing.get("t1")
     if isinstance(t1, dict) and "structural_artifact_id" not in t1:
         t1["structural_artifact_id"] = "workspace:anatomical-source"
@@ -342,7 +346,10 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
             t1_steps.append(
                 {
                     "step_id": "segment_t1",
-                    "label": "T1 " + str(t1["segmentation"]),
+                    "label": "T1 "
+                    + {"segment": "Segment 组织分割", "new_segment": "New Segment 组织分割"}.get(
+                        str(t1["segmentation"]), "组织分割"
+                    ),
                     "status": "planned",
                     "evidence": "draft.preprocessing.t1",
                 }
@@ -357,6 +364,53 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
                 }
             )
         common_steps[1:1] = t1_steps
+    if preprocessing:
+        common_steps = [step for step in common_steps if step["step_id"] != "common_preprocessing"]
+        early: list[dict[str, Any]] = []
+        if (preprocessing.get("dummy_scans") or 0) > 0:
+            early.append(
+                {
+                    "step_id": "dummy_scans",
+                    "label": f"移除初始 {preprocessing['dummy_scans']} 个时间点",
+                    "status": "planned",
+                }
+            )
+        for name, label in (("slice_timing", "层时间校正"), ("realignment", "头动校正")):
+            if (preprocessing.get(name) or {}).get("enabled") is True:
+                early.append({"step_id": name, "label": label, "status": "planned"})
+        position = 2 if common_steps[1:2] and common_steps[1]["step_id"] == "prepare_t1" else 1
+        common_steps[position:position] = early
+        nuisance = preprocessing.get("nuisance") or {}
+        filtering = preprocessing.get("temporal_filter") or {}
+        for stage in ("before_normalize", "after_normalize"):
+            if stage == "after_normalize" and (preprocessing.get("normalization") or {}).get(
+                "mode"
+            ) in {1, 2, 3}:
+                common_steps.append(
+                    {"step_id": "normalization", "label": "空间标准化", "status": "planned"}
+                )
+            if nuisance.get("enabled") is True and nuisance.get("timing") == (
+                "after_realign" if stage == "before_normalize" else "after_normalize"
+            ):
+                common_steps.append(
+                    {
+                        "step_id": "nuisance",
+                        "label": "协变量回归（标准化前）"
+                        if stage == "before_normalize"
+                        else "协变量回归（标准化后）",
+                        "status": "planned",
+                    }
+                )
+            if filtering.get("timing") == stage:
+                common_steps.append(
+                    {
+                        "step_id": "temporal_filter",
+                        "label": "时间滤波（标准化前）"
+                        if stage == "before_normalize"
+                        else "时间滤波（标准化后）",
+                        "status": "planned",
+                    }
+                )
     if preprocessing:
         if smoothing_timing not in {None, "disabled"}:
             common_steps.append(
@@ -388,7 +442,7 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
         branches.append(
             {
                 "branch_id": "alff_falff",
-                "label": "ALFF/fALFF 分支",
+                "label": "ALFF/fALFF 分支" if MetricKind.FALFF.value in selected else "ALFF 分支",
                 "consumes": "未带通滤波、未空间平滑的 verified 时序检查点",
                 "steps": [
                     "calculate_alff_falff",
@@ -439,6 +493,8 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
         "status": "ready_for_review" if not draft_issues(draft) else "incomplete",
         "common_steps": common_steps,
         "branches": branches,
+        "outputs": list(draft.primary_outputs),
+        "qc_mode": draft.qc_mode,
         "shared_constraints": [
             "所有输入、参数和处理阶段必须在用户确认后由服务端重新校验。",
             "ALFF/fALFF 保留滤波前、未平滑检查点；ReHo 使用未平滑时序及其确认的分支检查点。",
@@ -613,6 +669,12 @@ def review_issues(draft: WorkDraft, facts: dict[str, Any] | None = None) -> tupl
     issues = list(draft_issues(draft))
     values = leaf_values(draft.model_dump(mode="json"))
     for path, fact in (facts or {}).items():
+        if isinstance(fact, dict) and "conflicting_values" in fact:
+            values_text = "、".join(fact["conflicting_values"])
+            issues.append(
+                f"{path}：读取的输入存在不同值（{values_text}），请检查扫描配对或按采集参数分组。"
+            )
+            continue
         value = values.get(path)
         if value is not None and value != fact:
             issues.append(f"{path}：当前选择 {value}，读取数据为 {fact}，请核实后修改。")

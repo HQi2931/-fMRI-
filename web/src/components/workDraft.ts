@@ -1,4 +1,4 @@
-export type WorkDraftSnapshot = { draft: Record<string, unknown>; hash: string; workspace_path?: string; compiled?: boolean; sources?: Record<string, string>; version?: number | string; field_states?: Record<string, string> };
+export type WorkDraftSnapshot = { draft: Record<string, unknown>; hash: string; workspace_path?: string; compiled?: boolean; consumed?: boolean; sources?: Record<string, string>; version?: number | string; field_states?: Record<string, string>; review_issues?: string[]; changes?: Array<{ path: string; before: unknown; after: unknown }> };
 
 export function inheritedFieldValue(values: Record<string, string> | undefined, path: string): string | undefined {
   for (let parts = path.split("."); parts.length; parts = parts.slice(0, -1)) {

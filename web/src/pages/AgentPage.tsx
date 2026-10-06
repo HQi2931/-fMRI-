@@ -15,6 +15,7 @@ import {
 import { Feedback } from "../components/Ui";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { readConfirmation } from "../components/confirmation";
+import { ConversationText } from "../components/ConversationText";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import { WorkDraftPanel } from "../components/WorkDraftPanel";
 import { WorkRunPanel } from "../components/WorkRunPanel";
@@ -93,7 +94,7 @@ function messagesFrom(conversation?: Conversation): Message[] {
         citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
         steps: pending,
         workDraft: readWorkDraft(item.payload.work_draft),
-        draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : [],
+        draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : readWorkDraft(item.payload.work_draft)?.review_issues ?? [],
         planPreview: item.payload.plan_preview,
       };
       const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
@@ -164,12 +165,12 @@ function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, o
           {step.durationMs !== null && <span className="tool-duration">{step.durationMs} ms</span>}
         </li>)}
       </ol></details>}
-      <div className="conversation-text">{item.text.split(/\n\s*\n/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>
+      <ConversationText text={item.text} />
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
       {item.workDraft && (item.id === latestDraftId
         ? <button className="button button-secondary" type="button" onClick={onOpenPlan}>查看当前方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</button>
         : <details><summary>历史方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</summary><WorkDraftPanel snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly onSave={async () => {}} /></details>)}
-      {item.workspaceCitations && <ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul>}
+      {item.workspaceCitations && item.workspaceCitations.length > 0 && <details className="chat-technical"><summary>查看文件证据（{item.workspaceCitations.length} 项）</summary><ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul></details>}
       {item.proposal && <details className="workspace-proposal"><summary>查看文件修改 diff（{item.proposal.proposal_hash.slice(0, 12)}）</summary><p>不可变补丁哈希：<code>{item.proposal.proposal_hash}</code></p><p>文件数：{item.proposal.edits.length} · 增加 {patchStats(item.proposal.diff).added} 行 · 删除 {patchStats(item.proposal.diff).removed} 行</p><pre>{item.proposal.diff}</pre>{item.proposal.status === "proposed" && <button className="button button-primary" type="button" disabled={busy} onClick={() => onApply(item.proposal!)}>确认应用补丁</button>}{item.proposal.status === "applied" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onUndo(item.proposal!)}>撤销本次补丁</button>}</details>}
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
     </div>)}
@@ -213,7 +214,7 @@ export function AgentPage() {
   const [draftDirty, setDraftDirty] = useState(false);
   const [error, setError] = useState("");
   const [openedConfirmation, setOpenedConfirmation] = useState<string | null>(null);
-  const [planOpen, setPlanOpen] = useState(true);
+  const [planOpen, setPlanOpen] = useState(() => window.innerWidth > 980);
   const [pollNonce, setPollNonce] = useState(0);
   const [runConnectionMessage, setRunConnectionMessage] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -281,7 +282,8 @@ export function AgentPage() {
   }, [initialWorkspace]);
 
   useEffect(() => {
-    const runId = activeConversation?.active_run_id ?? (mode === "work" ? workspace.runId : undefined);
+    const runId = mode === "work" && boundToSelectedWorkspace ? activeConversation?.active_run_id : null;
+    setActiveRun(null);
     if (!runId) { setActiveRun(null); return; }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -305,7 +307,7 @@ export function AgentPage() {
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.active_run_id, mode, workspace.runId, pollNonce]);
+  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, boundToSelectedWorkspace, mode, pollNonce]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -608,8 +610,8 @@ export function AgentPage() {
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       </div>
-      {mode === "work" && currentDraftMessage?.workDraft && planOpen && <aside className="work-plan-region" aria-label="当前方案审查">
-        <div className="work-plan-heading"><h2>当前方案</h2><button type="button" disabled={draftDirty} onClick={() => setPlanOpen(false)}>收起方案</button></div>
+      {mode === "work" && currentDraftMessage?.workDraft && <aside className="work-plan-region" aria-label="当前方案审查" hidden={!planOpen}>
+        <div className="work-plan-heading"><h2>当前方案</h2><button type="button" onClick={() => setPlanOpen(false)}>收起方案</button></div>
         <WorkDraftPanel key={`${currentDraftMessage.id}:${currentDraftMessage.workDraft.hash}`} snapshot={currentDraftMessage.workDraft} issues={currentDraftMessage.draftIssues} preview={currentDraftMessage.planPreview} busy={busy} onSave={saveDraft} onDirty={setDraftDirty} confirmation={confirmation} confirmLabel={confirmation?.options.length === 1 ? confirmation.options[0].label : "审查并继续"} onConfirm={() => { setError(""); setOpenedConfirmation(confirmationKey); }} />
         <button className="button button-secondary" type="button" disabled={busy || draftDirty || Boolean(currentDraftMessage.draftIssues?.length)} onClick={() => void prepareReview()}>重新校验方案与启动确认</button>
       </aside>}

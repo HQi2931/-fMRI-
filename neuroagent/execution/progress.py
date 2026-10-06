@@ -10,6 +10,7 @@ _SPM_PHASES = {
     "Realign: Estimate & Reslice": "realignment",
     "Coregister: Estimate": "coregistration",
     "Segment": "segmentation",
+    "Old Segment": "segmentation",
     "Normalise: Estimate & Write": "normalization",
     "Normalise: Write": "normalization",
     "Smooth": "smoothing",
@@ -25,7 +26,7 @@ class MatlabProgressObserver:
         self.buffer += text
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
-            match = re.search(r"(?:^|\s)(Running|Done) '([^']+)'\s*$", line.strip())
+            match = re.search(r"(?:^|\s)(Running|Done)\s+'([^']+)'\s*$", line.strip())
             if match and match[2] in _SPM_PHASES:
                 self.publish(
                     _SPM_PHASES[match[2]], "started" if match[1] == "Running" else "finished"

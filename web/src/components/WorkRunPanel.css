@@ -12,3 +12,4 @@
 .work-run-warning { color: #8c4c08; background: #fff4db; border-radius: .5rem; padding: .75rem; }
 .work-run-panel table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .work-run-panel th, .work-run-panel td { padding: .5rem; text-align: left; border-bottom: 1px solid var(--border, #d4dce6); white-space: nowrap; }
+.work-run-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem; margin: 1rem 0; }

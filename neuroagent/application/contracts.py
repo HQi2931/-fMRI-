@@ -903,6 +903,7 @@ class ConversationRole(StrEnum):
 class ConversationToolStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    REJECTED = "rejected"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
 
 

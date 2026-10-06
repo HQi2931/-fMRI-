@@ -208,9 +208,18 @@ class ConversationMixin(BaseServiceMixin):
         request: WorkConfirmationCreate,
         idempotency_key: str,
     ) -> ConversationTurnView:
-        # Do not let arbitrary client text or a boolean create new authority.
-        # A retry uses the original turn key so response loss remains idempotent.
-        conversation = self.repository.get_conversation(conversation_id)
+        return await self.send_conversation_turn(
+            conversation_id,
+            ConversationTurnCreate(content=request.command),
+            idempotency_key,
+            _confirmation=request,
+        )
+
+    def _validate_work_confirmation(
+        self, conversation: ConversationView, request: WorkConfirmationCreate
+    ) -> None:
+        # Validate only after the idempotency lookup: a durable response must
+        # remain recoverable even when the conversation has since changed.
         if conversation.mode is not ConversationMode.WORK:
             raise InputValidationError(
                 "work_confirmation_mode_required", "此操作仅用于 Work 会话。"
@@ -224,11 +233,6 @@ class ConversationMixin(BaseServiceMixin):
         commands = [item.get("command") for item in (confirmation or {}).get("options", [])]
         if request.command not in commands:
             raise ConflictError("work_confirmation_changed", "确认操作已更新，请重新审查方案。")
-        return await self.send_conversation_turn(
-            conversation_id,
-            ConversationTurnCreate(content=request.command),
-            idempotency_key,
-        )
 
     def prepare_work_review(
         self,
@@ -271,6 +275,9 @@ class ConversationMixin(BaseServiceMixin):
                     "方案保持原版本，启动确认已更新。请审查后确认本次计算。",
                     payload={
                         "work_draft": saved,
+                        "draft_issues": [],
+                        "plan_preview": plan_preview(draft),
+                        "planning_decisions": planning_decisions(draft, saved.get("sources", {})),
                         "plan_revision": plan.model_dump(mode="json"),
                         "confirmation_request": {
                             "title": "确认并启动计算",
@@ -380,9 +387,11 @@ class ConversationMixin(BaseServiceMixin):
         conversation_id: str,
         request: ConversationTurnCreate,
         idempotency_key: str,
+        *,
+        _confirmation: WorkConfirmationCreate | None = None,
     ) -> ConversationTurnView:
         conversation = self.repository.get_conversation(conversation_id)
-        if conversation.mode is ConversationMode.CHAT:
+        if conversation.mode is ConversationMode.CHAT and _confirmation is None:
             return await self._send_chat_turn(
                 conversation_id,
                 request,
@@ -400,6 +409,8 @@ class ConversationMixin(BaseServiceMixin):
             dict[str, Any] | None,
         ]:
             conversation = self.repository.get_conversation(conversation_id)
+            if _confirmation is not None:
+                self._validate_work_confirmation(conversation, _confirmation)
             workspace_path = request.workspace_path or conversation.workspace_path
             preferred_profile_id = (
                 request.preferred_profile_id
@@ -558,9 +569,10 @@ class ConversationMixin(BaseServiceMixin):
             )
 
         return await self._idempotent_async(
-            scope=f"conversations:{conversation_id}:turns",
+            scope=f"conversations:{conversation_id}:"
+            + ("work-confirmation" if _confirmation is not None else "turns"),
             key=idempotency_key,
-            request=request,
+            request=_confirmation if _confirmation is not None else request,
             response_type=ConversationTurnView,
             prepare=prepare,
             finalize=finalize,

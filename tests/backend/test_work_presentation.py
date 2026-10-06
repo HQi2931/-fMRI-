@@ -115,4 +115,64 @@ def test_differing_acquisitions_are_not_collapsed_to_the_last_header():
         }
         for tr in (2, 3)
     ]
-    assert "preprocessing.tr_seconds" not in observed_facts({"calls": calls})
+    facts = observed_facts({"calls": calls})
+    assert facts["preprocessing.tr_seconds"] == {"conflicting_values": ["2", "3"]}
+    draft = WorkDraft(preprocessing={"tr_seconds": 2})
+    assert any("读取的输入存在不同值" in issue for issue in review_issues(draft, facts))
+    snapshot = draft_snapshot(draft, workspace_path=None, sources={}, facts=facts)
+    assert snapshot["field_states"]["preprocessing.tr_seconds"] == "conflict"
+
+
+def test_reho_only_smoothing_change_does_not_create_an_alff_branch():
+    patch, sources, _ = constrained_patch(
+        {"requested_metrics": ["reho"], "reho": {"smooth_reho_fwhm_mm": [4, 4, 4]}},
+        {},
+        {},
+        "结果图平滑改为6 mm",
+    )
+    assert "alff_falff" not in patch
+    from neuroagent.domain.fmri.metrics import RehoParameters
+
+    assert set(patch["reho"]) <= RehoParameters.model_fields.keys()
+    assert patch["reho"]["smooth_reho_fwhm_mm"] == [6, 6, 6]
+    assert sources["reho.smooth_reho_fwhm_mm"] == "user"
+
+
+def test_inactive_completion_keeps_scientific_unknowns_and_conflicts_visible():
+    from neuroagent.application.work_presentation import complete_inactive_parameters
+
+    completed = complete_inactive_parameters(
+        {
+            "preprocessing": {
+                "realignment": {"enabled": True},
+                "temporal_filter": {
+                    "timing": "disabled",
+                    "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+                },
+                "nuisance": {"white_matter": {"enabled": True, "method": "mean"}},
+            },
+            "alff_falff": {"mask_source": "dpabi_auto", "result_smoothing": False},
+        }
+    )
+    assert completed["alff_falff"]["mask_artifact_id"] is None
+    assert completed["alff_falff"]["result_smoothing_fwhm_mm"] is None
+    assert "options_source" not in completed["preprocessing"]["realignment"]
+    assert completed["preprocessing"]["temporal_filter"]["frequency_band"] is not None
+    tissue = completed["preprocessing"]["nuisance"]["white_matter"]
+    assert tissue["compcor_components"] is None
+    assert "mask_threshold" not in tissue
+
+
+def test_full_alff_protocol_keeps_other_negated_steps_separate_from_metric_intent():
+    patch = explicit_user_patch(
+        "完成一次 ALFF，去噪采用 Friston-24、白质和脑脊液均值回归、线性趋势，"
+        "不做全局信号回归并保留均值，ALFF频段0.01–0.08 Hz。"
+    )
+    assert patch["requested_metrics"] == ["alff"]
+    nuisance = patch["preprocessing"]["nuisance"]
+    assert nuisance["head_motion_model"] == 4
+    assert nuisance["global_signal"]["enabled"] is False
+    assert nuisance["polynomial_trend"] == 1
+    assert nuisance["white_matter"]["method"] == "mean"
+    assert nuisance["csf"]["method"] == "mean"
+    assert patch["alff_falff"]["frequency_band"] == {"low_hz": 0.01, "high_hz": 0.08}

@@ -386,9 +386,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     }
     throw error;
   }
+  // Receiving headers does not prove the response body arrived intact.
+  // Keep the key until decoding succeeds so a lost body can be recovered.
+  const result = response.status === 204 ? undefined as T : (await response.json()) as T;
   if (mutationFingerprint !== undefined) forgetMutationKey(mutationFingerprint);
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  return result;
 }
 
 async function requestSse(path: string, signal?: AbortSignal): Promise<RuntimeEvent[]> {

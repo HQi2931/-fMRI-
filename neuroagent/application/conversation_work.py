@@ -579,19 +579,15 @@ class ConversationWorkCoordinator:
             ),
             f"{idempotency_key}:dataset",
         )
+        selected_stage = request.selected_input_stage or setup.selected_input_stage
         manifest = self._inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(
                 expected_dataset_version=dataset.version,
-                report_only=True,
-                selected_input_stage=(
-                    request.selected_input_stage
-                    or (
-                        request.workspace_setup.selected_input_stage
-                        if request.workspace_setup
-                        else None
-                    )
-                ),
+                # Discovery can be cheap; an explicitly selected stage must
+                # freeze full file evidence for subsequent compilation/run.
+                report_only=selected_stage is None,
+                selected_input_stage=selected_stage,
             ),
             f"{idempotency_key}:manifest",
         )

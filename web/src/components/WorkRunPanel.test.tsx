@@ -18,6 +18,25 @@ beforeEach(() => {
 });
 
 describe("Work run and results", () => {
+  it("keeps registered artifacts available when only the QC report is broken", async () => {
+    vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "qc-broken", run_id: "run-1", project_id: "project", artifact_type: "qc.head_motion_report", relative_path: "qc/report.json", size_bytes: 800, checksum: "a".repeat(64), created_at: "2026-10-06T10:07:20Z", provenance: {} }]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("broken", { status: 200 })));
+    render(<WorkRunPanel run={run()} />);
+    await screen.findByText(/自动 QC 报告暂时无法读取/);
+    expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/qc-broken/content");
+    expect(screen.getByText("指标计算已完成，科学质量审查尚未通过。")).toBeInTheDocument();
+  });
+  it("shows only observed phases from the current attempt without invented completion", async () => {
+    vi.mocked(api.runEvents).mockResolvedValue([
+      { ...event(1, "MatlabPhaseFinished", "2026-10-06T10:01:00Z"), payload: { phase: "segmentation", attempt: 0 } },
+      { ...event(2, "MatlabPhaseFinished", "2026-10-06T10:02:00Z"), payload: { phase: "slice_timing", attempt: 1 } },
+      { ...event(3, "MatlabPhaseStarted", "2026-10-06T10:03:00Z"), payload: { phase: "realignment", attempt: 1 } },
+    ]);
+    render(<WorkRunPanel run={run("running")} />);
+    await screen.findByText("已观察到完成：层时间校正");
+    expect(screen.getByRole("status")).toHaveTextContent("当前阶段：头动校正");
+    expect(screen.queryByText(/T1 组织分割/)).not.toBeInTheDocument();
+  });
   it("separates completed calculation from QC approval and uses execution events for elapsed time", async () => {
     render(<WorkRunPanel run={run()} />);
     expect(screen.getByText("计算完成 · 待 QC 审查")).toBeInTheDocument();
@@ -30,7 +49,7 @@ describe("Work run and results", () => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "a1", run_id: "run-1", project_id: "project", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, checksum: "a".repeat(64), created_at: "2026-10-06T10:07:20Z", provenance: { non_scientific: true } } as Artifact]);
     render(<WorkRunPanel run={run()} />);
     await screen.findByText(/Mock 演示结果/);
-    fireEvent.click(screen.getByText("metric.alff · ALFF.nii"));
+    fireEvent.click(screen.getByText("ALFF 指标图 · ALFF.nii"));
     expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/a1/content");
     const image = screen.getByRole("img");
     expect(image).toHaveAttribute("src", "/api/v1/artifacts/a1/preview.png");

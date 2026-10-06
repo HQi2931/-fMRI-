@@ -10,6 +10,15 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it("allows reviewing a compiled plan for startup and disables a consumed plan", () => {
+    const start = vi.fn();
+    const saved = { ...snapshot(), compiled: true };
+    const view = render(<WorkDraftPanel snapshot={saved} onSave={vi.fn()} confirmation={confirmation} confirmLabel="确认并启动计算" onConfirm={start} />);
+    fireEvent.click(screen.getByRole("button", { name: "确认并启动计算" }));
+    expect(start).toHaveBeenCalledOnce();
+    view.rerender(<WorkDraftPanel snapshot={{ ...saved, consumed: true }} onSave={vi.fn()} confirmation={confirmation} confirmLabel="确认并启动计算" onConfirm={start} />);
+    expect(screen.getByRole("button", { name: "确认并启动计算" })).toBeDisabled();
+  });
   it("keeps unknown boolean distinct from explicitly disabled", () => {
     render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn()} />);
     expect(screen.getByLabelText("层时间校正")).toHaveValue("__unknown");

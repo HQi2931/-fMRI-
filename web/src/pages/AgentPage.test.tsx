@@ -177,6 +177,22 @@ describe("agent workbench page", () => {
     await screen.findByText("FunImg · 已确认");
   });
 
+  it("opens mobile review only on request and retains unsaved edits after closing", async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    try {
+      installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "方案已准备", { work_draft: { hash: "a".repeat(64), version: 2, draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, compiled: false } })] })]) });
+      render(<AgentPage />);
+      await screen.findByText("方案已准备");
+      expect(screen.queryByRole("complementary", { name: "当前方案审查" })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "查看当前方案 · 第 2 版" }));
+      fireEvent.change(screen.getByLabelText("重复时间 TR（秒）"), { target: { value: "3" } });
+      await userEvent.click(screen.getByRole("button", { name: "收起方案" }));
+      await userEvent.click(screen.getByRole("button", { name: "查看当前方案 · 第 2 版" }));
+      expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(3);
+      expect(screen.getByText("修改尚未保存，保存后重新校验")).toBeInTheDocument();
+    } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+  });
   it("embeds and saves the latest structured draft while preserving historical read-only panels", async () => {
     const draft = { preprocessing: { tr_seconds: 2 }, requested_metrics: [] };
     const payload = { work_draft: { draft, hash: "a".repeat(64), workspace_path: "D:/demo-work", compiled: false }, draft_issues: ["study_protocol_ref：尚未提供"] };

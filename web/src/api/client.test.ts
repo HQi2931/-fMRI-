@@ -11,6 +11,16 @@ describe("API client", () => {
     );
     await expect(api.health()).resolves.toEqual({ status: "ok", version: "0.1.0" });
   });
+  it("recovers a confirmation with the same key when its successful response body is lost", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: { active_run_id: "one-run" } }), { status: 200 }));
+    await expect(api.confirmWorkAction("lost-body", "issued command", "a".repeat(64))).rejects.toThrow();
+    await expect(api.confirmWorkAction("lost-body", "issued command", "a".repeat(64))).resolves.toMatchObject({ conversation: { active_run_id: "one-run" } });
+    const keys = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+  });
   it("patches a work draft with revision guard and an idempotency key", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ conversation: {} }), { status: 200 }));
     await api.patchWorkDraft("work / 1", "hash", { preprocessing: { detrend: false } });

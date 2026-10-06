@@ -69,6 +69,8 @@ class WorkInterpretation(BaseModel):
     stage_intent: str | None = Field(default=None, max_length=1000)
     stage_reasoning: str | None = Field(default=None, max_length=4000)
     stage_questions: tuple[str, ...] = ()
+    questions: tuple[str, ...] = Field(default=(), max_length=5)
+    recommendation_reason: str | None = Field(default=None, max_length=1000)
 
     @field_validator("action")
     @classmethod
@@ -492,6 +494,10 @@ class WorkDialogue:
                             "compiled": True,
                             "consumed": True,
                             "consumed_run_id": result.active_run_id,
+                            "field_states": {
+                                path: "included"
+                                for path in leaf_values((saved or {}).get("draft") or {})
+                            },
                         },
                     },
                 )
@@ -703,14 +709,7 @@ class WorkDialogue:
                         reasoning=interpreted.stage_reasoning,
                         questions=list(interpreted.stage_questions),
                     )
-                    next_step = (
-                        "确认后将登记当前工作区、冻结文件清单并选择此起点。"
-                        if latest_payload(conversation, "dataset") is None
-                        else (
-                            "请审查候选目录和依据后，原样回复："
-                            f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
-                        )
-                    )
+                    next_step = "请审查候选目录和依据，使用页面的确认按钮选择此起点。"
                     stage_command = payload["workspace_stage_recommendation"][
                         "confirmation_command"
                     ]
@@ -792,7 +791,7 @@ class WorkDialogue:
                 )
                 facts = {**(saved or {}).get("facts", {}), **observed_facts(loop_metadata)}
                 for path, value in facts.items():
-                    if sources.get(path) != "user":
+                    if sources.get(path) != "user" and not isinstance(value, dict):
                         set_value(patch, path, value)
                 draft = merge_work_draft(draft, patch)
                 for path, value in facts.items():
@@ -814,6 +813,11 @@ class WorkDialogue:
                 payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
+                payload["questions"] = list(interpreted.questions)
+                if interpreted.questions:
+                    review += "\n\n需要你决定：\n" + "\n".join(
+                        f"- {question}" for question in interpreted.questions
+                    )
                 if (
                     not issues
                     and selected_stage
@@ -1096,6 +1100,11 @@ class WorkDialogue:
             "workspace_path": workspace_path,
             "compiled": "plan_revision" in payload,
         }
+        payload["draft_issues"] = list(review_issues(draft, payload["work_draft"].get("facts")))
+        payload["plan_preview"] = plan_preview(draft)
+        payload["planning_decisions"] = planning_decisions(
+            draft, payload["work_draft"].get("sources", {})
+        )
         if "plan_revision" not in payload:
             # Binding or validation refused; keep the uncompiled draft so the
             # user can correct it and confirm again.

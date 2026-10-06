@@ -1082,6 +1082,7 @@
         "enum": [
           "succeeded",
           "failed",
+          "rejected",
           "awaiting_confirmation"
         ],
         "title": "ConversationToolStatus",

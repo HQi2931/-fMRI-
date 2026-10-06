@@ -81,6 +81,44 @@ def _turn(client: TestClient, service: Any, key: str) -> dict[str, Any]:
     return response.json()
 
 
+def test_rejected_tool_call_is_persisted_and_conversation_remains_readable(
+    tmp_path: Path, source_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WORK_TOOL_API_KEY", "test-secret")
+    provider = MockProvider(
+        [
+            ProviderResponse(
+                content="",
+                model="work-tool-model",
+                tool_calls=(
+                    ToolCall(call_id="rejected-call", name="not_an_available_tool", arguments={}),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                content=_work_json(answer="该操作不可用，已有方案保持有效。"),
+                model="work-tool-model",
+            ),
+        ]
+    )
+    service = _service(tmp_path, source_root, provider)
+    try:
+        service.repository.create_model_profile(
+            _profile(ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE)
+        )
+        with TestClient(create_app(service=service)) as client:
+            result = _turn(client, service, "rejected-tool")
+            assert result["tool_calls"][0]["status"] == "rejected"
+            conversation_id = result["conversation"]["conversation_id"]
+            restored = client.get(f"/api/v1/conversations/{conversation_id}")
+            assert restored.status_code == 200
+            assert restored.json()["tool_calls"][0]["status"] == "rejected"
+            assert result["assistant_message"]["content"] == "该操作不可用，已有方案保持有效。"
+            assert service.repository.list_runs() == []
+    finally:
+        service.close()
+
+
 def test_work_catalog_is_read_only() -> None:
     from neuroagent.agent.tool_spec import ToolTier
     from neuroagent.application.work_tools import build_work_tool_bindings
