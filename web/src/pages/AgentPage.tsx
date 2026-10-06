@@ -101,6 +101,15 @@ function messagesFrom(conversation?: Conversation): Message[] {
     });
 }
 
+function confirmedInputStage(conversation: Conversation | undefined, path: string): string | undefined {
+  if (!conversation || conversation.workspace_path !== path) return undefined;
+  for (const message of [...conversation.messages].reverse()) {
+    const stage = message.payload.selected_input_stage;
+    if (typeof stage === "string") return stage;
+  }
+  return undefined;
+}
+
 function applyConversationContext(conversation: Conversation): void {
   const patch: Record<string, unknown> = {
     projectId: conversation.project_id ?? undefined,
@@ -234,6 +243,7 @@ export function AgentPage() {
     { id: "pending-assistant", role: "assistant", text: pendingTurn.text, streamingStatus: pendingTurn.status },
   );
   const selectedModel = choices.find((item) => item.key === selectedModelKey);
+  const confirmedWorkspaceStage = confirmedInputStage(activeConversation, workspacePath);
   const canAuthorizeWorkspaceFiles = Boolean(selectedModel?.capabilities.includes("tool_use"));
   const authorizationUnavailableReason = !selectedModel
     ? "先选择一个具体模型，自动选择不能授予文件授权"
@@ -308,12 +318,12 @@ export function AgentPage() {
       .then((result) => {
         if (controller.signal.aborted) return;
         setWorkspaceCheck(result);
-        setSelectedInputStage(result.selected_input_stage ?? "");
+        setSelectedInputStage(result.selected_input_stage ?? confirmedWorkspaceStage ?? "");
       })
       .catch((caught) => { if (!controller.signal.aborted) setWorkspaceCheckError(describeError(caught)); })
       .finally(() => { if (!controller.signal.aborted) setWorkspaceChecking(false); });
     return () => controller.abort();
-  }, [mode, workspacePath]);
+  }, [mode, workspacePath, activeConversation?.conversation_id, confirmedWorkspaceStage]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || activeConversation.workspace_path !== workspacePath || !selectedModel) { setWorkspaceConsent(null); return; }
@@ -332,6 +342,8 @@ export function AgentPage() {
     if (conversation.mode === "work") {
       applyConversationContext(conversation);
       if (conversation.workspace_path) setWorkspacePath(conversation.workspace_path);
+      const stage = conversation.messages.at(-1)?.payload.selected_input_stage;
+      if (typeof stage === "string") setSelectedInputStage(stage);
     }
   }
 
@@ -441,6 +453,14 @@ export function AgentPage() {
     if (!content || busy) return;
     const controller = new AbortController();
     turnController.current = controller;
+    const deadline = window.setTimeout(() => {
+      if (turnController.current !== controller) return;
+      controller.abort();
+      setBusy(false);
+      setPrompt(content);
+      setPendingTurn(null);
+      setError("等待回答已超过 5 分钟，请刷新会话查看已保存结果后重试。");
+    }, 300_000);
     setPendingTurn({ mode, user: content, text: "", status: "正在生成回答…" });
     setPrompt(""); setBusy(true); setError("");
     try {
@@ -472,9 +492,35 @@ export function AgentPage() {
         setPendingTurn((pending) => pending && { ...pending, status: "回答未完成，临时内容可能不完整。请重试。" });
       }
     } finally {
-      if (!controller.signal.aborted) setBusy(false);
-      if (turnController.current === controller) turnController.current = null;
+      window.clearTimeout(deadline);
+      if (turnController.current === controller) {
+        setBusy(false);
+        turnController.current = null;
+      }
     }
+  }
+
+  async function selectWorkspacePath(path: string): Promise<void> {
+    setBusy(true); setError("");
+    try {
+      await api.checkWorkspace({ path });
+      if (activeConversation?.workspace_path && activeConversation.workspace_path !== path) {
+        setActiveIds((items) => ({ ...items, work: undefined }));
+      }
+      setSelectedScope([]); setWorkspacePath(path); updateWorkspace({ workspacePath: path });
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  function stopWaiting(): void {
+    const controller = turnController.current;
+    if (!controller) return;
+    controller.abort();
+    turnController.current = null;
+    setPrompt(pendingTurn?.user ?? "");
+    setPendingTurn(null);
+    setBusy(false);
+    setError("已停止等待。服务端可能继续保存本轮结果；请刷新会话查看后再发送。");
   }
 
   async function saveDraft(hash: string, patch: Record<string, unknown>): Promise<void> {
@@ -518,12 +564,14 @@ export function AgentPage() {
         checking={workspaceChecking}
         checkError={workspaceCheckError}
         selectedStage={selectedInputStage}
+        stageConfirmed={Boolean(selectedInputStage && selectedInputStage === confirmedWorkspaceStage)}
         busy={busy || draftDirty}
         consentBusy={consentBusy}
         consentGranted={Boolean(workspaceConsent)}
         canAuthorize={canAuthorizeWorkspaceFiles}
         authorizationUnavailableReason={authorizationUnavailableReason}
         onChoose={() => void chooseWorkspace()}
+        onPathSubmit={(path) => void selectWorkspacePath(path)}
         onStageChange={setSelectedInputStage}
         onConsent={() => void (workspaceConsent ? revokeWorkspaceConsent() : grantWorkspaceConsent())}
       >
@@ -545,6 +593,7 @@ export function AgentPage() {
           {mode === "chat" && <label><input type="checkbox" checked={allowRemoteSearch} disabled={busy || !canSearch} onChange={(event) => setAllowRemoteSearch(event.target.checked)} />联网搜索</label>}
           <label>模型<select disabled={busy} value={selectedModelKey} onChange={(event) => setSelectedModelKey(event.target.value)}><option value="">自动选择</option>{choices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
           <button className="button button-primary" type="button" disabled={busy || draftDirty || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
+          {busy && pendingTurn && <button className="button button-secondary" type="button" onClick={stopWaiting}>停止等待</button>}
         </div>
       </div>
     </section>

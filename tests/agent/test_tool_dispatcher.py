@@ -187,14 +187,20 @@ async def test_tool_result_paths_are_redacted_before_the_model_sees_them() -> No
 
 
 @pytest.mark.asyncio
-async def test_clinical_tool_result_field_is_dropped_not_fatal() -> None:
+async def test_clinical_prose_is_allowed_but_structured_identity_is_dropped() -> None:
     def clinical(arguments: dict[str, Any]) -> dict[str, Any]:
-        return {"state": "running", "note": "患者张三 住院号 12345", "count": 3}
+        return {
+            "state": "running",
+            "note": "患者脑功能影像研究",
+            "patient_name": "张三",
+            "count": 3,
+        }
 
     outcome = await _dispatcher(read=clinical).dispatch(_call("get_run_status", {"run_id": "x"}))
 
     assert outcome.status is ToolCallStatus.SUCCEEDED
-    assert "note" not in outcome.result
+    assert outcome.result["note"] == "患者脑功能影像研究"
+    assert "patient_name" not in outcome.result
     assert outcome.result["state"] == "running"
     assert outcome.result["count"] == 3
 

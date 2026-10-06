@@ -89,7 +89,6 @@ class MatlabTemplateRenderer:
                         "base_cfg_allowed_fields": job.payload.base_cfg_allowed_fields,
                         "builtin_base_cfg": job.payload.base_cfg_artifact_id.startswith("builtin:"),
                         "outputs": [item.model_dump(mode="json") for item in job.payload.outputs],
-                        "preparation_only": job.payload.preparation_only,
                         "t1_preparation": job.payload.t1_preparation,
                     },
                     ensure_ascii=False,

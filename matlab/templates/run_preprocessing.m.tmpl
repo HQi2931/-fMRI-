@@ -26,10 +26,7 @@ elseif isfield(Cfg, 'MaskFile') && ~strcmp(Cfg.MaskFile, 'Default')
 end
 Cfg.SubjectID = cellstr(Cfg.SubjectID);
 if ~isempty(request.t1_preparation)
-    prepare_t1(Cfg, run_directory, staging_directory, request.t1_preparation, request.preparation_only);
-end
-if request.preparation_only
-    return;
+    prepare_t1(Cfg, run_directory, staging_directory, request.t1_preparation);
 end
 if Cfg.IsNeedT1CoregisterToFun || Cfg.IsSegment || Cfg.IsDARTEL
     for index = 1:numel(Cfg.SubjectID)
@@ -61,30 +58,23 @@ cleanup = onCleanup(@() diary('off'));
 % Split at the actual unfiltered checkpoint so metrics never trust scheduled counts.
 metric_cfg = Cfg;
 has_metrics = Cfg.IsCalALFF || Cfg.IsCalReHo;
-if has_metrics
-    Cfg.IsCalALFF = 0;
-    Cfg.IsCalReHo = 0;
-    if Cfg.IsFilter && strcmp(Cfg.Filter.Timing, 'AfterNormalize')
-        Cfg.IsFilter = 0;
-    end
-    Cfg.IsScrubbing = 0;
-    Cfg.IsSmooth = 0;
-end
 checkpoint_stage = timeseries_stage(Cfg);
 save(cfg_mat_path, 'Cfg');
 [Error, EffectiveCfg] = DPARSFA_run(cfg_mat_path, staging_directory, subject_list_path, 0);
-register_structural(Cfg, run_directory, staging_directory);
-save(fullfile(run_directory, 'config', 'EffectiveCfg.mat'), 'EffectiveCfg');
 if ~isempty(Error)
     error('rsfmri:dpabi:DPARSFAFailed', 'DPARSFA_run returned an error result.');
 end
+register_structural(Cfg, run_directory, staging_directory);
+save(fullfile(run_directory, 'config', 'EffectiveCfg.mat'), 'EffectiveCfg');
 if auto_mask_requested
+    assert(isfield(EffectiveCfg, 'MaskFileForEachSubject') && ...
+        numel(EffectiveCfg.MaskFileForEachSubject) == numel(Cfg.SubjectID), ...
+        'rsfmri:mask:EffectiveMaskMissing', 'DPABI did not report the masks used for metrics.');
     auto_mask_paths = cell(numel(Cfg.SubjectID), 1);
     for index = 1:numel(Cfg.SubjectID)
-        auto_mask_paths{index} = fullfile(staging_directory, 'Masks', 'AutoMasks', ...
-            ['AutoMask_', Cfg.SubjectID{index}, '.nii']);
+        auto_mask_paths{index} = EffectiveCfg.MaskFileForEachSubject{index};
         assert(isfile(auto_mask_paths{index}), 'rsfmri:mask:AutoMaskMissing', ...
-            'DPABI did not produce the declared auto mask for %s.', Cfg.SubjectID{index});
+            'DPABI did not produce the effective metric mask for %s.', Cfg.SubjectID{index});
     end
     metric_cfg.MaskFile = auto_mask_paths{1};
 end
@@ -116,37 +106,6 @@ for index = 1:numel(Cfg.SubjectID)
     checkpoints(index).metadata = header_evidence(spm_vol(destination));
 end
 all_subject_ids = Cfg.SubjectID;
-if has_metrics
-    metric_cfg.StartingDirName = checkpoint_stage;
-    metric_cfg.RemoveFirstTimePoints = 0;
-    metric_cfg.TimePoints = 0;
-    disabled = {'IsSliceTiming', 'IsRealign', 'IsCovremove', 'IsDetrend', ...
-        'IsNormalize', 'IsNeedT1CoregisterToFun', 'IsSegment', 'IsDARTEL', ...
-        'IsWarpMasksIntoIndividualSpace', 'IsAutoMask'};
-    for index = 1:numel(disabled), metric_cfg.(disabled{index}) = 0; end
-    MetricEffectiveCfg = metric_cfg;
-    for index = 1:numel(metric_cfg.SubjectID)
-        subject = metric_cfg.SubjectID{index};
-        subject_cfg = metric_cfg;
-        subject_cfg.SubjectID = {subject};
-        subject_cfg.SubjectNum = 1;
-        if auto_mask_requested, subject_cfg.MaskFile = auto_mask_paths{index}; end
-        Cfg = subject_cfg;
-        metric_cfg_path = fullfile(run_directory, 'config', ['MetricsCfg_', subject, '.mat']);
-        subject_list_path = fullfile(run_directory, 'config', ['MetricSubjectList_', subject, '.txt']);
-        fid = fopen(subject_list_path, 'w');
-        assert(fid ~= -1, 'rsfmri:config:MetricSubjectList', ...
-            'Cannot create the per-subject metric list.');
-        fprintf(fid, '%s\n', subject);
-        fclose(fid);
-        save(metric_cfg_path, 'Cfg');
-        [Error, MetricEffectiveCfg] = DPARSFA_run(metric_cfg_path, ...
-            staging_directory, subject_list_path, 0);
-        assert(isempty(Error), 'rsfmri:dpabi:MetricFailed', ...
-            'DPARSFA metric phase failed for %s.', subject);
-    end
-    save(fullfile(run_directory, 'config', 'MetricEffectiveCfg.mat'), 'MetricEffectiveCfg');
-end
 records = struct([]);
 for index = 1:numel(request.outputs)
     output = request.outputs(index);
@@ -175,13 +134,19 @@ for index = 1:numel(request.outputs)
             otherwise, error('rsfmri:output:UnknownScaling', 'Unknown scaling.');
         end
         prefix = '';
-        if metric_cfg.IsSmooth || ...
+        result_directory = 'Results';
+        if metric_cfg.IsSmooth && strcmp(metric_cfg.Smooth.Timing, 'OnResults')
+            result_directory = EffectiveCfg.StartingDirName;
+            assert(strcmp(result_directory, 'ResultsS'), ...
+                'rsfmri:output:UnexpectedResultDirectory', ...
+                'DPABI did not report the reviewed smoothed-result directory.');
+        end
+        if (metric_cfg.IsSmooth && strcmp(metric_cfg.Smooth.Timing, 'OnResults')) || ...
                 (strcmp(output.metric, 'reho') && metric_cfg.CalReHo.SmoothReHo)
             prefix = 's';
         end
         filename = [prefix, scaling_prefix, name, '_', output.subject_id, '.nii'];
-        matches = dir(fullfile(staging_directory, ...
-            MetricEffectiveCfg.StartingDirName, '**', filename));
+        matches = dir(fullfile(staging_directory, result_directory, '**', filename));
         assert(numel(matches) == 1, 'rsfmri:output:MissingOrAmbiguousMetric', ...
             'Expected exactly one declared metric output: %s.', filename);
         copyfile(fullfile(matches.folder, matches.name), destination);
@@ -334,7 +299,7 @@ for index = 1:numel(allowed_fields)
 end
 end
 
-function prepare_t1(Cfg, root, staging, mode, standalone)
+function prepare_t1(Cfg, root, staging, mode)
 if strcmp(mode, 'reorient_crop')
     program = fileparts(which('DPARSFA_run'));
     executable = 'dcm2nii_linux';
@@ -402,25 +367,21 @@ for index = 1:numel(Cfg.SubjectID)
         end
         sgtitle(sprintf('World origin = [%.1f %.1f %.1f] vox; affine axes: i=[%.2f %.2f %.2f], j=[%.2f %.2f %.2f], k=[%.2f %.2f %.2f]', ...
             origin(1:3), headers.mat(1:3,1), headers.mat(1:3,2), headers.mat(1:3,3)));
-        colormap(gray); exportgraphics(review, fullfile(destination, 'review.png'));
+        colormap(gray); exportgraphics(review, fullfile(destination, 'inspection.png'));
         clear cleanup_figure;
     catch
         fprintf('Optional T1 inspection image could not be rendered.\n');
     end
     records(index).subject_id = subject;
     records(index).relative_path = ['output/t1/', subject, '/', names{1}];
-    records(index).review_image = ['output/t1/', subject, '/review.png'];
+    records(index).inspection_image = ['output/t1/', subject, '/inspection.png'];
     records(index).metadata = header_evidence(headers);
 end
 evidence = struct('operation', 't1_preparation', 'subjects', {Cfg.SubjectID}, ...
-    'outputs', records, 'requires_human_review', standalone);
+    'outputs', records, 'inspection_only', true);
 fid = fopen(fullfile(root, 'output', 't1-preparation-evidence.json'), 'w');
 assert(fid ~= -1, 'rsfmri:t1:EvidenceWrite', 'Cannot write preparation evidence.');
 fprintf(fid, '%s', jsonencode(evidence)); fclose(fid);
-if standalone
-    copyfile(fullfile(root, 'output', 't1-preparation-evidence.json'), ...
-        fullfile(root, 'output', 'preprocessing-evidence.json'));
-end
 end
 
 function register_structural(Cfg, root, staging)

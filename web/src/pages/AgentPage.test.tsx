@@ -97,6 +97,7 @@ const notFound = () =>
   json({ error: { code: "not_found", message: "missing", details: {}, trace_id: null } }, 404);
 
 type Options = {
+  workspaceCheck?: () => Promise<Response>;
   conversations?: () => Promise<Response>;
   created?: () => Promise<Response>;
   run?: () => Promise<Response>;
@@ -112,6 +113,7 @@ function installFetch(options: Options = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
     if (path.endsWith("/providers/models")) return json({ models: ["deepseek-chat", "deepseek-reasoner"] });
     if (path.endsWith("/workspace/consents")) {
@@ -160,6 +162,15 @@ describe("agent workbench page", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("restores the confirmed input stage when loading a conversation", async () => {
+    installFetch({
+      conversations: () => json([conversation({ messages: [message("a1", "assistant", "阶段已确认", { selected_input_stage: "FunImg" })] })]),
+      workspaceCheck: () => json({ path: "D:/demo-work", selected_input_stage: null, stage_candidates: [{ stage: "FunImg", label: "功能输入", selectable: true, subject_count: 1, file_count: 1, issues: [] }] }),
+    });
+    render(<AgentPage />);
+    await screen.findByText("FunImg · 已确认");
   });
 
   it("embeds and saves the latest structured draft while preserving historical read-only panels", async () => {
@@ -561,6 +572,24 @@ describe("agent workbench page", () => {
     await waitFor(() => expect(signal).toBeTruthy());
     view.unmount();
     expect(signal?.aborted).toBe(true);
+  });
+
+  it("stops waiting and restores the composer without claiming the operation was cancelled", async () => {
+    const user = userEvent.setup();
+    let signal: AbortSignal | undefined | null;
+    installFetch({ turn: (init) => {
+      signal = init?.signal;
+      return new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    } });
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    await user.type(screen.getByRole("textbox"), "等待中的问题{Enter}");
+    await waitFor(() => expect(signal).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "停止等待" }));
+    expect(signal?.aborted).toBe(true);
+    expect(screen.getByRole("textbox")).toBeEnabled();
+    expect(screen.getByRole("textbox")).toHaveValue("等待中的问题");
+    expect(screen.getByText(/服务端可能继续保存本轮结果/)).toBeInTheDocument();
   });
 
 });

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
@@ -58,7 +58,6 @@ from neuroagent.application.service_mixins import (
     StatisticsMixin,
 )
 from neuroagent.application.settings import Settings
-from neuroagent.application.t1_preparation import T1PreparationMixin
 from neuroagent.application.work_dialogue import WorkDialogue
 from neuroagent.application.work_tools import (
     WorkToolRunner,
@@ -94,7 +93,6 @@ from neuroagent.tools.registry import build_default_tool_registry
 
 
 class NeuroAgentService(
-    T1PreparationMixin,
     ConversationMixin,
     ProjectDatasetMixin,
     PlanApprovalMixin,
@@ -113,9 +111,13 @@ class NeuroAgentService(
 
     @staticmethod
     def _profile_revision(profile_view: ModelProfileView) -> str:
+        profile = profile_view.profile.model_dump(mode="json")
+        # Capabilities are a set. Its iteration order changes across processes,
+        # but does not represent a profile change or invalidate consent.
+        profile["capabilities"] = sorted(profile["capabilities"])
         material = canonical_json(
             {
-                "profile": profile_view.profile.model_dump(mode="json"),
+                "profile": profile,
                 "version": profile_view.version,
                 "created_at": profile_view.created_at.isoformat(),
             }
@@ -295,11 +297,33 @@ class NeuroAgentService(
                 remaining_seconds=min(profile_view.profile.timeout_seconds, 15.0),
             )
         except (ModelGatewayError, ProviderError) as exc:
+            cause: BaseException | None = exc
+            status = None
+            timeout = False
+            for _ in range(6):
+                if cause is None:
+                    break
+                timeout = timeout or bool(getattr(cause, "timeout", False))
+                if isinstance(cause, ProviderError):
+                    import re
+
+                    match = re.fullmatch(
+                        r"provider (?:rejected request|temporarily unavailable) \(([0-9]{3})\)",
+                        str(cause),
+                    )
+                    if match:
+                        status = int(match[1])
+                cause = cause.__cause__
+            reason = "timeout" if timeout else "http_rejected" if status else "provider_error"
             raise InputValidationError(
                 "workspace_tool_probe_failed",
-                "所选模型的工具调用测试未通过。请确认该模型支持 tools/tool_calls、API Key 可用，再重试。",
+                "工具测试请求超时；尚不能判定模型是否支持工具调用。"
+                if timeout
+                else "工具测试请求失败；请检查服务连接与接口兼容性。",
                 profile_id=profile_view.profile.id,
                 model=model,
+                reason=reason,
+                provider_status=status,
             ) from exc
         calls = result.response.tool_calls
         if (
@@ -308,12 +332,37 @@ class NeuroAgentService(
             or calls[0].name != probe_tool.name
             or not calls[0].arguments_valid
             or calls[0].arguments
+            or result.response.finish_reason == "length"
         ):
+            reason = (
+                "output_truncated"
+                if result.response.finish_reason == "length"
+                else "profile_mismatch"
+                if result.selected_profile_id != profile_view.profile.id
+                else "no_tool_call"
+                if not calls
+                else "wrong_tool"
+                if len(calls) != 1 or calls[0].name != probe_tool.name
+                else "invalid_arguments"
+            )
             raise InputValidationError(
                 "workspace_tool_probe_failed",
-                "所选模型未能按要求调用测试工具。请确认该模型支持 tools/tool_calls，再重试。",
+                "工具测试回复被截断；请检查输出上限和思考模式。"
+                if reason == "output_truncated"
+                else "工具测试未返回合格调用；尚不能判定模型是否支持工具调用。",
                 profile_id=profile_view.profile.id,
                 model=model,
+                reason=reason,
+                finish_reason=result.response.finish_reason
+                if result.response.finish_reason in {None, "length", "stop", "tool_calls"}
+                else "other",
+                tool_call_count=len(calls),
+                arguments_valid=bool(calls and calls[0].arguments_valid and not calls[0].arguments),
+                usage={
+                    key: value
+                    for key, value in result.response.usage.items()
+                    if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                },
             )
 
     def list_workspace_content_consents(
@@ -533,16 +582,9 @@ class NeuroAgentService(
         workspace_picker: WorkspacePickerPort | None = None,
         workspace_file_factory: Any | None = None,
         skill_registry: SkillRegistry | None = None,
-        t1_preparation_artifact_validator: Callable[[Path, str], None] | None = None,
     ) -> None:
         self.settings = settings
 
-        def unavailable_t1_validator(path: Path, role: str) -> None:
-            raise InputValidationError("t1_validator_unavailable", "T1 产物检查器未配置。")
-
-        self.t1_preparation_artifact_validator = (
-            t1_preparation_artifact_validator or unavailable_t1_validator
-        )
         self.database = database
         self.repository = repository
         self.path_policy = path_policy

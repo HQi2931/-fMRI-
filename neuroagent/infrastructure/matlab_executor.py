@@ -17,7 +17,6 @@ from neuroagent.application.environment_lock import (
 )
 from neuroagent.application.ports import ExecutionResult, RepositoryPort
 from neuroagent.application.settings import Settings
-from neuroagent.application.t1_preparation import resolve_reviewed_t1_bindings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage, MetricScaling
 from neuroagent.domain.fmri.dpabi_stages import stage_rule, verified_source_version
 from neuroagent.domain.fmri.metrics import MetricMaskSource, SmoothingTiming, TemporalFilterTiming
@@ -35,13 +34,12 @@ from neuroagent.execution.models import (
 )
 from neuroagent.execution.preprocessing import (
     PreprocessingCompilation,
-    ReviewedT1Binding,
     compile_preprocessing,
 )
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.infrastructure.filesystem.t1_artifacts import validate_t1_artifact
 from neuroagent.infrastructure.filesystem.t1_geometry import verify_t1_geometry
-from neuroagent.infrastructure.filesystem.t1_review import validate_t1_preparation_artifact
 from neuroagent.skills.models import SkillPlan, stable_hash
 from neuroagent.tools.input_staging import (
     InputFormat,
@@ -110,6 +108,10 @@ class MatlabJobExecutor:
         executor_type = payload.get("executor_type")
         if executor_type not in {"matlab_preprocessing", "matlab_statistics"}:
             return ExecutionResult(status="failed_terminal", error="invalid MATLAB executor type")
+        if payload.get("operation") == "t1_preparation":
+            return ExecutionResult(
+                status="failed_terminal", error="standalone T1 preparation is no longer supported"
+            )
         if payload.get("real_execution_confirmed") is not True:
             return ExecutionResult(
                 status="failed_terminal",
@@ -207,7 +209,6 @@ class MatlabJobExecutor:
                     )
                     if compilation.staging_plan is None:
                         raise ValueError("in-place execution requires frozen source inputs")
-                    self._verify_in_place_inputs(compilation.staging_plan, preprocessing_workspace)
                     # The selected checkpoint is part of the frozen manifest.
                     # Never recover the old implicit "single directory" behavior
                     # here: a plan created without explicit user confirmation must
@@ -359,17 +360,11 @@ class MatlabJobExecutor:
         if compilation is not None:
             assert isinstance(compilation.spec.payload, PreprocessingJobPayload)
             try:
-                if compilation.spec.payload.preparation_only:
-                    artifacts = self._t1_preparation_lineage(
-                        artifacts, compilation, result.rendered.run_directory
-                    )
-                else:
-                    artifacts = self._preprocessing_lineage(
-                        artifacts, compilation, result.rendered.run_directory
-                    )
+                artifacts = self._preprocessing_lineage(
+                    artifacts, compilation, result.rendered.run_directory
+                )
                 if (
-                    not compilation.spec.payload.preparation_only
-                    and str(run.qc_mode or "require") != "skip"
+                    str(run.qc_mode or "require") != "skip"
                 ):
                     try:
                         artifacts = (
@@ -459,14 +454,15 @@ class MatlabJobExecutor:
         relative_path = "output/qc/head-motion-qc.json"
         output_path = root / relative_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(report_json, encoding="utf-8")
-        digest = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
+        encoded = report_json.encode("utf-8")
+        output_path.write_bytes(encoded)
+        digest = hashlib.sha256(encoded).hexdigest()
         return (
             {
                 "artifact_type": "qc.head_motion_report",
                 "relative_path": relative_path,
                 "checksum": digest,
-                "size_bytes": len(report_json.encode("utf-8")),
+                "size_bytes": len(encoded),
                 "provenance": {
                     "executor": "controlled_matlab",
                     "job_hash": job_hash,
@@ -494,8 +490,8 @@ class MatlabJobExecutor:
         relative_path = "output/qc/head-motion-qc-failure.json"
         output_path = root / relative_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(text, encoding="utf-8")
         encoded = text.encode("utf-8")
+        output_path.write_bytes(encoded)
         return (
             {
                 "artifact_type": "qc.head_motion_failure",
@@ -510,25 +506,6 @@ class MatlabJobExecutor:
                 },
             },
         )
-
-    @staticmethod
-    def _verify_in_place_inputs(plan: StagingCopyPlan, workspace: Path) -> None:
-        root = workspace.resolve(strict=True)
-        for operation in plan.operations:
-            raw_source = root / PurePosixPath(operation.source_relative_path)
-            if raw_source.is_symlink() or _is_junction(raw_source):
-                raise ValueError("frozen in-place input is unavailable or unsafe")
-            source = raw_source.resolve(strict=True)
-            if not _within(source, root) or not source.is_file():
-                raise ValueError("frozen in-place input is unavailable or unsafe")
-            if source.stat().st_size != operation.size_bytes:
-                raise ValueError("frozen in-place input size changed")
-            digest = hashlib.sha256()
-            with source.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    digest.update(chunk)
-            if digest.hexdigest() != operation.sha256:
-                raise ValueError("frozen in-place input hash changed")
 
     @staticmethod
     def _verify_manifest_file_hashes(content: dict[str, Any], workspace: Path) -> None:
@@ -697,64 +674,7 @@ class MatlabJobExecutor:
             approval_record_id=approval.approval_id,
             mask_binding=mask_binding,
             input_binding=input_binding,
-            preparation_only=payload.get("operation") == "t1_preparation",
-            reviewed_t1_bindings=self._reviewed_t1_bindings(
-                payload, plan, tuple(subject.subject_id for subject in manifest.subjects)
-            ),
         )
-
-    def _reviewed_t1_bindings(
-        self, payload: dict[str, Any], plan: SkillPlan, subject_ids: tuple[str, ...]
-    ) -> tuple[ReviewedT1Binding, ...]:
-        bindings = tuple(
-            ReviewedT1Binding.model_validate(value)
-            for value in payload.get("reviewed_t1_bindings", ())
-        )
-        for preparation_id in {binding.preparation_run_id for binding in bindings}:
-            resolved = tuple(
-                ReviewedT1Binding.model_validate(value)
-                for value in resolve_reviewed_t1_bindings(
-                    self._repository,
-                    validate_t1_preparation_artifact,
-                    preparation_id,
-                    plan.input_manifest_hash,
-                    subject_ids,
-                )
-            )
-            if bindings != resolved:
-                raise ValueError("T1 bindings differ from current reviewed evidence")
-        for binding in bindings:
-            artifact = self._repository.get_artifact(binding.artifact_id)
-            preparation = self._repository.get_run(binding.preparation_run_id)
-            if (
-                preparation.project_id != plan.project_id
-                or artifact.run_id != preparation.run_id
-                or artifact.artifact_type != "preprocessing.t1_prepared"
-                or artifact.checksum != binding.sha256
-                or artifact.size_bytes != binding.size_bytes
-                or artifact.relative_path != binding.relative_path
-            ):
-                raise ValueError("reviewed T1 binding differs from registered artifact")
-            events = [
-                event
-                for event in self._repository.list_events(preparation.run_id)
-                if event.event_type == "T1PreparationReviewed"
-            ]
-            if not events:
-                raise ValueError("T1 preparation review is missing")
-            review = events[-1].payload
-            if (
-                review.get("review_record_id") != binding.review_record_id
-                or review.get("approved") is not True
-                or review.get("manifest_hash") != plan.input_manifest_hash
-                or binding.artifact_id not in review.get("artifact_ids", ())
-                or not all(
-                    review.get(key) is True
-                    for key in ("orientation_confirmed", "crop_confirmed", "origin_confirmed")
-                )
-            ):
-                raise ValueError("T1 preparation review does not authorize this artifact")
-        return bindings
 
     def _t1_preparation_lineage(
         self,
@@ -776,7 +696,7 @@ class MatlabJobExecutor:
             if metadata["volume_count"] != 1 or len(metadata["dimensions"]) != 3:
                 raise ValueError("prepared T1 must be 3D")
             subject = row["subject_id"]
-            paths = {row["relative_path"], row["review_image"]}
+            paths = {row["relative_path"], row["inspection_image"]}
             if any(not path.startswith(f"output/t1/{subject}/") for path in paths):
                 raise ValueError("T1 preparation path differs from subject")
             if row["relative_path"] not in {artifact["relative_path"] for artifact in artifacts}:
@@ -784,7 +704,7 @@ class MatlabJobExecutor:
             verify_t1_geometry(root / row["relative_path"], metadata)
             for artifact in artifacts:
                 if artifact["relative_path"] in paths:
-                    validate_t1_preparation_artifact(
+                    validate_t1_artifact(
                         root / artifact["relative_path"], artifact["artifact_type"]
                     )
                     artifact["provenance"].update(
@@ -792,7 +712,6 @@ class MatlabJobExecutor:
                         manifest_hash=compilation.spec.input_manifest_hash,
                         metadata=metadata,
                         operation="t1_preparation",
-                        evidence_hash=stable_hash(evidence),
                     )
         return artifacts
 

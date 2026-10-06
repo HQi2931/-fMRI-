@@ -207,6 +207,75 @@ def draft_issues(draft: WorkDraft) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def planning_decisions(draft: WorkDraft, sources: dict[str, str] | None = None) -> dict[str, Any]:
+    """Summarize draft choices without promoting suggestions to observed facts.
+
+    The draft is a proposal.  Even a value entered by the user becomes an
+    approved scientific parameter only through the existing confirmation path.
+    """
+    sources = sources or {}
+    choices: list[dict[str, Any]] = []
+    for section, values in (
+        ("preprocessing", draft.preprocessing),
+        ("alff_falff", draft.alff_falff),
+        ("reho", draft.reho),
+    ):
+        if values is None:
+            continue
+        names = {
+            "preprocessing": (
+                "tr_seconds",
+                "expected_time_points",
+                "dummy_scans",
+                "slice_timing",
+                "nuisance",
+                "normalization",
+                "temporal_filter",
+                "smoothing",
+            ),
+            "alff_falff": ("frequency_band", "filter_timing", "result_smoothing"),
+            "reho": (
+                "temporal_filter_band",
+                "cluster_voxels",
+                "smooth_reho",
+                "global_result_smoothing",
+            ),
+        }[section]
+        for name in names:
+            path = f"{section}.{name}"
+            if name not in values:
+                choices.append({"path": path, "status": "missing"})
+                continue
+            source = sources.get(path, "unattributed")
+            choices.append(
+                {
+                    "path": path,
+                    "value": values[name],
+                    "source": source,
+                    "status": "user_draft" if source == "user" else "proposed",
+                }
+            )
+    issues = list(draft_issues(draft))
+    for choice in choices:
+        if choice["status"] == "missing":
+            continue
+        if any(
+            issue.startswith(choice["path"] + "：") and "尚未提供" not in issue for issue in issues
+        ):
+            choice["status"] = "conflict"
+    return {
+        "version": "1",
+        "provisional": True,
+        "choices": choices,
+        "issues": issues,
+        "branches": [item["branch_id"] for item in plan_preview(draft)["branches"]],
+        "note": (
+            "草稿值尚不是已核实的采集事实；扫描参数须与元数据或用户明确输入核对。"
+            "所有选择仍须经用户审阅和服务端科学校验。"
+        ),
+    }
+
+
 def plan_preview(draft: WorkDraft) -> dict[str, Any]:
     """Build a deterministic, non-executable outline for Plan-and-Execute review.
 
@@ -242,7 +311,9 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
         t1_steps = [
             {
                 "step_id": "prepare_t1",
-                "label": "T1 重定向与裁剪（预处理内自动执行）",
+                "label": "T1 重定向与裁剪（预处理内自动执行）"
+                if t1.get("preparation") == "reorient_crop"
+                else "使用已准备的 T1 结构像",
                 "status": "planned"
                 if t1.get("preparation") == "reorient_crop"
                 else "requires_verified_input",
@@ -294,7 +365,9 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
             common_steps.append(
                 {
                     "step_id": "common_smoothing",
-                    "label": "公共功能像平滑",
+                    "label": "公共功能像平滑停用"
+                    if smoothing_timing == "disabled"
+                    else "公共功能像平滑待填写",
                     "status": "disabled_or_pending",
                     "evidence": "draft.preprocessing.smoothing",
                 }
@@ -499,7 +572,7 @@ _LABELS = {
 }
 
 
-def render_draft_review(draft: WorkDraft) -> str:
+def render_draft_review(draft: WorkDraft, sources: dict[str, str] | None = None) -> str:
     """Render every value, including nested disabled choices, for user review."""
     preview = plan_preview(draft)
     lines = [
@@ -527,6 +600,17 @@ def render_draft_review(draft: WorkDraft) -> str:
                 lines.append("    - 约束：" + str(branch["warning"]))
     else:
         lines.append("- 指标分支：尚未选择")
+
+    if sources:
+        lines.append("参数状态（当前草稿，尚未核实或批准）：")
+        for choice in planning_decisions(draft, sources)["choices"]:
+            label = {
+                "user_draft": "用户编辑",
+                "proposed": "模型建议",
+                "conflict": "校验冲突",
+            }.get(choice["status"])
+            if label and (choice["status"] != "proposed" or choice.get("source") == "suggested"):
+                lines.append(f"- {choice['path']}：{label}")
 
     def render(values: dict[str, Any], depth: int = 0) -> None:
         for key, value in values.items():

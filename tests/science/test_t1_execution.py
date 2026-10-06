@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from neuroagent.domain.fmri.preprocessing import PreprocessingParameters, T1Parameters
-from neuroagent.execution.preprocessing import ReviewedT1Binding, compile_preprocessing
+from neuroagent.execution.preprocessing import compile_preprocessing
 from neuroagent.tools.dpabi_v82 import DpabiPreprocessingRequest, DpabiV82Adapter
 from tests.science.conftest import preprocessing_parameters
 from tests.science.test_preprocessing_compilation import frozen_plan, manifest_for
@@ -88,53 +88,10 @@ def test_segment_projects_without_normalization():
     assert cfg["IsAllowGUI"] == 0
 
 
-def test_preparation_has_only_structural_outputs_and_no_downstream_flags():
-    manifest, content = manifest_for()
-    compilation = compile_t1(t1_parameters(manifest), manifest, content, preparation_only=True)
-    payload = compilation.spec.payload
-    assert payload.preparation_only and not payload.outputs
-    for flag in ("IsSegment", "IsDARTEL", "IsNormalize", "IsRealign", "IsCovremove"):
-        assert payload.metric_projection.cfg[flag] == 0
-    roles = {artifact.artifact_type for artifact in compilation.spec.expected_artifacts}
-    assert {"preprocessing.t1_prepared", "preprocessing.t1_review_image"} <= roles
-
-
-def test_reviewed_cohort_binds_real_output_names_and_all_dartel_artifacts():
-    manifest, content = manifest_for()
-    parameters = t1_parameters(manifest, normalize=True)
-    binding = ReviewedT1Binding(
-        subject_id="sub-01",
-        artifact_id="prepared-1",
-        relative_path="attempts/attempt-1/output/t1/sub-01/coT1.nii",
-        sha256="b" * 64,
-        size_bytes=4096,
-        source_manifest_hash=manifest.content_hash,
-        review_record_id="review-1",
-        preparation_run_id="prep-run",
-    )
-    compilation = compile_t1(parameters, manifest, content, reviewed_t1_bindings=(binding,))
-    assert compilation.spec.payload.metric_projection.cfg["IsDARTEL"] == 1
-    assert any(
-        a.artifact_type == "preprocessing.dartel_template"
-        for a in compilation.spec.expected_artifacts
-    )
-    assert not any(
-        "/T1Img/" in op.destination_relative_path for op in compilation.staging_plan.operations
-    )
-    with pytest.raises(ValueError, match="genuine preparation"):
-        compile_t1(
-            parameters,
-            manifest,
-            content,
-            reviewed_t1_bindings=(binding.model_copy(update={"relative_path": "plain.nii"}),),
-        )
-
-
 def test_integrated_t1_has_no_intermediate_review_requirement():
     manifest, content = manifest_for()
     compilation = compile_t1(t1_parameters(manifest, normalize=True), manifest, content)
     assert compilation.spec.payload.t1_preparation == "reorient_crop"
-    assert not compilation.spec.payload.preparation_only
     assert any(
         "/T1Img/" in op.destination_relative_path for op in compilation.staging_plan.operations
     )
@@ -142,5 +99,5 @@ def test_integrated_t1_has_no_intermediate_review_requirement():
     assert all(
         not item.required
         for item in compilation.spec.expected_artifacts
-        if item.artifact_type == "preprocessing.t1_review_image"
+        if item.artifact_type == "preprocessing.t1_inspection_image"
     )

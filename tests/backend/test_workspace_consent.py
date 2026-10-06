@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from neuroagent.agent.gateway import ModelGatewayError, ToolTurnResult
 from neuroagent.agent.models import ModelCapability, ProviderResponse, ToolCall
-from neuroagent.agent.providers import ProviderError
+from neuroagent.agent.providers import ProviderError, ProviderTimeoutError
 from neuroagent.api import create_app
 from neuroagent.application.contracts import (
     ConversationCreate,
@@ -238,6 +238,42 @@ async def test_workspace_consent_reports_provider_probe_failures(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response,reason",
+    [
+        (
+            ProviderResponse(
+                content="",
+                model="chosen-concrete-model",
+                finish_reason="length",
+                usage={"completion_tokens": 2048},
+            ),
+            "output_truncated",
+        ),
+        (ProviderTimeoutError("synthetic deadline"), "timeout"),
+    ],
+)
+async def test_probe_failure_diagnosis_does_not_claim_unsupported_tools(
+    service, source_root, monkeypatch, response, reason
+):
+    enable_workspace_assistant(service)
+    add_profile(service)
+    conversation_id = add_conversation(service, source_root)
+    install_gateway(monkeypatch, service, ProbeGateway(response))
+    with pytest.raises(InputValidationError) as caught:
+        await service.create_workspace_content_consent(
+            conversation_id,
+            WorkspaceContentConsentCreate(
+                profile_id="test-provider",
+                model="chosen-concrete-model",
+                acknowledge_remote_processing=True,
+            ),
+        )
+    assert caught.value.details["reason"] == reason
+    assert service.list_workspace_content_consents(conversation_id) == []
+
+
+@pytest.mark.asyncio
 async def test_workspace_consent_is_invalidated_by_profile_revision_and_revocation(
     service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,3 +306,20 @@ async def test_workspace_consent_is_invalidated_by_profile_revision_and_revocati
     assert not service.workspace_content_consent_granted(
         conversation_id, str(source_root), "test-provider", "chosen-concrete-model"
     )
+
+
+def test_profile_revision_is_independent_of_capability_serialization_order(
+    service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = add_profile(service)
+    expected = service._profile_revision(view)
+    model_type = type(view.profile)
+    original = model_type.model_dump
+
+    def reverse_capabilities(self, **kwargs):
+        value = original(self, **kwargs)
+        value["capabilities"] = list(reversed(value["capabilities"]))
+        return value
+
+    monkeypatch.setattr(model_type, "model_dump", reverse_capabilities)
+    assert service._profile_revision(view) == expected

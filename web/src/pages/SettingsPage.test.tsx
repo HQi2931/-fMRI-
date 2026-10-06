@@ -272,7 +272,7 @@ describe("settings page", () => {
     await user.click(toolUseCheckbox);
     await user.click(screen.getByRole("button", { name: "保存能力" }));
 
-    await screen.findByText(/已保存 deepseek 的模型能力/);
+    await screen.findByText(/已保存 deepseek 的模型设置/);
     const save = fetchSpy.mock.calls.find(([input, init]) =>
       pathOf(input).endsWith("/model-profiles") && init?.method === "POST",
     );
@@ -333,6 +333,23 @@ describe("settings page", () => {
     await user.click(screen.getByRole("button", { name: "刷新模型列表" }));
 
     expect(await screen.findByText(/服务商连接正常，当前返回 2 个可选模型/)).toBeInTheDocument();
+  });
+
+  it("edits limits and thinking mode on an existing binding without removing it", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = installFetch({ profiles: () => json([modelProfile()]) });
+    render(<SettingsPage />);
+    await screen.findByText("1 项");
+    await user.clear(screen.getByLabelText("deepseek timeout_seconds"));
+    await user.type(screen.getByLabelText("deepseek timeout_seconds"), "180");
+    await user.clear(screen.getByLabelText("deepseek max_output_tokens"));
+    await user.type(screen.getByLabelText("deepseek max_output_tokens"), "8192");
+    await user.selectOptions(screen.getByLabelText("deepseek 思考模式"), "disabled");
+    await user.click(screen.getByRole("button", { name: "保存模型设置" }));
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input, init]) => pathOf(input).endsWith("/model-profiles") && init?.method === "POST")).toBe(true));
+    const call = fetchSpy.mock.calls.find(([input, init]) => pathOf(input).endsWith("/model-profiles") && init?.method === "POST")!;
+    expect(JSON.parse(String(call[1]?.body)).profile).toMatchObject({ id: "deepseek", timeout_seconds: 180, max_output_tokens: 8192, thinking_mode: "disabled" });
+    expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
 
   it("reports a failed binding test", async () => {

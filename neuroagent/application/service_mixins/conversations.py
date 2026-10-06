@@ -45,6 +45,7 @@ from neuroagent.application.work_draft import (
     draft_issues,
     merge_work_draft,
     plan_preview,
+    planning_decisions,
     render_draft_review,
     validate_draft_patch,
 )
@@ -145,8 +146,9 @@ class ConversationMixin(BaseServiceMixin):
                 },
                 "draft_issues": list(issues),
                 "plan_preview": plan_preview(updated),
+                "planning_decisions": planning_decisions(updated, sources),
             }
-            review = render_draft_review(updated)
+            review = render_draft_review(updated, sources)
             if not issues:
                 payload["confirmation_request"] = {
                     "title": "确认方案参数",

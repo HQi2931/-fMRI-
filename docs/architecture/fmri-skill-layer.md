@@ -70,6 +70,8 @@ flowchart LR
 
 图中从请求到编译、计划 revision 和人工审批的控制面已经接入应用服务。审批后的 DAG→Tool→Executor 路径由 `WorkflowFactory` 冻结并由 `ToolRuntime` 遍历；Mock 和 MATLAB 适配器都必须通过同一份冻结步骤合同。真实执行还受环境探测、配置开关和逐次确认保护。
 
+Work 对话在形成 `SkillRequest` 前使用部分参数草稿。应用服务从草稿和服务端来源标记生成 `planning_decisions`，列出关键参数的候选值、用户编辑状态、缺失项、校验冲突与 ALFF/ReHo 分支；同一摘要进入模型上下文和对话回复。它不提供已核实的扫描事实或执行许可，完整科学参数仍须经用户审阅、`SkillValidator` 校验和计划审批。
+
 运行时状态只有一个真源：`WorkflowInstance`。可以保存 Skill 与运行的关联记录，但不得建立第二套可变的 `SkillRun` 状态机。
 
 ## 4. 核心模型

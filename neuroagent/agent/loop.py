@@ -125,38 +125,40 @@ class AgentLoop:
                     AgentLoopStopReason.BUDGET_TIME, steps, outcomes, usage, working, provider_model
                 )
             estimated = self._counter.count(working)
-            context_limit = budget.max_total_tokens
-            if budget.context_window_tokens is not None:
-                context_limit = min(
-                    context_limit,
-                    max(
-                        1,
-                        int(
-                            (budget.context_window_tokens - budget.max_output_tokens)
-                            * budget.context_safety_ratio
-                        ),
-                    ),
-                )
-            if max(sum(usage.values()), estimated) > context_limit:
-                reason = (
-                    AgentLoopStopReason.BUDGET_CONTEXT
-                    if budget.context_window_tokens is not None
-                    and context_limit < budget.max_total_tokens
-                    else AgentLoopStopReason.BUDGET_TOKENS
-                )
+            consumed = usage.get(
+                "total_tokens", usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+            )
+            if max(consumed, estimated) > budget.max_total_tokens:
                 return self._finish(
-                    reason,
+                    AgentLoopStopReason.BUDGET_TOKENS,
                     steps,
                     outcomes,
                     usage,
                     working,
                     provider_model,
                 )
+            if budget.context_window_tokens is not None:
+                context_limit = max(
+                    1,
+                    int(
+                        (budget.context_window_tokens - budget.max_output_tokens)
+                        * budget.context_safety_ratio
+                    ),
+                )
+                # Context measures this request; cumulative provider usage includes
+                # earlier requests and overlapping cache/total counters.
+                if estimated > context_limit:
+                    return self._finish(
+                        AgentLoopStopReason.BUDGET_CONTEXT,
+                        steps,
+                        outcomes,
+                        usage,
+                        working,
+                        provider_model,
+                    )
 
             try:
-                remaining_for_model = max(
-                    0.001, budget.max_seconds - (self._clock() - started)
-                )
+                remaining_for_model = max(0.001, budget.max_seconds - (self._clock() - started))
                 response = await asyncio.wait_for(
                     _call_with_optional_budget(call_model, working, remaining_for_model),
                     timeout=remaining_for_model,
@@ -222,9 +224,7 @@ class AgentLoop:
                         working,
                         provider_model,
                     )
-                outcome = await _dispatch_with_optional_timeout(
-                    self._dispatcher, call, remaining
-                )
+                outcome = await _dispatch_with_optional_timeout(self._dispatcher, call, remaining)
                 outcomes.append(outcome)
                 working.append(_tool_message(outcome))
                 if self._emit is not None:
@@ -261,7 +261,6 @@ class AgentLoop:
         return self._finish(
             AgentLoopStopReason.BUDGET_STEPS, steps, outcomes, usage, working, provider_model
         )
-
 
     def _finish(
         self,

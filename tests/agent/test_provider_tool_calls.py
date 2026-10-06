@@ -56,6 +56,29 @@ class _Recorder:
         return httpx.Response(200, json=self._body)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "host,expected", [("api.deepseek.com", True), ("proxy.example.org", False)]
+)
+async def test_explicit_nonthinking_mode_is_only_sent_to_deepseek(
+    host: str, expected: bool
+) -> None:
+    recorder = _Recorder({"choices": [{"message": {"content": "ok"}}]})
+    selected = _profile(ModelCapability.JSON_OBJECT).model_copy(
+        update={
+            "base_url": f"https://{host}/v1",
+            "thinking_mode": "disabled",
+        }
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(recorder)) as client:
+        await OpenAICompatibleProvider(client).generate(
+            selected, "secret", [{"role": "user", "content": "test"}]
+        )
+    assert ("thinking" in recorder.payload) is expected
+    if expected:
+        assert recorder.payload["thinking"] == {"type": "disabled"}
+
+
 def _tool_call_body(arguments: object, *, content: object = None) -> dict[str, Any]:
     return {
         "id": "chatcmpl-tools",

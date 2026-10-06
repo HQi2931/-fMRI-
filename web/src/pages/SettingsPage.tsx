@@ -60,6 +60,8 @@ export function SettingsPage() {
   const [timeoutSeconds, setTimeoutSeconds] = useState(45);
   const [contextWindowTokens, setContextWindowTokens] = useState(16384);
   const [maxOutputTokens, setMaxOutputTokens] = useState(2048);
+  const [thinkingMode, setThinkingMode] = useState<"provider_default" | "disabled">("provider_default");
+  const [profileLimits, setProfileLimits] = useState<Record<string, { timeout_seconds: number; context_window_tokens: number; max_output_tokens: number; thinking_mode: "provider_default" | "disabled" }>>({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -83,6 +85,12 @@ export function SettingsPage() {
       item.profile.id,
       [...item.profile.capabilities],
     ])));
+    setProfileLimits(Object.fromEntries(configured.map((item) => [item.profile.id, {
+      timeout_seconds: item.profile.timeout_seconds,
+      context_window_tokens: item.profile.context_window_tokens,
+      max_output_tokens: item.profile.max_output_tokens,
+      thinking_mode: item.profile.thinking_mode ?? "provider_default",
+    }])));
   }, []);
 
   useEffect(() => {
@@ -123,6 +131,7 @@ export function SettingsPage() {
       setProvider("openai-compatible");
       setBaseUrl(preset.baseUrl);
       setKeyEnv(preset.keyEnv);
+      setThinkingMode(preset.baseUrl === "https://api.deepseek.com" ? "disabled" : "provider_default");
     }
   }
 
@@ -153,11 +162,11 @@ export function SettingsPage() {
     setMessage("");
     try {
       await api.createProfile({
-        profile: { ...item.profile, capabilities: nextCapabilities },
+        profile: { ...item.profile, capabilities: nextCapabilities, ...profileLimits[item.profile.id] },
         api_key: null,
       });
       await refresh();
-      setMessage(`已保存 ${item.profile.id} 的模型能力。Work 文件授权时仍会验证具体模型的工具调用。`);
+      setMessage(`已保存 ${item.profile.id} 的模型设置。文件授权需按新配置重新验证。`);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -207,6 +216,7 @@ export function SettingsPage() {
           timeout_seconds: timeoutSeconds,
           context_window_tokens: contextWindowTokens,
           max_output_tokens: maxOutputTokens,
+          thinking_mode: thinkingMode,
         },
         api_key: apiKey.trim() || null,
       });
@@ -314,6 +324,7 @@ export function SettingsPage() {
               <label>超时秒<input type="number" min={1} max={300} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
               <label>上下文窗口<input type="number" min={4096} max={2000000} value={contextWindowTokens} onChange={(event) => setContextWindowTokens(Number(event.target.value))} /></label>
               <label>回答 token 上限<input type="number" min={256} max={65536} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
+              {baseUrl.replace(/\/$/, "") === "https://api.deepseek.com" && <label>思考模式<select value={thinkingMode} onChange={(event) => setThinkingMode(event.target.value as typeof thinkingMode)}><option value="provider_default">使用服务商默认</option><option value="disabled">关闭思考，直接返回方案</option></select></label>}
             </div>
             <fieldset className="capability-field">
               <legend>能力</legend>
@@ -342,6 +353,14 @@ export function SettingsPage() {
                   <p className="muted">{item.profile.provider} · {item.profile.base_url}</p>
                   <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 上下文 {item.profile.context_window_tokens} · 回答 {item.profile.max_output_tokens} token</p>
                   <p className="muted">能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
+                  <fieldset disabled={busy}>
+                    <legend>编辑模型设置</legend>
+                    {(["timeout_seconds", "context_window_tokens", "max_output_tokens"] as const).map((field) => <label key={field}>
+                      {{ timeout_seconds: "请求超时秒", context_window_tokens: "上下文窗口", max_output_tokens: "输出 token 上限" }[field]}
+                      <input type="number" aria-label={`${item.profile.id} ${field}`} min={field === "timeout_seconds" ? 1 : field === "context_window_tokens" ? 4096 : 256} max={field === "timeout_seconds" ? 300 : field === "context_window_tokens" ? 2000000 : 65536} value={profileLimits[item.profile.id]?.[field] ?? item.profile[field]} onChange={(event) => setProfileLimits((previous) => ({ ...previous, [item.profile.id]: { ...previous[item.profile.id], [field]: Number(event.target.value) } }))} />
+                    </label>)}
+                    {new URL(item.profile.base_url).hostname === "api.deepseek.com" && <label>思考模式<select aria-label={`${item.profile.id} 思考模式`} value={profileLimits[item.profile.id]?.thinking_mode ?? "provider_default"} onChange={(event) => setProfileLimits((previous) => ({ ...previous, [item.profile.id]: { ...previous[item.profile.id], thinking_mode: event.target.value as "provider_default" | "disabled" } }))}><option value="provider_default">使用服务商默认</option><option value="disabled">关闭思考，直接返回方案</option></select></label>}
+                  </fieldset>
                   <fieldset className="capability-field profile-capability-field">
                     <legend>编辑能力</legend>
                     {ALL_CAPABILITIES.map((capability) => (
@@ -358,6 +377,7 @@ export function SettingsPage() {
                   {(profileCapabilities[item.profile.id] ?? item.profile.capabilities).includes("tool_use") && <p className="muted">开启后，该 Profile 的模型都会进入工具调用候选；Work 文件授权仍会单独测试你选择的模型。</p>}
                   <div className="button-row">
                     <button className="button button-secondary" type="button" disabled={busy || JSON.stringify([...(profileCapabilities[item.profile.id] ?? item.profile.capabilities)].sort()) === JSON.stringify([...item.profile.capabilities].sort())} onClick={() => void saveProfileCapabilities(item)}>保存能力</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => void saveProfileCapabilities(item)}>保存模型设置</button>
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>刷新模型列表</button>
                     <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>
                   </div>

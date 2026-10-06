@@ -98,6 +98,44 @@ def test_work_uses_model_and_history_for_questions_without_actions(service, monk
     execute.assert_not_called()
 
 
+def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
+    service, source_root, monkeypatch
+):
+    subject = source_root / "FunImg" / "sub-01"
+    subject.mkdir(parents=True)
+    (subject / "rest.nii").write_bytes((348).to_bytes(4, "little") + b"\0" * 344)
+    response = generated("conversation", answer="建议使用 FunImg 起点。")
+    response = response.__class__(
+        **{
+            **response.__dict__,
+            "response": response.response.model_copy(
+                update={
+                    "content": json.dumps(
+                        {
+                            "answer": "建议使用 FunImg 起点。",
+                            "action": "conversation",
+                            "recommended_input_stage": "FunImg",
+                        }
+                    )
+                }
+            ),
+        }
+    )
+    model = configure(service, monkeypatch, [response])
+    with TestClient(create_app(service=service)) as client:
+        session = create(client, source_root)
+        proposed = turn(client, session, "建议起点", "stage-propose")
+        payload = proposed["assistant_message"]["payload"]
+        command = payload["confirmation_request"]["options"][0]["command"]
+        assert "dataset" not in payload
+        confirmed = turn(client, session, command, "stage-confirm")
+        result = confirmed["assistant_message"]["payload"]
+        assert result["manifest"]["selected_input_stage"] == "FunImg"
+        assert result["dataset"]["dataset_id"]
+        assert service.repository.list_runs() == []
+        assert model.await_count == 1
+
+
 def test_work_context_exposes_only_anonymized_workspace_profile(service) -> None:
     context = service.conversation_context.work_context(
         project_id=None,
@@ -136,12 +174,21 @@ def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(servi
         first = turn(client, session, "生成方案，TR是2秒", "draft-1")
         old_hash = first["assistant_message"]["payload"]["work_draft"]["hash"]
         assert first["assistant_message"]["payload"]["plan_preview"]["kind"] == "dpabi_plan_preview"
+        decisions = first["assistant_message"]["payload"]["planning_decisions"]
+        assert "preprocessing.tr_seconds：模型建议" in first["assistant_message"]["content"]
+        assert (
+            next(
+                item for item in decisions["choices"] if item["path"] == "preprocessing.tr_seconds"
+            )["status"]
+            == "proposed"
+        )
         assert "confirmation_request" not in first["assistant_message"]["payload"]
         turn(client, session, "去掉10个时间点", "draft-2")
         third = turn(client, session, "更正，TR是3秒", "draft-3")
         stale = turn(client, session, f"确认方案参数 {old_hash[:12]}", "stale")
         draft = third["assistant_message"]["payload"]["work_draft"]["draft"]
     assert draft["preprocessing"] == {"tr_seconds": 3.0, "dummy_scans": 10}
+    assert "planning_decisions" in third["assistant_message"]["payload"]
     assert "已变化" in stale["assistant_message"]["content"]
     assert model.await_count == 3
     assert service.list_projects() == []
@@ -203,11 +250,17 @@ def test_run_confirmation_options_are_server_bound(service, source_root, work_ro
         session.conversation_id,
         user_content="prepare",
         assistant_content="review plan",
-        assistant_payload={"plan_revision": {
-            "plan_revision_id": plan.plan_revision_id, "plan_hash": plan.plan_hash,
-        }},
-        tool=None, workspace_path=None, preferred_profile_id=None,
-        project_id=project.project_id, active_run_id=None,
+        assistant_payload={
+            "plan_revision": {
+                "plan_revision_id": plan.plan_revision_id,
+                "plan_hash": plan.plan_hash,
+            }
+        },
+        tool=None,
+        workspace_path=None,
+        preferred_profile_id=None,
+        project_id=project.project_id,
+        active_run_id=None,
     )
     with TestClient(create_app(service=service)) as client:
         result = turn(client, session.conversation_id, "请提供启动选项", "options-turn")
@@ -815,3 +868,27 @@ def test_prepare_plan_from_draft_binds_registered_dataset_and_fails_closed(
     assert "方案尚未编译，也未运行" in result.assistant_content
     assert "plan_revision" not in result.payload
     assert service.repository.list_runs() == []
+
+
+def test_file_citations_keep_evidence_from_multiple_reads_of_the_same_path():
+    from neuroagent.application.contracts import WorkspaceCitation
+    from neuroagent.application.work_dialogue import _valid_workspace_citation_paths
+
+    path = "FunImg/subject-0123456789ab/scan.json"
+    calls = [
+        {
+            "tool_name": "read_workspace_content",
+            "status": "succeeded",
+            "output": {"path": path, "locators": [{"line": 58, "json_pointer": "/SliceTiming"}]},
+        },
+        {
+            "tool_name": "read_workspace_content",
+            "status": "succeeded",
+            "output": {"path": path, "locators": [{"line": 91}]},
+        },
+    ]
+    citation = WorkspaceCitation(path=path, locator="/SliceTiming")
+    assert _valid_workspace_citation_paths((citation,), {"calls": calls})
+    assert not _valid_workspace_citation_paths(
+        (WorkspaceCitation(path=path, locator="/Unobserved"),), {"calls": calls}
+    )

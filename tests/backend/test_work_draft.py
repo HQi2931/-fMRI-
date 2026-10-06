@@ -11,6 +11,7 @@ from neuroagent.application.work_draft import (
     draft_schema,
     merge_work_draft,
     plan_preview,
+    planning_decisions,
     render_draft_review,
 )
 from tests.science.conftest import preprocessing_parameters
@@ -132,6 +133,18 @@ def test_review_contains_every_nested_choice_and_hash_is_order_independent() -> 
     assert draft_hash(reordered) == draft_hash(draft)
 
 
+def test_preview_labels_prepared_t1_and_disabled_smoothing_accurately() -> None:
+    preview = plan_preview(
+        WorkDraft(
+            preprocessing={"t1": {"preparation": "prepared"}, "smoothing": {"timing": "disabled"}}
+        )
+    )
+    labels = [item["label"] for item in preview["common_steps"]]
+    assert "使用已准备的 T1 结构像" in labels
+    assert "公共功能像平滑停用" in labels
+    assert not any("裁剪" in label for label in labels)
+
+
 def test_plan_preview_keeps_alff_and_reho_checkpoints_separate() -> None:
     draft = WorkDraft(
         preprocessing={"smoothing": {"timing": "disabled"}},
@@ -155,6 +168,41 @@ def test_plan_preview_keeps_alff_and_reho_checkpoints_separate() -> None:
         "calculate_reho",
         "register_reho",
     ]
+
+
+def test_planning_decisions_separate_user_edits_suggestions_and_conflicts() -> None:
+    draft = WorkDraft(
+        preprocessing={"tr_seconds": -1, "dummy_scans": 10},
+        requested_metrics=["alff", "reho"],
+        alff_falff={"frequency_band": {"low_hz": 0.01, "high_hz": 0.08}},
+        reho={"cluster_voxels": 27},
+    )
+    report = planning_decisions(
+        draft,
+        {"preprocessing.tr_seconds": "user", "reho.cluster_voxels": "suggested"},
+    )
+    choices = {item["path"]: item for item in report["choices"]}
+    assert report["provisional"] is True
+    assert report["branches"] == ["alff_falff", "reho"]
+    assert choices["preprocessing.tr_seconds"]["status"] == "conflict"
+    assert choices["preprocessing.dummy_scans"]["status"] == "proposed"
+    assert choices["preprocessing.expected_time_points"]["status"] == "missing"
+    assert choices["reho.cluster_voxels"]["status"] == "proposed"
+    assert choices["reho.cluster_voxels"]["source"] == "suggested"
+    assert "核实" in report["note"]
+    review = render_draft_review(draft, {"reho.cluster_voxels": "suggested"})
+    assert "reho.cluster_voxels" in review and "模型建议" in review
+
+    corrected = planning_decisions(
+        WorkDraft(preprocessing={"tr_seconds": 2.0}),
+        {"preprocessing.tr_seconds": "user"},
+    )
+    assert (
+        next(item for item in corrected["choices"] if item["path"] == "preprocessing.tr_seconds")[
+            "status"
+        ]
+        == "user_draft"
+    )
 
 
 def test_plan_preview_survives_partial_or_malformed_nested_draft() -> None:

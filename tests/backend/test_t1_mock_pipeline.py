@@ -1,7 +1,6 @@
 """Approved automatic T1 workflow, with optional inspection and no interim approval."""
 
 import hashlib
-from pathlib import Path
 
 import pytest
 
@@ -16,7 +15,6 @@ from neuroagent.application.contracts import (
     SkillPlanResolveRequest,
     WorkflowState,
 )
-from neuroagent.application.t1_preparation import T1PreparationRunCreate
 from neuroagent.bootstrap import build_worker
 
 from .conftest import make_bids_dataset, make_project
@@ -104,7 +102,6 @@ def test_automatic_t1_mock_pipeline_requires_no_interim_review(service, approved
         expected_plan_hash=plan.plan_hash,
         qc_mode=QcExecutionMode.SKIP,
     )
-    assert request.t1_preparation_run_id is None
     run = service.create_run(request, "automatic-t1-run")
     worker = build_worker(service)
     assert worker.run_once()
@@ -114,10 +111,6 @@ def test_automatic_t1_mock_pipeline_requires_no_interim_review(service, approved
     anatomy = [a for a in artifacts if a.artifact_type == "preprocessing.t1_prepared"]
     assert len(anatomy) == len(manifest.subjects)
     assert all(a.provenance["non_scientific"] is True for a in anatomy)
-    review = service.get_t1_preparation_review(run.run_id)
-    assert review.approved is False
-    assert review.non_scientific is True
-    assert set(review.subject_artifacts) == {s.subject_id for s in manifest.subjects}
     assert {
         p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in source.rglob("*")
@@ -127,21 +120,3 @@ def test_automatic_t1_mock_pipeline_requires_no_interim_review(service, approved
     assert not any(
         e.event_type == "T1PreparationReviewed" for e in service.repository.list_events(run.run_id)
     )
-
-
-def test_optional_standalone_mock_preparation_has_inspection_files(service, approved_t1_plan):
-    project, plan, manifest, _source, _before = approved_t1_plan
-    run = service.create_t1_preparation_run(
-        plan.plan_revision_id,
-        T1PreparationRunCreate(project_id=project.project_id, expected_plan_hash=plan.plan_hash),
-        "optional-t1-prep",
-    )
-    assert build_worker(service).run_once()
-    review = service.get_t1_preparation_review(run.run_id)
-    assert review.subject_ids == tuple(s.subject_id for s in manifest.subjects)
-    for mapping in review.subject_artifacts.values():
-        path, media_type = service.t1_preparation_preview_path(
-            run.run_id, mapping["review_image_artifact_id"]
-        )
-        assert path.is_file() and media_type == "image/png"
-        assert path.is_relative_to(Path(project.work_root))

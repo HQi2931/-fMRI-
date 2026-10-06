@@ -288,3 +288,11 @@ class OutboundContextPolicy:
     def _pseudonym(self, source_id: str) -> str:
         digest = hmac.new(self._salt, source_id.encode("utf-8"), hashlib.sha256).hexdigest()
         return f"subject-{digest[:12]}"
+
+    def workspace_component_alias(self, component: str) -> str:
+        """Stable opaque handles for names altered by the outbound policy."""
+        sanitized = self.redact_tool_result({"name": component}).payload.get("name")
+        if sanitized == component:
+            return component
+        digest = hmac.new(self._salt, component.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"entry-{digest[:12]}"

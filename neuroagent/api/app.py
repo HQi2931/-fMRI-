@@ -55,9 +55,6 @@ def create_app(
         code: {"model": ErrorResponse} for code in (400, 403, 404, 409, 422, 500)
     }
     app.include_router(router, prefix="/api/v1", responses=shared_errors)
-    from neuroagent.api.t1_routes import router as t1_router
-
-    app.include_router(t1_router, prefix="/api/v1", responses=shared_errors)
 
     @app.middleware("http")
     async def trace_request(

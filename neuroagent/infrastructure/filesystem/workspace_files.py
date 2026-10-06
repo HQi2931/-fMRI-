@@ -166,7 +166,7 @@ class WorkspaceFilePolicy:
         self.max_document_bytes = max_document_bytes
         self.pdf_parser = PypdfParser()
 
-    def _relative(self, value: str, *, must_exist: bool = True) -> Path:
+    def _relative(self, value: str, *, must_exist: bool = True, require_file: bool = True) -> Path:
         if (
             not value
             or "\x00" in value
@@ -194,7 +194,7 @@ class WorkspaceFilePolicy:
                 raise InputValidationError(
                     "workspace_symlink_forbidden", "不允许读取符号链接文件。"
                 )
-        if must_exist and not target.is_file():
+        if must_exist and require_file and not target.is_file():
             raise InputValidationError("workspace_file_required", "目标不是普通文件。")
         return target
 
@@ -215,7 +215,7 @@ class WorkspaceFilePolicy:
     ) -> dict[str, Any]:
         if limit < 1 or limit > 1000 or offset < 0:
             raise InputValidationError("workspace_listing_limit_invalid", "文件列表分页参数无效。")
-        base = self.root if not directory else self._relative(directory, must_exist=True)
+        base = self.root if not directory else self._relative(directory, require_file=False)
         if not base.is_dir():
             raise InputValidationError("workspace_directory_required", "目录参数不是目录。")
         entries: list[dict[str, Any]] = []
@@ -244,6 +244,29 @@ class WorkspaceFilePolicy:
             "next_offset": offset + limit if offset + limit < len(entries) else None,
         }
 
+    def read_image_metadata(self, relative: str) -> dict[str, Any]:
+        """Read only numerical NIfTI header facts, never descriptive text or voxels."""
+        from neuroagent.infrastructure.filesystem.nifti_header import read_nifti_header
+
+        path = self._relative(relative)
+        if self._excluded(path.relative_to(self.root), False):
+            raise InputValidationError("workspace_path_excluded", "该路径位于默认排除目录。")
+        if not path.name.lower().endswith((".nii", ".nii.gz")):
+            raise InputValidationError(
+                "workspace_image_format_invalid", "只支持 NIfTI 数值头信息。"
+            )
+        header = read_nifti_header(path)
+        return {
+            "path": relative,
+            "format": "image_header",
+            "dimensions": [header.nx, header.ny, header.nz],
+            "volume_count": header.volume_count,
+            "tr_seconds": header.tr_seconds,
+            "voxel_size_mm": list(header.pixdim_mm),
+            "datatype": header.datatype,
+            "locators": [{"section": "fixed_numeric_header"}],
+        }
+
     def _check_file(self, relative: str, *, include_excluded: bool = False) -> Path:
         path = self._relative(relative)
         rel = path.relative_to(self.root)
@@ -253,7 +276,11 @@ class WorkspaceFilePolicy:
             raise InputValidationError("workspace_file_required", "目标不是普通文件。")
         file_size = path.stat().st_size
         kind = self.classify(path)
-        size_limit = self.max_text_bytes if kind in {"text", "json", "jsonl", "csv", "tsv"} else self.max_document_bytes
+        size_limit = (
+            self.max_text_bytes
+            if kind in {"text", "json", "jsonl", "csv", "tsv"}
+            else self.max_document_bytes
+        )
         if file_size > size_limit:
             raise InputValidationError("workspace_file_too_large", "文件超过读取大小限制。")
         if kind is None:
@@ -313,7 +340,9 @@ class WorkspaceFilePolicy:
         try:
             text = path.read_text(encoding="utf-8-sig", errors="strict")
             if "\x00" in text:
-                raise InputValidationError("workspace_binary_content", "文件包含 NUL 字节，不能按文本读取。")
+                raise InputValidationError(
+                    "workspace_binary_content", "文件包含 NUL 字节，不能按文本读取。"
+                )
             return text
         except UnicodeDecodeError as exc:
             raise InputValidationError(
@@ -349,7 +378,9 @@ class WorkspaceFilePolicy:
             selected = lines[start - 1 : end]
             clean, redactions, omitted = self.sanitize_text("\n".join(selected))
             locators = _json_locators(raw, document, start, end)
-            return WorkspaceRead(relative, kind, clean, tuple(locators), digest, redactions, omitted)
+            return WorkspaceRead(
+                relative, kind, clean, tuple(locators), digest, redactions, omitted
+            )
         if kind == "jsonl":
             raw = self._read_text(path)
             lines = raw.splitlines()
@@ -369,14 +400,18 @@ class WorkspaceFilePolicy:
                     selected.append(line)
                     locators.append({"line": index, "record": index, "json_pointer": "/"})
             clean, redactions, omitted = self.sanitize_text("\n".join(selected))
-            return WorkspaceRead(relative, kind, clean, tuple(locators), digest, redactions, omitted)
+            return WorkspaceRead(
+                relative, kind, clean, tuple(locators), digest, redactions, omitted
+            )
         if kind in {"csv", "tsv"}:
             raw = self._read_text(path)
             delimiter = "\t" if kind == "tsv" else ","
             try:
                 rows = list(csv.reader(io.StringIO(raw), delimiter=delimiter, strict=True))
             except csv.Error as exc:
-                raise InputValidationError("workspace_csv_parse_failed", "CSV/TSV 语法错误。") from exc
+                raise InputValidationError(
+                    "workspace_csv_parse_failed", "CSV/TSV 语法错误。"
+                ) from exc
             header = rows[0] if rows else []
             selected_rows = rows[start - 1 : end]
             rendered = ["\t".join(row) for row in selected_rows]
@@ -526,7 +561,9 @@ class WorkspaceFilePolicy:
             grouped.setdefault(relative, []).append(item)
             replacement = str(item.get("replacement", ""))
             if "\x00" in replacement:
-                raise InputValidationError("workspace_binary_content", "补丁内容不能包含 NUL 字节。")
+                raise InputValidationError(
+                    "workspace_binary_content", "补丁内容不能包含 NUL 字节。"
+                )
             total += len(replacement.encode("utf-8"))
         if total > max_bytes:
             raise InputValidationError("workspace_patch_too_large", "补丁超过大小限制。")
@@ -535,17 +572,23 @@ class WorkspaceFilePolicy:
         for relative, file_edits in grouped.items():
             expected_values = {item.get("expected_sha256") for item in file_edits}
             if len(expected_values) != 1:
-                raise InputValidationError("workspace_patch_hash_mismatch", "同一文件的原文件哈希必须一致。")
+                raise InputValidationError(
+                    "workspace_patch_hash_mismatch", "同一文件的原文件哈希必须一致。"
+                )
             expected = next(iter(expected_values))
             if expected is None:
                 if len(file_edits) != 1:
-                    raise InputValidationError("workspace_new_file_multiple_edits", "新文件只能有一个完整内容编辑块。")
+                    raise InputValidationError(
+                        "workspace_new_file_multiple_edits", "新文件只能有一个完整内容编辑块。"
+                    )
                 target = self._relative(relative, must_exist=False)
                 if target.exists():
                     raise ConflictError("workspace_new_file_exists", "新建文件目标已经存在。")
                 suffix = Path(relative).suffix.casefold()
                 if suffix and suffix not in WRITABLE_SUFFIXES:
-                    raise InputValidationError("workspace_format_read_only", "该文件格式只能读取，不能修改。")
+                    raise InputValidationError(
+                        "workspace_format_read_only", "该文件格式只能读取，不能修改。"
+                    )
                 if not target.parent.is_dir() or target.parent.is_symlink():
                     raise InputValidationError("workspace_parent_invalid", "新文件父目录无效。")
                 before = ""
@@ -554,7 +597,9 @@ class WorkspaceFilePolicy:
                 target = self._check_file(relative)
                 kind = self.classify(target)
                 if kind not in {"text", "json", "jsonl", "csv", "tsv"}:
-                    raise InputValidationError("workspace_format_read_only", "该文件格式只能读取，不能修改。")
+                    raise InputValidationError(
+                        "workspace_format_read_only", "该文件格式只能读取，不能修改。"
+                    )
                 if sha256_file(target) != expected:
                     raise ConflictError("workspace_file_changed", "文件已变化，补丁需要重新生成。")
                 before = self._read_text(target)
@@ -613,7 +658,9 @@ class WorkspaceFilePolicy:
                     if not existed or sha256_file(path) != expected:
                         raise ConflictError("workspace_file_changed", "文件已变化，补丁未应用。")
                     if self.classify(path) not in {"text", "json", "jsonl", "csv", "tsv"}:
-                        raise InputValidationError("workspace_format_read_only", "该文件格式只能读取，不能修改。")
+                        raise InputValidationError(
+                            "workspace_format_read_only", "该文件格式只能读取，不能修改。"
+                        )
                 else:
                     suffix = Path(relative).suffix.casefold()
                     if suffix and suffix not in WRITABLE_SUFFIXES:
@@ -684,9 +731,7 @@ def _read_docx_paragraphs(
         for row_index, row in enumerate(table.rows, start=1):
             cells = [cell.text.strip() for cell in row.cells]
             pieces.append(f"[table {table_index}, row {row_index}]\n" + "\t".join(cells))
-            locators.append(
-                {"table": table_index, "row": row_index, "columns": len(cells)}
-            )
+            locators.append({"table": table_index, "row": row_index, "columns": len(cells)})
     return pieces, locators
 
 
@@ -709,9 +754,7 @@ def _apply_line_edits(before: str, edits: list[dict[str, Any]]) -> str:
     return "".join(result)
 
 
-def _json_locators(
-    raw: str, document: Any, start: int, end: int
-) -> list[dict[str, Any]]:
+def _json_locators(raw: str, document: Any, start: int, end: int) -> list[dict[str, Any]]:
     """Return conservative source-line/JSON-Pointer evidence for JSON.
 
     JSON parsers do not retain source positions.  We therefore associate object
@@ -730,7 +773,11 @@ def _json_locators(
                 escaped = str(key).replace("~", "~0").replace("/", "~1")
                 key_pattern = re.compile(rf"[\"']{re.escape(str(key))}[\"']\s*:")
                 found = next(
-                    (index for index in range(cursor, len(lines)) if key_pattern.search(lines[index])),
+                    (
+                        index
+                        for index in range(cursor, len(lines))
+                        if key_pattern.search(lines[index])
+                    ),
                     cursor,
                 )
                 child_pointer = f"{pointer}/{escaped}" if pointer else f"/{escaped}"

@@ -18,7 +18,8 @@
 - DPABI 原位续跑读取冻结 manifest 的 `selected_input_stage`；`FunImgAR`、`FunImgARW`、`FunImgARWS` 等已核验 checkpoint 会关闭相应已完成步骤，禁止重复 dummy-volume 删除，并在运行前核对伴随文件哈希。头动 QC provenance 会区分 `prior_checkpoint` 与 `current_execution`。缺少显式阶段、步骤冲突或输出目录碰撞时失败关闭。
 - 统计软件证据来自运行时 MATLAB/SPM 版本和 DPABI 源码 Release 标记；效应量使用冻结设计矩阵的对比方差，见 [ADR 0007](../../docs/adr/0007-adjusted-statistical-effects.md)。
 - 指标影像与掩膜通过 DPABI `y_ReadRPI` 做相同轴方向规范化后核对维度和物理网格；仅做轴翻转，不重采样。
+- `dpabi_auto` 登记本次 `EffectiveCfg.MaskFileForEachSubject` 指定的实际指标掩膜。标准化后使用与指标同空间的 DPABI 掩膜，不将原生空间 `AutoMasks` 文件冒充指标计算掩膜；缺少实际掩膜时阻断登记。
 
 每次 MATLAB 作业必须使用独立运行目录。真实运行只接受验证后的结构化 JobSpec，且需调用方显式授权。常规测试不启动 MATLAB；明确 opt-in 的仓库外小型合成 smoke 记录在 [验证文档](../../docs/development/mvp-verification.md)。预处理当前限单会话 4D 输入，metric-only 限单主体；需要不同阶段掩膜的 OnResults normalization 与组合指标方案暂时拒绝。
 
-T1 准备默认作为同一个已批准预处理作业的第一阶段自动执行，没有中途审查或额外批准。仅在 staging 副本上通过固定且引用完整路径的模板调用 DPABI 所附 legacy dcm2nii 重定向/裁剪工具，验证真实新建裁剪输出和 3D 头信息，保留原始影像；不使用当前源码中与旧参数不兼容的 dcm2niix 包装器。可选 PNG 三视图标注体素轴、世界坐标仿射和原点十字线，供结果检查。Segment/New Segment 与标准化分开建模，DARTEL 要求 New Segment；固定模板验证组织图、DARTEL 输入、形变场与六级模板，登记冻结集合谱系，始终关闭 GUI。高级独立准备接口仍可供显式分阶段操作。真实 T1/DARTEL 路径尚未经过 MATLAB smoke 验证。
+T1 准备默认作为同一个已批准预处理作业的第一阶段自动执行，没有中途审查或额外批准。仅在 staging 副本上通过固定且引用完整路径的模板调用 DPABI 所附 legacy dcm2nii 重定向/裁剪工具，验证真实新建裁剪输出和 3D 头信息，保留原始影像；不使用当前源码中与旧参数不兼容的 dcm2niix 包装器。可选 PNG 三视图标注体素轴、世界坐标仿射和原点十字线，供结果检查。Segment/New Segment 与标准化分开建模，DARTEL 要求 New Segment；固定模板验证组织图、DARTEL 输入、形变场与六级模板，登记冻结集合谱系，始终关闭 GUI。所有已选择的预处理与指标步骤由同一次 `DPARSFA_run` 执行，结束后统一登记最终产物；不在 T1 阶段单独暂停。真实 T1/DARTEL 路径尚未经过 MATLAB smoke 验证。

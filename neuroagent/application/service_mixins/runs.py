@@ -68,7 +68,6 @@ class RunMixin(BaseServiceMixin):
     _require_plan_current: Callable[..., None]
     _statistics_view: Callable[..., StatisticalDesignView]
     _require_skill_parameter_schema: Callable[..., None]
-    resolve_reviewed_t1_bindings: Callable[..., tuple[dict[str, object], ...]]
 
     def create_run(self, request: RunCreate, idempotency_key: str) -> RunView:
         self._validate_execution_backend(
@@ -102,15 +101,6 @@ class RunMixin(BaseServiceMixin):
                     received=request.expected_plan_hash,
                 )
             self._require_plan_current(plan, verify_source_files=False)
-            reviewed_t1_bindings = None
-            if request.t1_preparation_run_id is not None:
-                manifest = self.repository.get_manifest(str(plan.plan["dataset_manifest_id"]))
-                reviewed_t1_bindings = self.resolve_reviewed_t1_bindings(
-                    request.t1_preparation_run_id,
-                    plan.manifest_hash,
-                    tuple(subject.subject_id for subject in manifest.subjects),
-                    allow_non_scientific=request.execution_backend is ExecutionBackend.MOCK,
-                )
             payload: dict[str, object] = {
                 "outcome": request.mock_outcome.value,
                 "delay_ms": request.mock_delay_ms,
@@ -129,9 +119,6 @@ class RunMixin(BaseServiceMixin):
             }
             if plan.plan.get("skill_plan"):
                 payload["workflow_plan"] = plan.plan["skill_plan"]
-            if reviewed_t1_bindings is not None:
-                payload["reviewed_t1_bindings"] = list(reviewed_t1_bindings)
-                payload["t1_preparation_run_id"] = request.t1_preparation_run_id
             if plan.state is PlanState.APPROVED:
                 payload["approval_record_id"] = self.repository.get_approved_plan_approval(
                     plan.plan_revision_id

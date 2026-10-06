@@ -108,7 +108,8 @@
 - [ADR 0017：DPABI 阶段由模型建议、用户确认与服务端冻结](adr/0017-explicit-dpabi-stage-selection.md)
 - [ADR 0018：工作区文件授权验证具体模型工具能力](adr/0018-workspace-tool-probe-and-consent-revision.md)
 - [ADR 0019：对话正文流式预览与事务收口](adr/0019-conversation-streaming.md)
-- [ADR 0020：DPARSF 参数面板与 T1 准备审查](adr/0020-dparsf-draft-and-t1-review.md)
+- [ADR 0020：DPARSF 参数面板与 T1 准备审查（已被 ADR 0021 取代）](adr/0020-dparsf-draft-and-t1-review.md)
+- [ADR 0021：DPABI 预处理单次运行](adr/0021-single-pass-dpabi-preprocessing.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

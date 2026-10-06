@@ -87,9 +87,10 @@ class MockJobExecutor:
             return ExecutionResult(
                 status="failed_terminal", error="requested executor type is not registered"
             )
-
         if payload.get("operation") == "t1_preparation":
-            return self._prepare_synthetic_t1(payload, is_cancelled)
+            return ExecutionResult(
+                status="failed_terminal", error="standalone T1 preparation is no longer supported"
+            )
 
         workflow_payload = payload.get("workflow_plan")
         if workflow_payload is not None:
@@ -243,7 +244,7 @@ class MockJobExecutor:
             header[344:348] = b"n+1\0"
             image = directory / "coSYNTHETIC_NON_SCIENTIFIC.nii"
             image.write_bytes(header)
-            preview = directory / "review.png"
+            preview = directory / "inspection.png"
             preview.write_bytes(
                 base64.b64decode(
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6X8AAAAASUVORK5CYII="
@@ -252,13 +253,13 @@ class MockJobExecutor:
             row = {
                 "subject_id": subject.subject_id,
                 "relative_path": image.relative_to(attempt).as_posix(),
-                "review_image": preview.relative_to(attempt).as_posix(),
+                "inspection_image": preview.relative_to(attempt).as_posix(),
                 "metadata": metadata,
             }
             outputs.append(row)
             for path, role in (
                 (image, "preprocessing.t1_prepared"),
-                (preview, "preprocessing.t1_review_image"),
+                (preview, "preprocessing.t1_inspection_image"),
             ):
                 artifacts.append(
                     {
@@ -285,7 +286,7 @@ class MockJobExecutor:
                 {
                     "operation": "t1_preparation",
                     "subjects": [s.subject_id for s in manifest.subjects],
-                    "requires_human_review": True,
+                    "inspection_only": True,
                     "outputs": outputs,
                     "non_scientific": True,
                 }

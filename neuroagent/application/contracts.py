@@ -401,7 +401,6 @@ class QcExecutionMode(StrEnum):
 
 
 class RunCreate(StrictModel):
-    t1_preparation_run_id: str | None = Field(default=None, min_length=1, max_length=64)
     project_id: str
     plan_revision_id: str
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

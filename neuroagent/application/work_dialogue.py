@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from neuroagent.agent.gateway import ChatGatewayResult
+from neuroagent.agent.providers import ProviderTimeoutError
 from neuroagent.application.contracts import (
     ConversationAction,
     ConversationTurnCreate,
@@ -33,6 +34,7 @@ from neuroagent.application.work_draft import (
     draft_schema,
     merge_work_draft,
     plan_preview,
+    planning_decisions,
     render_draft_review,
 )
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
@@ -162,7 +164,9 @@ def _valid_workspace_citation_paths(
         if not isinstance(path, str):
             continue
         locators = output.get("locators") or []
-        evidence[path] = [locator for locator in locators if isinstance(locator, dict)]
+        evidence.setdefault(path, []).extend(
+            locator for locator in locators if isinstance(locator, dict)
+        )
     if read_seen and not citations:
         return False
     for citation in citations:
@@ -239,12 +243,7 @@ def _work_failure_details(
     else:
         diagnostic["code"] = "work_draft_invalid"
         reason = "原因：模型提出的动作或参数草稿未通过校验，请重新说明需求。"
-    if (
-        finish == "length"
-        and stage == "response_validation"
-        and isinstance(exc, ValidationError)
-        and any(issue["type"] == "json_invalid" for issue in exc.errors(include_input=False))
-    ):
+    if finish == "length" and stage == "response_validation":
         diagnostic["code"] = "work_response_truncated"
         reason = "原因：模型输出达到 token 上限，返回内容不完整。请在模型设置中提高输出上限后重试。"
     cause: BaseException | None = exc
@@ -322,29 +321,51 @@ class WorkDialogue:
             if self.confirm_workspace_stage is None or not workspace_path:
                 return reply("当前服务不能确认工作区起始阶段。")
             dataset_payload = latest_payload(conversation, "dataset")
-            if not dataset_payload or not dataset_payload.get("dataset_id"):
-                return reply("请先登记工作区，再确认 DPABI 起始阶段。")
             candidates = list(packet.work_context.get("workspace_stage_candidates", []))
             stage = stage_confirmation[1]
             token = stage_confirmation[2]
 
             def commit_stage() -> WorkActionResult:
+                expected_token = self.coordinator.stage_confirmation_token(
+                    workspace_path, candidates
+                )
+                if token != expected_token[:12]:
+                    return reply("工作区候选已变化，请重新审查并确认起始阶段。")
+                registration_payload: dict[str, Any] = {}
+                bound_project_id = project_id
+                bound_dataset = dataset_payload
+                if not bound_dataset or not bound_dataset.get("dataset_id"):
+                    # The exact user command authorizes both registration and
+                    # stage selection; model suggestions never reach this path.
+                    registered = self.coordinator.register_workspace_for_stage_confirmation(
+                        request,
+                        workspace_path=workspace_path,
+                        conversation_id=conversation.conversation_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    registration_payload.update(registered.payload)
+                    bound_project_id = registered.project_id
+                    bound_dataset = registration_payload.get("dataset")
+                    if not bound_dataset:
+                        return registered
                 manifest = self.confirm_workspace_stage(
-                    dataset_id=str(dataset_payload["dataset_id"]),
+                    dataset_id=str(bound_dataset["dataset_id"]),
                     workspace_path=workspace_path,
                     selected_input_stage=stage,
-                    token=token,
+                    token=expected_token,
                     idempotency_key=idempotency_key,
                 )
                 return replace(
                     reply(
                         f"已确认 DPABI 起始阶段 {stage}。现在可以继续整理预处理参数。",
                         {
+                            **registration_payload,
                             "manifest": manifest.model_dump(mode="json"),
                             "selected_input_stage": stage,
+                            "stage_selection_required": False,
                         },
                     ),
-                    project_id=project_id,
+                    project_id=bound_project_id,
                 )
 
             return replace(reply(""), commit=commit_stage)
@@ -484,6 +505,7 @@ class WorkDialogue:
             )
 
         model_metadata: dict[str, Any] = {}
+        loop_metadata: dict[str, Any] | None = None
         failure_stage = "context"
         try:
             model_context: dict[str, Any] = {
@@ -496,6 +518,7 @@ class WorkDialogue:
                 "work_context": {
                     **packet.work_context,
                     "parameter_draft": draft.model_dump(mode="json", exclude={"confirmed_hash"}),
+                    "planning_decisions": planning_decisions(draft, (saved or {}).get("sources")),
                     "draft_schema": draft_schema(),
                 },
                 "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
@@ -547,7 +570,17 @@ class WorkDialogue:
                 ),
             )
             model_metadata = metadata
+            if metadata.get("stop_reason") in {"provider_timeout", "budget_time"}:
+                raise ApplicationError(
+                    "work_model_timeout", "模型工具阶段超时。", status_code=503
+                ) from ProviderTimeoutError("provider tool loop deadline exceeded")
+            if metadata.get("stop_reason") in {"provider_error", "cancelled"}:
+                raise ApplicationError(
+                    "work_model_unavailable", "模型工具阶段失败；未重复请求。", status_code=503
+                )
             failure_stage = "response_validation"
+            if metadata.get("finish_reason") == "length":
+                raise ApplicationError("work_response_truncated", "模型输出不完整。")
             interpreted = WorkInterpretation.model_validate_json(raw_content)
             failure_stage = "draft_validation"
             payload: dict[str, Any] = {"model": metadata}
@@ -617,8 +650,6 @@ class WorkDialogue:
                         "questions": list(interpreted.stage_questions),
                         "confirmation_command": (
                             f"确认起始阶段 {interpreted.recommended_input_stage} {token[:12]}"
-                            if latest_payload(conversation, "dataset")
-                            else None
                         ),
                     }
                     self.coordinator.record_workspace_stage_recommendation(
@@ -631,7 +662,7 @@ class WorkDialogue:
                         questions=list(interpreted.stage_questions),
                     )
                     next_step = (
-                        "登记工作区后，再原样回复服务端签发的确认口令。"
+                        "确认后将登记当前工作区、冻结文件清单并选择此起点。"
                         if latest_payload(conversation, "dataset") is None
                         else (
                             "请审查候选目录和依据后，原样回复："
@@ -648,7 +679,7 @@ class WorkDialogue:
                             "options": [
                                 {
                                     "label": f"使用 {interpreted.recommended_input_stage}",
-                                    "description": "确认当前输入阶段，继续准备方案。",
+                                    "description": "登记当前工作区并确认输入阶段，继续准备方案。",
                                     "command": stage_command,
                                 }
                             ],
@@ -710,16 +741,18 @@ class WorkDialogue:
             if interpreted.action == "prepare_preprocessing_plan":
                 draft = merge_work_draft(draft, interpreted.draft_patch)
                 issues = draft_issues(draft)
-                review = render_draft_review(draft)
+                sources = _draft_sources(saved, interpreted.draft_patch)
+                review = render_draft_review(draft, sources)
                 payload["work_draft"] = {
                     "draft": draft.model_dump(mode="json"),
                     "hash": draft_hash(draft),
                     "workspace_path": workspace_path,
                     "compiled": False,
-                    "sources": _draft_sources(saved, interpreted.draft_patch),
+                    "sources": sources,
                 }
                 payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
+                payload["planning_decisions"] = planning_decisions(draft, sources)
                 if issues:
                     suffix = "\n\n仍需补充或修正：\n" + "\n".join(issues)
                 else:
@@ -815,7 +848,10 @@ class WorkDialogue:
                 + "\n\n"
                 + reason
                 + "\n原有对话和草稿仍保留。",
-                {"model_error": diagnostic},
+                {
+                    "model_error": diagnostic,
+                    **({"tool_loop": loop_metadata} if loop_metadata is not None else {}),
+                },
             )
 
     async def _interpret(
@@ -849,6 +885,26 @@ class WorkDialogue:
                 max_output_tokens=int(model_context.get("max_output_tokens", 2_048)),
             )
             loop_metadata = _work_loop_metadata(looped)
+            if looped.stop_reason in {
+                "provider_timeout",
+                "budget_time",
+                "provider_error",
+                "cancelled",
+            }:
+                return "", {"stop_reason": looped.stop_reason, "usage": looped.usage}, loop_metadata
+            if looped.finish_reason == "length":
+                # Never spend another complete request repeating a known
+                # completion-budget failure. Response validation records it.
+                return (
+                    looped.final_text,
+                    {
+                        "profile_id": looped.profile_id,
+                        "model": looped.model,
+                        "finish_reason": looped.finish_reason,
+                        "usage": looped.usage,
+                    },
+                    loop_metadata,
+                )
             if looped.final_text.strip():
                 metadata = {
                     "profile_id": looped.profile_id,
@@ -869,6 +925,11 @@ class WorkDialogue:
             for key, value in model_context.items()
             if key not in {"context_window_tokens", "max_output_tokens"}
         }
+        if loop_metadata is not None:
+            fallback_context["question"] = str(fallback_context["question"]) + (
+                "\n本轮只重试一次结构化回复：返回简洁的 answer、action 和增量 draft_patch，"
+                "省略没有内容的可选字段。"
+            )
         generated = await self.generate(
             **fallback_context,
             evidence=[],

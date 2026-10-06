@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.models import ModelCapability, ModelProfile, ProviderResponse, ToolCall
-from neuroagent.agent.providers import MockProvider
+from neuroagent.agent.providers import MockProvider, ProviderTimeoutError
 from neuroagent.api.app import create_app
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
@@ -195,7 +195,7 @@ def test_work_tool_loop_answers_in_the_json_contract(
 
     single_shot.assert_not_called()
     # The read catalog was offered, and the tool-gathering turn carried no JSON mode.
-    assert provider.tool_requests[0] == _WORK_CATALOG
+    assert provider.tool_requests[0] == tuple(sorted((*_WORK_CATALOG, "get_run_diagnosis")))
 
     payload = body["assistant_message"]["payload"]
     loop = payload["tool_loop"]
@@ -282,6 +282,28 @@ def test_work_loop_falls_back_when_the_answer_is_not_json(
     # The fallback is single-shot, but the attempted loop remains auditable.
     assert body["assistant_message"]["payload"]["tool_loop"]["fallback_candidate"] is False
     assert body["assistant_message"]["payload"]["tool_loop"]["calls"] == []
+
+
+def test_work_timeout_preserves_draft_without_repeating_provider_request(
+    tmp_path, source_root, monkeypatch
+):
+    monkeypatch.setenv("WORK_TOOL_API_KEY", "test-secret")
+    provider = MockProvider([ProviderTimeoutError("synthetic timeout")])
+    service = _service(tmp_path, source_root, provider)
+    fallback = AsyncMock(side_effect=AssertionError("timeout must not trigger a second request"))
+    monkeypatch.setattr(service, "_generate_rsfmri_chat", fallback)
+    try:
+        service.repository.create_model_profile(
+            _profile(ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE)
+        )
+        with TestClient(create_app(service=service)) as client:
+            result = _turn(client, service, "work-loop-timeout")
+    finally:
+        service.close()
+    fallback.assert_not_called()
+    assert len(provider.requests) == 1
+    assert result["assistant_message"]["payload"]["model_error"]["provider_timeout"] is True
+    assert "未执行任务" in result["assistant_message"]["content"]
 
 
 def test_work_uses_single_shot_when_the_profile_lacks_tool_use(

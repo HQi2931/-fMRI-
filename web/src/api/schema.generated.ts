@@ -690,23 +690,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/plans/{plan_revision_id}/t1-preparation-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create T1 Preparation Run */
-        post: operations["create_t1_preparation_run_api_v1_plans__plan_revision_id__t1_preparation_runs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -1026,41 +1009,6 @@ export interface paths {
         put?: never;
         /** Retry Run */
         post: operations["retry_run_api_v1_runs__run_id__retry_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/runs/{run_id}/t1-preparation-artifacts/{artifact_id}/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** T1 Preparation Preview */
-        get: operations["t1_preparation_preview_api_v1_runs__run_id__t1_preparation_artifacts__artifact_id__preview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/runs/{run_id}/t1-preparation-review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get T1 Preparation Review */
-        get: operations["get_t1_preparation_review_api_v1_runs__run_id__t1_preparation_review_get"];
-        put?: never;
-        /** Review T1 Preparation */
-        post: operations["review_t1_preparation_api_v1_runs__run_id__t1_preparation_review_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2563,6 +2511,12 @@ export interface components {
             /** Provider */
             provider: string;
             /**
+             * Thinking Mode
+             * @default provider_default
+             * @enum {string}
+             */
+            thinking_mode: "provider_default" | "disabled";
+            /**
              * Timeout Seconds
              * @default 45
              */
@@ -3358,8 +3312,6 @@ export interface components {
              * @default false
              */
             real_execution_confirmed: boolean;
-            /** T1 Preparation Run Id */
-            t1_preparation_run_id?: string | null;
             /** @default isolated */
             workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
         };
@@ -4002,82 +3954,6 @@ export interface components {
          * @enum {string}
          */
         T1Preparation: "reorient_crop" | "prepared";
-        /** T1PreparationReviewCreate */
-        T1PreparationReviewCreate: {
-            /** Actor */
-            actor: string;
-            /** Approved */
-            approved: boolean;
-            /** Crop Confirmed */
-            crop_confirmed: boolean;
-            /** Evidence Hash */
-            evidence_hash: string;
-            /** Expected Run Version */
-            expected_run_version: number;
-            /** Orientation Confirmed */
-            orientation_confirmed: boolean;
-            /** Origin Confirmed */
-            origin_confirmed: boolean;
-            /** Reason */
-            reason: string;
-        };
-        /** T1PreparationReviewView */
-        T1PreparationReviewView: {
-            /**
-             * Approved
-             * @default false
-             */
-            approved: boolean;
-            /** Artifact Ids */
-            artifact_ids: string[];
-            /** Evidence Hash */
-            evidence_hash: string;
-            /** Manifest Hash */
-            manifest_hash: string;
-            /**
-             * Non Scientific
-             * @default false
-             */
-            non_scientific: boolean;
-            /** Review Record Id */
-            review_record_id?: string | null;
-            /** Run Id */
-            run_id: string;
-            /** Subject Artifacts */
-            subject_artifacts?: {
-                [key: string]: {
-                    [key: string]: string;
-                };
-            };
-            /** Subject Ids */
-            subject_ids: string[];
-        };
-        /** T1PreparationRunCreate */
-        T1PreparationRunCreate: {
-            /** @default mock */
-            execution_backend: components["schemas"]["ExecutionBackend"];
-            /** Expected Plan Hash */
-            expected_plan_hash: string;
-            /**
-             * Max Attempts
-             * @default 1
-             */
-            max_attempts: number;
-            /**
-             * Mock Delay Ms
-             * @default 0
-             */
-            mock_delay_ms: number;
-            /** @default succeed */
-            mock_outcome: components["schemas"]["MockOutcome"];
-            /** Project Id */
-            project_id: string;
-            /**
-             * Real Execution Confirmed
-             * @default false
-             */
-            real_execution_confirmed: boolean;
-        };
         /**
          * T1Segmentation
          * @enum {string}
@@ -8055,88 +7931,6 @@ export interface operations {
             };
         };
     };
-    create_t1_preparation_run_api_v1_plans__plan_revision_id__t1_preparation_runs_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                plan_revision_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["T1PreparationRunCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RunView"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     list_projects_api_v1_projects_get: {
         parameters: {
             query?: never;
@@ -9745,241 +9539,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    t1_preparation_preview_api_v1_runs__run_id__t1_preparation_artifacts__artifact_id__preview_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-                artifact_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    get_t1_preparation_review_api_v1_runs__run_id__t1_preparation_review_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["T1PreparationReviewView"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    review_t1_preparation_api_v1_runs__run_id__t1_preparation_review_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["T1PreparationReviewCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["T1PreparationReviewView"];
                 };
             };
             /** @description Bad Request */

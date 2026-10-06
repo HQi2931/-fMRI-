@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import Field
-
 from neuroagent.application.contracts import (
     DatasetKind,
     ManifestRevisionView,
@@ -30,7 +28,6 @@ from neuroagent.domain.fmri.preprocessing import (
 from neuroagent.execution.models import (
     ArtifactPathBinding,
     ExpectedArtifact,
-    FrozenExecutionModel,
     MatlabJobKind,
     MatlabJobSpec,
     PreprocessingJobPayload,
@@ -48,17 +45,6 @@ from neuroagent.tools.input_staging import (
     StagingCopyOperation,
     StagingCopyPlan,
 )
-
-
-class ReviewedT1Binding(FrozenExecutionModel):
-    subject_id: str
-    artifact_id: str
-    relative_path: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    size_bytes: int = Field(gt=0)
-    source_manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    review_record_id: str = Field(min_length=1)
-    preparation_run_id: str = Field(min_length=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +68,6 @@ def compile_preprocessing(
     approval_record_id: str,
     mask_binding: ArtifactPathBinding | None,
     input_binding: ArtifactPathBinding | None = None,
-    preparation_only: bool = False,
-    reviewed_t1_bindings: tuple[ReviewedT1Binding, ...] = (),
 ) -> PreprocessingCompilation:
     """Project approved values; filesystem reads and metadata checks stay with execution.
 
@@ -189,31 +173,12 @@ def compile_preprocessing(
             NormalizationMode.T1_SEGMENT,
             NormalizationMode.DARTEL,
         }
-        if preparation_only and not needs_t1:
-            raise ValueError("T1 preparation requires an explicit structural choice")
         if (
-            not preparation_only
-            and parameters.t1 is None
+            parameters.t1 is None
             and needs_t1
             and not parameters.realignment.enabled
         ):
             raise ValueError("T1 coregistration requires realignment mean-image evidence")
-        if needs_t1 and not preparation_only and reviewed_t1_bindings:
-            if tuple(item.subject_id for item in reviewed_t1_bindings) != subject_ids:
-                raise ValueError("reviewed T1 cohort does not match frozen subject order")
-            for item in reviewed_t1_bindings:
-                name = _nifti_name(item.relative_path)
-                if item.source_manifest_hash != manifest.content_hash:
-                    raise ValueError("reviewed T1 manifest differs from approved manifest")
-                if not (name.startswith("co") or "Crop" in name) or not name.endswith(".nii"):
-                    raise ValueError("reviewed T1 must retain genuine preparation output basename")
-                bindings.append(
-                    ArtifactPathBinding(
-                        artifact_id=item.artifact_id,
-                        relative_path=f"staging/T1Img/{item.subject_id}/{name}",
-                        read_only=True,
-                    )
-                )
         if (
             parameters.normalization.mode is NormalizationMode.EPI_TEMPLATE
             and not parameters.realignment.enabled
@@ -229,15 +194,6 @@ def compile_preprocessing(
         if reho is not None and parameters.scrubbing.method is ScrubbingMethod.CUT:
             raise ValueError("CUT scrubbing requires a verified checkpoint before a ReHo plan")
         staging_plan = _staging_plan(plan, manifest, manifest_content, parameters)
-        if needs_t1 and not preparation_only and reviewed_t1_bindings:
-            operations = tuple(
-                item
-                for item in staging_plan.operations
-                if "/T1Img/" not in item.destination_relative_path
-            )
-            body = staging_plan.model_dump(mode="json", exclude={"plan_hash"})
-            body["operations"] = [item.model_dump(mode="json") for item in operations]
-            staging_plan = StagingCopyPlan(**body, plan_hash=stable_hash(body))
         projection = adapter.project_pipeline_cfg(
             DpabiPreprocessingRequest(
                 subject_ids=subject_ids,
@@ -248,12 +204,6 @@ def compile_preprocessing(
             ),
             metric_request,
         )
-        if preparation_only:
-            cfg = {
-                **projection.cfg,
-                **_disabled_preprocessing_cfg(),
-            }
-            projection = projection.model_copy(update={"cfg": cfg, "cfg_hash": stable_hash(cfg)})
     else:
         if input_binding is None or input_binding.artifact_id != plan.input_artifact_id:
             raise ValueError("metric-only execution requires its registered checkpoint binding")
@@ -277,7 +227,7 @@ def compile_preprocessing(
             cfg=cfg,
             cfg_hash=stable_hash(cfg),
         )
-    outputs = () if preparation_only else _outputs(subject_ids, alff, reho, auto_mask=auto_mask)
+    outputs = _outputs(subject_ids, alff, reho, auto_mask=auto_mask)
     expected_artifacts = (
         *(
             ExpectedArtifact(
@@ -304,8 +254,8 @@ def compile_preprocessing(
         ),
         *(
             ExpectedArtifact(
-                artifact_type="preprocessing.t1_review_image",
-                relative_pattern=f"output/t1/{subject}/review.png",
+                artifact_type="preprocessing.t1_inspection_image",
+                relative_pattern=f"output/t1/{subject}/inspection.png",
                 required=False,
             )
             for subject in subject_ids
@@ -328,8 +278,7 @@ def compile_preprocessing(
             )
             for subject in subject_ids
             for tissue in (1, 2, 3)
-            if not preparation_only
-            and parameters is not None
+            if parameters is not None
             and (
                 (parameters.t1 is not None and parameters.t1.segmentation.value != "disabled")
                 or parameters.normalization.mode
@@ -343,8 +292,7 @@ def compile_preprocessing(
                 required=True,
             )
             for subject in subject_ids
-            if not preparation_only
-            and parameters is not None
+            if parameters is not None
             and (
                 (parameters.t1 is not None and parameters.t1.dartel)
                 or parameters.normalization.mode is NormalizationMode.DARTEL
@@ -358,8 +306,7 @@ def compile_preprocessing(
             )
             for subject in subject_ids
             for tissue in (1, 2)
-            if not preparation_only
-            and parameters is not None
+            if parameters is not None
             and (
                 (parameters.t1 is not None and parameters.t1.dartel)
                 or parameters.normalization.mode is NormalizationMode.DARTEL
@@ -372,8 +319,7 @@ def compile_preprocessing(
                 required=True,
             )
             for iteration in range(1, 7)
-            if not preparation_only
-            and parameters is not None
+            if parameters is not None
             and (
                 (parameters.t1 is not None and parameters.t1.dartel)
                 or parameters.normalization.mode is NormalizationMode.DARTEL
@@ -407,11 +353,8 @@ def compile_preprocessing(
             subject_ids=subject_ids,
             base_cfg_allowed_fields=("Realign",) if projection.cfg.get("IsRealign") else (),
             outputs=outputs,
-            preparation_only=preparation_only,
             t1_preparation=(
-                "prepared"
-                if reviewed_t1_bindings
-                else parameters.t1.preparation.value
+                parameters.t1.preparation.value
                 if parameters and parameters.t1
                 else "reorient_crop"
             )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
@@ -107,6 +108,14 @@ def _completion_payload(
         "stream": stream,
         "max_tokens": profile.max_output_tokens,
     }
+    # The DeepSeek API defaults to thinking, which consumes the completion
+    # budget before tool calls or JSON appear. Only send this vendor option to
+    # the official host, and only when the user explicitly selects it.
+    if (
+        profile.thinking_mode == "disabled"
+        and urlsplit(profile.base_url).hostname == "api.deepseek.com"
+    ):
+        payload["thinking"] = {"type": "disabled"}
     if json_object is True or (
         json_object is None and ModelCapability.JSON_OBJECT in profile.capabilities
     ):

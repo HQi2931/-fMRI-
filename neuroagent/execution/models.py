@@ -84,7 +84,6 @@ class PreprocessingJobPayload(FrozenExecutionModel):
     subject_ids: tuple[str, ...]
     base_cfg_allowed_fields: tuple[str, ...]
     outputs: tuple[PreprocessingOutput, ...] = ()
-    preparation_only: bool = False
     t1_preparation: str | None = None
 
     @field_validator("staging_relative_path")

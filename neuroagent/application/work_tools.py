@@ -184,7 +184,11 @@ SEARCH_WORKSPACE_CONTENT_TOOL = LlmTool(
 
 READ_WORKSPACE_CONTENT_TOOL = LlmTool(
     name="read_workspace_content",
-    description="Read a bounded excerpt from a consented workspace file by relative path.",
+    description=(
+        "Read a bounded excerpt from a consented workspace file by its listed relative path. "
+        "For NIfTI files returns only numerical header facts, never image data. "
+        "Use anonymized paths exactly as returned by list_workspace_entries."
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -224,6 +228,7 @@ def build_work_tool_bindings(
     project_id: str | None = None,
     allowed_run_ids: frozenset[str] | None = None,
     workspace_policy: WorkspaceFilePolicyPort | None = None,
+    outbound_policy: OutboundContextPolicy | None = None,
     workspace_scope: tuple[str, ...] = (),
     workspace_stage_candidates: tuple[Mapping[str, Any], ...] = (),
     workspace_stage_check_available: bool = False,
@@ -361,6 +366,47 @@ def build_work_tool_bindings(
             ],
         }
 
+    def public_workspace_path(path: str) -> str:
+        if outbound_policy is None:
+            return path
+        return "/".join(outbound_policy.workspace_component_alias(part) for part in path.split("/"))
+
+    def local_workspace_path(path: str, *, include_excluded: bool = False) -> str:
+        """Resolve listed anonymous components locally within the same workspace."""
+        if not path or workspace_policy is None or outbound_policy is None:
+            return path
+        parts = path.split("/")
+        if len(parts) > 32 or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("invalid workspace path")
+        directory = ""
+        for part in parts:
+            matches = []
+            offset = 0
+            while True:
+                listing = workspace_policy.list_entries(
+                    directory=directory,
+                    include_excluded=include_excluded,
+                    limit=1000,
+                    offset=offset,
+                )
+                for entry in listing["entries"]:
+                    alias = outbound_policy.workspace_component_alias(entry["name"])
+                    legacy_alias = outbound_policy.redact_tool_result(
+                        {"name": entry["name"]}
+                    ).payload.get("name")
+                    if part in (entry["name"], alias, legacy_alias):
+                        matches.append(str(entry["path"]))
+                next_offset = listing.get("next_offset")
+                if next_offset is None or next_offset >= 10000:
+                    break
+                offset = int(next_offset)
+            if len(matches) != 1:
+                raise ValueError(
+                    "workspace path is unavailable or ambiguous; list its parent again"
+                )
+            directory = matches[0]
+        return directory
+
     def scoped_path(path: str) -> str:
         if workspace_scope and not any(
             path == item or path.startswith(item.rstrip("/") + "/") for item in workspace_scope
@@ -371,7 +417,10 @@ def build_work_tool_bindings(
     def list_workspace_entries(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         if workspace_policy is None:
             return {"status": "not_available_in_scope", "entries": []}
-        directory = str(arguments.get("directory", ""))
+        directory = local_workspace_path(
+            str(arguments.get("directory", "")),
+            include_excluded=bool(arguments.get("include_excluded", False)),
+        )
         if (
             workspace_scope
             and directory
@@ -387,6 +436,10 @@ def build_work_tool_bindings(
             limit=int(arguments.get("limit", 1000)),
             offset=int(arguments.get("offset", 0)),
         )
+        for entry in result["entries"]:
+            if entry["kind"] == "file" and str(entry["path"]).lower().endswith((".nii", ".nii.gz")):
+                entry["format"] = "image_header"
+                entry["readable"] = True
         if workspace_scope:
             result["entries"] = [
                 item
@@ -397,6 +450,11 @@ def build_work_tool_bindings(
                 )
             ]
             result["total"] = len(result["entries"])
+        result["directory"] = public_workspace_path(directory)
+        for entry in result["entries"]:
+            entry["path"] = public_workspace_path(str(entry["path"]))
+            if outbound_policy is not None:
+                entry["name"] = outbound_policy.workspace_component_alias(str(entry["name"]))
         return result
 
     def search_workspace_content(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -418,12 +476,23 @@ def build_work_tool_bindings(
                 )
             ]
             result["total"] = len(result["results"])
+        for item in result["results"]:
+            item["path"] = public_workspace_path(str(item["path"]))
         return result
 
     def read_workspace_content(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         if workspace_policy is None:
             return {"status": "not_available_in_scope", "content": ""}
-        path = scoped_path(str(arguments["path"]))
+        path = scoped_path(
+            local_workspace_path(
+                str(arguments["path"]),
+                include_excluded=bool(arguments.get("include_excluded", False)),
+            )
+        )
+        if path.lower().endswith((".nii", ".nii.gz")):
+            metadata = workspace_policy.read_image_metadata(path)
+            metadata["path"] = public_workspace_path(path)
+            return metadata
         result = workspace_policy.read(
             path,
             start=int(arguments.get("start", 1)),
@@ -432,12 +501,14 @@ def build_work_tool_bindings(
             include_excluded=bool(arguments.get("include_excluded", False)),
         )
         content = result.content
+        locators = list(result.locators)
         return {
-            "path": result.path,
+            "path": public_workspace_path(result.path),
             "format": result.format,
             "content": content[:MAX_WORKSPACE_RETURN_CHARS],
             "truncated": len(content) > MAX_WORKSPACE_RETURN_CHARS,
-            "locators": list(result.locators),
+            "locators": locators[:100],
+            "locators_truncated": len(locators) > 100,
             "sha256": result.sha256,
             "redactions": result.redactions,
             "omitted_sensitive": result.omitted_sensitive,
@@ -507,6 +578,7 @@ def build_work_dispatcher(
             project_id=project_id,
             allowed_run_ids=allowed_run_ids,
             workspace_policy=workspace_policy,
+            outbound_policy=policy,
             workspace_scope=workspace_scope,
             workspace_stage_candidates=workspace_stage_candidates,
             workspace_stage_check_available=workspace_stage_check_available,

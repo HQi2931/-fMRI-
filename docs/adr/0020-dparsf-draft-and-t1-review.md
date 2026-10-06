@@ -1,10 +1,10 @@
 # DPARSF 参数面板与 T1 准备审查
 
-- 状态：Accepted
+- 状态：Superseded
 - 文档类型：ADR
 - 维护者：system_architect
 - 决策日期：2026-09-29
-- 关联：[方案实施计划](../plans/0011-dparsf-panel-t1.md)
+- 关联：[方案实施计划](../plans/0011-dparsf-panel-t1.md)；已被 [ADR 0021](0021-single-pass-dpabi-preprocessing.md) 取代
 
 ## 决策
 

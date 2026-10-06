@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { WorkspaceCheck } from "../api/client";
 
 type Props = {
@@ -7,6 +7,7 @@ type Props = {
   checking: boolean;
   checkError: string;
   selectedStage: string;
+  stageConfirmed?: boolean;
   busy: boolean;
   consentBusy: boolean;
   consentGranted: boolean;
@@ -15,10 +16,13 @@ type Props = {
   onChoose: () => void;
   onStageChange: (stage: string) => void;
   onConsent: () => void;
+  onPathSubmit?: (path: string) => void;
   children?: ReactNode;
 };
 
 export function WorkspacePanel(props: Props) {
+  const [typedPath, setTypedPath] = useState(props.path);
+  const [pathEditorOpen, setPathEditorOpen] = useState(false);
   const name = props.path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || props.path;
   const candidates = props.check?.stage_candidates ?? [];
   const selected = candidates.find((item) => item.stage === props.selectedStage);
@@ -36,12 +40,13 @@ export function WorkspacePanel(props: Props) {
       </div>
       <button className={`button ${props.path ? "button-secondary" : "button-primary"}`} type="button" disabled={props.busy} onClick={props.onChoose}>{props.path ? "更换工作区" : "选择工作区"}</button>
     </div>
+    {props.onPathSubmit && <details onToggle={(event) => setPathEditorOpen(event.currentTarget.open)}><summary>手动填写工作区路径</summary>{pathEditorOpen && <><label>工作区路径<input value={typedPath} disabled={props.busy} onChange={(event) => setTypedPath(event.target.value)} /></label><button className="button button-secondary" type="button" disabled={props.busy || !typedPath.trim()} onClick={() => props.onPathSubmit?.(typedPath.trim())}>使用此工作区</button></>}</details>}
     {props.path && <>
       {props.checking && <p className="work-folder-notice" role="status">正在检查工作区中的起始阶段…</p>}
       {props.checkError && <p className="work-folder-notice work-folder-error" role="status">工作区检查未完成：{props.checkError}</p>}
       {candidates.length > 0 && <details className="work-stage-picker">
         <summary>
-          <span className="work-stage-summary"><strong>预处理起点</strong><span>{selected ? `${selected.stage} · 待确认` : "尚未选择"}</span></span>
+          <span className="work-stage-summary"><strong>预处理起点</strong><span>{selected ? `${selected.stage} · ${props.stageConfirmed ? "已确认" : "待确认"}` : "尚未选择"}</span></span>
           <span className="work-stage-count">{candidates.length} 个阶段<span className="work-stage-chevron" aria-hidden="true">⌄</span></span>
         </summary>
         <fieldset className="work-stage-options" disabled={props.busy}>

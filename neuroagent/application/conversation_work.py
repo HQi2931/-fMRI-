@@ -426,6 +426,28 @@ class ConversationWorkCoordinator:
         )
         return challenge.confirmation_id
 
+    def register_workspace_for_stage_confirmation(
+        self,
+        request: ConversationTurnCreate,
+        *,
+        workspace_path: str,
+        conversation_id: str,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        """Register only after the user echoes the server's stage challenge."""
+        setup = request.model_copy(
+            update={
+                "action": ConversationAction.SETUP_WORKSPACE,
+                "selected_input_stage": None,
+                "workspace_setup": WorkspaceSetupIntent(
+                    project_name="对话研究项目",
+                    dataset_name="工作区数据集",
+                    work_root=str(self._work_root / "conversations" / conversation_id),
+                ),
+            }
+        )
+        return self._setup_workspace(setup, workspace_path, idempotency_key + ":setup")
+
     def prepare_plan_from_draft(
         self,
         request: ConversationTurnCreate,

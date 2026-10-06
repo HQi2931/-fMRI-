@@ -175,6 +175,54 @@ async def test_token_budget_stops_the_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_overlapping_usage_counters_do_not_consume_context_twice() -> None:
+    responses = [
+        _response(
+            tool_calls=(_tool_call("c1", "get_run_status"),),
+            usage={
+                "prompt_tokens": 9000,
+                "completion_tokens": 38,
+                "total_tokens": 9038,
+                "prompt_cache_hit_tokens": 2000,
+                "prompt_cache_miss_tokens": 7000,
+            },
+        ),
+        _response(content="done"),
+    ]
+
+    async def call_model(messages: list[dict[str, Any]]) -> ProviderResponse:
+        del messages
+        return responses.pop(0)
+
+    result = await AgentLoop(
+        ScriptedDispatcher([]),
+        budget=AgentLoopBudget(
+            max_total_tokens=20000, context_window_tokens=10000, max_output_tokens=2000
+        ),
+    ).run(messages=_messages(), call_model=call_model)
+
+    assert result.stop_reason is AgentLoopStopReason.COMPLETED
+    assert result.steps == 2
+
+
+@pytest.mark.asyncio
+async def test_cumulative_usage_still_enforces_total_budget() -> None:
+    async def call_model(messages: list[dict[str, Any]]) -> ProviderResponse:
+        del messages
+        return _response(
+            tool_calls=(_tool_call("c1", "get_run_status"),), usage={"total_tokens": 2000}
+        )
+
+    result = await AgentLoop(
+        ScriptedDispatcher([]),
+        budget=AgentLoopBudget(max_total_tokens=3000, context_window_tokens=10000),
+    ).run(messages=_messages(), call_model=call_model)
+
+    assert result.stop_reason is AgentLoopStopReason.BUDGET_TOKENS
+    assert result.steps == 2
+
+
+@pytest.mark.asyncio
 async def test_repeated_identical_failure_trips_the_breaker() -> None:
     call = _tool_call("c1", "get_run_status")
     dispatcher = ScriptedDispatcher(
@@ -260,9 +308,9 @@ async def test_provider_deadline_is_enforced() -> None:
         await asyncio.sleep(0.05)
         return _response(content="too late")
 
-    result = await AgentLoop(
-        ScriptedDispatcher([]), budget=AgentLoopBudget(max_seconds=0.01)
-    ).run(messages=_messages(), call_model=call_model)
+    result = await AgentLoop(ScriptedDispatcher([]), budget=AgentLoopBudget(max_seconds=0.01)).run(
+        messages=_messages(), call_model=call_model
+    )
 
     assert result.stop_reason is AgentLoopStopReason.PROVIDER_TIMEOUT
 
