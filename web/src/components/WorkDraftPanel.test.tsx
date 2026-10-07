@@ -57,6 +57,9 @@ describe("editable DPARSF draft", () => {
     expect(save).toHaveBeenCalledWith("a".repeat(64), { preprocessing: { tr_seconds: 3 } });
   });
   it("retains local edits on a version conflict", async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
     render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn().mockRejectedValue(new ApiError("草稿已变化。", 409, { code: "conflict", trace_id: "trace-123" }))} />);
     fireEvent.change(screen.getByLabelText("重复时间 TR（秒）"), { target: { value: "2" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
@@ -65,6 +68,9 @@ describe("editable DPARSF draft", () => {
     expect(screen.getByRole("alert").textContent).not.toContain("trace-123");
     expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
     expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" }));
+    if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: original });
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   });
   it("prevents confirmation for dirty or invalid arrays and permits discarding", () => {
     const dirty = vi.fn();

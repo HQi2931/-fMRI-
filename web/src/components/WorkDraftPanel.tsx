@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { describeError } from "../api/client";
 import type { ConfirmationRequest } from "./confirmation";
 import { inheritedFieldValue, reviewLabel, sourceLabel, type WorkDraftSnapshot } from "./workDraft";
@@ -87,6 +87,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   const [arrayText, setArrayText] = useState<Record<string, string>>({});
   const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState("");
+  const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState("");
   const actionLocked = readOnly || snapshot.consumed || busy || saving;
@@ -94,6 +95,9 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   const locked = actionLocked || inputNeedsReview;
   const inputRecovery = snapshot.input_manifest_stale && confirmation?.options.length && confirmation.options.every((option) => option.command.startsWith("确认起始阶段 "));
   const dirty = edited.length > 0;
+  useEffect(() => {
+    if (saveError) saveErrorRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [saveError]);
   function locate(path: string) {
     const element = document.getElementById(`draft-${panelId}-${path}`);
     if (!element) return;
@@ -193,7 +197,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     }}>应用到面板</button></>}</details>
     {preview !== undefined && <PlanPreview value={preview} />}
     <p className="draft-help">暂不支持：DICOM/BIDS 转换、外部 DARTEL 模板复用、FC、度中心性。T1 准备、配准、分割及 DARTEL 在获批任务中自动衔接；启动计算需独立授权。</p>
-    {saveError && <p role="alert" className="draft-error">{saveError}</p>}
+    {saveError && <p ref={saveErrorRef} role="alert" className="draft-error">{saveError}</p>}
     {!readOnly && <div className="draft-actions"><span>{dirty ? "有未保存修改" : "当前参数已保存"}</span><button type="button" className="button button-secondary" disabled={locked || !dirty} onClick={() => { setDraft(snapshot.draft); setEdited([]); setArrayText({}); setInputErrors({}); setSaveError(""); onDirty?.(false); }}>放弃本地修改</button><button type="button" className="button button-secondary" disabled={locked || !dirty || Object.values(inputErrors).some(Boolean)} onClick={() => void save()}>{saving ? "保存中…" : "保存修改"}</button><button type="button" className="button button-primary" disabled={actionLocked || dirty || Object.values(inputErrors).some(Boolean) || (issues.length > 0 && !inputRecovery) || (inputNeedsReview && !inputRecovery) || !confirmation || snapshot.consumed} onClick={onConfirm}>{confirmLabel}</button></div>}
   </section>;
 }
