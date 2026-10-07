@@ -17,4 +17,9 @@ describe("confirmation bound to the current draft", () => {
     }
     expect(currentConfirmation([previous], "D:/another")).toBeNull();
   });
+  it("retires an earlier confirmation when a newer draft state omits an action, even if its parameter hash is unchanged", () => {
+    const recovery = message("recovery", { work_draft: draft, confirmation_request: request });
+    const refreshedEvidence = message("refreshed", { work_draft: { ...draft, input_evidence_stale: false } });
+    expect(currentConfirmation([recovery, refreshedEvidence], "D:/example")).toBeNull();
+  });
 });

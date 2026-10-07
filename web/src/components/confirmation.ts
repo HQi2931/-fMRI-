@@ -16,9 +16,13 @@ type ConfirmationMessage = { message_id: string; role: string; payload: Record<s
 export function currentConfirmation(messages: ConfirmationMessage[], workspacePath: string | null | undefined) {
   const draftMessages = [...messages].reverse().filter((message) => message.payload.work_draft && typeof message.payload.work_draft === "object");
   const draft = draftMessages[0]?.payload.work_draft as { hash?: unknown; consumed?: unknown; compiled?: unknown; workspace_path?: unknown } | undefined;
+  const latestDraftMessage = draftMessages[0];
+  const latestDraftIndex = latestDraftMessage ? messages.indexOf(latestDraftMessage) : -1;
   if (draft?.consumed === true) return null;
   if (typeof draft?.workspace_path === "string" && draft.workspace_path !== workspacePath) return null;
   for (const [index, message] of [...messages].reverse().entries()) {
+    const messageIndex = messages.length - index - 1;
+    if (latestDraftIndex >= 0 && messageIndex < latestDraftIndex) break;
     if (message.role !== "assistant") continue;
     const request = readConfirmation(message.payload.confirmation_request);
     if (!request) continue;
