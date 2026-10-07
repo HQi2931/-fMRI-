@@ -27,7 +27,13 @@ Work 体验优化新增以下接口（阶段实现，完整交互验收见计划
 - `PATCH /conversations/{conversation_id}/work-draft` 接受 `{base_hash, patch}`，返回 `ConversationTurnView`。必须提供幂等键；更新当前 Work/工作区草稿并在条件满足时编译候选，不调用模型、批准或运行。未知字段和来源/确认字段拒绝；数值或依赖问题保存在 `draft_issues`，问题未解决时不提供确认请求。过期哈希返回 `work_draft_changed`（409）。
 - `work_draft.sources` 按点分字段路径保存来源，用于区分待审查建议、用户修改与数据事实；不代替科研来源与审批证据。变更后旧确认失效，候选须重新校验和编译。
 
-Work assistant 消息的 payload 可包含 `confirmation_request: {title, summary, options: [{label, description, command}]}`。这是协调器生成的展示契约；前端仅展示最新回复的请求，用户显式选择后将 `command` 原样作为下一轮 `content` 提交。选项数量为一至三个；缺项草稿不签发确认。启动 command 包含绑定方案/QC 的一次性 challenge，服务端继续校验有效期、作用域和单次消费。普通回答文本不能生成按钮。详见 [ADR 0018](../adr/0018-work-confirmation-dialog.md)。
+Work assistant 消息的 payload 可包含 `confirmation_request: {title, summary, options: [{label, description, command}]}`。这是协调器生成的展示契约；用户显式选择后将 `command` 原样提交到上述确认接口。当前草稿版本未变且尚未使用时，方法问答后的页面可恢复与该版本绑定的确认；参数变化、工作区切换、编译失效或已消费时不恢复旧启动操作。选项数量为一至三个；缺项草稿不签发确认。启动 command 包含绑定方案/QC 的一次性 challenge，服务端继续校验有效期、作用域和单次消费。普通回答文本不能生成按钮。确认实现见 [ADR 0022](../adr/0022-work-review-and-direct-confirmation.md)，历史设计见 [ADR 0018](../adr/0018-work-confirmation-dialog.md)。
+
+Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, calls}], note}`，只记录实际发生的阶段；嵌套耗时可能重叠，不应相加。计时不进入冻结输入与科学参数。`questions` 是服务端过滤后的待决定问题，`recommendation_reason` 是可展示的模型建议理由。参数已填写但与读取证据冲突时，不将相关问题当作已解决。
+
+工作区 JSON 读取结果另附 `numeric_metadata`，仅包含本次请求行范围内、类型和数值有效的 `RepetitionTime` 与不超过 100 项的 `SliceTiming`。它由本机解析器提取，仍经过出站策略，不能携带身份字段或任意字符串。正文省略敏感行导致 JSON 片段无法解析时，服务端可使用这些独立数值证据推导采集事实；原始敏感正文不恢复。
+
+规划回合携带页面明确选择的 `selected_input_stage` 时，若输入阶段尚未冻结且该候选可选，服务端签发对应起点确认入口，不依赖模型是否填写阶段建议。用户仍须明确确认，之后复查候选并冻结全量证据；此操作不启动计算。Segment 标准化未指定不同结构像输入时复用已选 T1 引用，显式不同引用或 `null` 不被覆盖。
 
 - JSON 业务写入 `POST` 请求要求 `Idempotency-Key` 头。key 的作用域包含具体操作；同一作用域内，相同 key 只能绑定规范化后的同一请求体。multipart PDF 上传与显式论文索引是例外；索引按稳定 chunk ID upsert，可手动重试。上传时客户端在响应不确定时应先按 SHA-256/文献列表核对，不要盲目重复上传。
 - 修改已有资源时，请求体会携带 `expected_*_version`、计划哈希或 revision 哈希。不匹配时失败关闭，不自动覆盖。
@@ -189,7 +195,7 @@ Chat 与 Work 的回合请求均支持 `stream` 字段：`false`（默认）返�
 | --- | --- | --- |
 | `status` | `{message: string}` | 当前响应准备状态 |
 | `reset` | `{}` | 清空正文预览，隔离模型回退与工具轮次 |
-| `delta` | `{text: string}` | 追加正文增量；属于尚未校验的预览 |
+| `delta` | `{text: string}` | Chat 追加正文增量；属于尚未校验的预览。Work 不发送未校验正文 |
 | `final` | `ConversationTurnView` | 完整校验并落库的会话、消息、引用、草稿与工具步骤 |
 | `error` | `{status: number, error: {code, message, details, trace_id}}` | 流已开始后的稳定错误封装；此时 HTTP 仍是 201 |
 
@@ -199,8 +205,7 @@ Chat 与 Work 的回合请求均支持 `stream` 字段：`false`（默认）返�
 断连后的已派发操作仍按原幂等协议收口，相同请求与键重放最终保存结果，不重复调用模型。
 
 声明 `streaming` 能力且适配器支持流式的 Profile 使用 Provider 原生 SSE；其他配置返回完整正文，
-仍通过相同流事件收口。内部意图、摘要和记忆 JSON 不展示。Work 只预览顶层 answer 文本，
-完整响应经过原有结构与业务校验后才处理动作，最终消息可替换预览。
+仍通过相同流事件收口。内部意图、摘要和记忆 JSON 不展示。Work 在模型处理、工具检查和规划校验时发送固定中文 status，校验和保存完成后通过 final 展示正式回答。页面不显示未校验的 Work 正文增量，详见 [ADR 0023](../adr/0023-work-validated-answer-stream.md)。
 Chat 的引用仍在完成后按本轮证据编号校验，前端以 final 的引用与正文为准。
 
 Work 失败回复在 `assistant_message.payload.model_error` 中保存安全诊断：错误 code、处理 stage、

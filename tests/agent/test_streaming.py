@@ -162,7 +162,7 @@ async def test_broken_stream_is_not_a_success(parts: list[bytes], error: type[Ex
 
 
 @pytest.mark.asyncio
-async def test_work_preview_decodes_split_escapes_and_ignores_nested_fields() -> None:
+async def test_work_shows_processing_status_without_unvalidated_model_prose() -> None:
     events: list[tuple[str, dict[str, object]]] = []
 
     async def emit(event: str, data: dict[str, object]) -> None:
@@ -180,10 +180,7 @@ async def test_work_preview_decodes_split_escapes_and_ignores_nested_fields() ->
     ]
     for chunk in chunks:
         await observer.text(chunk)
-    assert (
-        "".join(str(data["text"]) for event, data in events if event == "delta")
-        == '你好\n"quoted"😀'
-    )
+    assert events == [("reset", {}), ("status", {"message": "正在整理方案与回答…"})]
     assert "hidden" not in str(events)
     assert "draft_patch" not in str(events)
 

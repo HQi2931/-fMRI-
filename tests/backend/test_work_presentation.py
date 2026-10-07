@@ -4,10 +4,16 @@
 
 import json
 
-from neuroagent.application.work_draft import WorkDraft, draft_snapshot, review_issues
+from neuroagent.application.work_draft import (
+    WorkDraft,
+    draft_snapshot,
+    merge_work_draft,
+    review_issues,
+)
 from neuroagent.application.work_presentation import (
     constrained_patch,
     explicit_user_patch,
+    merge_observed_facts,
     observed_facts,
     pending_review_questions,
     semantic_patch,
@@ -47,6 +53,12 @@ def test_explicit_choices_never_derive_from_negation_or_method_question():
     assert patch["preprocessing"]["normalization"]["mode"] == 2
     assert patch["preprocessing"]["expected_time_points"] == 234
     assert patch["alff_falff"]["result_smoothing_fwhm_mm"] == [4, 4, 4]
+    assert (
+        explicit_user_patch("采用 Old Segment")["preprocessing"]["t1"]["segmentation"] == "segment"
+    )
+    assert "segmentation" not in explicit_user_patch("不要使用 Old Segment").get(
+        "preprocessing", {}
+    ).get("t1", {})
 
 
 def test_slice_order_is_calculated_from_successful_reads_and_conflicts_are_not_hidden():
@@ -124,6 +136,43 @@ def test_differing_acquisitions_are_not_collapsed_to_the_last_header():
     assert snapshot["field_states"]["preprocessing.tr_seconds"] == "conflict"
 
 
+def test_cross_turn_acquisition_conflicts_survive_partial_rereads():
+    key = "preprocessing.tr_seconds"
+    initial = {key: 2, "preprocessing.expected_time_points": 234}
+    conflict = merge_observed_facts(initial, {key: 3})
+    assert conflict[key] == {"conflicting_values": ["2", "3"]}
+    assert merge_observed_facts(conflict, {key: 2}) == conflict
+    assert merge_observed_facts(conflict, {}) == conflict
+    assert merge_observed_facts(initial, {key: 2.0}) == initial
+    assert initial[key] == 2
+    draft = WorkDraft(preprocessing={"tr_seconds": 2})
+    assert any("读取的输入存在不同值" in issue for issue in review_issues(draft, conflict))
+
+
+def test_invalid_header_numbers_do_not_become_verified_facts():
+    def read(tr, count, dimensions):
+        return {
+            "tool_name": "read_workspace_content",
+            "status": "succeeded",
+            "output": {
+                "format": "image_header",
+                "tr_seconds": tr,
+                "volume_count": count,
+                "dimensions": dimensions,
+            },
+        }
+
+    for tr in (True, -2, 0, float("nan"), float("inf"), "2"):
+        assert observed_facts({"calls": [read(tr, 234, [64])]}) == {
+            "preprocessing.expected_time_points": 234
+        }
+    for count in (True, "234", None, 0):
+        assert observed_facts({"calls": [read(2, count, [64, 64, 33])]}) == {}
+    for slices in (True, -1, None, "33"):
+        facts = observed_facts({"calls": [read(2, 234, [64, 64, slices])]})
+        assert "preprocessing.slice_timing.slice_count" not in facts
+
+
 def test_anatomical_sidecar_tr_does_not_contaminate_functional_facts():
     def read(path, content):
         return {
@@ -163,6 +212,65 @@ def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices
         {"alff_falff.result_smoothing_fwhm_mm": "user", "preprocessing.dummy_scans": "user"},
         {"preprocessing.tr_seconds": 2},
     ) == ["采用哪个掩膜？"]
+
+
+def test_user_choice_does_not_hide_a_question_about_conflicting_read_evidence():
+    path = "preprocessing.tr_seconds"
+    question = {"text": "采集 TR 与方案不同，如何处理？", "parameter_paths": [path]}
+    for fact in (3, {"conflicting_values": ["2", "3"]}):
+        assert pending_review_questions(
+            [question], {"preprocessing": {"tr_seconds": 2}}, {path: "user"}, {path: fact}
+        ) == [question["text"]]
+
+
+def test_explicit_no_filter_and_no_presmoothing_clear_model_active_slots():
+    proposed = {
+        "preprocessing": {
+            "temporal_filter": {
+                "timing": "disabled",
+                "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+                "add_mean_back": True,
+            },
+            "smoothing": {"timing": "disabled", "method": "gaussian", "fwhm_mm": [4, 4, 4]},
+        }
+    }
+    patch, sources, blocked = constrained_patch(
+        {}, {}, proposed, "计算 ALFF，计算前不带通滤波、不空间平滑，回归中加回均值"
+    )
+    assert patch["preprocessing"]["temporal_filter"] == {
+        "timing": "disabled",
+        "frequency_band": None,
+        "add_mean_back": None,
+    }
+    assert patch["preprocessing"]["smoothing"] == {
+        "timing": "disabled",
+        "method": None,
+        "fwhm_mm": None,
+    }
+    assert patch["preprocessing"]["nuisance"]["add_mean_back"] is True
+    assert "preprocessing.temporal_filter.add_mean_back" in blocked
+    assert sources["preprocessing.temporal_filter.frequency_band"] == "user"
+
+
+def test_segment_normalization_reuses_selected_t1_without_overriding_explicit_input():
+    draft = WorkDraft(
+        preprocessing={"normalization": {"mode": 2}, "t1": {"segmentation": "segment"}}
+    )
+    merged = merge_work_draft(draft, {})
+    assert (
+        merged.preprocessing["normalization"]["structural_artifact_id"]
+        == "workspace:anatomical-source"
+    )
+    assert "structural_artifact_id" not in draft.preprocessing["normalization"]
+    for explicit in (None, "explicit-other-artifact"):
+        changed = merge_work_draft(
+            draft, {"preprocessing": {"normalization": {"structural_artifact_id": explicit}}}
+        )
+        assert changed.preprocessing["normalization"]["structural_artifact_id"] == explicit
+    no_t1 = merge_work_draft(
+        WorkDraft(preprocessing={"normalization": {"mode": 2}, "t1": None}), {}
+    )
+    assert "structural_artifact_id" not in no_t1.preprocessing["normalization"]
 
 
 def test_complete_protocol_explicit_choices_are_protected_from_later_model_replacement():

@@ -264,9 +264,9 @@ class DatasetInspector:
                         "DPABI-ready 目录包含当前扫描契约不支持的 stage root。",
                         unsupported_stage_roots=unsupported_stages,
                         supported_input_stage_roots=[
-                            stage_rule(item).name
+                            supported_rule.name
                             for item in known_roots
-                            if stage_rule(item) is not None
+                            if (supported_rule := stage_rule(item)) is not None
                         ],
                     )
             # Every recognized functional stage is a candidate.  Selection is
@@ -314,10 +314,9 @@ class DatasetInspector:
                 root_files = [
                     path
                     for path in nifti
-                    if path.relative_to(source_path).parts[0].casefold()
-                    == root_name.casefold()
+                    if path.relative_to(source_path).parts[0].casefold() == root_name.casefold()
                 ]
-                subjects = {
+                stage_subjects = {
                     path.relative_to(source_path).parts[1]
                     for path in root_files
                     if len(path.relative_to(source_path).parts) >= 3
@@ -325,12 +324,8 @@ class DatasetInspector:
                 candidate_issues: list[str] = []
                 if not root_files:
                     candidate_issues.append("stage 中没有可读取的 NIfTI 文件")
-                if any(
-                    len(path.relative_to(source_path).parts) < 3 for path in root_files
-                ):
-                    candidate_issues.append(
-                        "stage 必须使用 stage/subject/file 的受试者层级"
-                    )
+                if any(len(path.relative_to(source_path).parts) < 3 for path in root_files):
+                    candidate_issues.append("stage 必须使用 stage/subject/file 的受试者层级")
                 if any(
                     len(path.relative_to(source_path).parts) >= 3
                     and not re.fullmatch(
@@ -345,7 +340,7 @@ class DatasetInspector:
                 stage_candidates.append(
                     stage_candidate(
                         root_name,
-                        subject_count=len(subjects),
+                        subject_count=len(stage_subjects),
                         file_count=len(root_files),
                         issues=candidate_issues,
                     )
@@ -598,9 +593,7 @@ class DatasetInspector:
         if report_only:
             # Timings are operational telemetry, never part of the deterministic
             # frozen input content hashed by plan compilation and execution.
-            content["inspection_timing_ms"] = round(
-                (perf_counter() - inspection_started) * 1000, 3
-            )
+            content["inspection_timing_ms"] = round((perf_counter() - inspection_started) * 1000, 3)
             content["inventory_ms"] = round(inventory_ms, 3)
             content["hashing_ms"] = 0.0
         return content

@@ -190,7 +190,17 @@ class RepositoryPort(Protocol):
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
 
-    def create_workspace_consent(self, **kwargs: Any) -> WorkspaceContentConsent: ...
+    def create_workspace_consent(
+        self,
+        *,
+        conversation_id: str,
+        workspace_hash: str,
+        profile_id: str,
+        profile_revision: str,
+        model: str,
+        policy_version: str,
+        provider_host: str,
+    ) -> WorkspaceContentConsent: ...
 
     def list_workspace_consents(self, conversation_id: str) -> list[WorkspaceContentConsent]: ...
 
@@ -198,7 +208,17 @@ class RepositoryPort(Protocol):
         self, conversation_id: str, consent_id: str
     ) -> WorkspaceContentConsent: ...
 
-    def create_workspace_patch(self, **kwargs: Any) -> WorkspaceChangeProposal: ...
+    def create_workspace_patch(
+        self,
+        *,
+        conversation_id: str,
+        workspace_hash: str,
+        proposal_hash: str,
+        edits: list[dict[str, Any]],
+        diff: str,
+        citations: list[dict[str, Any]],
+        ttl_seconds: int = 600,
+    ) -> WorkspaceChangeProposal: ...
 
     def get_workspace_patch(
         self, conversation_id: str, proposal_id: str

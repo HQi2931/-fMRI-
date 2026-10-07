@@ -207,19 +207,33 @@ describe("agent workbench page", () => {
     const patch = vi.fn((init?: RequestInit) => { expect(init?.method).toBe("PATCH"); return json({ conversation: conversation({ messages: [first, changed] }), user_message: message("u2", "user", "参数修改"), assistant_message: changed, tool_calls: [], tool_call: null }); });
     installFetch({ conversations: () => json([conversation({ messages: [first] })]), draftPatch: patch });
     render(<AgentPage />);
-    const panel = await screen.findByRole("region", { name: "预处理方案参数" });
-    expect(screen.getByRole("complementary", { name: "当前方案审查" })).toContainElement(panel);
+    const panel = await screen.findByLabelText("预处理方案参数");
+    expect(screen.getByLabelText("当前方案审查")).toContainElement(panel);
     fireEvent.change(within(panel).getByLabelText("重复时间 TR（秒）"), { target: { value: "3" } });
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    await userEvent.click(within(panel).getByRole("button", { name: "保存修改" }));
+    expect(screen.getByText("发送", { selector: "button" })).toBeDisabled();
+    await userEvent.click(within(panel).getByText("保存修改", { selector: "button" }));
     await screen.findByText("修改已保存");
     expect(JSON.parse(String(patch.mock.calls[0]?.[0]?.body))).toEqual({ base_hash: "a".repeat(64), patch: { preprocessing: { tr_seconds: 3 } } });
+    expect(within(screen.getByLabelText("预处理方案参数")).getByLabelText("重复时间 TR（秒）")).toHaveValue(3);
+    expect(screen.queryByLabelText("历史预处理方案（只读）")).not.toBeInTheDocument();
+  });
+
+  it("loads a historical plan only when expanded and keeps it read-only", async () => {
+    const snapshot = { draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, hash: "a".repeat(64), compiled: false };
+    installFetch({ conversations: () => json([conversation({ messages: [
+      message("old", "assistant", "原方案", { work_draft: snapshot }),
+      message("current", "assistant", "当前方案", { work_draft: { ...snapshot, hash: "b".repeat(64), draft: { ...snapshot.draft, preprocessing: { tr_seconds: 3 } } } }),
+    ] })]) });
+    render(<AgentPage />);
+    await screen.findByText("原方案");
+    fireEvent.click(screen.getByText("收起方案", { selector: "button" }));
     const history = screen.getByText("历史方案").closest("details")!;
     expect(history).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText("历史方案"));
-    expect(within(screen.getByRole("region", { name: "历史预处理方案（只读）" })).getByLabelText("重复时间 TR（秒）")).toBeDisabled();
-    expect(within(screen.getByRole("region", { name: "预处理方案参数" })).getByLabelText("重复时间 TR（秒）")).toHaveValue(3);
-  });
+    expect(screen.queryByLabelText("历史预处理方案（只读）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("历史方案"));
+    expect(within(await screen.findByLabelText("历史预处理方案（只读）")).getByLabelText("重复时间 TR（秒）")).toBeDisabled();
+  // Rendering the full read-only editor under V8 coverage exceeds the usual budget.
+  }, 30_000);
 
   it("opens confirmation only on request and submits the selected server action without calling the model", async () => {
     const user = userEvent.setup();
@@ -249,6 +263,30 @@ describe("agent workbench page", () => {
     expect(JSON.parse(String(init[0].body))).toEqual({ command, expected_draft_hash: null });
     expect(onTurn).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("keeps the current reviewed confirmation available after a method question", async () => {
+    const hash = "d".repeat(64);
+    const command = "current-server-command";
+    const confirm = vi.fn(() => json({ conversation: conversation(), user_message: message("confirm-user", "user", "启动当前方案"), assistant_message: message("started", "assistant", "已提交"), tool_call: null }));
+    const onTurn = vi.fn();
+    installFetch({ conversations: () => json([conversation({ messages: [
+      message("plan", "assistant", "方案准备完成", {
+        work_draft: { hash, compiled: true, draft: { requested_metrics: [], preprocessing: { tr_seconds: 2 } } },
+        confirmation_request: { title: "启动当前方案", summary: "已审查的当前版本", options: [{ label: "确认并启动计算", description: "授权本次计算", command }] },
+      }),
+      message("method-user", "user", "为什么不做全局信号回归？"),
+      message("method-answer", "assistant", "这是当前研究方案的选择。"),
+    ] })]), confirmation: confirm, turn: onTurn });
+    render(<AgentPage />);
+    await screen.findByText("这是当前研究方案的选择。");
+    fireEvent.click(screen.getByText("确认并启动计算", { selector: "button" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByText("确认并启动计算", { selector: "button" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    const init = confirm.mock.calls[0] as unknown as [RequestInit];
+    expect(JSON.parse(String(init[0].body))).toEqual({ command, expected_draft_hash: hash });
+    expect(onTurn).not.toHaveBeenCalled();
   });
 
   it("does not turn model text or an earlier confirmation into an action", async () => {
@@ -610,7 +648,7 @@ describe("agent workbench page", () => {
     expect(await screen.findByText(/你好，我可以协助/)).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Agent 工具步骤" })).not.toBeInTheDocument();
   });
-  it.each(["work", "chat"])("renders %s deltas immediately and replaces them only after final", async (mode) => {
+  it.each(["work", "chat"])("shows %s processing feedback and displays the authoritative final", async (mode) => {
     const user = userEvent.setup();
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
@@ -630,7 +668,8 @@ describe("agent workbench page", () => {
       controller.enqueue(new TextEncoder().encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
     });
     await emit("delta", { text: "临时" });
-    expect(await screen.findByText("临时")).toBeInTheDocument();
+    if (mode === "chat") expect(await screen.findByText("临时")).toBeInTheDocument();
+    else expect(screen.queryByText("临时")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认应用补丁" })).not.toBeInTheDocument();
     await emit("reset", {});
     expect(screen.queryByText("临时")).not.toBeInTheDocument();
@@ -657,8 +696,8 @@ describe("agent workbench page", () => {
       controller.enqueue(new TextEncoder().encode('event: delta\ndata: {"text":"部分结果"}\n\n'));
       controller.close();
     });
-    expect(await screen.findByText(/回答未完成，临时内容可能不完整/)).toBeInTheDocument();
-    expect(screen.getByText("部分结果")).toBeInTheDocument();
+    expect(await screen.findByText("本轮结果尚未确认，请重试恢复。")).toBeInTheDocument();
+    expect(screen.queryByText("部分结果")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox")).toHaveValue("重试问题");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(fetchSpy.mock.calls.filter(([input]) => pathOf(input).endsWith("/turns"))).toHaveLength(2));

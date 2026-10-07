@@ -512,6 +512,7 @@ def build_work_tool_bindings(
             "sha256": result.sha256,
             "redactions": result.redactions,
             "omitted_sensitive": result.omitted_sensitive,
+            "numeric_metadata": result.numeric_metadata,
         }
 
     def list_workspace_stages(arguments: Mapping[str, Any]) -> Mapping[str, Any]:

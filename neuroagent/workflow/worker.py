@@ -83,6 +83,10 @@ class WorkerRepository(Protocol):
 
     def get_plan(self, plan_revision_id: str) -> PlanRevisionView: ...
 
+    def register_artifacts(
+        self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
+    ) -> None: ...
+
     def append_event(
         self,
         *,

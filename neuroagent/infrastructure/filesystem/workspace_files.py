@@ -12,6 +12,7 @@ import difflib
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -22,8 +23,8 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile
 
-from docx import Document  # type: ignore[import-untyped]
-from docx.opc.exceptions import PackageNotFoundError  # type: ignore[import-untyped]
+from docx import Document
+from docx.opc.exceptions import PackageNotFoundError
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from openpyxl.utils.cell import get_column_letter  # type: ignore[import-untyped]
 from openpyxl.utils.exceptions import InvalidFileException  # type: ignore[import-untyped]
@@ -147,6 +148,39 @@ class WorkspaceRead:
     sha256: str
     redactions: int = 0
     omitted_sensitive: int = 0
+    numeric_metadata: dict[str, Any] | None = None
+
+
+def _numeric_acquisition_metadata(document: Any, locators: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep only bounded numeric acquisition fields within the requested range."""
+    if not isinstance(document, dict):
+        return {}
+    visible = {item.get("json_pointer") for item in locators}
+    result: dict[str, Any] = {}
+    tr = document.get("RepetitionTime")
+    if (
+        "/RepetitionTime" in visible
+        and isinstance(tr, (int, float))
+        and not isinstance(tr, bool)
+        and math.isfinite(tr)
+        and tr > 0
+    ):
+        result["RepetitionTime"] = tr
+    timings = document.get("SliceTiming")
+    if (
+        "/SliceTiming" in visible
+        and isinstance(timings, list)
+        and 0 < len(timings) <= 100
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            and item >= 0
+            for item in timings
+        )
+    ):
+        result["SliceTiming"] = list(timings)
+    return result
 
 
 class WorkspaceFilePolicy:
@@ -223,7 +257,7 @@ class WorkspaceFilePolicy:
             rel = path.relative_to(self.root)
             if self._excluded(rel, include_excluded) or _is_link_like(path):
                 continue
-            item = {
+            item: dict[str, Any] = {
                 "path": rel.as_posix(),
                 "name": path.name,
                 "kind": "directory" if path.is_dir() else "file",
@@ -365,6 +399,7 @@ class WorkspaceFilePolicy:
         path = self._check_file(relative, include_excluded=include_excluded)
         kind = self.classify(path) or "text"
         digest = sha256_file(path)
+        locators: list[dict[str, Any]] | tuple[dict[str, Any], ...]
         if kind == "json":
             raw = self._read_text(path)
             try:
@@ -379,13 +414,20 @@ class WorkspaceFilePolicy:
             clean, redactions, omitted = self.sanitize_text("\n".join(selected))
             locators = _json_locators(raw, document, start, end)
             return WorkspaceRead(
-                relative, kind, clean, tuple(locators), digest, redactions, omitted
+                relative,
+                kind,
+                clean,
+                tuple(locators),
+                digest,
+                redactions,
+                omitted,
+                numeric_metadata=_numeric_acquisition_metadata(document, locators),
             )
         if kind == "jsonl":
             raw = self._read_text(path)
             lines = raw.splitlines()
-            selected: list[str] = []
-            locators: list[dict[str, Any]] = []
+            selected = []
+            locators = []
             for index, line in enumerate(lines, start=1):
                 if not line.strip():
                     continue
@@ -407,13 +449,13 @@ class WorkspaceFilePolicy:
             raw = self._read_text(path)
             delimiter = "\t" if kind == "tsv" else ","
             try:
-                rows = list(csv.reader(io.StringIO(raw), delimiter=delimiter, strict=True))
+                csv_rows = list(csv.reader(io.StringIO(raw), delimiter=delimiter, strict=True))
             except csv.Error as exc:
                 raise InputValidationError(
                     "workspace_csv_parse_failed", "CSV/TSV 语法错误。"
                 ) from exc
-            header = rows[0] if rows else []
-            selected_rows = rows[start - 1 : end]
+            header = csv_rows[0] if csv_rows else []
+            selected_rows = csv_rows[start - 1 : end]
             rendered = ["\t".join(row) for row in selected_rows]
             clean, redactions, omitted = self.sanitize_text("\n".join(rendered))
             locators = tuple(
@@ -470,14 +512,14 @@ class WorkspaceFilePolicy:
                 workbook.close()
                 raise InputValidationError("xlsx_sheet_not_found", "指定工作表不存在。")
             ws = workbook[selected_sheet]
-            rows: list[str] = []
-            locators: list[dict[str, Any]] = []
+            xlsx_rows: list[str] = []
+            locators = []
             for row_index, row in enumerate(ws.iter_rows(values_only=True), start=1):
                 if row_index < start:
                     continue
                 if row_index > end:
                     break
-                rows.append(
+                xlsx_rows.append(
                     f"[row {row_index}]\t"
                     + "\t".join("" if value is None else str(value) for value in row)
                 )
@@ -490,7 +532,7 @@ class WorkspaceFilePolicy:
                     }
                 )
             workbook.close()
-            clean, redactions, omitted = self.sanitize_text("\n".join(rows))
+            clean, redactions, omitted = self.sanitize_text("\n".join(xlsx_rows))
             return WorkspaceRead(
                 relative, kind, clean, tuple(locators), digest, redactions, omitted
             )

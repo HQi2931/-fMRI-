@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.providers import ProviderTimeoutError
+from neuroagent.agent.streaming import current_answer_stream
 from neuroagent.application.contracts import (
     ConversationAction,
     ConversationTurnCreate,
@@ -41,6 +42,7 @@ from neuroagent.application.work_draft import (
 from neuroagent.application.work_presentation import (
     constrained_patch,
     leaf_values,
+    merge_observed_facts,
     observed_facts,
     pending_review_questions,
     set_value,
@@ -791,6 +793,9 @@ class WorkDialogue:
                     payload,
                 )
             if interpreted.action == "prepare_preprocessing_plan":
+                observer = current_answer_stream()
+                if observer is not None:
+                    await observer.status("正在校验并整理方案…")
                 patch, sources, blocked = constrained_patch(
                     draft.model_dump(mode="json"),
                     (saved or {}).get("sources", {}),
@@ -798,11 +803,28 @@ class WorkDialogue:
                     request.content,
                 )
                 with measure_work_stage("fact_derivation"):
-                    facts = {**(saved or {}).get("facts", {}), **observed_facts(loop_metadata)}
+                    facts = merge_observed_facts(
+                        (saved or {}).get("facts", {}), observed_facts(loop_metadata)
+                    )
                 for path, value in facts.items():
                     if sources.get(path) != "user" and not isinstance(value, dict):
                         set_value(patch, path, value)
                 draft = merge_work_draft(draft, patch)
+                merged_preprocessing = draft.preprocessing or {}
+                normalization = merged_preprocessing.get("normalization") or {}
+                if (
+                    "structural_artifact_id" in normalization
+                    and "preprocessing.normalization.structural_artifact_id"
+                    not in leaf_values(patch)
+                    and "structural_artifact_id"
+                    not in (
+                        ((saved or {}).get("draft", {}).get("preprocessing") or {}).get(
+                            "normalization"
+                        )
+                        or {}
+                    )
+                ):
+                    sources["preprocessing.normalization.structural_artifact_id"] = "system"
                 for path, value in facts.items():
                     if (
                         leaf_values(draft.model_dump(mode="json")).get(path) == value
@@ -839,7 +861,8 @@ class WorkDialogue:
                     reason
                     and not blocked
                     and not re.search(
-                        r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b", reason
+                        r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b|workspace:[\w-]+|\bt1_segment\b",
+                        reason,
                     )
                 ):
                     explanation = "\n\n方案说明（模型建议）：" + reason[:240]
@@ -888,6 +911,37 @@ class WorkDialogue:
                             }
                         ],
                     }
+                if (
+                    workspace_path
+                    and request.selected_input_stage
+                    and model_context["work_context"].get("workspace_stage_selection_required")
+                ):
+                    candidates = model_context["work_context"].get("workspace_stage_candidates", [])
+                    selected = next(
+                        (
+                            item
+                            for item in candidates
+                            if isinstance(item, dict)
+                            and item.get("stage") == request.selected_input_stage
+                            and item.get("selectable") is True
+                        ),
+                        None,
+                    )
+                    if selected is not None:
+                        token = self.coordinator.stage_confirmation_token(
+                            workspace_path, candidates
+                        )
+                        payload["confirmation_request"] = {
+                            "title": "确认预处理起点",
+                            "summary": f"使用你在页面选择的 {request.selected_input_stage} 输入阶段。确认后冻结输入并校验当前方案，不启动计算。",
+                            "options": [
+                                {
+                                    "label": f"使用 {request.selected_input_stage}",
+                                    "description": "核对输入阶段，准备当前方案。",
+                                    "command": f"确认起始阶段 {request.selected_input_stage} {token[:12]}",
+                                }
+                            ],
+                        }
                 if blocked:
                     payload["preserved_user_choices"] = blocked
                     review += "\n已保留你明确指定的参数；未采用与这些选择冲突的模型建议。"

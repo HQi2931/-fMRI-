@@ -120,9 +120,9 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
     if re.search(r"(?:仿射正则化|仿射正则).{0,10}MNI", text, re.I):
         set_value(patch, "preprocessing.t1.affine_regularization", "mni")
     if re.search(
-        r"(?:使用|采用|用|选择|标准化.{0,8})\s*(?:T1\s*)?Segment\b", text, re.I
+        r"(?:使用|采用|用|选择|标准化.{0,8})\s*(?:T1\s*)?(?:Old\s*)?Segment\b", text, re.I
     ) and not re.search(
-        r"(?:不要|不|别)(?:采用|使用|用|做)?\s*(?:T1\s*)?Segment",
+        r"(?:不要|不|别)(?:采用|使用|用|做)?\s*(?:T1\s*)?(?:Old\s*)?Segment",
         text,
         re.I,
     ):
@@ -190,9 +190,13 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
     if metric_section == "alff_falff":
         if re.search(r"计算前不(?:带通)?滤波|不另(?:做|行)?(?:带通)?滤波", text):
             set_value(patch, "preprocessing.temporal_filter.timing", "disabled")
+            set_value(patch, "preprocessing.temporal_filter.frequency_band", None)
+            set_value(patch, "preprocessing.temporal_filter.add_mean_back", None)
             set_value(patch, "alff_falff.filter_timing", "disabled")
         if re.search(r"计算前不.{0,12}空间平滑|计算前不滤波不平滑", text):
             set_value(patch, "preprocessing.smoothing.timing", "disabled")
+            set_value(patch, "preprocessing.smoothing.method", None)
+            set_value(patch, "preprocessing.smoothing.fwhm_mm", None)
     if (
         re.search(r"输出.*原始", text)
         and re.search(r"均值归一化", text)
@@ -299,17 +303,34 @@ def observed_facts(metadata: dict[str, Any] | None) -> dict[str, Any]:
             continue
         data = call.get("output") or {}
         values: dict[str, Any] = {}
-        if data.get("format") == "image_header" and data.get("volume_count", 0) > 1:
-            values = {
-                "preprocessing.tr_seconds": data.get("tr_seconds"),
-                "preprocessing.expected_time_points": data.get("volume_count"),
-                "preprocessing.slice_timing.slice_count": (data.get("dimensions") or [None] * 3)[2],
-            }
+        count = data.get("volume_count")
+        if (
+            data.get("format") == "image_header"
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > 1
+        ):
+            values["preprocessing.expected_time_points"] = count
+            tr = data.get("tr_seconds")
+            if (
+                isinstance(tr, (int, float))
+                and not isinstance(tr, bool)
+                and math.isfinite(tr)
+                and tr > 0
+            ):
+                values["preprocessing.tr_seconds"] = tr
+            dimensions = data.get("dimensions")
+            if isinstance(dimensions, list) and len(dimensions) >= 3:
+                slices = dimensions[2]
+                if isinstance(slices, int) and not isinstance(slices, bool) and slices > 0:
+                    values["preprocessing.slice_timing.slice_count"] = slices
         elif data.get("format") == "json":
-            try:
-                sidecar = json.loads(data.get("content", ""))
-            except (ValueError, TypeError):
-                continue
+            sidecar = data.get("numeric_metadata")
+            if not isinstance(sidecar, dict):
+                try:
+                    sidecar = json.loads(data.get("content", ""))
+                except (ValueError, TypeError):
+                    continue
             if not isinstance(sidecar, dict):
                 continue
             timings = sidecar.get("SliceTiming")
@@ -352,6 +373,30 @@ def observed_facts(metadata: dict[str, Any] | None) -> dict[str, Any]:
         else {"conflicting_values": list(dict.fromkeys(json.dumps(v) for v in values))}
         for path, values in observations.items()
     }
+
+
+def merge_observed_facts(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Accumulate acquisition evidence; one reread cannot clear known conflicts."""
+    merged = deepcopy(previous)
+    for path, value in current.items():
+        if path not in merged:
+            merged[path] = deepcopy(value)
+            continue
+        candidates: list[Any] = []
+        for observation in (merged[path], value):
+            if isinstance(observation, dict) and "conflicting_values" in observation:
+                readings = [json.loads(item) for item in observation["conflicting_values"]]
+            else:
+                readings = [observation]
+            for reading in readings:
+                if reading not in candidates:
+                    candidates.append(reading)
+        merged[path] = (
+            candidates[0]
+            if len(candidates) == 1
+            else {"conflicting_values": [json.dumps(item) for item in candidates]}
+        )
+    return merged
 
 
 def human_issue(issue: str) -> str:
@@ -410,13 +455,38 @@ def pending_review_questions(
         settled = bool(paths) and all(
             path in leaves
             and leaves[path] is not None
-            and (sources.get(path) == "user" or (path in facts and leaves[path] == facts[path]))
+            and (path not in facts or leaves[path] == facts[path])
+            and (
+                sources.get(path) == "user"
+                or (path in facts and leaves[path] == facts[path])
+                or (sources.get(path) == "system" and path.endswith(".structural_artifact_id"))
+            )
             for path in paths
         )
         text = text.strip()
         if not settled and text and text not in pending:
             pending.append(text[:400])
     return pending
+
+
+def complete_input_bindings(values: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the chosen T1 input for Segment normalization when no override exists."""
+    result = deepcopy(values)
+    preprocessing = result.get("preprocessing") or {}
+    normalization = preprocessing.get("normalization")
+    t1 = preprocessing.get("t1")
+    if isinstance(t1, dict):
+        t1.setdefault("structural_artifact_id", "workspace:anatomical-source")
+    if (
+        isinstance(normalization, dict)
+        and normalization.get("mode") == 2
+        and "structural_artifact_id" not in normalization
+        and isinstance(t1, dict)
+        and isinstance(t1.get("structural_artifact_id"), str)
+        and t1["structural_artifact_id"]
+    ):
+        normalization["structural_artifact_id"] = t1["structural_artifact_id"]
+    return result
 
 
 def complete_inactive_parameters(values: dict[str, Any]) -> dict[str, Any]:

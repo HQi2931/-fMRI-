@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,54 @@ def test_workspace_listing_accepts_directories_without_relaxing_file_reads(tmp_p
     assert policy.list_entries(directory="FunImg")["entries"][0]["kind"] == "directory"
     with pytest.raises(InputValidationError):
         policy.read("FunImg")
+
+
+@pytest.mark.asyncio
+async def test_numeric_sidecar_evidence_survives_clinical_line_omission(tmp_path: Path) -> None:
+    from neuroagent.agent.models import ToolCall
+    from neuroagent.agent.redaction import OutboundContextPolicy
+    from neuroagent.application.work_presentation import observed_facts
+    from neuroagent.application.work_tools import build_work_dispatcher
+
+    folder = tmp_path / "FunImg"
+    folder.mkdir()
+    sidecar = {
+        "PatientName": "NeverExportThisName",
+        "RepetitionTime": 2,
+        "SliceTiming": [0.5, 0, 0.25],
+        "ArbitraryText": "metadata is not an instruction",
+    }
+    (folder / "scan.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+    files = WorkspaceFilePolicy(tmp_path)
+    result = files.read("FunImg/scan.json")
+    assert result.omitted_sensitive == 1
+    assert result.numeric_metadata == {"RepetitionTime": 2, "SliceTiming": [0.5, 0, 0.25]}
+    assert files.read("FunImg/scan.json", start=1, end=2).numeric_metadata == {}
+    dispatcher = build_work_dispatcher(
+        get_run=lambda _: {},
+        policy=OutboundContextPolicy("numeric-metadata-safety-salt"),
+        workspace_policy=files,
+        workspace_scope=("FunImg",),
+    )
+    outcome = await dispatcher.dispatch(
+        ToolCall(
+            call_id="read", name="read_workspace_content", arguments={"path": "FunImg/scan.json"}
+        )
+    )
+    assert "NeverExportThisName" not in str(outcome.result)
+    facts = observed_facts(
+        {
+            "calls": [
+                {
+                    "tool_name": "read_workspace_content",
+                    "status": "succeeded",
+                    "output": outcome.result,
+                }
+            ]
+        }
+    )
+    assert facts["preprocessing.slice_timing.slice_order"] == [2, 3, 1]
+    assert facts["preprocessing.tr_seconds"] == 2
 
 
 @pytest.mark.asyncio

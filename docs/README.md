@@ -112,6 +112,7 @@
 - [ADR 0020：DPARSF 参数面板与 T1 准备审查（已被 ADR 0021 取代）](adr/0020-dparsf-draft-and-t1-review.md)
 - [ADR 0021：DPABI 预处理单次运行](adr/0021-single-pass-dpabi-preprocessing.md)
 - [ADR 0022：Work 候选方案与直接界面确认](adr/0022-work-review-and-direct-confirmation.md)
+- [ADR 0023：Work 阶段反馈与校验后的正式回答](adr/0023-work-validated-answer-stream.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

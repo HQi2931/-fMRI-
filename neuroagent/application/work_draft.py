@@ -101,14 +101,16 @@ def merge_work_draft(draft: WorkDraft, patch: dict[str, Any]) -> WorkDraft:
                 result[key] = deepcopy(value)
         return result
 
-    from neuroagent.application.work_presentation import complete_inactive_parameters
+    from neuroagent.application.work_presentation import (
+        complete_inactive_parameters,
+        complete_input_bindings,
+    )
 
     updated = WorkDraft.model_validate(
-        complete_inactive_parameters(merge(draft.model_dump(mode="json"), patch))
+        complete_inactive_parameters(
+            complete_input_bindings(merge(draft.model_dump(mode="json"), patch))
+        )
     )
-    t1 = updated.preprocessing.get("t1")
-    if isinstance(t1, dict) and "structural_artifact_id" not in t1:
-        t1["structural_artifact_id"] = "workspace:anatomical-source"
     if draft_hash(updated) != draft_hash(draft):
         updated.confirmed_hash = None
     return updated

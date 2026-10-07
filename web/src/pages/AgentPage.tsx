@@ -162,6 +162,15 @@ function applyConversationContext(conversation: Conversation): void {
   updateWorkspace(patch);
 }
 
+function HistoricalPlan({ item }: { item: Message }) {
+  const [open, setOpen] = useState(false);
+  if (!item.workDraft) return null;
+  return <details open={open}>
+    <summary onClick={(event) => { event.preventDefault(); setOpen((value) => !value); }}>历史方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</summary>
+    {open && <WorkDraftPanel snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly onSave={async () => {}} />}
+  </details>;
+}
+
 function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onOpenPlan }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onOpenPlan: () => void }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
@@ -179,7 +188,7 @@ function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, o
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
       {item.workDraft && (item.id === latestDraftId
         ? <button className="button button-secondary" type="button" onClick={onOpenPlan}>查看当前方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</button>
-        : <details><summary>历史方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</summary><WorkDraftPanel snapshot={item.workDraft} issues={item.draftIssues} preview={item.planPreview} readOnly onSave={async () => {}} /></details>)}
+        : <HistoricalPlan item={item} />)}
       {item.workspaceCitations && item.workspaceCitations.length > 0 && <details className="chat-technical"><summary>查看文件证据（{item.workspaceCitations.length} 项）</summary><ul className="workspace-citations">{item.workspaceCitations.map((citation) => <li key={`${citation.path}:${citation.locator}`}><code>{citation.path}</code> · {citation.locator}</li>)}</ul></details>}
       {item.proposal && <details className="workspace-proposal"><summary>查看文件修改 diff（{item.proposal.proposal_hash.slice(0, 12)}）</summary><p>不可变补丁哈希：<code>{item.proposal.proposal_hash}</code></p><p>文件数：{item.proposal.edits.length} · 增加 {patchStats(item.proposal.diff).added} 行 · 删除 {patchStats(item.proposal.diff).removed} 行</p><pre>{item.proposal.diff}</pre>{item.proposal.status === "proposed" && <button className="button button-primary" type="button" disabled={busy} onClick={() => onApply(item.proposal!)}>确认应用补丁</button>}{item.proposal.status === "applied" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onUndo(item.proposal!)}>撤销本次补丁</button>}</details>}
       {item.citations?.map((citation) => <a key={citation.citation_id} href={citation.source} target="_blank" rel="noreferrer">[{citation.citation_id}] {citation.title}</a>)}
@@ -509,7 +518,7 @@ export function AgentPage() {
       }, (event) => {
         if (controller.signal.aborted) return;
         if (event.type === "reset") setPendingTurn((pending) => pending && { ...pending, text: "" });
-        if (event.type === "delta") setPendingTurn((pending) => pending && { ...pending, text: pending.text + event.text, status: "正在生成回答…" });
+        if (event.type === "delta" && mode === "chat") setPendingTurn((pending) => pending && { ...pending, text: pending.text + event.text, status: "正在生成回答…" });
         if (event.type === "status") setPendingTurn((pending) => pending && { ...pending, status: event.message });
       }, controller.signal);
       if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); }
@@ -530,7 +539,7 @@ export function AgentPage() {
           return;
         }
         setError(describeError(caught)); if (!confirmationCommand) setPrompt(content);
-        setPendingTurn((pending) => pending && { ...pending, status: "回答未完成，临时内容可能不完整。请重试。" });
+        setPendingTurn((pending) => pending && { ...pending, status: mode === "work" ? "本轮结果尚未确认，请重试恢复。" : "回答未完成，临时内容可能不完整。请重试。" });
       }
     } finally {
       window.clearTimeout(deadline);

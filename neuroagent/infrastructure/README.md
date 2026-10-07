@@ -10,6 +10,7 @@
 
 - SQLAlchemy 2 + SQLite 持久化与 Alembic 迁移；
 - 数据集只读扫描、文件哈希和允许根目录路径策略；
+- 工作区 JSON 读取可附上请求范围内的 TR/层时间数值证据，独立于敏感行省略后的文本片段；仅允许有限、有效数值，不恢复身份正文。
 - `dataset_inspector.py` 按已核验 DPABI 源码的版本化阶段表返回 `FunRaw`/`FunImg` 及中间 checkpoint 候选；不自动选择唯一目录，确认后的阶段和全量伴随文件哈希进入冻结 manifest；
 - CSV、TSV、XLSX 人口学读取与受试者对齐；
 - 用户选择的 MATLAB、SPM、DPABI 环境探测；环境锁会失败关闭地校验并哈希

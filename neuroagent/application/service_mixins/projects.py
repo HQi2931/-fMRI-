@@ -24,33 +24,9 @@ from neuroagent.application.contracts import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.observability.work_timings import measure_work_stage
 
 
 class ProjectDatasetMixin(BaseServiceMixin):
-    def _inspect_source(
-        self,
-        source: Any,
-        *,
-        report_only: bool,
-        selected_input_stage: str | None = None,
-    ) -> dict[str, Any]:
-        with measure_work_stage("workspace_inspection"):
-            try:
-                return self.dataset_inspector.inspect(
-                    source,
-                    report_only=report_only,
-                    selected_input_stage=selected_input_stage,
-                )
-            except TypeError as exc:
-                # Preserve compatibility with lightweight test/integration inspectors.
-                if "report_only" not in str(exc) and "selected_input_stage" not in str(exc):
-                    raise
-                try:
-                    return self.dataset_inspector.inspect(source, report_only=report_only)
-                except TypeError:
-                    return self.dataset_inspector.inspect(source)
-
     def check_workspace(self, request: WorkspaceCheckRequest) -> WorkspaceCheckView:
         """Inspect a selected workspace without registering or modifying it."""
 

@@ -108,8 +108,15 @@ def test_stream_final_is_durable_and_same_key_replays_without_provider(
         assert response.status_code == 201, response.text
         frames = decode_frames(response.text)
         deltas = [data["text"] for event, data in frames if event == "delta"]
-        assert len(deltas) >= 2
-        assert "".join(deltas) == answer
+        if mode == "chat":
+            assert len(deltas) >= 2
+            assert "".join(deltas) == answer
+        else:
+            assert deltas == []
+            assert any(
+                event == "status" and data["message"] == "正在整理方案与回答…"
+                for event, data in frames
+            )
         assert frames[-1][0] == "final", frames
         final = frames[-1][1]
         assert final["assistant_message"]["content"] == answer
@@ -169,9 +176,10 @@ def test_stream_tool_loop_keeps_durable_steps_and_only_previews_answer(
         )
     frames = decode_frames(response.text)
     assert frames[-1][0] == "final", frames
-    assert (
-        "".join(data["text"] for event, data in frames if event == "delta")
-        == "校正方法需要核验能力。"
+    assert not any(event == "delta" for event, _ in frames)
+    assert frames[-1][1]["assistant_message"]["content"] == "校正方法需要核验能力。"
+    assert any(
+        event == "status" and data["message"] == "正在检查任务信息…" for event, data in frames
     )
     assert frames[-1][1]["tool_calls"][0]["tool_name"] == "describe_statistical_capabilities"
     assert frames[-1][1]["tool_calls"][0]["status"] == "succeeded"
@@ -201,6 +209,7 @@ def test_stream_does_not_authorize_a_model_selected_execution_action(
     frames = decode_frames(response.text)
     assert frames[-1][0] == "final"
     assert frames[-1][1]["assistant_message"]["content"] != "模型声称已启动。"
+    assert "模型声称已启动。" not in response.text
     assert frames[-1][1]["conversation"]["active_run_id"] is None
     execute.assert_not_called()
 

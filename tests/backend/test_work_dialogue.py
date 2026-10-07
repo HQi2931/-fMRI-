@@ -98,10 +98,13 @@ def test_work_uses_model_and_history_for_questions_without_actions(service, monk
     execute.assert_not_called()
 
 
+@pytest.mark.parametrize("proposed_tr", [2, 3])
 def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reason(
-    service, monkeypatch
+    service, monkeypatch, proposed_tr
 ):
-    response = generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 3}})
+    response = generated(
+        "prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": proposed_tr}}
+    )
     content = json.loads(response.response.content)
     content.update(
         questions=[
@@ -123,8 +126,12 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
     assistant = result["assistant_message"]
     assert assistant["payload"]["questions"] == ["指标掩膜使用哪一种？"]
     assert "TR 是否" not in assistant["content"]
-    # The model tried to replace the explicit TR: discard its rationale too.
-    assert "方案说明" not in assistant["content"]
+    if proposed_tr == 3:
+        # The model tried to replace the explicit TR: discard its rationale too.
+        assert "方案说明" not in assistant["content"]
+    else:
+        assert "方案说明（模型建议）" in assistant["content"]
+        assert assistant["payload"]["recommendation_reason"] == content["recommendation_reason"]
     assert assistant["payload"]["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
 
 
@@ -162,6 +169,40 @@ def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
         result = confirmed["assistant_message"]["payload"]
         assert result["manifest"]["selected_input_stage"] == "FunImg"
         assert result["dataset"]["dataset_id"]
+        assert service.repository.list_runs() == []
+        assert model.await_count == 1
+
+
+def test_page_selected_stage_gets_a_confirmation_without_model_stage_recommendation(
+    service, source_root, monkeypatch
+):
+    subject = source_root / "FunImg" / "sub-01"
+    subject.mkdir(parents=True)
+    (subject / "rest.nii").write_bytes((348).to_bytes(4, "little") + b"\0" * 344)
+    model = configure(
+        service,
+        monkeypatch,
+        [generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 2}})],
+    )
+    with TestClient(create_app(service=service)) as client:
+        session = create(client, source_root)
+        proposed = turn(
+            client,
+            session,
+            "准备ALFF方案，使用页面选择的起点",
+            "selected-stage",
+            selected_input_stage="FunImg",
+        )
+        payload = proposed["assistant_message"]["payload"]
+        command = payload["confirmation_request"]["options"][0]["command"]
+        assert payload["confirmation_request"]["title"] == "确认预处理起点"
+        assert "dataset" not in payload
+        assert payload["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
+        confirmed = turn(client, session, command, "selected-stage-confirm")
+        assert (
+            confirmed["assistant_message"]["payload"]["manifest"]["selected_input_stage"]
+            == "FunImg"
+        )
         assert service.repository.list_runs() == []
         assert model.await_count == 1
 

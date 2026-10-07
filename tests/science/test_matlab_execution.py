@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import hashlib
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -17,13 +17,15 @@ from neuroagent.execution import (
     MatlabTemplateRenderer,
     PreprocessingJobPayload,
 )
-from neuroagent.tools import DpabiCfgProjection
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
+from neuroagent.tools import DpabiCfgProjection
 
 
 def test_head_motion_failure_report_bytes_match_registered_hash(tmp_path: Path) -> None:
     artifact = MatlabJobExecutor._head_motion_qc_failure_artifact(
-        tmp_path, job_hash="j" * 64, plan_hash="p" * 64,
+        tmp_path,
+        job_hash="j" * 64,
+        plan_hash="p" * 64,
         error_type="InvalidQcReport",
     )[0]
     content = (tmp_path / artifact["relative_path"]).read_bytes()

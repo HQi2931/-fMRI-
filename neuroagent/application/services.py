@@ -150,7 +150,7 @@ class NeuroAgentService(
                 digest.update(block)
         return digest.hexdigest()
 
-    def _workspace_root(self, path: str | None):
+    def _workspace_root(self, path: str | None) -> Path | None:
         if not path:
             return None
         return self.path_policy.validate_project_source_root(path)
@@ -167,6 +167,8 @@ class NeuroAgentService(
         try:
             root = self._workspace_root(workspace_path)
         except Exception:
+            return False
+        if root is None:
             return False
         expected_hash = self._workspace_hash(root)
         try:
@@ -215,6 +217,8 @@ class NeuroAgentService(
                 "workspace_consent_required", "必须确认文件内容可能发送给所选模型服务。"
             )
         root = self._workspace_root(conversation.workspace_path)
+        if root is None:
+            raise InputValidationError("workspace_required", "文件助手需要绑定 Work 工作区。")
         workspace_hash = self._workspace_hash(root)
         await self._probe_workspace_tool_support(profile_view, request.model)
 
@@ -277,7 +281,7 @@ class NeuroAgentService(
             timeout_seconds=15,
             max_result_bytes=1_024,
         )
-        messages = [
+        messages: list[dict[str, object]] = [
             {
                 "role": "system",
                 "content": (

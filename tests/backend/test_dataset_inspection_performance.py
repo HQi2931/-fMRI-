@@ -9,6 +9,7 @@ from neuroagent.infrastructure.filesystem import dataset_inspector
 from neuroagent.infrastructure.filesystem.dataset_inspector import DatasetInspector
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
+from neuroagent.observability.work_timings import capture_work_timings
 
 from .conftest import make_bids_dataset
 
@@ -59,7 +60,12 @@ def test_frozen_scan_keeps_complete_stable_hashes_and_worker_reverification(
     assert set(frozen["file_hashes"]) == set(frozen["file_sizes"])
     assert all(len(value) == 64 for value in frozen["file_hashes"].values())
     assert "inspection_timing_ms" not in frozen
-    assert content_hash(frozen) == content_hash(inspector.inspect(dataset))
+    with capture_work_timings() as timings:
+        measured = inspector.inspect(dataset)
+    assert content_hash(frozen) == content_hash(measured)
+    assert timings.snapshot()[0]["stage"] == "hashing"
+    assert timings.snapshot()[0]["calls"] == 5
+    assert "work_timings" not in measured
     MatlabJobExecutor._verify_manifest_file_hashes(frozen, dataset)
 
     # A same-size sidecar edit cannot be detected by file size alone.

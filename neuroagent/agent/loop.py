@@ -25,6 +25,7 @@ from neuroagent.agent.models import (
     ProviderResponse,
     ToolCall,
 )
+from neuroagent.agent.streaming import current_answer_stream
 from neuroagent.agent.tool_result import ToolCallOutcome, ToolCallStatus
 from neuroagent.agent.tool_spec import LlmTool
 from neuroagent.context.engine import RegexTokenCounter
@@ -224,6 +225,13 @@ class AgentLoop:
                         usage,
                         working,
                         provider_model,
+                    )
+                observer = current_answer_stream()
+                if observer is not None:
+                    await observer.status(
+                        "正在读取工作区数据…"
+                        if "workspace_content" in call.name
+                        else "正在检查任务信息…"
                     )
                 with measure_work_stage(
                     "file_tools" if "workspace_content" in call.name else "other_tools"

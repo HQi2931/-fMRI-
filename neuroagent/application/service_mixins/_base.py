@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TypeVar
+from pathlib import Path
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from neuroagent.application.ports import (
     SecretWriterPort,
 )
 from neuroagent.application.settings import Settings
+from neuroagent.observability.work_timings import measure_work_stage
 from neuroagent.skills.compiler import SkillCompiler
 from neuroagent.skills.registry import SkillRegistry
 from neuroagent.skills.resolver import SkillResolver
@@ -54,6 +56,29 @@ class BaseServiceMixin:
     skill_resolver: SkillResolver
     tool_registry: ToolRegistry
     skill_compiler: SkillCompiler
+
+    def _inspect_source(
+        self,
+        source: Path,
+        *,
+        report_only: bool,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]:
+        with measure_work_stage("workspace_inspection"):
+            try:
+                return self.dataset_inspector.inspect(
+                    source,
+                    report_only=report_only,
+                    selected_input_stage=selected_input_stage,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with lightweight test/integration inspectors.
+                if "report_only" not in str(exc) and "selected_input_stage" not in str(exc):
+                    raise
+                try:
+                    return self.dataset_inspector.inspect(source, report_only=report_only)
+                except TypeError:
+                    return self.dataset_inspector.inspect(source)
 
     def _idempotent(
         self,
