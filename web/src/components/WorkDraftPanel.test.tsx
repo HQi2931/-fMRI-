@@ -165,6 +165,8 @@ describe("editable DPARSF draft", () => {
     expect(within(nuisanceRow).getByText("来源：模型推荐 · 状态：存在冲突")).toBeInTheDocument();
     expect(within(summary).getByText("标准化后")).toBeInTheDocument();
     expect(within(summary).getByText(/来源：用户指定/)).toBeInTheDocument();
+    expect(within(summary).getByText("结果图平滑核（毫米）")).toBeInTheDocument();
+    expect(within(summary).getByText("4、4、4")).toBeInTheDocument();
   });
   it("shows semantic changes and saves comma separated values without model guidance", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
