@@ -29,13 +29,24 @@ const groups: Array<{ title: string; fields: Field[] }> = [
 
 const keyFields = new Set([
   "preprocessing.tr_seconds", "preprocessing.expected_time_points", "preprocessing.dummy_scans",
-  "preprocessing.slice_timing.enabled", "preprocessing.slice_timing.slice_count", "preprocessing.slice_timing.reference_slice", "preprocessing.realignment.enabled",
+  "preprocessing.slice_timing.enabled", "preprocessing.slice_timing.slice_count", "preprocessing.slice_timing.slice_order", "preprocessing.slice_timing.reference_slice", "preprocessing.realignment.enabled",
   "preprocessing.t1.preparation", "preprocessing.t1.segmentation", "preprocessing.t1.dartel",
-  "preprocessing.nuisance.enabled", "preprocessing.nuisance.head_motion_model", "preprocessing.nuisance.polynomial_trend", "preprocessing.nuisance.white_matter.enabled", "preprocessing.nuisance.csf.enabled", "preprocessing.nuisance.global_signal.enabled",
+  "preprocessing.nuisance.enabled", "preprocessing.nuisance.timing", "preprocessing.nuisance.head_motion_model", "preprocessing.nuisance.polynomial_trend", "preprocessing.nuisance.white_matter.enabled", "preprocessing.nuisance.csf.enabled", "preprocessing.nuisance.global_signal.enabled",
   "preprocessing.normalization.mode", "preprocessing.normalization.voxel_size_mm", "preprocessing.detrend",
-  "alff_falff.frequency_band.low_hz", "alff_falff.frequency_band.high_hz", "alff_falff.result_smoothing", "alff_falff.result_smoothing_fwhm_mm",
+  "alff_falff.tr_seconds", "alff_falff.frequency_band.low_hz", "alff_falff.frequency_band.high_hz", "alff_falff.filter_timing", "alff_falff.result_smoothing", "alff_falff.result_smoothing_fwhm_mm",
   "reho.cluster_voxels", "reho.smooth_reho", "reho.smooth_reho_fwhm_mm", "qc_mode",
 ]);
+
+const statusSummaryFields = [
+  { path: "preprocessing.tr_seconds", label: "TR" },
+  { path: "preprocessing.expected_time_points", label: "时间点数" },
+  { path: "preprocessing.dummy_scans", label: "删除初始时间点" },
+  { path: "preprocessing.slice_timing", label: "层时间校正" },
+  { path: "preprocessing.nuisance", label: "协变量回归" },
+  { path: "alff_falff.filter_timing", label: "ALFF/fALFF 指标滤波" },
+  { path: "alff_falff.result_smoothing", label: "ALFF/fALFF 结果图平滑" },
+  { path: "alff_falff.result_smoothing_fwhm_mm", label: "结果图平滑核（毫米）" },
+];
 
 function get(value: ObjectValue, path: string): unknown {
   return path.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as ObjectValue)[key] : undefined, value);
@@ -119,6 +130,59 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     const field = groups.flatMap((group) => group.fields).find((field) => field.path === path);
     return field?.choices?.find(([key]) => key === value)?.[1] ?? (Array.isArray(value) ? value.map((item) => Array.isArray(item) ? item.join("、") : String(item)).join("、") : String(value));
   }
+  function summaryValue(path: string): string {
+    if (path.startsWith("alff_falff.") && !draft.alff_falff) return "未选择 ALFF/fALFF 指标";
+    const value = get(draft, path);
+    if (value === undefined) return "未填写";
+    if (value === null) return "不适用";
+    if (path === "preprocessing.slice_timing") {
+      if (typeof value !== "object" || Array.isArray(value)) return "待审查";
+      const timing = value as ObjectValue;
+      if (timing.enabled === false) return "明确停用";
+      return [
+        timing.enabled === true ? "已启用" : "启用状态未定",
+        timing.slice_count ? String(timing.slice_count) + " 层" : "层数未定",
+        timing.reference_slice ? "参考层 " + String(timing.reference_slice) : "参考层未定",
+        Array.isArray(timing.slice_order) ? "采集顺序 " + timing.slice_order.length + " 项" : "采集顺序未定",
+      ].join(" · ");
+    }
+    if (path === "preprocessing.nuisance") {
+      if (typeof value !== "object" || Array.isArray(value)) return "待审查";
+      const nuisance = value as ObjectValue;
+      if (nuisance.enabled === false) return "明确停用";
+      const model = nuisance.head_motion_model;
+      const modelLabel = groups.flatMap((group) => group.fields).find((field) => field.path === "preprocessing.nuisance.head_motion_model")?.choices?.find(([key]) => key === model)?.[1];
+      const wm = get(draft, "preprocessing.nuisance.white_matter.enabled");
+      const csf = get(draft, "preprocessing.nuisance.csf.enabled");
+      return [
+        nuisance.enabled === true ? "已启用" : "启用状态未定",
+        modelLabel ? "头动 " + modelLabel : "头动模型未定",
+        "WM " + (wm === true ? "启用" : wm === false ? "停用" : "未定"),
+        "CSF " + (csf === true ? "启用" : csf === false ? "停用" : "未定"),
+      ].join(" · ");
+    }
+    return display(path, value);
+  }
+  function summaryState(path: string): string {
+    if (path.startsWith("alff_falff.") && !draft.alff_falff) return "不适用";
+    const issue = issues.some((item) => item.startsWith(path + "：") || item.startsWith(path + ":") || item.startsWith(path + "."));
+    if (issue) return "存在冲突";
+    if (edited.some((item) => item === path || item.startsWith(path + ".") || path.startsWith(item + "."))) return "未保存";
+    if (get(draft, path) === undefined || get(draft, path) === null) return "待选择";
+    const direct = inheritedFieldValue(snapshot.field_states, path);
+    if (direct) return reviewLabel(direct);
+    const descendants = Object.entries(snapshot.field_states ?? {}).filter(([key]) => key.startsWith(path + ".")).map(([, value]) => reviewLabel(value));
+    if (descendants.includes("存在冲突")) return "存在冲突";
+    if (descendants.length && descendants.every((state) => state === "已核实")) return "已核实";
+    if (descendants.includes("待选择")) return "待选择";
+    return "待审查";
+  }
+  function summarySource(path: string): string {
+    const direct = inheritedFieldValue(snapshot.sources, path);
+    if (direct) return sourceLabel(direct);
+    const descendants = Object.entries(snapshot.sources ?? {}).filter(([key]) => key.startsWith(path + ".")).map(([, value]) => sourceLabel(value));
+    return [...new Set(descendants)].join("、") || sourceLabel(undefined);
+  }
   function change(path: string, value: unknown) {
     const next = structuredClone(draft); put(next, path, value);
     if (path === "preprocessing.normalization.mode" && (value === 2 || value === 3) && !get(next, "preprocessing.normalization.structural_artifact_id")) put(next, "preprocessing.normalization.structural_artifact_id", "workspace:anatomical-source");
@@ -180,6 +244,10 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     {dirty && <aside className="draft-changes" aria-label="本次修改"><strong>本次修改 · 保存后重新校验</strong><ul>{edited.map((path) => <li key={path}>{groups.flatMap((group) => group.fields).find((field) => field.path === path)?.label ?? (path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(path, get(snapshot.draft, path))} → {display(path, get(draft, path))}</li>)}</ul></aside>}
     {!dirty && snapshot.changes && snapshot.changes.length > 0 && <details className="draft-changes"><summary>此版本的修改（{snapshot.changes.length} 项）</summary><ul>{snapshot.changes.map((change) => <li key={change.path}>{groups.flatMap((group) => group.fields).find((field) => field.path === change.path)?.label ?? (change.path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(change.path, change.before)} → {display(change.path, change.after)}</li>)}</ul></details>}
     <p>{snapshot.consumed ? "本次执行方案只读。如需修改分析选择，请在对话中准备新方案。" : "未填写项保持未知；建议需审阅。保存参数和生成方案不会启动计算。"}</p>
+    <section className="draft-status-summary" aria-label="关键参数状态">
+      <h4>关键参数状态 <small>来源与核验状态分别显示 · 启动仍需独立确认</small></h4>
+      <ul>{statusSummaryFields.map((field) => <li key={field.path}><strong>{field.label}</strong><span>{summaryValue(field.path)}</span><small>来源：{summarySource(field.path)} · 状态：{summaryState(field.path)}</small></li>)}</ul>
+    </section>
     <div className="draft-metrics" role="group" aria-label="计算指标">{["alff", "falff", "reho"].map((metric) => <label key={metric}><input type="checkbox" disabled={locked} checked={Array.isArray(draft.requested_metrics) && draft.requested_metrics.includes(metric)} onChange={(event) => {
       const current = Array.isArray(draft.requested_metrics) ? draft.requested_metrics : [];
       change("requested_metrics", event.target.checked ? [...current, metric] : current.filter((m) => m !== metric));

@@ -138,6 +138,34 @@ describe("editable DPARSF draft", () => {
     expect(within(scans).getByText("来源：模型推荐")).toBeInTheDocument();
     expect(within(scans).getByText("状态：待审查")).toBeInTheDocument();
   });
+  it("summarizes key parameter values, sources, and conflicts before detailed editing", () => {
+    render(<WorkDraftPanel snapshot={{
+      ...snapshot({
+        preprocessing: {
+          tr_seconds: 2, expected_time_points: 234, dummy_scans: 0,
+          slice_timing: { enabled: true, slice_count: 33, slice_order: [1, 2, 3], reference_slice: 33 },
+          nuisance: { enabled: true, head_motion_model: 4, white_matter: { enabled: true }, csf: { enabled: true } },
+        },
+        alff_falff: { filter_timing: "after_normalize", result_smoothing: true, result_smoothing_fwhm_mm: [4, 4, 4] },
+      }),
+      sources: { "preprocessing.tr_seconds": "data", "preprocessing.expected_time_points": "data", "preprocessing.dummy_scans": "suggested", "preprocessing.slice_timing.slice_order": "system", "preprocessing.nuisance": "suggested", "alff_falff.filter_timing": "suggested", "alff_falff.result_smoothing": "user" },
+      field_states: { "preprocessing.tr_seconds": "verified", "preprocessing.expected_time_points": "verified", "preprocessing.slice_timing.slice_order": "verified" },
+    }} issues={["preprocessing.nuisance.head_motion_model：与研究方案冲突"]} onSave={vi.fn()} />);
+    const summary = screen.getByRole("region", { name: "关键参数状态" });
+    expect(summary).toHaveTextContent("来源与核验状态分别显示 · 启动仍需独立确认");
+    expect(within(summary).getByText("TR")).toBeInTheDocument();
+    expect(within(summary).getByText("2")).toBeInTheDocument();
+    const trRow = within(summary).getByText("TR").closest("li")!;
+    expect(within(trRow).getByText("来源：数据读取 · 状态：已核实")).toBeInTheDocument();
+    expect(within(summary).getByText(/33 层 · 参考层 33 · 采集顺序 3 项/)).toBeInTheDocument();
+    const sliceTimingRow = within(summary).getByText("层时间校正").closest("li")!;
+    expect(within(sliceTimingRow).getByText("来源：系统计算 · 状态：已核实")).toBeInTheDocument();
+    expect(within(summary).getByText(/Friston-24/)).toBeInTheDocument();
+    const nuisanceRow = within(summary).getByText("协变量回归").closest("li")!;
+    expect(within(nuisanceRow).getByText("来源：模型推荐 · 状态：存在冲突")).toBeInTheDocument();
+    expect(within(summary).getByText("标准化后")).toBeInTheDocument();
+    expect(within(summary).getByText(/来源：用户指定/)).toBeInTheDocument();
+  });
   it("shows semantic changes and saves comma separated values without model guidance", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<WorkDraftPanel snapshot={snapshot({ requested_metrics: ["alff"], alff_falff: { result_smoothing_fwhm_mm: [4, 4, 4] } })} onSave={save} />);
@@ -147,10 +175,10 @@ describe("editable DPARSF draft", () => {
     expect(save).toHaveBeenCalledWith("a".repeat(64), { alff_falff: { result_smoothing_fwhm_mm: [6, 6, 6] } });
   });
   it("locates a problem inside a folded advanced section using the keyboard accessible action", async () => {
-    render(<WorkDraftPanel snapshot={snapshot()} issues={["preprocessing.slice_timing.slice_order：请核对采集顺序"]} onSave={vi.fn()} />);
-    const field = screen.getByLabelText("层采集顺序");
+    render(<WorkDraftPanel snapshot={snapshot({ preprocessing: { nuisance: { white_matter: {} } } })} issues={["preprocessing.nuisance.white_matter.compcor_components：请核对成分数"]} onSave={vi.fn()} />);
+    const field = screen.getByLabelText("WM 白质 CompCor 成分数");
     expect(field.closest("details")).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByRole("button", { name: "层采集顺序：请核对采集顺序" }));
+    await userEvent.click(screen.getByRole("button", { name: "WM 白质 CompCor 成分数：请核对成分数" }));
     expect(field).toHaveFocus();
     expect(field.closest("details")).toHaveAttribute("open");
     expect(field).toHaveAttribute("aria-invalid", "true");

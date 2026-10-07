@@ -18,6 +18,14 @@
 .draft-help { color: #64748b; }
 .draft-field-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .draft-changes { padding: 12px 16px; background: #edf5f0; border-radius: 8px; margin: 12px 0; font-size: 13px; }
+.draft-status-summary { margin: 12px 0 18px; padding: 12px 14px; border: 1px solid #d8e1e9; border-radius: 8px; background: #f7f9fb; }
+.draft-status-summary h4 { margin: 0 0 8px; font-size: 14px; }
+.draft-status-summary h4 small { display: block; margin-top: 3px; color: #64748b; font-size: 12px; font-weight: 400; }
+.draft-status-summary ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; padding: 0; margin: 0; list-style: none; }
+.draft-status-summary li { min-width: 0; display: grid; gap: 3px; padding: 7px 0; border-top: 1px solid #e1e6ed; }
+.draft-status-summary li strong { font-size: 13px; }
+.draft-status-summary li span { overflow-wrap: anywhere; font-size: 13px; }
+.draft-status-summary li small { color: #64748b; font-size: 12px; }
 .draft-issue-link { border: 0; background: transparent; color: #a52424; padding: 4px 0; text-align: left; text-decoration: underline; cursor: pointer; font: inherit; }
 .draft-actions { position: sticky; bottom: 0; z-index: 1; background: var(--panel, #fff); border-top: 1px solid var(--line, #d4dce6); }
 .work-draft-panel :is(input, select, button, summary, textarea):focus-visible { outline: 3px solid #237866; outline-offset: 3px; }
