@@ -240,7 +240,7 @@ export function AgentPage() {
   const [runConnectionMessage, setRunConnectionMessage] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null);
   const turnController = useRef<AbortController | null>(null);
-  const [pendingTurn, setPendingTurn] = useState<{ mode: ConversationMode; user: string; text: string; status: string } | null>(null);
+  const [pendingTurn, setPendingTurn] = useState<{ mode: ConversationMode; user: string; text: string; status: string; confirmation: boolean } | null>(null);
   useEffect(() => () => turnController.current?.abort(), []);
   const [consentBusy, setConsentBusy] = useState(false);
   const [workspaceConsent, setWorkspaceConsent] = useState<WorkspaceConsent | null>(null);
@@ -489,12 +489,13 @@ export function AgentPage() {
       if (turnController.current !== controller) return;
       controller.abort();
       setBusy(false);
-      setPrompt(content);
+      setPrompt(confirmationCommand ? "" : content);
+      if (confirmationCommand) setOpenedConfirmation(null);
       setPendingTurn(null);
-      setError("等待回答已超过 5 分钟，请刷新会话查看已保存结果后重试。");
+      setError(confirmationCommand ? "确认操作等待已超过 5 分钟，尚不能确定是否提交成功。请刷新会话核对结果；停止等待不会取消计算。" : "等待回答已超过 5 分钟，请刷新会话查看已保存结果后重试。");
     }, 300_000);
     const confirmationLabel = confirmation?.options.find((option) => option.command === content)?.label;
-    setPendingTurn({ mode, user: confirmationLabel ?? content, text: "", status: confirmationCommand ? "正在核对方案并提交操作…" : "正在生成回答…" });
+    setPendingTurn({ mode, user: confirmationLabel ?? content, text: "", status: confirmationCommand ? "正在核对方案并提交操作…" : "正在生成回答…", confirmation: !!confirmationCommand });
     setPrompt(""); setBusy(true); setError("");
     try {
       const conversationId = await ensureConversation(mode);
@@ -582,10 +583,11 @@ export function AgentPage() {
     if (!controller) return;
     controller.abort();
     turnController.current = null;
-    setPrompt(pendingTurn?.user ?? "");
+    setPrompt(pendingTurn?.confirmation ? "" : pendingTurn?.user ?? "");
+    if (pendingTurn?.confirmation) setOpenedConfirmation(null);
     setPendingTurn(null);
     setBusy(false);
-    setError("已停止等待。服务端可能继续保存本轮结果；请刷新会话查看后再发送。");
+    setError(pendingTurn?.confirmation ? "已停止等待确认结果，尚不能确定是否提交成功。请刷新会话核对结果；停止等待不会取消计算。" : "已停止等待。服务端可能继续保存本轮结果；请刷新会话查看后再发送。");
   }
 
   async function saveDraft(hash: string, patch: Record<string, unknown>): Promise<void> {
@@ -607,6 +609,7 @@ export function AgentPage() {
     {confirmation && !draftDirty && confirmationKey === openedConfirmation && <ConfirmationDialog
       key={confirmationKey} request={confirmation} busy={busy} error={error}
       onConfirm={(command) => void send(command)}
+      onStopWaiting={pendingTurn?.confirmation ? stopWaiting : undefined}
       onDismiss={() => { setOpenedConfirmation(null); }}
       onEdit={() => { setOpenedConfirmation(null); setPlanOpen(true); requestAnimationFrame(() => composer.current?.focus()); }}
     />}

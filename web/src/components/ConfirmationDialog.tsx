@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ConfirmationRequest } from "./confirmation";
 
-export function ConfirmationDialog({ request, busy, error, onConfirm, onDismiss, onEdit }: {
+export function ConfirmationDialog({ request, busy, error, onConfirm, onDismiss, onEdit, onStopWaiting }: {
   request: ConfirmationRequest;
   busy: boolean;
   error: string;
   onConfirm: (command: string) => void;
   onDismiss: () => void;
   onEdit: () => void;
+  onStopWaiting?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [selected, setSelected] = useState<string>(request.options.length === 1 ? request.options[0].command : "");
@@ -34,7 +35,9 @@ export function ConfirmationDialog({ request, busy, error, onConfirm, onDismiss,
       </label>)}
     </fieldset>}
     {error && <p role="alert" className="confirmation-error">{error}</p>}
+    {busy && onStopWaiting && <p role="status">正在等待提交结果。停止等待不会取消计算。</p>}
     <div className="confirmation-footer">
+      {busy && onStopWaiting && <button type="button" className="button button-secondary" onClick={onStopWaiting}>停止等待</button>}
       <button type="button" className="button button-secondary" disabled={busy} onClick={onDismiss}>保留方案</button>
       <button type="button" className="button button-secondary" disabled={busy} onClick={onEdit}>返回修改</button>
       <button type="button" className="button button-primary" disabled={busy || !selectedCommand} onClick={() => onConfirm(selectedCommand)}>{busy ? "正在提交…" : request.options.length === 1 ? request.options[0].label : "确认选择"}</button>

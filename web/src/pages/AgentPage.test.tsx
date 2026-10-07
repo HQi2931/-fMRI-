@@ -343,6 +343,30 @@ describe("agent workbench page", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("keeps confirmation commands out of the composer when waiting is stopped", async () => {
+    let signal: AbortSignal | undefined | null;
+    const command = "确认方案参数 private-command";
+    const draft = { hash: "d".repeat(64), draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: false };
+    const confirm = vi.fn((init?: RequestInit) => {
+      signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    });
+    const turn = vi.fn();
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "准备审查", { work_draft: draft, confirmation_request: { title: "确认方案", summary: "审查当前方案", options: [{ label: "确认当前方案", description: "记录审查", command }] } })] })]), confirmation: confirm, turn });
+    render(<AgentPage />);
+    const plan = await screen.findByRole("complementary", { name: "当前方案审查" });
+    await userEvent.click(within(plan).getByRole("button", { name: "确认当前方案" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认当前方案" }));
+    await waitFor(() => expect(signal).toBeTruthy());
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "停止等待" }));
+    expect(signal?.aborted).toBe(true);
+    expect(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案")).toHaveValue("");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("停止等待不会取消计算");
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(turn).not.toHaveBeenCalled();
+  });
+
   it("recovers a saved confirmation after response loss with one read and no second execution request", async () => {
     const command = "确认方案参数 recover-command";
     const draft = { hash: "d".repeat(64), draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: false };
