@@ -714,4 +714,35 @@ def draft_snapshot(
         "version": int((prior or {}).get("version", 0)) + 1,
         "changes": draft_delta((prior or {}).get("draft", {}), values),
         "review_issues": list(issues),
+        "input_revision": (prior or {}).get("input_revision"),
+        "pending_evidence_paths": list((prior or {}).get("pending_evidence_paths", [])),
+        "input_manifest_stale": bool((prior or {}).get("input_manifest_stale")),
     }
+
+
+def invalidate_input_evidence(saved: dict[str, Any], revision: str | None) -> dict[str, Any] | None:
+    """Preserve choices but withdraw facts when a planning inventory changes."""
+    previous = saved.get("input_revision")
+    if not revision or previous == revision or (not previous and not saved.get("facts")):
+        return None
+    draft = WorkDraft.model_validate(saved["draft"])
+    sources = dict(saved.get("sources", {}))
+    for path, source in sources.items():
+        if source in {"data", "system"}:
+            sources[path] = "stale_data" if source == "data" else "stale_system"
+    snapshot = draft_snapshot(
+        draft, workspace_path=saved.get("workspace_path"), sources=sources, prior=saved
+    )
+    snapshot["input_revision"] = revision
+    snapshot["pending_evidence_paths"] = sorted(
+        set(saved.get("facts", {})) | set(saved.get("pending_evidence_paths", []))
+    )
+    snapshot["input_evidence_stale"] = True
+    snapshot["input_manifest_stale"] = True
+    snapshot["input_invalidation_reason"] = "changed" if previous else "unbound"
+    snapshot["review_issues"].append(
+        "输入文件已变化，请重新读取并核实采集信息。"
+        if previous
+        else "历史读取未绑定当前输入，请重新读取并核实采集信息。"
+    )
+    return snapshot

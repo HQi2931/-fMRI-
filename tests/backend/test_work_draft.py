@@ -9,6 +9,7 @@ from neuroagent.application.work_draft import (
     draft_hash,
     draft_issues,
     draft_schema,
+    invalidate_input_evidence,
     merge_work_draft,
     plan_preview,
     planning_decisions,
@@ -26,6 +27,24 @@ def complete_draft() -> WorkDraft:
         study_protocol_ref="test:reviewed-protocol",
         qc_mode="skip",
     )
+
+
+def test_legacy_facts_cannot_be_adopted_without_an_input_binding() -> None:
+    draft = complete_draft()
+    saved = {
+        "draft": draft.model_dump(mode="json"),
+        "facts": {"preprocessing.tr_seconds": 2.0},
+        "sources": {"preprocessing.tr_seconds": "data"},
+        "compiled": True,
+    }
+    migrated = invalidate_input_evidence(saved, "a" * 64)
+    assert migrated is not None
+    assert migrated["input_invalidation_reason"] == "unbound"
+    assert migrated["facts"] == {}
+    assert migrated["sources"]["preprocessing.tr_seconds"] == "stale_data"
+    assert migrated["input_evidence_stale"] and migrated["input_manifest_stale"]
+    assert saved["facts"] == {"preprocessing.tr_seconds": 2.0}
+    assert invalidate_input_evidence(migrated, "a" * 64) is None
 
 
 def test_partial_merge_preserves_values_and_clears_confirmation() -> None:

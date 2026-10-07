@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import re
 import struct
 from collections import defaultdict
@@ -591,6 +592,26 @@ class DatasetInspector:
             "file_sizes": dict(sorted(file_sizes.items())),
         }
         if report_only:
+            # A cheap change hint for planning evidence, never execution proof.
+            # Full content hashes remain mandatory in frozen manifests/Worker.
+            inventory = []
+            for path in all_files:
+                stat = path.stat()
+                inventory.append(
+                    (
+                        path.relative_to(source_path).as_posix(),
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ctime_ns,
+                    )
+                )
+            content["metadata_revision"] = hashlib.sha256(
+                json.dumps(
+                    [DPABI_STAGE_RULE_VERSION, top_directories, inventory],
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             # Timings are operational telemetry, never part of the deterministic
             # frozen input content hashed by plan compilation and execution.
             content["inspection_timing_ms"] = round((perf_counter() - inspection_started) * 1000, 3)

@@ -108,6 +108,7 @@ type Options = {
   turn?: (init?: RequestInit) => Promise<Response>;
   draftPatch?: (init?: RequestInit) => Promise<Response>;
   confirmation?: (init?: RequestInit) => Promise<Response>;
+  review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
 };
 
@@ -115,6 +116,7 @@ function installFetch(options: Options = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    if (path.endsWith("/work-review")) return options.review?.(init) ?? notFound();
     if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
     if (path.endsWith("/providers/models")) return json({ models: ["deepseek-chat", "deepseek-reasoner"] });
@@ -356,6 +358,49 @@ describe("agent workbench page", () => {
     expect(recover).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByText(/回答未完成/)).not.toBeInTheDocument();
+  });
+
+  it("refreshes the latest draft after a definite version conflict without retrying the old command", async () => {
+    const draft = { hash: "d".repeat(64), draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: false };
+    const option = { label: "确认当前方案", description: "记录审查", command: "确认方案参数 old-command" };
+    const confirm = vi.fn(() => json({ error: { code: "work_draft_changed", message: "方案已更新", details: {} } }, 409));
+    const recover = vi.fn(() => json(conversation({ messages: [message("a2", "assistant", "已载入另一处保存的新方案", { work_draft: { ...draft, hash: "e".repeat(64), draft: { ...draft.draft, preprocessing: { tr_seconds: 3 } } }, confirmation_request: { title: "确认方案", summary: "新方案", options: [{ ...option, command: "确认方案参数 new-command" }] } })] })));
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "准备审查", { work_draft: draft, confirmation_request: { title: "确认方案", summary: "原方案", options: [option] } })] })]), confirmation: confirm, conversation: recover });
+    render(<AgentPage />);
+    const plan = await screen.findByRole("complementary", { name: "当前方案审查" });
+    await userEvent.click(within(plan).getByRole("button", { name: "确认当前方案" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认当前方案" }));
+    expect(await screen.findByText("已载入另一处保存的新方案")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("已刷新当前方案");
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(3);
+    expect(confirm).toHaveBeenCalledOnce(); expect(recover).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/未能确认操作是否完成/)).not.toBeInTheDocument();
+  });
+
+  it("withdraws verified fields after input rejection through deterministic review recovery", async () => {
+    const hash = "d".repeat(64);
+    const draft = { hash, draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: true, sources: { "preprocessing.tr_seconds": "data" }, field_states: { "preprocessing.tr_seconds": "verified" } };
+    const confirm = vi.fn(() => json({ error: { code: "work_input_changed", message: "输入文件已变化", details: {} } }, 409));
+    const recovery = message("a2", "assistant", "输入确认已撤回", {
+      work_draft: { ...draft, compiled: false, input_evidence_stale: true, input_manifest_stale: true, sources: { "preprocessing.tr_seconds": "stale_data" }, field_states: { "preprocessing.tr_seconds": "review_pending" } },
+      draft_issues: ["请重新核实输入"],
+      confirmation_request: { title: "重新确认输入阶段", summary: "不启动计算", options: [{ label: "使用 FunRaw", description: "冻结输入", command: "确认起始阶段 FunRaw aaaaaaaaaaaa" }] },
+    });
+    const review = vi.fn(() => json({ conversation: conversation({ messages: [recovery] }), assistant_message: recovery }));
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "原方案", { work_draft: draft, confirmation_request: { title: "确认并启动计算", summary: "原输入", options: [{ label: "确认并启动计算", description: "启动", command: "批准并启动 old-command" }] } })] })]), confirmation: confirm, review });
+    render(<AgentPage />);
+    const plan = await screen.findByRole("complementary", { name: "当前方案审查" });
+    await userEvent.click(within(plan).getByRole("button", { name: "确认并启动计算" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认并启动计算" }));
+    expect(await screen.findByText("输入确认已撤回")).toBeInTheDocument();
+    expect(screen.getByText("来源：历史读取（待重读）")).toBeInTheDocument();
+    expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("参数选择已保留"))).toBe(true);
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toBeDisabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^使用 FunRaw$/ })).toBeEnabled();
+    expect(confirm).toHaveBeenCalledOnce(); expect(review).toHaveBeenCalledOnce();
   });
 
   it("reconnects an interrupted run observation and restores results without starting another computation", async () => {

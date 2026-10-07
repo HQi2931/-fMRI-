@@ -16,7 +16,7 @@ Work 体验优化新增以下接口（阶段实现，完整交互验收见计划
 
 - `POST /conversations/{conversation_id}/work-confirmation`：接受 `{command, expected_draft_hash?}`，需幂等键；只接受服务端签发的选项，复用原有授权路径，不调用模型理解启动意图。版本或选项变化返回冲突。
 - 确认接口使用独立于普通回合的幂等作用域，绑定完整请求体；相同请求与键先返回已保存响应，再对新操作检查版本。响应正文解码失败时客户端保留原键，重试不创建第二个运行。批准、运行创建与挑战消费在同一事务内提交。
-- `POST /conversations/{conversation_id}/work-review`：接受 `{base_hash}`，需幂等键；重新准备当前完整方案或更新启动确认，不直接创建运行。
+- `POST /conversations/{conversation_id}/work-review`：接受 `{base_hash}`，需幂等键；重新准备当前完整方案或更新启动确认，不直接创建运行。若工作区输入修订改变，持久化返回失效后的草稿、需重新核实的字段及起点重确认选项；撤回旧事实和确认，保留用户选择。相同幂等键可重放恢复响应。
 - `GET /artifacts/{artifact_id}/content` 与 `/preview.png`：按注册产物编号下载或生成有限 NIfTI 预览，检查路径边界、文件大小和内容哈希；预览不替代空间配准或科学 QC。
 - `GET /runs/{run_id}/qc-review`：返回此运行最新的持久化 QC 审查记录，尚无记录时返回 `null`，运行不存在时返回 404。页面不依赖事件摘要里的编号查找 QC；事件或方案读取失败不遮蔽已加载的结果与下载入口。
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,7 @@ def test_frozen_scan_keeps_complete_stable_hashes_and_worker_reverification(
     assert set(frozen["file_hashes"]) == set(frozen["file_sizes"])
     assert all(len(value) == 64 for value in frozen["file_hashes"].values())
     assert "inspection_timing_ms" not in frozen
+    assert "metadata_revision" not in frozen
     with capture_work_timings() as timings:
         measured = inspector.inspect(dataset)
     assert content_hash(frozen) == content_hash(measured)
@@ -76,3 +78,37 @@ def test_frozen_scan_keeps_complete_stable_hashes_and_worker_reverification(
     with pytest.raises(ValueError, match="file hash changed"):
         MatlabJobExecutor._verify_manifest_file_hashes(frozen, dataset)
     assert content_hash(frozen) != content_hash(inspector.inspect(dataset))
+
+
+def test_planning_revision_tracks_metadata_and_inventory_changes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    dataset = make_bids_dataset(source)
+    inspector = DatasetInspector(PathPolicy([source], tmp_path / "work"))
+
+    def revision() -> str:
+        report = inspector.inspect(dataset, report_only=True)
+        assert report["file_hashes"] is None
+        value = report["metadata_revision"]
+        assert isinstance(value, str) and len(value) == 64
+        return value
+
+    original = revision()
+    assert revision() == original
+    sidecar = dataset / "dataset_description.json"
+    stat = sidecar.stat()
+    sidecar.write_bytes(sidecar.read_bytes().replace(b"synthetic", b"different"))
+    os.utime(sidecar, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    changed = revision()
+    assert changed != original
+    extra = dataset / "notes.txt"
+    extra.write_text("synthetic note", encoding="utf-8")
+    added = revision()
+    assert added != changed
+    extra.rename(dataset / "renamed.txt")
+    renamed = revision()
+    assert renamed != added
+    (dataset / "renamed.txt").unlink()
+    assert revision() == changed
+    (dataset / "empty-directory").mkdir()
+    assert revision() != changed

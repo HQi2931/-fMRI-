@@ -11,7 +11,7 @@ from neuroagent.application.work_draft import draft_hash
 from tests.backend.test_work_draft import complete_draft
 
 
-def seed(service, source_root, *, mode="work"):
+def seed(service, source_root, *, mode="work", revision=None):
     conversation = service.create_conversation(
         ConversationCreate(mode=mode, workspace_path=str(source_root)), "seed"
     )
@@ -26,6 +26,7 @@ def seed(service, source_root, *, mode="work"):
                 "hash": draft_hash(draft),
                 "workspace_path": str(source_root),
                 "compiled": True,
+                "input_revision": revision,
             }
         },
         tool=None,
@@ -35,6 +36,60 @@ def seed(service, source_root, *, mode="work"):
         active_run_id=None,
     )
     return conversation.conversation_id, draft_hash(draft)
+
+
+def test_changed_inputs_reject_edit_and_start_but_review_persists_recovery(service, source_root):
+    report = service.conversation_work.workspace_stage_candidates(str(source_root))
+    session, original = seed(
+        service, source_root, revision=report["data_profile"]["metadata_revision"]
+    )
+    (source_root / "new-sidecar.txt").write_text("synthetic", encoding="utf-8")
+    with TestClient(create_app(service=service)) as client:
+        for suffix, method, body in [
+            ("work-draft", client.patch, {"base_hash": original, "patch": {"qc_mode": "skip"}}),
+            ("work-review", client.post, {"base_hash": original}),
+            ("work-confirmation", client.post, {"command": "old", "expected_draft_hash": original}),
+        ]:
+            response = method(
+                f"/api/v1/conversations/{session}/{suffix}",
+                json=body,
+                headers={"Idempotency-Key": "changed-" + suffix},
+            )
+            if suffix == "work-review":
+                assert response.status_code == 200, response.text
+                payload = response.json()["assistant_message"]["payload"]
+                assert payload["work_draft"]["compiled"] is False
+                assert payload["work_draft"]["input_manifest_stale"] is True
+                assert payload["confirmation_request"]["title"] == "重新确认输入阶段"
+                replay = method(
+                    f"/api/v1/conversations/{session}/{suffix}",
+                    json=body,
+                    headers={"Idempotency-Key": "changed-" + suffix},
+                )
+                assert replay.json() == response.json()
+                stored = service.get_conversation(session)
+                assert stored.messages[-1].payload["work_draft"] == payload["work_draft"]
+                assert service.repository.list_runs() == []
+            else:
+                assert response.status_code == 409, response.text
+                assert response.json()["error"]["code"] == "work_input_changed"
+
+
+def test_saved_edit_response_remains_replayable_after_input_change(service, source_root):
+    report = service.conversation_work.workspace_stage_candidates(str(source_root))
+    session, original = seed(
+        service, source_root, revision=report["data_profile"]["metadata_revision"]
+    )
+    with TestClient(create_app(service=service)) as client:
+        arguments = {
+            "json": {"base_hash": original, "patch": {"preprocessing": {"dummy_scans": 2}}},
+            "headers": {"Idempotency-Key": "revision-replay"},
+        }
+        first = client.patch(f"/api/v1/conversations/{session}/work-draft", **arguments)
+        assert first.status_code == 200, first.text
+        (source_root / "new-sidecar.txt").write_text("synthetic", encoding="utf-8")
+        replay = client.patch(f"/api/v1/conversations/{session}/work-draft", **arguments)
+        assert replay.json() == first.json()
 
 
 def test_save_preserves_draft_and_is_idempotent(service, source_root, monkeypatch):

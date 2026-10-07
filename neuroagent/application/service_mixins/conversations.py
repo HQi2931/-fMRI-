@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -41,11 +42,17 @@ from neuroagent.application.conversation_work import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.application.work_dialogue import WorkDialogue, execution_command, latest_payload
+from neuroagent.application.work_dialogue import (
+    STAGE_CONFIRMATION_PATTERN,
+    WorkDialogue,
+    execution_command,
+    latest_payload,
+)
 from neuroagent.application.work_draft import (
     WorkDraft,
     draft_hash,
     draft_snapshot,
+    invalidate_input_evidence,
     merge_work_draft,
     plan_preview,
     planning_decisions,
@@ -62,6 +69,21 @@ from neuroagent.observability.work_timings import capture_work_timings
 
 class ConversationMixin(BaseServiceMixin):
     work_dialogue: WorkDialogue
+
+    def _check_work_input_revision(
+        self, conversation: ConversationView, saved: dict[str, Any] | None
+    ) -> None:
+        if not saved or not conversation.workspace_path:
+            return
+        if saved.get("input_evidence_stale") or saved.get("input_manifest_stale"):
+            raise ConflictError("work_input_changed", "输入文件已变化，请通过对话重新读取并核实。")
+        if not saved.get("input_revision") and not saved.get("facts"):
+            return
+        report = self.conversation_work.workspace_stage_candidates(conversation.workspace_path)
+        revision = report.get("data_profile", {}).get("metadata_revision")
+        if invalidate_input_evidence(saved, revision):
+            raise ConflictError("work_input_changed", "输入文件已变化，请通过对话重新读取并核实。")
+
     answer_rsfmri_question: Callable[[RsFmriQuestionRequest], RsFmriAnswerView]
     get_run: Callable[[str], RunView]
     create_run: Callable[[RunCreate, str], RunView]
@@ -121,6 +143,7 @@ class ConversationMixin(BaseServiceMixin):
                     "work_draft_workspace_changed", "草稿与当前工作区不一致，请重新准备。"
                 )
             draft = WorkDraft.model_validate(saved["draft"])
+            self._check_work_input_revision(conversation, saved)
             if request.base_hash != draft_hash(draft):
                 raise ConflictError("work_draft_changed", "参数草稿已更新，请核对最新版本后重试。")
             try:
@@ -226,6 +249,10 @@ class ConversationMixin(BaseServiceMixin):
                 "work_confirmation_mode_required", "此操作仅用于 Work 会话。"
             )
         saved = latest_payload(conversation, "work_draft")
+        # Re-freezing is the recovery operation itself. The exact issued option
+        # and the coordinator's live stage/path checks still apply below.
+        if not re.fullmatch(STAGE_CONFIRMATION_PATTERN, request.command):
+            self._check_work_input_revision(conversation, saved)
         if request.expected_draft_hash and (
             not saved or saved.get("hash") != request.expected_draft_hash
         ):
@@ -254,11 +281,38 @@ class ConversationMixin(BaseServiceMixin):
                 raise ConflictError("work_draft_changed", "工作区或方案已更新，请审查最新版本。")
             if saved.get("consumed"):
                 raise ConflictError("work_review_already_started", "此方案已启动，请查看运行卡片。")
+            recovery: WorkActionResult | None = None
+            try:
+                self._check_work_input_revision(conversation, saved)
+            except ConflictError as exc:
+                if exc.code != "work_input_changed":
+                    raise
+                report = self.conversation_work.workspace_stage_candidates(
+                    conversation.workspace_path
+                )
+                revision = report.get("data_profile", {}).get("metadata_revision")
+                invalidated = invalidate_input_evidence(saved, revision) or saved
+                recovery = WorkActionResult(
+                    "旧输入证据或确认已失效，参数选择已保留。请重新确认输入阶段并读取采集信息，再审查方案。",
+                    payload={
+                        "work_draft": invalidated,
+                        "draft_issues": invalidated.get("review_issues", []),
+                        "plan_preview": plan_preview(draft),
+                        "planning_decisions": planning_decisions(
+                            draft, invalidated.get("sources", {})
+                        ),
+                        "confirmation_request": self.work_dialogue.input_recovery_confirmation(
+                            conversation.workspace_path, list(report.get("candidates", []))
+                        ),
+                    },
+                )
             issues = review_issues(draft, saved.get("facts"))
-            if issues:
+            if issues and recovery is None:
                 raise ConflictError("work_review_incomplete", "请先处理方案中的待填写或冲突项。")
             plan_data = latest_payload(conversation, "plan_revision")
-            if saved.get("compiled") and plan_data and conversation.project_id:
+            if recovery is not None:
+                result = recovery
+            elif saved.get("compiled") and plan_data and conversation.project_id:
                 plan = self.repository.get_plan(str(plan_data["plan_revision_id"]))
                 qc = (
                     QcExecutionMode.REQUIRE

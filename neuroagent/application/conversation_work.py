@@ -189,6 +189,7 @@ class ConversationWorkCoordinator:
             "warnings": list(profile.get("warnings", []))[:20] if isinstance(profile, dict) else [],
             "input_stage": content.get("input_stage"),
             "selected_input_stage": content.get("selected_input_stage"),
+            "metadata_revision": content.get("metadata_revision"),
             "output_directories": list(content.get("output_directories", []))[:20],
         }
         return {

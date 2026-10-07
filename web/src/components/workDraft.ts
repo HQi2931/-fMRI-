@@ -1,4 +1,4 @@
-export type WorkDraftSnapshot = { draft: Record<string, unknown>; hash: string; workspace_path?: string; compiled?: boolean; consumed?: boolean; sources?: Record<string, string>; version?: number | string; field_states?: Record<string, string>; review_issues?: string[]; changes?: Array<{ path: string; before: unknown; after: unknown }> };
+export type WorkDraftSnapshot = { draft: Record<string, unknown>; hash: string; workspace_path?: string; compiled?: boolean; consumed?: boolean; input_evidence_stale?: boolean; input_manifest_stale?: boolean; sources?: Record<string, string>; version?: number | string; field_states?: Record<string, string>; review_issues?: string[]; changes?: Array<{ path: string; before: unknown; after: unknown }> };
 
 export function inheritedFieldValue(values: Record<string, string> | undefined, path: string): string | undefined {
   for (let parts = path.split("."); parts.length; parts = parts.slice(0, -1)) {
@@ -8,7 +8,7 @@ export function inheritedFieldValue(values: Record<string, string> | undefined, 
 }
 
 export function sourceLabel(source: string | undefined): string {
-  return ({ user: "用户指定", suggested: "模型推荐", model: "模型推荐", data: "数据读取", evidence: "数据读取", metadata: "数据读取", system: "系统计算", computed: "系统计算" } as Record<string, string>)[source ?? ""] ?? "来源待核实";
+  return ({ user: "用户指定", suggested: "模型推荐", model: "模型推荐", data: "数据读取", evidence: "数据读取", metadata: "数据读取", system: "系统计算", computed: "系统计算", stale_data: "历史读取（待重读）", stale_system: "历史计算（待核实）" } as Record<string, string>)[source ?? ""] ?? "来源待核实";
 }
 
 export function reviewLabel(state: string | undefined): string {

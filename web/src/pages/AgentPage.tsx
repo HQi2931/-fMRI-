@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
+  ApiError,
   describeError,
   type Citation,
   type Conversation,
@@ -526,10 +527,23 @@ export function AgentPage() {
     } catch (caught) {
       if (!controller.signal.aborted) {
         if (confirmationCommand && activeConversation) {
+          if (caught instanceof ApiError && caught.code === "work_input_changed" && currentDraftMessage?.workDraft) {
+            try {
+              const refreshed = await api.prepareWorkReview(activeConversation.conversation_id, currentDraftMessage.workDraft.hash, controller.signal);
+              cache(refreshed.conversation); setPlanOpen(true); setPendingTurn(null); setOpenedConfirmation(null);
+              setError("输入已变化，旧确认已撤回。请重新核实输入，再审查方案。");
+              return;
+            } catch { /* Preserve the original rejection if recovery is unavailable. */ }
+          }
           setPendingTurn((pending) => pending && { ...pending, status: "正在确认操作是否已保存…" });
           try {
             // One read-only recovery. Never repeat an execution request here.
             const recovered = await api.conversation(activeConversation.conversation_id, controller.signal);
+            if (caught instanceof ApiError && caught.status === 409 && ["work_draft_changed", "work_confirmation_changed", "work_review_already_started"].includes(caught.code)) {
+              cache(recovered); setPendingTurn(null); setOpenedConfirmation(null);
+              setError(`${describeError(caught)}已刷新当前方案，请重新审查后继续。`);
+              return;
+            }
             if (recovered.messages.some((item) => item.role === "user" && item.content === confirmationCommand)) {
               cache(recovered); setPendingTurn(null); setOpenedConfirmation(null); setError("");
               return;

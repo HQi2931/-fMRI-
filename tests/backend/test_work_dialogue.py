@@ -75,6 +75,56 @@ def turn(client: TestClient, session: str, content: str, key: str, **fields):
     return response.json()
 
 
+def test_input_change_withdraws_facts_and_requires_fresh_read(service, source_root, monkeypatch):
+    from tests.backend.test_work_draft_update import seed
+
+    model = configure(service, monkeypatch, [generated("prepare_preprocessing_plan")])
+    revision = service.conversation_work.workspace_stage_candidates(str(source_root))[
+        "data_profile"
+    ]["metadata_revision"]
+    session, _ = seed(service, source_root, revision=revision)
+    draft = complete_draft()
+    saved = {
+        "draft": draft.model_dump(mode="json"),
+        "hash": draft_hash(draft),
+        "workspace_path": str(source_root),
+        "compiled": True,
+        "input_revision": revision,
+        "sources": {"preprocessing.tr_seconds": "data", "preprocessing.dummy_scans": "user"},
+        "facts": {"preprocessing.tr_seconds": draft.preprocessing["tr_seconds"]},
+    }
+    service.repository.append_conversation_exchange(
+        session,
+        user_content="review",
+        assistant_content="ready",
+        assistant_payload={"work_draft": saved},
+        tool=None,
+        workspace_path=str(source_root),
+        preferred_profile_id=None,
+        project_id=None,
+        active_run_id=None,
+    )
+    (source_root / "new-sidecar.txt").write_text("synthetic", encoding="utf-8")
+    with TestClient(create_app(service=service)) as client:
+        changed = turn(client, session, "继续准备方案", "input-changed")
+        payload = changed["assistant_message"]["payload"]
+        snapshot = payload["work_draft"]
+        assert snapshot["facts"] == {}
+        assert snapshot["compiled"] is False
+        assert snapshot["field_states"]["preprocessing.tr_seconds"] == "review_pending"
+        assert snapshot["sources"]["preprocessing.dummy_scans"] == "user"
+        assert snapshot["draft"] == saved["draft"]
+        assert snapshot["input_revision"] != revision
+        assert payload["confirmation_request"]["options"] == []
+        model.assert_not_called()
+        retry = turn(client, session, "重新核实并准备方案", "input-unread")
+        pending = retry["assistant_message"]["payload"]
+        assert pending["work_draft"]["input_evidence_stale"] is True
+        assert pending["work_draft"]["pending_evidence_paths"] == ["preprocessing.tr_seconds"]
+        assert "plan_revision" not in pending
+        assert any("尚未重新读取" in issue for issue in pending["draft_issues"])
+
+
 def test_work_uses_model_and_history_for_questions_without_actions(service, monkeypatch):
     model = configure(
         service,
@@ -769,6 +819,96 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
             ] == ["alff"]
             assert service.repository.list_runs() == []
             assert payload["confirmation_request"]["title"] == "确认并启动计算"
+            # A changed input must traverse re-freezing and a fresh successful
+            # read before the real compiler can create the replacement plan.
+            evidence = {
+                **payload["work_draft"],
+                "facts": {"preprocessing.tr_seconds": 2.0},
+                "sources": {**payload["work_draft"]["sources"], "preprocessing.tr_seconds": "data"},
+            }
+            current = service.get_conversation(session)
+            service.repository.append_conversation_exchange(
+                session,
+                user_content="read",
+                assistant_content="verified",
+                assistant_payload={"work_draft": evidence},
+                tool=None,
+                workspace_path=current.workspace_path,
+                preferred_profile_id=current.preferred_profile_id,
+                project_id=current.project_id,
+                active_run_id=None,
+            )
+            (subject / "rest.json").write_text('{"RepetitionTime":2}', encoding="utf-8")
+            invalidated = turn(client, session, "核对更新的数据", "changed-alff")
+            recovery = invalidated["assistant_message"]["payload"]
+            assert recovery["work_draft"]["facts"] == {}
+            choices = recovery["confirmation_request"]["options"]
+            assert len(choices) == 1
+            assert choices[0]["command"].startswith("确认起始阶段 FunRaw ")
+            frozen = client.post(
+                f"/api/v1/conversations/{session}/work-confirmation",
+                json={"command": choices[0]["command"]},
+                headers={"Idempotency-Key": "refreeze-alff"},
+            )
+            assert frozen.status_code == 200, frozen.text
+            refreshed = frozen.json()["assistant_message"]["payload"]
+            assert refreshed["work_draft"]["input_manifest_stale"] is False
+            assert refreshed["work_draft"]["input_evidence_stale"] is True
+            assert "plan_revision" not in refreshed
+            fresh_read = {
+                "calls": [
+                    {
+                        "tool_name": "read_workspace_content",
+                        "status": "succeeded",
+                        "output": {
+                            "format": "json",
+                            "path": "FunRaw/anonymous/rest.json",
+                            "numeric_metadata": {"RepetitionTime": 2.0},
+                            "locators": [{"json_pointer": "/RepetitionTime"}],
+                        },
+                    }
+                ]
+            }
+            monkeypatch.setattr(
+                service.work_dialogue,
+                "_interpret",
+                AsyncMock(
+                    return_value=(
+                        json.dumps(
+                            {
+                                "action": "prepare_preprocessing_plan",
+                                "answer": "已重新读取采集信息。",
+                                "workspace_citations": [
+                                    {
+                                        "path": "FunRaw/anonymous/rest.json",
+                                        "locator": "/RepetitionTime",
+                                    }
+                                ],
+                            }
+                        ),
+                        {},
+                        fresh_read,
+                    )
+                ),
+            )
+            rebuilt = turn(client, session, "重新读取采集信息并准备方案", "fresh-alff")
+            rebuilt_payload = rebuilt["assistant_message"]["payload"]
+            assert "work_draft" in rebuilt_payload, rebuilt["assistant_message"]["content"]
+            assert rebuilt_payload["work_draft"]["pending_evidence_paths"] == []
+            assert rebuilt_payload["work_draft"]["input_evidence_stale"] is False
+            assert (
+                rebuilt_payload["work_draft"]["field_states"]["preprocessing.tr_seconds"]
+                == "verified"
+            )
+            assert (
+                rebuilt_payload["plan_revision"]["manifest_hash"]
+                == refreshed["manifest"]["content_hash"]
+            )
+            assert (
+                rebuilt_payload["plan_revision"]["plan_revision_id"]
+                != payload["plan_revision"]["plan_revision_id"]
+            )
+            assert service.repository.list_runs() == []
             assert all(
                 p["source"] == "proposal"
                 for p in dict(payload["skill_plan"]["resolved_parameters"])["preprocessing"][

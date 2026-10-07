@@ -89,7 +89,10 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState("");
-  const locked = readOnly || snapshot.consumed || busy || saving;
+  const actionLocked = readOnly || snapshot.consumed || busy || saving;
+  const inputNeedsReview = snapshot.input_evidence_stale || snapshot.input_manifest_stale;
+  const locked = actionLocked || inputNeedsReview;
+  const inputRecovery = snapshot.input_manifest_stale && confirmation?.options.length && confirmation.options.every((option) => option.command.startsWith("确认起始阶段 "));
   const dirty = edited.length > 0;
   function locate(path: string) {
     const element = document.getElementById(`draft-${panelId}-${path}`);
@@ -165,7 +168,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   return <section className="work-draft-panel" aria-label={readOnly ? "历史预处理方案（只读）" : "预处理方案参数"}>
     <h3>预处理方案 {snapshot.version !== undefined ? `· 第 ${snapshot.version} 版` : ""} {readOnly ? "· 历史只读" : snapshot.consumed ? "· 本次执行方案（只读）" : snapshot.compiled ? "· 已生成方案" : "· 待审查"}</h3>
     <p>工作区：{snapshot.workspace_path ?? "当前会话工作区"}</p>
-    <p role="status">{snapshot.consumed ? "已用于本次计算，科学参数已冻结" : busy || saving ? "正在检查方案，请稍候" : dirty ? "修改尚未保存，保存后重新校验" : issues.length ? `需要处理 ${issues.length} 项问题` : confirmation ? "方案可审查，请核对关键科学选择" : "等待补充与校验"}</p>
+    <p role="status">{snapshot.consumed ? "已用于本次计算，科学参数已冻结" : busy || saving ? "正在检查方案，请稍候" : inputNeedsReview ? "输入已变化，参数选择已保留；请重新确认输入并读取采集信息" : dirty ? "修改尚未保存，保存后重新校验" : issues.length ? `需要处理 ${issues.length} 项问题` : confirmation ? "方案可审查，请核对关键科学选择" : "等待补充与校验"}</p>
     {issues.length > 0 && <nav aria-label="方案问题"><strong>需要处理（{issues.length}）</strong><ul>{issues.map((issue, index) => { const item = humanIssue(issue); return <li key={index}>{item.path ? <button type="button" className="draft-issue-link" onClick={() => locate(item.path!)}>{item.text}</button> : item.text}</li>; })}</ul></nav>}
     {dirty && <aside className="draft-changes" aria-label="本次修改"><strong>本次修改 · 保存后重新校验</strong><ul>{edited.map((path) => <li key={path}>{groups.flatMap((group) => group.fields).find((field) => field.path === path)?.label ?? (path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(path, get(snapshot.draft, path))} → {display(path, get(draft, path))}</li>)}</ul></aside>}
     {!dirty && snapshot.changes && snapshot.changes.length > 0 && <details className="draft-changes"><summary>此版本的修改（{snapshot.changes.length} 项）</summary><ul>{snapshot.changes.map((change) => <li key={change.path}>{groups.flatMap((group) => group.fields).find((field) => field.path === change.path)?.label ?? (change.path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(change.path, change.before)} → {display(change.path, change.after)}</li>)}</ul></details>}
@@ -188,6 +191,6 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     {preview !== undefined && <PlanPreview value={preview} />}
     <p className="draft-help">暂不支持：DICOM/BIDS 转换、外部 DARTEL 模板复用、FC、度中心性。T1 准备、配准、分割及 DARTEL 在获批任务中自动衔接；启动计算需独立授权。</p>
     {saveError && <p role="alert" className="draft-error">{saveError}</p>}
-    {!readOnly && <div className="draft-actions"><span>{dirty ? "有未保存修改" : "当前参数已保存"}</span><button type="button" className="button button-secondary" disabled={locked || !dirty} onClick={() => { setDraft(snapshot.draft); setEdited([]); setArrayText({}); setInputErrors({}); setSaveError(""); onDirty?.(false); }}>放弃本地修改</button><button type="button" className="button button-secondary" disabled={locked || !dirty || Object.values(inputErrors).some(Boolean)} onClick={() => void save()}>{saving ? "保存中…" : "保存修改"}</button><button type="button" className="button button-primary" disabled={locked || dirty || Object.values(inputErrors).some(Boolean) || issues.length > 0 || !confirmation || snapshot.consumed} onClick={onConfirm}>{confirmLabel}</button></div>}
+    {!readOnly && <div className="draft-actions"><span>{dirty ? "有未保存修改" : "当前参数已保存"}</span><button type="button" className="button button-secondary" disabled={locked || !dirty} onClick={() => { setDraft(snapshot.draft); setEdited([]); setArrayText({}); setInputErrors({}); setSaveError(""); onDirty?.(false); }}>放弃本地修改</button><button type="button" className="button button-secondary" disabled={locked || !dirty || Object.values(inputErrors).some(Boolean)} onClick={() => void save()}>{saving ? "保存中…" : "保存修改"}</button><button type="button" className="button button-primary" disabled={actionLocked || dirty || Object.values(inputErrors).some(Boolean) || (issues.length > 0 && !inputRecovery) || (inputNeedsReview && !inputRecovery) || !confirmation || snapshot.consumed} onClick={onConfirm}>{confirmLabel}</button></div>}
   </section>;
 }

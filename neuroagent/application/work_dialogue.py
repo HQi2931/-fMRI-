@@ -33,6 +33,7 @@ from neuroagent.application.work_draft import (
     draft_hash,
     draft_schema,
     draft_snapshot,
+    invalidate_input_evidence,
     merge_work_draft,
     plan_preview,
     planning_decisions,
@@ -304,6 +305,28 @@ class WorkDialogue:
         self.create_workspace_proposal = create_workspace_proposal
         self.confirm_workspace_stage = confirm_workspace_stage
 
+    def input_recovery_confirmation(
+        self, workspace_path: str | None, candidates: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        token = (
+            self.coordinator.stage_confirmation_token(workspace_path, candidates)
+            if workspace_path and candidates
+            else None
+        )
+        return {
+            "title": "重新确认输入阶段",
+            "summary": "需要重新核实输入。请确认本次使用的阶段，系统将重新冻结输入；此操作不启动计算。",
+            "options": [
+                {
+                    "label": f"使用 {item['stage']}",
+                    "description": "重新冻结当前输入，保留参数选择。",
+                    "command": f"确认起始阶段 {item['stage']} {token[:12]}",
+                }
+                for item in candidates
+                if token and isinstance(item, dict) and item.get("selectable") and item.get("stage")
+            ],
+        }
+
     async def respond(
         self,
         conversation: ConversationView,
@@ -333,6 +356,31 @@ class WorkDialogue:
         if saved and saved.get("workspace_path") != workspace_path:
             saved = None
         draft = WorkDraft.model_validate(saved["draft"]) if saved else WorkDraft()
+        profile = packet.work_context.get("workspace_data_profile")
+        input_revision = profile.get("metadata_revision") if isinstance(profile, dict) else None
+
+        def input_recovery_confirmation() -> dict[str, Any]:
+            return self.input_recovery_confirmation(
+                workspace_path, list(packet.work_context.get("workspace_stage_candidates", []))
+            )
+
+        invalidated = invalidate_input_evidence(saved, input_revision) if saved else None
+        if invalidated:
+            return reply(
+                (
+                    "输入文件已变化，旧读取结果和启动确认已失效。"
+                    if invalidated["input_invalidation_reason"] == "changed"
+                    else "历史读取结果尚未绑定当前输入，旧核实状态和启动确认已撤回。"
+                )
+                + "已保留你的参数选择，请重新读取采集信息，再审查新方案。",
+                {
+                    "work_draft": invalidated,
+                    "draft_issues": invalidated["review_issues"],
+                    "confirmation_request": input_recovery_confirmation(),
+                    "plan_preview": plan_preview(draft),
+                    "planning_decisions": planning_decisions(draft, invalidated["sources"]),
+                },
+            )
         text = request.content.strip()
 
         stage_confirmation = re.fullmatch(STAGE_CONFIRMATION_PATTERN, text)
@@ -375,6 +423,9 @@ class WorkDialogue:
                     token=expected_token,
                     idempotency_key=idempotency_key,
                 )
+                refreshed = {**saved, "input_manifest_stale": False} if saved else None
+                if refreshed:
+                    registration_payload["work_draft"] = refreshed
                 if saved and not review_issues(draft, saved.get("facts")):
                     compiled = self._compile(
                         conversation,
@@ -385,7 +436,7 @@ class WorkDialogue:
                         idempotency_key + ":review",
                         proposal=True,
                         dataset_id=str(bound_dataset["dataset_id"]),
-                        snapshot=saved,
+                        snapshot=refreshed,
                     )
                     return replace(
                         compiled,
@@ -441,6 +492,8 @@ class WorkDialogue:
                 "请先让系统签发最新确认指令，再原样回复。"
             )
         if start:
+            if saved and (saved.get("input_evidence_stale") or saved.get("input_manifest_stale")):
+                return reply("输入文件已变化，旧启动确认已失效。请重新读取并审查方案。")
             if start_confirmation_used:
                 run_id = (saved or {}).get("consumed_run_id")
                 if run_id:
@@ -578,6 +631,10 @@ class WorkDialogue:
                     "parameter_draft": draft.model_dump(mode="json", exclude={"confirmed_hash"}),
                     "planning_decisions": planning_decisions(draft, (saved or {}).get("sources")),
                     "draft_schema": draft_schema(),
+                    "input_evidence": {
+                        "requires_fresh_reads": (saved or {}).get("pending_evidence_paths", []),
+                        "requires_refreeze": bool((saved or {}).get("input_manifest_stale")),
+                    },
                 },
                 "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
                 "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
@@ -803,9 +860,11 @@ class WorkDialogue:
                     request.content,
                 )
                 with measure_work_stage("fact_derivation"):
-                    facts = merge_observed_facts(
-                        (saved or {}).get("facts", {}), observed_facts(loop_metadata)
-                    )
+                    current_facts = observed_facts(loop_metadata)
+                    facts = merge_observed_facts((saved or {}).get("facts", {}), current_facts)
+                pending_evidence = sorted(
+                    set((saved or {}).get("pending_evidence_paths", [])) - set(current_facts)
+                )
                 for path, value in facts.items():
                     if sources.get(path) != "user" and not isinstance(value, dict):
                         set_value(patch, path, value)
@@ -833,6 +892,8 @@ class WorkDialogue:
                         sources[path] = "system" if path.endswith("slice_order") else "data"
                 with measure_work_stage("validation"):
                     issues = review_issues(draft, facts)
+                if pending_evidence:
+                    issues += ("输入文件已变化，部分采集信息尚未重新读取，请核实后再启动。",)
                 review = render_draft_review(draft, sources)
                 snapshot = draft_snapshot(
                     draft,
@@ -841,10 +902,16 @@ class WorkDialogue:
                     prior=saved,
                     facts=facts,
                 )
+                snapshot["input_revision"] = input_revision
+                snapshot["pending_evidence_paths"] = pending_evidence
+                snapshot["input_evidence_stale"] = bool(pending_evidence)
+                snapshot["review_issues"] = list(issues)
                 payload["work_draft"] = snapshot
                 payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
+                if snapshot.get("input_manifest_stale"):
+                    payload["confirmation_request"] = input_recovery_confirmation()
                 questions = pending_review_questions(
                     [
                         question.model_dump() if isinstance(question, WorkQuestion) else question
@@ -877,6 +944,7 @@ class WorkDialogue:
                 review += explanation
                 if (
                     not issues
+                    and not snapshot.get("input_manifest_stale")
                     and selected_stage
                     and not model_context["work_context"].get("workspace_stage_selection_required")
                 ):
@@ -1165,6 +1233,15 @@ class WorkDialogue:
         """
 
         dataset_data = latest_payload(conversation, "dataset")
+        evidence = snapshot or latest_payload(conversation, "work_draft") or {}
+        if evidence.get("input_evidence_stale") or evidence.get("input_manifest_stale"):
+            return WorkActionResult(
+                "输入文件已变化，请先重新读取并核实采集信息，再生成方案。",
+                payload={"work_draft": evidence, "confirmation_request": {"options": []}},
+                workspace_path=workspace_path,
+                project_id=project_id,
+                active_run_id=conversation.active_run_id,
+            )
         dataset_id = dataset_id or (dataset_data.get("dataset_id") if dataset_data else None)
         if not isinstance(dataset_id, str):
             skill = latest_payload(conversation, "skill_plan")
