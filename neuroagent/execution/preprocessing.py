@@ -173,11 +173,7 @@ def compile_preprocessing(
             NormalizationMode.T1_SEGMENT,
             NormalizationMode.DARTEL,
         }
-        if (
-            parameters.t1 is None
-            and needs_t1
-            and not parameters.realignment.enabled
-        ):
+        if parameters.t1 is None and needs_t1 and not parameters.realignment.enabled:
             raise ValueError("T1 coregistration requires realignment mean-image evidence")
         if (
             parameters.normalization.mode is NormalizationMode.EPI_TEMPLATE
@@ -354,9 +350,7 @@ def compile_preprocessing(
             base_cfg_allowed_fields=("Realign",) if projection.cfg.get("IsRealign") else (),
             outputs=outputs,
             t1_preparation=(
-                parameters.t1.preparation.value
-                if parameters and parameters.t1
-                else "reorient_crop"
+                parameters.t1.preparation.value if parameters and parameters.t1 else "reorient_crop"
             )
             if needs_t1
             else None,

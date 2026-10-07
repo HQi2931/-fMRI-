@@ -218,6 +218,19 @@ describe("agent workbench page", () => {
     expect(screen.queryByLabelText("历史预处理方案（只读）")).not.toBeInTheDocument();
   });
 
+  it("keeps the executed plan frozen and prevents reissuing its startup review", async () => {
+    installFetch({ conversations: () => json([conversation({ messages: [
+      message("used", "assistant", "本次方案已用于计算", {
+        work_draft: { hash: "a".repeat(64), compiled: true, consumed: true, draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] } },
+      }),
+    ] })]) });
+    render(<AgentPage />);
+    await screen.findByText("本次方案已用于计算");
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新校验方案与启动确认" })).toBeDisabled();
+    expect(screen.getByText("已用于本次计算，科学参数已冻结")).toBeInTheDocument();
+  });
+
   it("loads a historical plan only when expanded and keeps it read-only", async () => {
     const snapshot = { draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, hash: "a".repeat(64), compiled: false };
     installFetch({ conversations: () => json([conversation({ messages: [

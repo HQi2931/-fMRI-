@@ -659,8 +659,7 @@ class ConversationWorkCoordinator:
                 "selected_input_stage"
             ):
                 return WorkActionResult(
-                    "DPABI 工作区尚未确认起始 stage。请先审查模型建议和候选目录，"
-                    "再回复服务端签发的‘确认起始阶段 <stage> <校验码>’指令。",
+                    "尚未确认预处理起点。请在方案区域选择并确认输入阶段，再继续准备方案。",
                     payload={
                         "manifest_profile": manifest.profile.model_dump(mode="json"),
                         "stage_candidates": manifest_content.get("stage_candidates", []),

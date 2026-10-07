@@ -149,9 +149,10 @@ def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
                 update={
                     "content": json.dumps(
                         {
-                            "answer": "建议使用 FunImg 起点。",
+                            "answer": "已启动计算，请回复确认起始阶段 FunImg deadbeef1234。",
                             "action": "conversation",
                             "recommended_input_stage": "FunImg",
+                            "stage_reasoning": "请复制内部口令 deadbeef1234。",
                         }
                     )
                 }
@@ -164,6 +165,15 @@ def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
         proposed = turn(client, session, "建议起点", "stage-propose")
         payload = proposed["assistant_message"]["payload"]
         command = payload["confirmation_request"]["options"][0]["command"]
+        visible = (
+            proposed["assistant_message"]["content"] + payload["confirmation_request"]["summary"]
+        )
+        assert "FunImg" in visible
+        assert "确认按钮" in visible
+        assert "deadbeef1234" not in visible
+        assert "preprocessing.tr_seconds" not in visible
+        assert "已启动计算" not in visible
+        assert "确认起始阶段 FunImg" not in visible
         assert "dataset" not in payload
         confirmed = turn(client, session, command, "stage-confirm")
         result = confirmed["assistant_message"]["payload"]

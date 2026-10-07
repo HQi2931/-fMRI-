@@ -18,6 +18,10 @@ describe("editable DPARSF draft", () => {
     expect(start).toHaveBeenCalledOnce();
     view.rerender(<WorkDraftPanel snapshot={{ ...saved, consumed: true }} onSave={vi.fn()} confirmation={confirmation} confirmLabel="确认并启动计算" onConfirm={start} />);
     expect(screen.getByRole("button", { name: "确认并启动计算" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "ALFF" })).toBeDisabled();
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("已用于本次计算，科学参数已冻结");
+    expect(screen.queryByText("等待补充与校验")).not.toBeInTheDocument();
   });
   it("keeps unknown boolean distinct from explicitly disabled", () => {
     render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn()} />);

@@ -191,9 +191,7 @@ class ConversationContextCoordinator:
             context["workspace_stage_selection_required"] = bool(
                 workspace_stage_candidates.get("selection_required", False)
             )
-            context["workspace_stage_rule_version"] = workspace_stage_candidates.get(
-                "rule_version"
-            )
+            context["workspace_stage_rule_version"] = workspace_stage_candidates.get("rule_version")
             data_profile = workspace_stage_candidates.get("data_profile")
             if isinstance(data_profile, dict):
                 context["workspace_data_profile"] = data_profile

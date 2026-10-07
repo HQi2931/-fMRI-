@@ -14,6 +14,7 @@ import {
 } from "../api/client";
 import { Feedback } from "../components/Ui";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
+import { WorkReviewRegion } from "../components/WorkReviewRegion";
 import { currentConfirmation } from "../components/confirmation";
 import { ConversationText } from "../components/ConversationText";
 import { WorkTimingDetails } from "../components/WorkTimingDetails";
@@ -581,7 +582,7 @@ export function AgentPage() {
   }
 
   async function prepareReview(): Promise<void> {
-    if (!activeConversation || !currentDraftMessage?.workDraft || busy || draftDirty) return;
+    if (!activeConversation || !currentDraftMessage?.workDraft || currentDraftMessage.workDraft.consumed || busy || draftDirty) return;
     setBusy(true); setError("");
     try { cache((await api.prepareWorkReview(activeConversation.conversation_id, currentDraftMessage.workDraft.hash)).conversation); }
     catch (caught) { setError(describeError(caught)); }
@@ -643,11 +644,11 @@ export function AgentPage() {
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       </div>
-      {mode === "work" && currentDraftMessage?.workDraft && <aside className="work-plan-region" aria-label="当前方案审查" hidden={!planOpen}>
+      {mode === "work" && currentDraftMessage?.workDraft && <WorkReviewRegion open={planOpen} onClose={() => setPlanOpen(false)}>
         <div className="work-plan-heading"><h2>当前方案</h2><button type="button" onClick={() => setPlanOpen(false)}>收起方案</button></div>
         <WorkDraftPanel key={`${currentDraftMessage.id}:${currentDraftMessage.workDraft.hash}`} snapshot={currentDraftMessage.workDraft} issues={currentDraftMessage.draftIssues} preview={currentDraftMessage.planPreview} busy={busy} onSave={saveDraft} onDirty={setDraftDirty} confirmation={confirmation} confirmLabel={confirmation?.options.length === 1 ? confirmation.options[0].label : "审查并继续"} onConfirm={() => { setError(""); setOpenedConfirmation(confirmationKey); }} />
-        <button className="button button-secondary" type="button" disabled={busy || draftDirty || Boolean(currentDraftMessage.draftIssues?.length)} onClick={() => void prepareReview()}>重新校验方案与启动确认</button>
-      </aside>}
+        <button className="button button-secondary" type="button" disabled={busy || draftDirty || currentDraftMessage.workDraft.consumed || Boolean(currentDraftMessage.draftIssues?.length)} onClick={() => void prepareReview()}>重新校验方案与启动确认</button>
+      </WorkReviewRegion>}
       </div>
       <div className="chat-composer">
         {confirmation && openedConfirmation !== confirmationKey && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy || draftDirty} onClick={() => { setError(""); setOpenedConfirmation(confirmationKey); }}>待确认 · {confirmation.title}</button>}

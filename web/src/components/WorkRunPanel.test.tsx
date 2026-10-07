@@ -19,6 +19,16 @@ beforeEach(() => {
 });
 
 describe("Work run and results", () => {
+  it.each([
+    ["skipped", "QC 已明确跳过，请自行评估使用限制。"],
+    ["approved", "QC 审查已通过。"],
+    ["awaiting_review", "请查看 QC 记录确认审查结论。"],
+  ] as const)("presents the actual %s QC decision after calculation", async (qcStatus, label) => {
+    render(<WorkRunPanel run={{ ...run("succeeded"), qc_status: qcStatus }} />);
+    await screen.findByText(label);
+    if (qcStatus !== "approved") expect(screen.queryByText("QC 审查已通过。")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取消计算" })).not.toBeInTheDocument();
+  });
   it("keeps image results visible when only plan and phase records are unavailable", async () => {
     vi.mocked(api.plan).mockRejectedValue(new Error("plan unavailable"));
     vi.mocked(api.runEvents).mockRejectedValue(new Error("events unavailable"));
@@ -97,6 +107,15 @@ describe("Work run and results", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新加载详情" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(api.artifacts).toHaveBeenCalledTimes(2);
+  });
+  it("keeps a failed cancellation visible without claiming the running task has stopped", async () => {
+    vi.mocked(api.cancelRun).mockRejectedValueOnce(new Error("版本已经变化，请刷新运行"));
+    render(<WorkRunPanel run={run("running")} />);
+    fireEvent.click(screen.getByRole("button", { name: "取消计算" }));
+    await screen.findByText("版本已经变化，请刷新运行");
+    expect(screen.getByRole("heading", { name: "计算中" })).toBeInTheDocument();
+    expect(screen.queryByText("计算已取消")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消计算" })).toBeEnabled();
   });
   it("shows automatic QC measurements without treating them as human approval", async () => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "qc-report", run_id: "run-1", project_id: "project", artifact_type: "qc.head_motion_report", relative_path: "qc/report.json", size_bytes: 800, checksum: "a".repeat(64), created_at: "2026-10-06T10:07:20Z", provenance: {} }]);

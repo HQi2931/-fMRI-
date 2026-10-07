@@ -227,7 +227,6 @@ class ToolDispatcher:
             redactions=redactions,
         )
 
-
     def redacted_arguments(self, call: ToolCall) -> dict[str, Any]:
         """Redact raw arguments for the audit trail without affecting dispatch."""
 

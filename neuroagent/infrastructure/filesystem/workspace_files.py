@@ -127,11 +127,13 @@ def workspace_hash(root: Path) -> str:
     return hashlib.sha256(str(root.resolve(strict=True)).encode("utf-8")).hexdigest()
 
 
-def _is_link_like(path: Path) -> bool:
+def _is_link_like(path: Path, *, allow_missing: bool = False) -> bool:
     if path.is_symlink():
         return True
     try:
         attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return not allow_missing
     except OSError:
         return True
     # FILE_ATTRIBUTE_REPARSE_POINT covers Windows junctions and other
@@ -224,7 +226,7 @@ class WorkspaceFilePolicy:
         current = self.root
         for part in relative.parts:
             current = current / part
-            if _is_link_like(current):
+            if _is_link_like(current, allow_missing=not must_exist):
                 raise InputValidationError(
                     "workspace_symlink_forbidden", "不允许读取符号链接文件。"
                 )
@@ -600,6 +602,8 @@ class WorkspaceFilePolicy:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for item in edits:
             relative = str(item.get("path", ""))
+            if self._excluded(Path(relative), False):
+                raise InputValidationError("workspace_path_excluded", "该路径位于默认排除目录。")
             grouped.setdefault(relative, []).append(item)
             replacement = str(item.get("replacement", ""))
             if "\x00" in replacement:
@@ -691,6 +695,10 @@ class WorkspaceFilePolicy:
             for item in edits:
                 grouped.setdefault(str(item["path"]), []).append(item)
             for relative, file_edits in grouped.items():
+                if self._excluded(Path(relative), False):
+                    raise InputValidationError(
+                        "workspace_path_excluded", "该路径位于默认排除目录。"
+                    )
                 path = self._relative(relative, must_exist=False)
                 existed = path.exists()
                 expected = file_edits[0].get("expected_sha256")

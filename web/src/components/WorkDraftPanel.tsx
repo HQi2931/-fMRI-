@@ -89,7 +89,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState("");
-  const locked = readOnly || busy || saving;
+  const locked = readOnly || snapshot.consumed || busy || saving;
   const dirty = edited.length > 0;
   function locate(path: string) {
     const element = document.getElementById(`draft-${panelId}-${path}`);
@@ -163,13 +163,13 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
       </div>;
     };
   return <section className="work-draft-panel" aria-label={readOnly ? "历史预处理方案（只读）" : "预处理方案参数"}>
-    <h3>预处理方案 {snapshot.version !== undefined ? `· 第 ${snapshot.version} 版` : ""} {readOnly ? "· 历史只读" : snapshot.compiled ? "· 已生成方案" : "· 待审查"}</h3>
+    <h3>预处理方案 {snapshot.version !== undefined ? `· 第 ${snapshot.version} 版` : ""} {readOnly ? "· 历史只读" : snapshot.consumed ? "· 本次执行方案（只读）" : snapshot.compiled ? "· 已生成方案" : "· 待审查"}</h3>
     <p>工作区：{snapshot.workspace_path ?? "当前会话工作区"}</p>
-    <p role="status">{busy || saving ? "正在检查方案，请稍候" : dirty ? "修改尚未保存，保存后重新校验" : issues.length ? `需要处理 ${issues.length} 项问题` : confirmation ? "方案可审查，请核对关键科学选择" : "等待补充与校验"}</p>
+    <p role="status">{snapshot.consumed ? "已用于本次计算，科学参数已冻结" : busy || saving ? "正在检查方案，请稍候" : dirty ? "修改尚未保存，保存后重新校验" : issues.length ? `需要处理 ${issues.length} 项问题` : confirmation ? "方案可审查，请核对关键科学选择" : "等待补充与校验"}</p>
     {issues.length > 0 && <nav aria-label="方案问题"><strong>需要处理（{issues.length}）</strong><ul>{issues.map((issue, index) => { const item = humanIssue(issue); return <li key={index}>{item.path ? <button type="button" className="draft-issue-link" onClick={() => locate(item.path!)}>{item.text}</button> : item.text}</li>; })}</ul></nav>}
     {dirty && <aside className="draft-changes" aria-label="本次修改"><strong>本次修改 · 保存后重新校验</strong><ul>{edited.map((path) => <li key={path}>{groups.flatMap((group) => group.fields).find((field) => field.path === path)?.label ?? (path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(path, get(snapshot.draft, path))} → {display(path, get(draft, path))}</li>)}</ul></aside>}
     {!dirty && snapshot.changes && snapshot.changes.length > 0 && <details className="draft-changes"><summary>此版本的修改（{snapshot.changes.length} 项）</summary><ul>{snapshot.changes.map((change) => <li key={change.path}>{groups.flatMap((group) => group.fields).find((field) => field.path === change.path)?.label ?? (change.path === "requested_metrics" ? "计算指标" : "高级参数")}：{display(change.path, change.before)} → {display(change.path, change.after)}</li>)}</ul></details>}
-    <p>未填写项保持未知；建议需审阅。保存参数和生成方案不会启动计算。</p>
+    <p>{snapshot.consumed ? "本次执行方案只读。如需修改分析选择，请在对话中准备新方案。" : "未填写项保持未知；建议需审阅。保存参数和生成方案不会启动计算。"}</p>
     <div className="draft-metrics" role="group" aria-label="计算指标">{["alff", "falff", "reho"].map((metric) => <label key={metric}><input type="checkbox" disabled={locked} checked={Array.isArray(draft.requested_metrics) && draft.requested_metrics.includes(metric)} onChange={(event) => {
       const current = Array.isArray(draft.requested_metrics) ? draft.requested_metrics : [];
       change("requested_metrics", event.target.checked ? [...current, metric] : current.filter((m) => m !== metric));

@@ -80,7 +80,7 @@ def test_save_preserves_draft_and_is_idempotent(service, source_root, monkeypatc
         {"confirmed_hash": "a" * 64},
         {"preprocessing": {"provenance": []}},
         {"preprocessing": {"slice_timing": {"invented": 1}}},
-    {"preprocessing": {"t1": {"invented": 1, "structural_artifact_id": ""}}},
+        {"preprocessing": {"t1": {"invented": 1, "structural_artifact_id": ""}}},
         {"preprocessing": {"tr_seconds": "two"}},
     ],
 )

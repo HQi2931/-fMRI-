@@ -48,6 +48,7 @@ function elapsedLabel(events: RuntimeEvent[], now: number) {
 export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (updated: Run) => void }) {
   const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; qcSubjects: Array<Record<string, unknown>> } | null>(null);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState<{ runId: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -103,7 +104,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const mock = artifacts.some((artifact) => artifact.provenance.non_scientific === true || String(artifact.provenance.executor ?? "").includes("mock")) || events.some((event) => event.payload.execution_backend === "mock");
   async function action(kind: "cancel" | "retry" | "qc" | "approve") {
     if (busy) return;
-    setBusy(true); setError("");
+    setBusy(true); setActionError(null);
     try {
       if (kind === "cancel" || kind === "retry") {
         const updated = await (kind === "cancel" ? api.cancelRun : api.retryRun)(run.run_id, { expected_version: run.version, reason: kind === "cancel" ? "用户在运行卡片明确取消计算" : "用户在运行卡片明确重试计算" });
@@ -115,7 +116,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
         onRunChange?.(await api.run(run.run_id));
       }
       setReload((value) => value + 1);
-    } catch (caught) { setError(describeError(caught)); }
+    } catch (caught) { setActionError({ runId: run.run_id, message: describeError(caught) }); }
     finally { setBusy(false); }
   }
   return <section className="work-run-panel" aria-label="运行与结果">
@@ -128,6 +129,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {run.state === "qc_review" && <p>指标计算已完成，科学质量审查尚未通过。</p>}
     {run.state === "succeeded" && <p>{run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
     {run.error && <p role="alert">运行失败：{run.error}</p>}
+    {actionError?.runId === run.run_id && <p role="alert">{actionError.message}</p>}
     {error && <div role="alert">{error} <button type="button" onClick={() => setReload((value) => value + 1)}>重新加载详情</button></div>}
     <div className="work-run-actions">
       {["queued", "running"].includes(run.state) && <button type="button" disabled={busy} onClick={() => void action("cancel")}>取消计算</button>}

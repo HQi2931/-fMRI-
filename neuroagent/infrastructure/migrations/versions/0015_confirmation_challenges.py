@@ -60,10 +60,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_confirmation_challenges_plan_hash", table_name="confirmation_challenges"
-    )
-    op.drop_index(
-        "ix_confirmation_challenges_conversation", table_name="confirmation_challenges"
-    )
+    op.drop_index("ix_confirmation_challenges_plan_hash", table_name="confirmation_challenges")
+    op.drop_index("ix_confirmation_challenges_conversation", table_name="confirmation_challenges")
     op.drop_table("confirmation_challenges")

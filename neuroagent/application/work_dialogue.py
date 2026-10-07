@@ -719,14 +719,18 @@ class WorkDialogue:
                         reasoning=interpreted.stage_reasoning,
                         questions=list(interpreted.stage_questions),
                     )
-                    next_step = "请审查候选目录和依据，使用页面的确认按钮选择此起点。"
+                    stage_summary = (
+                        f"建议从 {recommended_stage} 输入开始预处理。"
+                        "请核对输入阶段，再点击页面的确认按钮。"
+                        "确认后冻结当前输入并继续准备方案；启动计算仍需审查最终方案。"
+                    )
                     stage_command = payload["workspace_stage_recommendation"][
                         "confirmation_command"
                     ]
                     if stage_command:
                         payload["confirmation_request"] = {
                             "title": "确认预处理起点",
-                            "summary": interpreted.stage_reasoning or interpreted.answer,
+                            "summary": stage_summary,
                             "options": [
                                 {
                                     "label": f"使用 {interpreted.recommended_input_stage}",
@@ -736,14 +740,10 @@ class WorkDialogue:
                             ],
                         }
                     if interpreted.action != "prepare_preprocessing_plan":
-                        return reply(
-                            interpreted.answer
-                            + "\n\n模型建议起始阶段："
-                            + recommended_stage
-                            + "。"
-                            + next_step,
-                            payload,
-                        )
+                        # A stage proposal is an unapproved UI operation. The
+                        # model's prose may expose commands or falsely claim a
+                        # run has started; explain the server-issued action only.
+                        return reply(stage_summary, payload)
             if (
                 interpreted.action == "prepare_preprocessing_plan"
                 and not interpreted.draft_patch
@@ -972,7 +972,7 @@ class WorkDialogue:
                 payload["confirmation_request"] = {
                     "title": "批准并启动计算",
                     "summary": (
-                        f"方案版本：{plan_hash[:12]}。批准后将启动当前方案的计算。"
+                        "批准后将启动当前方案的计算。"
                         "请选择本次头动 QC 方式；此授权仅用于本次运行。"
                         + ("\n\n" + render_draft_review(draft) if saved else "")
                     ),
