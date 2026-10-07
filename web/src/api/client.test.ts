@@ -289,7 +289,7 @@ describe("API client", () => {
   });
 
   it("formats API, cancellation, generic, and unknown errors", () => {
-    expect(describeError(new ApiError("bad", 409, { trace_id: "t" }))).toBe("bad（追踪号：t）");
+    expect(describeError(new ApiError("bad", 409, { trace_id: "t" }))).toBe("bad");
     expect(describeError(new DOMException("cancel", "AbortError"))).toBe("请求已取消");
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError(null)).toBe("发生未知错误");

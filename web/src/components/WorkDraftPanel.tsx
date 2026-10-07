@@ -138,7 +138,10 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     try {
       const patch = changedValues(snapshot.draft, draft);
       await onSave(snapshot.hash, patch); setEdited([]); onDirty?.(false);
-    } catch (error) { setSaveError(`${describeError(error)}。本地修改仍保留，请核对草稿版本后重试。`); }
+    } catch (error) {
+      const message = describeError(error).replace(/[。.!！?？\s]+$/u, "");
+      setSaveError(`${message}。本地修改仍保留，请核对草稿版本后重试。`);
+    }
     finally { setSaving(false); }
   }
   const renderField = (field: Field) => {

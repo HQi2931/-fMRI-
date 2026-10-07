@@ -619,8 +619,9 @@ export const api = {
 
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) {
-    const trace = error.traceId ? `（追踪号：${error.traceId}）` : "";
-    return `${error.message}${trace}`;
+    // Keep request IDs available on ApiError for diagnostics, but avoid
+    // exposing internal identifiers in ordinary user-facing messages.
+    return error.message;
   }
   if (isAbortError(error)) return "请求已取消";
   return error instanceof Error ? error.message : "发生未知错误";

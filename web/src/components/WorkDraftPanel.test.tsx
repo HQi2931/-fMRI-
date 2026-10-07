@@ -57,10 +57,12 @@ describe("editable DPARSF draft", () => {
     expect(save).toHaveBeenCalledWith("a".repeat(64), { preprocessing: { tr_seconds: 3 } });
   });
   it("retains local edits on a version conflict", async () => {
-    render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn().mockRejectedValue(new ApiError("草稿已变化", 409, { code: "conflict" }))} />);
+    render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn().mockRejectedValue(new ApiError("草稿已变化。", 409, { code: "conflict", trace_id: "trace-123" }))} />);
     fireEvent.change(screen.getByLabelText("重复时间 TR（秒）"), { target: { value: "2" } });
     await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("本地修改仍保留");
+    expect(screen.getByRole("alert").textContent).toBe("草稿已变化。本地修改仍保留，请核对草稿版本后重试。");
+    expect(screen.getByRole("alert").textContent).not.toContain("trace-123");
     expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
     expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
   });
