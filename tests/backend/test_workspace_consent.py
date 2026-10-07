@@ -17,7 +17,7 @@ from neuroagent.application.contracts import (
     ModelProfileInput,
     WorkspaceContentConsentCreate,
 )
-from neuroagent.application.errors import InputValidationError
+from neuroagent.application.errors import InputValidationError, NotFoundError
 from neuroagent.application.services import NeuroAgentService
 
 
@@ -323,3 +323,53 @@ def test_profile_revision_is_independent_of_capability_serialization_order(
 
     monkeypatch.setattr(model_type, "model_dump", reverse_capabilities)
     assert service._profile_revision(view) == expected
+
+
+@pytest.mark.asyncio
+async def test_regrant_refreshes_revoked_workspace_consent_in_place(
+    service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_workspace_assistant(service)
+    add_profile(service)
+    conversation_id = add_conversation(service, source_root)
+    install_gateway(monkeypatch, service, ProbeGateway(successful_probe()))
+    request = WorkspaceContentConsentCreate(
+        profile_id="test-provider",
+        model="chosen-concrete-model",
+        acknowledge_remote_processing=True,
+    )
+
+    first = await service.create_workspace_content_consent(conversation_id, request)
+    revoked = service.revoke_workspace_content_consent(conversation_id, first.consent_id)
+    renewed = await service.create_workspace_content_consent(conversation_id, request)
+
+    assert revoked.revoked_at is not None
+    assert renewed.consent_id == first.consent_id
+    assert renewed.revoked_at is None
+    assert renewed.granted_at > first.granted_at
+    assert renewed.valid_for_current_context is True
+    assert len(service.list_workspace_content_consents(conversation_id)) == 1
+
+
+def test_workspace_consent_persistence_enforces_conversation_scope(
+    service: NeuroAgentService, source_root: Path
+) -> None:
+    conversation_id = add_conversation(service, source_root)
+    other_conversation_id = service.create_conversation(
+        ConversationCreate(mode=ConversationMode.WORK, workspace_path=str(source_root)),
+        "other-workspace-consent-conversation",
+    ).conversation_id
+    consent = service.repository.create_workspace_consent(
+        conversation_id=conversation_id,
+        workspace_hash="a" * 64,
+        profile_id="test-provider",
+        profile_revision="b" * 64,
+        model="chosen-model",
+        policy_version="workspace-content-v1",
+        provider_host="provider.example",
+    )
+
+    with pytest.raises(NotFoundError):
+        service.repository.list_workspace_consents("missing-conversation")
+    with pytest.raises(NotFoundError):
+        service.repository.revoke_workspace_consent(other_conversation_id, consent.consent_id)

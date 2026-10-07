@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.errors import InputValidationError
+from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.infrastructure.filesystem.workspace_files import WorkspaceFilePolicy
 
 
@@ -165,6 +165,180 @@ def test_workspace_listing_accepts_directories_without_relaxing_file_reads(tmp_p
         policy.read("FunImg")
 
 
+def test_workspace_listing_paginates_and_reports_unsupported_files(tmp_path: Path) -> None:
+    (tmp_path / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (tmp_path / "beta.bin").write_bytes(b"\x00\x01")
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "hidden.txt").write_text("hidden", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("hidden", encoding="utf-8")
+    policy = WorkspaceFilePolicy(tmp_path)
+
+    first = policy.list_entries(limit=1)
+    second = policy.list_entries(limit=1, offset=1)
+    all_entries = policy.list_entries(include_excluded=True)
+
+    assert first["entries"][0]["path"] == "alpha.txt"
+    assert first["total"] == 2
+    assert first["next_offset"] == 1
+    assert second["entries"][0]["path"] == "beta.bin"
+    assert second["next_offset"] is None
+    binary = next(item for item in all_entries["entries"] if item["path"] == "beta.bin")
+    assert binary["readable"] is False
+    assert {item["path"] for item in all_entries["entries"]} == {
+        "alpha.txt",
+        "beta.bin",
+        "cache",
+    }
+    with pytest.raises(InputValidationError, match="分页参数无效"):
+        policy.list_entries(limit=0)
+    with pytest.raises(InputValidationError):
+        policy.list_entries(directory="alpha.txt")
+
+
+def test_workspace_search_is_scoped_bounded_and_redacts_results(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text(
+        "ALFF result for researcher@example.org\n" + "x" * 310 + "ALFF" + "y" * 310,
+        encoding="utf-8",
+    )
+    (tmp_path / "database.db").write_bytes(b"SQLite format 3")
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "notes.txt").write_text("ALFF excluded", encoding="utf-8")
+    policy = WorkspaceFilePolicy(tmp_path)
+
+    result = policy.search("alff", glob="*.txt", max_results=1)
+
+    assert result["total"] == 1
+    assert result["truncated"] is True
+    assert result["results"][0]["path"] == "notes.txt"
+    assert "[redacted-email]" in result["results"][0]["text"]
+    assert len(result["results"][0]["text"]) <= 600
+    with pytest.raises(InputValidationError):
+        policy.search("", max_results=1)
+    with pytest.raises(InputValidationError):
+        policy.search("alff", max_results=201)
+
+
+def test_workspace_reads_enforce_ranges_encoding_and_nul_safety(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("one\ntwo\n", encoding="utf-8")
+    (tmp_path / "invalid.txt").write_bytes(b"\xff")
+    (tmp_path / "binary.txt").write_bytes(b"safe\x00binary")
+    (tmp_path / "large.txt").write_text("x" * 17, encoding="utf-8")
+    policy = WorkspaceFilePolicy(tmp_path, max_text_bytes=16)
+
+    for start, end in [(0, 1), (2, 1), (1, 401)]:
+        with pytest.raises(InputValidationError) as invalid_range:
+            policy.read("notes.txt", start=start, end=end)
+        assert invalid_range.value.code == "workspace_read_range_invalid"
+    with pytest.raises(InputValidationError) as invalid_encoding:
+        policy.read("invalid.txt")
+    assert invalid_encoding.value.code == "workspace_encoding_invalid"
+    with pytest.raises(InputValidationError) as binary_content:
+        policy.read("binary.txt")
+    assert binary_content.value.code == "workspace_binary_content"
+    with pytest.raises(InputValidationError) as too_large:
+        policy.read("large.txt")
+    assert too_large.value.code == "workspace_file_too_large"
+
+
+def test_workspace_patch_rejects_overlaps_noops_and_existing_new_file(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("first\nsecond\n", encoding="utf-8")
+    policy = WorkspaceFilePolicy(tmp_path)
+    digest = policy.read("notes.txt").sha256
+
+    with pytest.raises(InputValidationError) as overlap:
+        policy.build_patch(
+            [
+                {
+                    "path": "notes.txt",
+                    "expected_sha256": digest,
+                    "start_line": 1,
+                    "end_line": 2,
+                    "replacement": "merged\n",
+                },
+                {
+                    "path": "notes.txt",
+                    "expected_sha256": digest,
+                    "start_line": 2,
+                    "end_line": 2,
+                    "replacement": "second\n",
+                },
+            ]
+        )
+    assert overlap.value.code == "workspace_edit_overlap"
+    with pytest.raises(InputValidationError) as no_op:
+        policy.build_patch(
+            [
+                {
+                    "path": "notes.txt",
+                    "expected_sha256": digest,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "replacement": "first\n",
+                }
+            ]
+        )
+    assert no_op.value.code == "workspace_patch_noop"
+    with pytest.raises(ConflictError) as exists:
+        policy.build_patch(
+            [{"path": "notes.txt", "expected_sha256": None, "replacement": "replace"}]
+        )
+    assert exists.value.code == "workspace_new_file_exists"
+    with pytest.raises(InputValidationError) as bad_line:
+        policy.build_patch(
+            [
+                {
+                    "path": "notes.txt",
+                    "expected_sha256": digest,
+                    "start_line": 0,
+                    "end_line": 1,
+                    "replacement": "bad",
+                }
+            ]
+        )
+    assert bad_line.value.code == "workspace_edit_range_invalid"
+
+
+def test_workspace_patch_rejects_ambiguous_and_oversized_edits(tmp_path: Path) -> None:
+    policy = WorkspaceFilePolicy(tmp_path)
+
+    with pytest.raises(InputValidationError) as empty:
+        policy.build_patch([])
+    assert empty.value.code == "workspace_patch_edit_limit"
+    with pytest.raises(InputValidationError) as binary:
+        policy.build_patch([{"path": "new.txt", "replacement": "unsafe\x00text"}])
+    assert binary.value.code == "workspace_binary_content"
+    with pytest.raises(InputValidationError) as byte_limit:
+        policy.build_patch(
+            [{"path": "new.txt", "expected_sha256": None, "replacement": "x"}],
+            max_bytes=1,
+        )
+    assert byte_limit.value.code == "workspace_patch_too_large"
+    with pytest.raises(InputValidationError) as file_limit:
+        policy.build_patch(
+            [
+                {"path": "first.txt", "expected_sha256": None, "replacement": "one"},
+                {"path": "second.txt", "expected_sha256": None, "replacement": "two"},
+            ],
+            max_files=1,
+        )
+    assert file_limit.value.code == "workspace_patch_file_limit"
+    with pytest.raises(InputValidationError) as parent:
+        policy.build_patch(
+            [{"path": "missing/new.txt", "expected_sha256": None, "replacement": "new"}]
+        )
+    assert parent.value.code == "workspace_parent_invalid"
+    with pytest.raises(InputValidationError) as multiple:
+        policy.build_patch(
+            [
+                {"path": "new.txt", "expected_sha256": None, "replacement": "first"},
+                {"path": "new.txt", "expected_sha256": None, "replacement": "second"},
+            ]
+        )
+    assert multiple.value.code == "workspace_new_file_multiple_edits"
+
+
 @pytest.mark.asyncio
 async def test_numeric_sidecar_evidence_survives_clinical_line_omission(tmp_path: Path) -> None:
     from neuroagent.agent.models import ToolCall
@@ -211,6 +385,23 @@ async def test_numeric_sidecar_evidence_survives_clinical_line_omission(tmp_path
     )
     assert facts["preprocessing.slice_timing.slice_order"] == [2, 3, 1]
     assert facts["preprocessing.tr_seconds"] == 2
+
+
+def test_numeric_sidecar_metadata_rejects_invalid_or_unread_fields(tmp_path: Path) -> None:
+    (tmp_path / "scan.json").write_text(
+        json.dumps(
+            {
+                "RepetitionTime": True,
+                "SliceTiming": [0.0, -0.25, float("nan")],
+                "Description": "not numerical evidence",
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy = WorkspaceFilePolicy(tmp_path)
+
+    assert policy.read("scan.json").numeric_metadata == {}
+    assert policy.read("scan.json", start=2, end=3).numeric_metadata == {}
 
 
 @pytest.mark.asyncio

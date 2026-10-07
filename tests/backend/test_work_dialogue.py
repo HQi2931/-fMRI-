@@ -1123,3 +1123,39 @@ def test_file_citations_keep_evidence_from_multiple_reads_of_the_same_path():
     assert not _valid_workspace_citation_paths(
         (WorkspaceCitation(path=path, locator="/Unobserved"),), {"calls": calls}
     )
+
+
+def test_nested_model_suggestions_preserve_user_choices_and_mark_changed_values():
+    from neuroagent.application.work_dialogue import _draft_sources
+
+    saved = {
+        "draft": {
+            "preprocessing": {
+                "tr_seconds": 2,
+                "slice_timing": {"enabled": True},
+                "smoothing_mm": 4,
+            }
+        },
+        "sources": {
+            "preprocessing.tr_seconds": "user",
+            "preprocessing.smoothing_mm": "data",
+        },
+    }
+
+    sources = _draft_sources(
+        saved,
+        {
+            "preprocessing": {
+                "tr_seconds": 2,
+                "slice_timing": {"enabled": True, "reference_slice": 33},
+                "smoothing_mm": 6,
+            }
+        },
+    )
+
+    assert sources == {
+        "preprocessing.tr_seconds": "user",
+        "preprocessing.smoothing_mm": "suggested",
+        "preprocessing.slice_timing.enabled": "suggested",
+        "preprocessing.slice_timing.reference_slice": "suggested",
+    }
