@@ -98,7 +98,8 @@ function PlanPreview({ value }: { value: unknown }) {
 }
 
 type Props = { snapshot: WorkDraftSnapshot; issues?: string[]; preview?: unknown; readOnly?: boolean; busy?: boolean; confirmation?: ConfirmationRequest | null; confirmLabel?: string; onSave: (baseHash: string, patch: ObjectValue) => Promise<void>; onConfirm?: () => void; onDirty?: (dirty: boolean) => void };
-export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = false, busy = false, confirmation, confirmLabel = "确认并生成方案", onSave, onConfirm, onDirty }: Props) {
+export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, readOnly = false, busy = false, confirmation, confirmLabel = "确认并生成方案", onSave, onConfirm, onDirty }: Props) {
+  const issues = rawIssues.map((issue) => issue.replace(/^研究方案引用（study_protocol_ref）[：:]/, "study_protocol_ref："));
   const panelId = useId();
   const [draft, setDraft] = useState(snapshot.draft);
   const [edited, setEdited] = useState<string[]>([]);
