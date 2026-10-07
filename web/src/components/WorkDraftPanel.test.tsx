@@ -128,7 +128,9 @@ describe("editable DPARSF draft", () => {
     render(<WorkDraftPanel snapshot={snapshot()} issues={["study_protocol_ref：尚未提供"]} onSave={vi.fn()} />);
     expect(screen.getByRole("button", { name: "研究方案引用是编译必填项。填写真实方案编号、文档引用或 DOI；未知时不要编造。" })).toBeInTheDocument();
     const row = screen.getByLabelText("研究方案引用（编译必填）").closest(".draft-field") as HTMLElement;
-    expect(within(row).getByText("状态：存在冲突")).toBeInTheDocument();
+    expect(within(row).getByText("状态：待补充")).toBeInTheDocument();
+    const summaryRow = screen.getByRole("region", { name: "关键参数状态" }).querySelector("li")!;
+    expect(within(summaryRow).getByText(/状态：待补充/)).toBeInTheDocument();
   });
   it("ignores malformed old payloads", () => {
     expect(readWorkDraft(undefined)).toBeUndefined();

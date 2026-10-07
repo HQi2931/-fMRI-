@@ -67,6 +67,12 @@ function changedValues(base: ObjectValue, next: ObjectValue): ObjectValue {
   }
   return patch;
 }
+function issueState(issues: string[]): string | undefined {
+  if (!issues.length) return undefined;
+  return issues.every((issue) => /尚未提供|尚未填写|尚未选择|Field required|missing|required/i.test(issue))
+    ? "待补充"
+    : "存在冲突";
+}
 function disabledReason(draft: ObjectValue, path: string): string | undefined {
   if (path.startsWith("alff_falff.") && !draft.alff_falff) return "未选择 ALFF/fALFF";
   if (path.startsWith("reho.") && !draft.reho) return "未选择 ReHo";
@@ -167,8 +173,9 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
   }
   function summaryState(path: string): string {
     if (path.startsWith("alff_falff.") && !draft.alff_falff) return "不适用";
-    const issue = issues.some((item) => item.startsWith(path + "：") || item.startsWith(path + ":") || item.startsWith(path + "."));
-    if (issue) return "存在冲突";
+    const matchingIssues = issues.filter((item) => item.startsWith(path + "：") || item.startsWith(path + ":") || item.startsWith(path + "."));
+    const validationState = issueState(matchingIssues);
+    if (validationState) return validationState;
     if (edited.some((item) => item === path || item.startsWith(path + ".") || path.startsWith(item + "."))) return "未保存";
     if (get(draft, path) === undefined || get(draft, path) === null) return "待选择";
     const direct = inheritedFieldValue(snapshot.field_states, path);
@@ -218,7 +225,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
       const value = get(draft, field.path); const reason = disabledReason(draft, field.path);
       const fieldIssues = issues.filter((issue) => issue.startsWith(`${field.path}：`) || issue.startsWith(`${field.path}:`));
       const source = edited.includes(field.path) ? "用户指定" : sourceLabel(inheritedFieldValue(snapshot.sources, field.path));
-      const state = edited.includes(field.path) ? "未保存" : fieldIssues.length ? "存在冲突" : value === undefined ? "待选择" : value === null ? "不适用" : reviewLabel(inheritedFieldValue(snapshot.field_states, field.path));
+      const state = edited.includes(field.path) ? "未保存" : issueState(fieldIssues) ?? (value === undefined ? "待选择" : value === null ? "不适用" : reviewLabel(inheritedFieldValue(snapshot.field_states, field.path)));
       const controlDisabled = locked || Boolean(reason);
       const id = `draft-${panelId}-${field.path}`;
       return <div className="draft-field" key={field.path}><label htmlFor={id}>{field.label}</label><small className="draft-field-meta"><span>来源：{source}</span><span>状态：{reason ?? state}</span></small>
