@@ -10,6 +10,11 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it("preserves requested output names while translating known artifact identifiers", () => {
+    render(<WorkDraftPanel snapshot={snapshot()} preview={{ outputs: ["raw_alff", "ALFF 标准化结果图", "头动质量报告"] }} onSave={vi.fn()} />);
+    expect(screen.getByText("预期输出：原始 ALFF、ALFF 标准化结果图、头动质量报告")).toBeInTheDocument();
+    expect(screen.queryByText(/预期输出：.*所选指标结果/)).not.toBeInTheDocument();
+  });
   it("offers input recovery while withdrawn evidence blocks editing and startup", () => {
     const recover = vi.fn();
     render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { tr_seconds: 2 } }), input_evidence_stale: true, input_manifest_stale: true, sources: { "preprocessing.tr_seconds": "stale_data" } }} issues={["输入文件已变化，请重新读取并核实采集信息。"]} confirmation={{ title: "重新确认输入阶段", summary: "不启动计算", options: [{ label: "使用 FunRaw", description: "冻结输入", command: "确认起始阶段 FunRaw aaaaaaaaaaaa" }] }} confirmLabel="重新确认输入阶段" onSave={vi.fn()} onConfirm={recover} />);
