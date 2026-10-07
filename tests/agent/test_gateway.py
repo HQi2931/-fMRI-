@@ -21,6 +21,27 @@ from neuroagent.agent.tool_spec import LlmTool, ToolTier
 from neuroagent.infrastructure.secrets import LocalDotenvSecretResolver
 
 
+def test_work_prompt_distinguishes_planning_action_from_callable_tools() -> None:
+    configured = profile("work-provider", "WORK_KEY", 1)
+    gateway = ModelGateway(
+        ModelRouter([configured], {}),
+        {},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+
+    rendered = gateway.build_chat_messages(
+        question="Prepare an ALFF plan; do not execute.",
+        evidence=[],
+        work_mode=True,
+    )
+
+    system_prompt = rendered.messages[0]["content"]
+    assert "prepare_preprocessing_plan 是最终 JSON 的 action 字段取值" in system_prompt
+    assert "不是工具" in system_prompt
+    assert "绝不能作为 tool/function 调用" in system_prompt
+
+
 def profile(profile_id: str, key: str, priority: int) -> ModelProfile:
     return ModelProfile(
         id=profile_id,

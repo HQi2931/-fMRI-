@@ -1178,7 +1178,8 @@ class WorkDialogue:
             }
             fallback_context["question"] = str(fallback_context["question"]) + (
                 "\n本轮只重试一次结构化回复：返回简洁的 answer、action 和增量 draft_patch，"
-                "省略没有内容的可选字段。"
+                "省略没有内容的可选字段。prepare_preprocessing_plan 只能作为最终 JSON 的 action 字段值，"
+                "不是工具，不要调用它；只引用 successful_read_evidence 中逐字提供的 path 和 locator。"
             )
         generated = await self.generate(
             **fallback_context,
