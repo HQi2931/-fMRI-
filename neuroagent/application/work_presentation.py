@@ -446,6 +446,7 @@ def pending_review_questions(
         (r"初始|删除|丢弃", "preprocessing.dummy_scans"),
         (r"结果.*平滑|平滑.*结果", "alff_falff.result_smoothing_fwhm_mm"),
         (r"全局信号|GSR", "preprocessing.nuisance.global_signal.enabled"),
+        (r"研究方案引用|study_protocol_ref|protocol reference|协议编号", "study_protocol_ref"),
     )
     for question in questions:
         text = question if isinstance(question, str) else str(question.get("text", ""))
@@ -466,6 +467,22 @@ def pending_review_questions(
         text = text.strip()
         if not settled and text and text not in pending:
             pending.append(text[:400])
+    protocol_ref = values.get("study_protocol_ref")
+    if not isinstance(protocol_ref, str) or not protocol_ref.strip():
+        pending = [
+            question
+            for question in pending
+            if not re.search(
+                r"study_protocol_ref|研究方案引用|protocol reference|协议编号", question, re.I
+            )
+        ]
+        pending.insert(
+            0,
+            (
+                "研究方案引用是编译必填项，目前尚未提供。请填写真实方案编号、文档引用或 DOI；"
+                "未知时不要编造，补齐后才能校验并编译。"
+            ),
+        )
     return pending
 
 

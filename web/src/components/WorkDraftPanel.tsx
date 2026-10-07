@@ -16,7 +16,7 @@ const motion = (path: string) => [choice(`${path}.fd_type`, "头动 FD 类型", 
 const tissue = (path: string, label: string) => [bool(`${path}.enabled`, `${label}回归`), choice(`${path}.mask_source`, `${label}掩膜`, [["spm", "SPM"], ["segment", "T1 分割"]]), number(`${path}.mask_threshold`, `${label}掩膜阈值`), choice(`${path}.method`, `${label}方法`, [["mean", "均值"], ["compcor", "CompCor"]]), number(`${path}.compcor_components`, `${label} CompCor 成分数`)];
 const p = "preprocessing";
 const groups: Array<{ title: string; fields: Field[] }> = [
-  { title: "数据与采集", fields: [f("study_protocol_ref", "研究方案引用"), array("primary_outputs", "主要输出"), number(`${p}.tr_seconds`, "重复时间 TR（秒）"), number(`${p}.expected_time_points`, "时间点数"), number(`${p}.dummy_scans`, "删除初始时间点")] },
+  { title: "数据与采集", fields: [f("study_protocol_ref", "研究方案引用（编译必填）"), array("primary_outputs", "主要输出"), number(`${p}.tr_seconds`, "重复时间 TR（秒）"), number(`${p}.expected_time_points`, "时间点数"), number(`${p}.dummy_scans`, "删除初始时间点")] },
   { title: "基础预处理", fields: [bool(`${p}.slice_timing.enabled`, "层时间校正"), number(`${p}.slice_timing.slice_count`, "层数"), array(`${p}.slice_timing.slice_order`, "层采集顺序"), number(`${p}.slice_timing.reference_slice`, "参考层"), bool(`${p}.realignment.enabled`, "头动校正"), choice(`${p}.realignment.options_source`, "头动校正选项来源", [["dpabi_v82_jobmat", "DPABI Jobmat"]])] },
   { title: "T1 处理", fields: [choice(`${p}.t1.preparation`, "T1 准备", [["reorient_crop", "重定向与裁剪"], ["prepared", "使用已准备 T1"]]), f(`${p}.t1.structural_artifact_id`, "T1 结构像输入绑定"), bool(`${p}.t1.coregister_to_functional`, "T1 与功能像配准"), choice(`${p}.t1.segmentation`, "T1 分割", [["disabled", "停用"], ["segment", "Segment"], ["new_segment", "New Segment"]]), choice(`${p}.t1.affine_regularization`, "T1 分割仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]]), bool(`${p}.t1.dartel`, "DARTEL 构建模板"), f(`${p}.normalization.structural_artifact_id`, "标准化结构像产物绑定"), choice(`${p}.normalization.affine_regularization`, "标准化仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]])] },
   { title: "协变量回归", fields: [bool(`${p}.nuisance.enabled`, "协变量回归"), choice(`${p}.nuisance.timing`, "回归阶段", [["after_realign", "头动校正后"], ["after_normalize", "标准化后"]]), number(`${p}.nuisance.polynomial_trend`, "多项式趋势"), choice(`${p}.nuisance.head_motion_model`, "头动回归模型", [[0, "无"], [1, "刚体 6 参数"], [2, "导数 12 参数"], [3, "6 参数及平方项"], [4, "Friston-24"]]), ...motion(`${p}.nuisance.head_motion_scrubbing`), ...tissue(`${p}.nuisance.white_matter`, "WM 白质"), ...tissue(`${p}.nuisance.csf`, "CSF 脑脊液"), bool(`${p}.nuisance.global_signal.enabled`, "全局信号回归"), choice(`${p}.nuisance.global_signal.mask_source`, "全局信号掩膜", [["spm", "SPM"], ["auto_mask", "AutoMask"]]), choice(`${p}.nuisance.global_signal.method`, "全局信号方法", [["mean", "均值"]]), bool(`${p}.nuisance.warp_masks_to_individual_space`, "将掩膜变换到个体空间"), bool(`${p}.nuisance.add_mean_back`, "加回均值")] },
@@ -28,7 +28,7 @@ const groups: Array<{ title: string; fields: Field[] }> = [
 ];
 
 const keyFields = new Set([
-  "preprocessing.tr_seconds", "preprocessing.expected_time_points", "preprocessing.dummy_scans",
+  "study_protocol_ref", "preprocessing.tr_seconds", "preprocessing.expected_time_points", "preprocessing.dummy_scans",
   "preprocessing.slice_timing.enabled", "preprocessing.slice_timing.slice_count", "preprocessing.slice_timing.slice_order", "preprocessing.slice_timing.reference_slice", "preprocessing.realignment.enabled",
   "preprocessing.t1.preparation", "preprocessing.t1.segmentation", "preprocessing.t1.dartel",
   "preprocessing.nuisance.enabled", "preprocessing.nuisance.timing", "preprocessing.nuisance.head_motion_model", "preprocessing.nuisance.polynomial_trend", "preprocessing.nuisance.white_matter.enabled", "preprocessing.nuisance.csf.enabled", "preprocessing.nuisance.global_signal.enabled",
@@ -38,6 +38,7 @@ const keyFields = new Set([
 ]);
 
 const statusSummaryFields = [
+  { path: "study_protocol_ref", label: "研究方案引用" },
   { path: "preprocessing.tr_seconds", label: "TR" },
   { path: "preprocessing.expected_time_points", label: "时间点数" },
   { path: "preprocessing.dummy_scans", label: "删除初始时间点" },
@@ -117,6 +118,7 @@ export function WorkDraftPanel({ snapshot, issues = [], preview, readOnly = fals
     element.focus(); element.scrollIntoView?.({ block: "center", behavior: "smooth" });
   }
   function humanIssue(issue: string): { path: string | undefined; text: string } {
+    if (issue.startsWith("study_protocol_ref：") || issue.startsWith("study_protocol_ref:")) return { path: "study_protocol_ref", text: "研究方案引用是编译必填项。填写真实方案编号、文档引用或 DOI；未知时不要编造。" };
     const field = groups.flatMap((group) => group.fields).find((field) => issue.startsWith(`${field.path}：`) || issue.startsWith(`${field.path}:`));
     let text = field ? `${field.label}：${issue.slice(field.path.length + 1)}` : issue;
     text = text.replace(/（[a-z_][a-z_0-9.]*）/g, "").replace(/Field required/g, "尚未填写，请补充此选择").replace(/尚未提供（停用项也需明确填写 null 或 false）/g, "尚未确定，请选择启用、停用或不适用");

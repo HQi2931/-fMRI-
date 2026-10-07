@@ -15,6 +15,7 @@ from neuroagent.application.work_draft import (
     planning_decisions,
     render_draft_review,
 )
+from neuroagent.application.work_presentation import pending_review_questions
 from tests.science.conftest import preprocessing_parameters
 
 
@@ -110,6 +111,29 @@ def test_empty_draft_and_invalid_scientific_choices_are_actionable() -> None:
     assert "provenance" not in issues
     invalid = merge_work_draft(complete_draft(), {"preprocessing": {"tr_seconds": -1}})
     assert any("tr_seconds" in item for item in draft_issues(invalid))
+
+
+def test_missing_protocol_reference_becomes_one_deterministic_blocking_question() -> None:
+    question = "是否提供研究方案引用?留空不影响本轮方案编译。"
+    missing = pending_review_questions(
+        [question],
+        {"study_protocol_ref": None},
+        {},
+        {},
+    )
+    assert len(missing) == 1
+    assert "编译必填项" in missing[0]
+    assert "真实方案编号、文档引用或 DOI" in missing[0]
+    assert "留空不影响" not in missing[0]
+    assert (
+        pending_review_questions(
+            [question],
+            {"study_protocol_ref": "protocol-2026-001"},
+            {"study_protocol_ref": "user"},
+            {},
+        )
+        == []
+    )
 
 
 def test_confirmation_binds_review_and_generates_user_evidence() -> None:

@@ -924,9 +924,23 @@ class WorkDialogue:
                 payload["questions"] = questions
                 explanation = ""
                 reason = interpreted.recommendation_reason
+                missing_protocol_reference = (
+                    not draft.study_protocol_ref or not draft.study_protocol_ref.strip()
+                )
+                contradictory_protocol_reason = bool(
+                    missing_protocol_reference
+                    and reason
+                    and re.search(
+                        r"(?:研究方案引用|study_protocol_ref|protocol).{0,60}(?:留空|可选|不影响|非必需|无需|不需要)"
+                        r"|(?:留空|可选|不影响|非必需|无需|不需要).{0,60}(?:研究方案引用|study_protocol_ref|protocol)",
+                        reason,
+                        re.I,
+                    )
+                )
                 if (
                     reason
                     and not blocked
+                    and not contradictory_protocol_reason
                     and not re.search(
                         r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b|workspace:[\w-]+|\bt1_segment\b",
                         reason,

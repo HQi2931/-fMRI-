@@ -196,6 +196,7 @@ def test_anatomical_sidecar_tr_does_not_contaminate_functional_facts():
 
 def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices():
     values = {
+        "study_protocol_ref": "protocol-test",
         "preprocessing": {"tr_seconds": 2, "dummy_scans": 0},
         "alff_falff": {"result_smoothing_fwhm_mm": [4, 4, 4]},
     }
@@ -209,7 +210,11 @@ def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices
     assert pending_review_questions(
         questions,
         values,
-        {"alff_falff.result_smoothing_fwhm_mm": "user", "preprocessing.dummy_scans": "user"},
+        {
+            "study_protocol_ref": "user",
+            "alff_falff.result_smoothing_fwhm_mm": "user",
+            "preprocessing.dummy_scans": "user",
+        },
         {"preprocessing.tr_seconds": 2},
     ) == ["采用哪个掩膜？"]
 
@@ -219,7 +224,10 @@ def test_user_choice_does_not_hide_a_question_about_conflicting_read_evidence():
     question = {"text": "采集 TR 与方案不同，如何处理？", "parameter_paths": [path]}
     for fact in (3, {"conflicting_values": ["2", "3"]}):
         assert pending_review_questions(
-            [question], {"preprocessing": {"tr_seconds": 2}}, {path: "user"}, {path: fact}
+            [question],
+            {"study_protocol_ref": "protocol-test", "preprocessing": {"tr_seconds": 2}},
+            {path: "user"},
+            {path: fact},
         ) == [question["text"]]
 
 

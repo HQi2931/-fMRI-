@@ -174,7 +174,13 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
         session = create(client)
         result = turn(client, session, "请计算 ALFF，TR设为2秒", "questions")
     assistant = result["assistant_message"]
-    assert assistant["payload"]["questions"] == ["指标掩膜使用哪一种？"]
+    assert assistant["payload"]["questions"] == [
+        (
+            "研究方案引用是编译必填项，目前尚未提供。请填写真实方案编号、文档引用或 DOI；"
+            "未知时不要编造，补齐后才能校验并编译。"
+        ),
+        "指标掩膜使用哪一种？",
+    ]
     assert "TR 是否" not in assistant["content"]
     if proposed_tr == 3:
         # The model tried to replace the explicit TR: discard its rationale too.
@@ -183,6 +189,35 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
         assert "方案说明（模型建议）" in assistant["content"]
         assert assistant["payload"]["recommendation_reason"] == content["recommendation_reason"]
     assert assistant["payload"]["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
+
+
+def test_planning_suppresses_model_claim_that_required_protocol_can_be_omitted(
+    service, monkeypatch
+):
+    response = generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 2.0}})
+    content = json.loads(response.response.content)
+    content.update(
+        questions=["是否提供研究方案引用?留空不影响本轮方案编译。"],
+        recommendation_reason="研究方案引用可以留空，不影响方案编译。",
+    )
+    response = response.__class__(
+        **{
+            **response.__dict__,
+            "response": response.response.model_copy(update={"content": json.dumps(content)}),
+        }
+    )
+    configure(service, monkeypatch, [response])
+    with TestClient(create_app(service=service)) as client:
+        result = turn(client, create(client), "请准备 ALFF 预处理方案", "protocol-required")
+    assistant = result["assistant_message"]
+    assert assistant["payload"]["questions"] == [
+        (
+            "研究方案引用是编译必填项，目前尚未提供。请填写真实方案编号、文档引用或 DOI；"
+            "未知时不要编造，补齐后才能校验并编译。"
+        )
+    ]
+    assert "留空不影响" not in assistant["content"]
+    assert "recommendation_reason" not in assistant["payload"]
 
 
 def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
