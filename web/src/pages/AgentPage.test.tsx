@@ -343,7 +343,13 @@ describe("agent workbench page", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("keeps confirmation commands out of the composer when waiting is stopped", async () => {
+  it.each(["stop", "timeout"])("keeps confirmation commands out of the composer after %s", async (reason) => {
+    let expire: (() => void) | undefined;
+    const originalTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+      if (timeout === 300_000 && typeof handler === "function") expire = () => handler(...args);
+      return originalTimeout(handler, timeout, ...args) as unknown as ReturnType<typeof setTimeout>;
+    });
     let signal: AbortSignal | undefined | null;
     const command = "确认方案参数 private-command";
     const draft = { hash: "d".repeat(64), draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: false };
@@ -358,7 +364,12 @@ describe("agent workbench page", () => {
     await userEvent.click(within(plan).getByRole("button", { name: "确认当前方案" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认当前方案" }));
     await waitFor(() => expect(signal).toBeTruthy());
-    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "停止等待" }));
+    if (reason === "stop") {
+      await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "停止等待" }));
+    } else {
+      expect(expire).toBeDefined();
+      await act(async () => expire!());
+    }
     expect(signal?.aborted).toBe(true);
     expect(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案")).toHaveValue("");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
