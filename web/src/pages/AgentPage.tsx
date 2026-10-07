@@ -14,8 +14,9 @@ import {
 } from "../api/client";
 import { Feedback } from "../components/Ui";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
-import { readConfirmation } from "../components/confirmation";
+import { currentConfirmation } from "../components/confirmation";
 import { ConversationText } from "../components/ConversationText";
+import { WorkTimingDetails } from "../components/WorkTimingDetails";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import { WorkDraftPanel } from "../components/WorkDraftPanel";
 import { WorkRunPanel } from "../components/WorkRunPanel";
@@ -42,6 +43,7 @@ type Message = {
   workDraft?: WorkDraftSnapshot;
   draftIssues?: string[];
   planPreview?: unknown;
+  workTimings?: unknown;
 };
 type ModelChoice = {
   key: string;
@@ -50,6 +52,12 @@ type ModelChoice = {
   label: string;
   capabilities: ModelProfile["profile"]["capabilities"];
 };
+
+const MODEL_SELECTION_KEY = "rsfmri-agent-model-v1";
+function rememberedModel(): string {
+  try { return window.sessionStorage.getItem(MODEL_SELECTION_KEY) ?? ""; }
+  catch { return ""; }
+}
 
 const WELCOME: Record<ConversationMode, Message> = {
   chat: { id: "chat-welcome", role: "assistant", text: "可以问我 rs-fMRI、DPABI 与统计方法问题。" },
@@ -96,6 +104,7 @@ function messagesFrom(conversation?: Conversation): Message[] {
         workDraft: readWorkDraft(item.payload.work_draft),
         draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : readWorkDraft(item.payload.work_draft)?.review_issues ?? [],
         planPreview: item.payload.plan_preview,
+        workTimings: item.payload.work_timings,
       };
       const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
       const workspaceCitations = item.payload.workspace_citations as Array<{ path: string; locator: string }> | undefined;
@@ -166,6 +175,7 @@ function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, o
         </li>)}
       </ol></details>}
       <ConversationText text={item.text} />
+      <WorkTimingDetails value={item.workTimings} />
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
       {item.workDraft && (item.id === latestDraftId
         ? <button className="button button-secondary" type="button" onClick={onOpenPlan}>查看当前方案{item.workDraft.version ? ` · 第 ${item.workDraft.version} 版` : ""}</button>
@@ -206,7 +216,7 @@ export function AgentPage() {
   const [activeIds, setActiveIds] = useState<Partial<Record<ConversationMode, string>>>({});
   const [workspacePath, setWorkspacePath] = useState(initialWorkspace);
   const [choices, setChoices] = useState<ModelChoice[]>([]);
-  const [selectedModelKey, setSelectedModelKey] = useState("");
+  const [selectedModelKey, setSelectedModelKey] = useState(rememberedModel);
   const [allowRemoteSearch, setAllowRemoteSearch] = useState(false);
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -234,10 +244,10 @@ export function AgentPage() {
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
   const boundToSelectedWorkspace = activeConversation?.workspace_path === workspacePath;
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
-  const latestMessage = activeConversation?.messages.at(-1);
-  const confirmation = mode === "work" && boundToSelectedWorkspace && latestMessage?.role === "assistant"
-    ? readConfirmation(latestMessage.payload.confirmation_request) : null;
-  const confirmationKey = confirmation ? `${activeConversation?.conversation_id}:${latestMessage?.message_id}` : null;
+  const offeredConfirmation = mode === "work" && boundToSelectedWorkspace
+    ? currentConfirmation(activeConversation?.messages ?? [], workspacePath) : null;
+  const confirmation = offeredConfirmation?.request ?? null;
+  const confirmationKey = offeredConfirmation ? `${activeConversation?.conversation_id}:${offeredConfirmation.messageId}` : null;
   const visibleMessages = messagesFrom(activeConversation);
   const latestDraftId = mode === "work" && boundToSelectedWorkspace ? [...visibleMessages].reverse().find((item) => item.workDraft)?.id : undefined;
   const currentDraftMessage = visibleMessages.find((item) => item.id === latestDraftId);
@@ -505,6 +515,20 @@ export function AgentPage() {
       if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); }
     } catch (caught) {
       if (!controller.signal.aborted) {
+        if (confirmationCommand && activeConversation) {
+          setPendingTurn((pending) => pending && { ...pending, status: "正在确认操作是否已保存…" });
+          try {
+            // One read-only recovery. Never repeat an execution request here.
+            const recovered = await api.conversation(activeConversation.conversation_id, controller.signal);
+            if (recovered.messages.some((item) => item.role === "user" && item.content === confirmationCommand)) {
+              cache(recovered); setPendingTurn(null); setOpenedConfirmation(null); setError("");
+              return;
+            }
+          } catch { /* Keep the original idempotency key for an explicit retry. */ }
+          setPendingTurn(null);
+          setError(`未能确认操作是否完成，请刷新会话或重试相同操作。${describeError(caught)}`);
+          return;
+        }
         setError(describeError(caught)); if (!confirmationCommand) setPrompt(content);
         setPendingTurn((pending) => pending && { ...pending, status: "回答未完成，临时内容可能不完整。请重试。" });
       }
@@ -624,7 +648,7 @@ export function AgentPage() {
         }} />
         <div className="chat-actions">
           {mode === "chat" && <label><input type="checkbox" checked={allowRemoteSearch} disabled={busy || !canSearch} onChange={(event) => setAllowRemoteSearch(event.target.checked)} />联网搜索</label>}
-          <label>模型<select disabled={busy} value={selectedModelKey} onChange={(event) => setSelectedModelKey(event.target.value)}><option value="">自动选择</option>{choices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+          <label>模型<select disabled={busy} value={selectedModelKey} onChange={(event) => { setSelectedModelKey(event.target.value); try { window.sessionStorage.setItem(MODEL_SELECTION_KEY, event.target.value); } catch { /* Selection still works when browser storage is unavailable. */ } }}><option value="">自动选择</option>{choices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
           <button className="button button-primary" type="button" disabled={busy || draftDirty || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
           {busy && pendingTurn && <button className="button button-secondary" type="button" onClick={stopWaiting}>停止等待</button>}
         </div>

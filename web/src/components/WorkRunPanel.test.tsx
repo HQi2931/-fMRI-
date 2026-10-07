@@ -5,7 +5,7 @@ import { WorkRunPanel } from "./WorkRunPanel";
 
 vi.mock("../api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client")>();
-  return { ...original, api: { artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), qcReview: vi.fn(), cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(), run: vi.fn() } };
+  return { ...original, api: { artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), qcReview: vi.fn(), runQcReview: vi.fn(), cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(), run: vi.fn() } };
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const run = (state: Run["state"] = "qc_review"): Run => ({ run_id: "run-1", project_id: "project", plan_revision_id: "plan", version: 4, attempt: 1, state, stage: "running", cancel_requested: false, qc_status: "awaiting_review", created_at: "2026-10-06T10:00:00Z", updated_at: "2026-10-06T10:09:00Z", qc_mode: "require", diagnosis_available: false, log_cursor: 0 });
@@ -15,9 +15,30 @@ beforeEach(() => {
   vi.mocked(api.artifacts).mockResolvedValue([]);
   vi.mocked(api.runEvents).mockResolvedValue([event(1, "RunStageStarted", "2026-10-06T10:01:00Z"), event(2, "RunStageFinished", "2026-10-06T10:07:20Z")]);
   vi.mocked(api.plan).mockResolvedValue({ plan_revision_id: "plan", plan: {} } as PlanRevision);
+  vi.mocked(api.runQcReview).mockResolvedValue(null);
 });
 
 describe("Work run and results", () => {
+  it("keeps image results visible when only plan and phase records are unavailable", async () => {
+    vi.mocked(api.plan).mockRejectedValue(new Error("plan unavailable"));
+    vi.mocked(api.runEvents).mockRejectedValue(new Error("events unavailable"));
+    vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "a1", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);
+    render(<WorkRunPanel run={run()} />);
+    await screen.findByText(/对应方案暂时不可用/);
+    expect(screen.getByRole("img")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "下载产物" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "下载对应方案" })).not.toBeInTheDocument();
+  });
+  it("loads QC by authoritative run scope and keeps artifacts if the review request fails", async () => {
+    vi.mocked(api.runEvents).mockResolvedValue([{ ...event(1, "QcReviewRevisionCreated", "2026-10-06T10:07:20Z"), payload: { review_revision_id: "823ac579-a[REDACTED-PHONE]c-5791bfa49be4" } }]);
+    vi.mocked(api.runQcReview).mockRejectedValue(new Error("review unavailable"));
+    vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "a1", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);
+    render(<WorkRunPanel run={run()} />);
+    await screen.findByText(/QC 审查记录暂时无法读取/);
+    expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/a1/content");
+    expect(api.runQcReview).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
+    expect(api.qcReview).not.toHaveBeenCalled();
+  });
   it("keeps registered artifacts available when only the QC report is broken", async () => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "qc-broken", run_id: "run-1", project_id: "project", artifact_type: "qc.head_motion_report", relative_path: "qc/report.json", size_bytes: 800, checksum: "a".repeat(64), created_at: "2026-10-06T10:07:20Z", provenance: {} }]);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("broken", { status: 200 })));

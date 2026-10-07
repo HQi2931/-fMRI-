@@ -815,6 +815,11 @@ def get_qc_review(review_revision_id: str, request: Request) -> QcReviewView:
     return service_from(request).get_qc_review(review_revision_id)
 
 
+@router.get("/runs/{run_id}/qc-review", response_model=QcReviewView | None, tags=["qc"])
+def get_run_qc_review(run_id: str, request: Request) -> QcReviewView | None:
+    return service_from(request).get_run_qc_review(run_id)
+
+
 @router.post(
     "/qc-reviews/{review_revision_id}/approve",
     response_model=QcReviewView,

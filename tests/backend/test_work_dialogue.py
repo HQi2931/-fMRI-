@@ -98,6 +98,36 @@ def test_work_uses_model_and_history_for_questions_without_actions(service, monk
     execute.assert_not_called()
 
 
+def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reason(
+    service, monkeypatch
+):
+    response = generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 3}})
+    content = json.loads(response.response.content)
+    content.update(
+        questions=[
+            {"text": "TR 是否使用 2 秒？", "parameter_paths": ["preprocessing.tr_seconds"]},
+            {"text": "指标掩膜使用哪一种？", "parameter_paths": ["alff_falff.mask_source"]},
+        ],
+        recommendation_reason="指标计算前保留未平滑时序，结果图再按方案平滑。",
+    )
+    response = response.__class__(
+        **{
+            **response.__dict__,
+            "response": response.response.model_copy(update={"content": json.dumps(content)}),
+        }
+    )
+    configure(service, monkeypatch, [response])
+    with TestClient(create_app(service=service)) as client:
+        session = create(client)
+        result = turn(client, session, "请计算 ALFF，TR设为2秒", "questions")
+    assistant = result["assistant_message"]
+    assert assistant["payload"]["questions"] == ["指标掩膜使用哪一种？"]
+    assert "TR 是否" not in assistant["content"]
+    # The model tried to replace the explicit TR: discard its rationale too.
+    assert "方案说明" not in assistant["content"]
+    assert assistant["payload"]["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
+
+
 def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
     service, source_root, monkeypatch
 ):

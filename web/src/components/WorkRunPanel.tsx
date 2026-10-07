@@ -7,7 +7,7 @@ const RUN_LABELS: Record<string, string> = {
   failed_retryable: "计算失败 · 可重试", failed_terminal: "计算失败", timed_out: "计算超时",
   qc_review: "计算完成 · 待 QC 审查", succeeded: "计算完成",
 };
-const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归" };
+const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归", metric_calculation: "指标计算" };
 const activeStates = new Set(["queued", "running", "cancelling"]);
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {
@@ -19,6 +19,13 @@ const ARTIFACT_LABELS: Record<string, string> = {
   "qc.head_motion_report": "头动 QC 报告", "qc.head_motion_failure": "头动 QC 诊断",
 };
 const artifactLabel = (artifact: Artifact) => ARTIFACT_LABELS[artifact.artifact_type] ?? "计算产物";
+const QC_CHECK_LABELS: Record<string, [string, string]> = {
+  HEAD_MOTION_EVIDENCE_COMPLETE: ["头动记录完整且与输入清单对应", "头动记录缺失或与输入清单不一致"],
+  HEAD_MOTION_INCLUDED_SUBJECTS_PASS: ["纳入受试者满足本次头动阈值", "纳入受试者未满足本次头动阈值"],
+  HEAD_MOTION_EXCLUSIONS_RECORDED: ["头动排除记录已保存", "头动排除记录不完整"],
+  HEAD_MOTION_INCLUDED_SUBJECTS_NONEMPTY: ["至少保留一名受试者", "没有可纳入的受试者"],
+  METRIC_ARTIFACTS_AVAILABLE: ["指标产物可用于后续 QC 审查", "缺少后续 QC 审查所需的指标产物"],
+};
 
 function ImagePreview({ artifact }: { artifact: Artifact }) {
   const [failed, setFailed] = useState(false);
@@ -39,7 +46,7 @@ function elapsedLabel(events: RuntimeEvent[], now: number) {
 }
 
 export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (updated: Run) => void }) {
-  const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision; review: QcReview | null; qcSubjects: Array<Record<string, unknown>> } | null>(null);
+  const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; qcSubjects: Array<Record<string, unknown>> } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -49,9 +56,15 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function load() {
       try {
-        const [artifacts, events, plan] = await Promise.all([api.artifacts(run.run_id, controller.signal), api.runEvents(run.run_id, 0, controller.signal), api.plan(run.plan_revision_id, controller.signal)]);
-        const reviewId = [...events].reverse().find((event) => typeof event.payload.review_revision_id === "string")?.payload.review_revision_id;
-        const review = typeof reviewId === "string" ? await api.qcReview(reviewId, controller.signal) : null;
+        const [artifactResult, eventResult, planResult] = await Promise.allSettled([api.artifacts(run.run_id, controller.signal), api.runEvents(run.run_id, 0, controller.signal), api.plan(run.plan_revision_id, controller.signal)]);
+        const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value : [];
+        const events = eventResult.status === "fulfilled" ? eventResult.value : [];
+        const plan = planResult.status === "fulfilled" ? planResult.value : null;
+        const detailErrors = [artifactResult.status === "rejected" ? "产物列表暂时不可用。" : "", eventResult.status === "rejected" ? "阶段记录暂时不可用。" : "", planResult.status === "rejected" ? "对应方案暂时不可用。" : ""];
+        let review: QcReview | null = null;
+        let reviewError = "";
+        try { review = await api.runQcReview(run.run_id, controller.signal); }
+        catch { reviewError = "QC 审查记录暂时无法读取。计算产物仍可查看和下载，请重新加载详情。"; }
         const report = artifacts.find((artifact) => artifact.artifact_type === "qc.head_motion_report" && artifact.size_bytes <= 5 * 1024 * 1024);
         let qcSubjects: Array<Record<string, unknown>> = [];
         let reportError = "";
@@ -63,7 +76,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
             if (qc && typeof qc === "object" && "subjects" in qc && Array.isArray(qc.subjects)) qcSubjects = qc.subjects.filter((subject): subject is Record<string, unknown> => Boolean(subject) && typeof subject === "object");
           } catch { reportError = "自动 QC 报告暂时无法读取。计算产物仍可查看和下载，请重新加载详情或检查报告文件。"; }
         }
-        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, qcSubjects }); setError(reportError); }
+        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, qcSubjects }); setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" ")); }
       } catch (caught) {
         if (!controller.signal.aborted) setError(`运行详情暂时不可用：${describeError(caught)}`);
       }
@@ -130,9 +143,9 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     </div>}
     {current && current.qcSubjects.length > 0 && <div><h4>自动头动 QC</h4><p>自动测量不代表人工科学审查已通过。</p><table><thead><tr><th>受试者</th><th>最大平移（mm）</th><th>最大旋转（°）</th><th>平均 FD（mm）</th><th>自动检查</th></tr></thead><tbody>{current.qcSubjects.map((subject, index) => <tr key={index}><td>{String(subject.subject_id ?? "—")}</td>{["max_translation_mm", "max_rotation_deg", "mean_fd_power"].map((key) => <td key={key}>{typeof subject[key] === "number" ? subject[key].toFixed(3) : "—"}</td>)}<td>{subject.passed === true ? "通过" : "需检查"}</td></tr>)}</tbody></table></div>}
     {run.state === "qc_review" && !review && <details><summary>生成头动 QC 审查</summary><p>阈值：平移 2 mm，旋转 2°，平均 FD 0.2 mm，FD &gt; 0.5 mm 比例 20%。请核对本项目要求后选择。</p><button type="button" disabled={busy} onClick={() => void action("qc")}>采用这些阈值生成审查</button></details>}
-    {review && <div><h4>QC 检查</h4><ul>{review.review.checks.map((check) => <li key={check.code}>{check.passed ? "通过" : "需处理"}：{check.message}</li>)}</ul><p>纳入 {review.review.included_subject_ids.length} 人，排除 {review.review.excluded_subject_ids.length} 人。</p>
+    {review && <div><h4>QC 检查</h4><ul>{review.review.checks.map((check) => <li key={check.code}>{check.passed ? "通过" : "需处理"}：{QC_CHECK_LABELS[check.code]?.[check.passed ? 0 : 1] ?? check.message}</li>)}</ul><p>纳入 {review.review.included_subject_ids.length} 人，排除 {review.review.excluded_subject_ids.length} 人。</p>
       {review.state === "draft" && run.state === "qc_review" && <button type="button" disabled={busy || review.review.checks.some((check) => !check.passed && check.severity === "blocking")} onClick={() => void action("approve")}>确认 QC 结论并批准</button>}
     </div>}
-    {current && <details><summary>方案与技术记录</summary><a download="approved-plan.json" href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(current.plan, null, 2))}`}>下载对应方案</a><ol>{events.filter((event) => event.event_type === "RunStageStarted" || event.event_type === "RunStageFinished").map((event) => <li key={event.event_id}>{new Date(event.created_at).toLocaleString("zh-CN")} · {event.event_type === "RunStageStarted" ? "开始" : "结束"} {PHASE_LABELS[String(event.payload.stage)] ?? String(event.payload.stage)}</li>)}</ol></details>}
+    {current && <details><summary>方案与技术记录</summary>{current.plan && <a download="approved-plan.json" href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(current.plan, null, 2))}`}>下载对应方案</a>}<ol>{events.filter((event) => event.event_type === "RunStageStarted" || event.event_type === "RunStageFinished").map((event) => <li key={event.event_id}>{new Date(event.created_at).toLocaleString("zh-CN")} · {event.event_type === "RunStageStarted" ? "开始" : "结束"} {PHASE_LABELS[String(event.payload.stage)] ?? String(event.payload.stage)}</li>)}</ol></details>}
   </section>;
 }

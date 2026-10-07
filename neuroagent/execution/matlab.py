@@ -363,7 +363,15 @@ class ControlledMatlabExecutor:
             _append_communicated_output(stdout_log, communicated_stdout)
             _append_communicated_output(stderr_log, communicated_stderr)
             stdout_log.flush()
-            publish_output()
+            # The process has exited: drain the known remaining bytes in bounded
+            # chunks, so a burst larger than one chunk cannot hide final phases.
+            if self._on_output is not None:
+                final_size = stdout_path.stat().st_size
+                while output_cursor < final_size:
+                    previous_cursor = output_cursor
+                    publish_output()
+                    if output_cursor == previous_cursor:
+                        break
 
         stdout = _read_bounded_log(stdout_path)
         stderr = _read_bounded_log(stderr_path)

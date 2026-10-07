@@ -42,13 +42,21 @@ from neuroagent.application.work_presentation import (
     constrained_patch,
     leaf_values,
     observed_facts,
+    pending_review_questions,
     set_value,
 )
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
+from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
+
+
+class WorkQuestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=400)
+    parameter_paths: tuple[str, ...] = Field(default=(), max_length=8)
 
 
 class WorkInterpretation(BaseModel):
@@ -69,7 +77,7 @@ class WorkInterpretation(BaseModel):
     stage_intent: str | None = Field(default=None, max_length=1000)
     stage_reasoning: str | None = Field(default=None, max_length=4000)
     stage_questions: tuple[str, ...] = ()
-    questions: tuple[str, ...] = Field(default=(), max_length=5)
+    questions: tuple[WorkQuestion | str, ...] = Field(default=(), max_length=5)
     recommendation_reason: str | None = Field(default=None, max_length=1000)
 
     @field_validator("action")
@@ -789,7 +797,8 @@ class WorkDialogue:
                     interpreted.draft_patch,
                     request.content,
                 )
-                facts = {**(saved or {}).get("facts", {}), **observed_facts(loop_metadata)}
+                with measure_work_stage("fact_derivation"):
+                    facts = {**(saved or {}).get("facts", {}), **observed_facts(loop_metadata)}
                 for path, value in facts.items():
                     if sources.get(path) != "user" and not isinstance(value, dict):
                         set_value(patch, path, value)
@@ -800,7 +809,8 @@ class WorkDialogue:
                         and sources.get(path) != "user"
                     ):
                         sources[path] = "system" if path.endswith("slice_order") else "data"
-                issues = review_issues(draft, facts)
+                with measure_work_stage("validation"):
+                    issues = review_issues(draft, facts)
                 review = render_draft_review(draft, sources)
                 snapshot = draft_snapshot(
                     draft,
@@ -813,11 +823,35 @@ class WorkDialogue:
                 payload["draft_issues"] = list(issues)
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
-                payload["questions"] = list(interpreted.questions)
-                if interpreted.questions:
-                    review += "\n\n需要你决定：\n" + "\n".join(
-                        f"- {question}" for question in interpreted.questions
+                questions = pending_review_questions(
+                    [
+                        question.model_dump() if isinstance(question, WorkQuestion) else question
+                        for question in interpreted.questions
+                    ],
+                    draft.model_dump(mode="json"),
+                    sources,
+                    facts,
+                )
+                payload["questions"] = questions
+                explanation = ""
+                reason = interpreted.recommendation_reason
+                if (
+                    reason
+                    and not blocked
+                    and not re.search(
+                        r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b", reason
                     )
+                ):
+                    explanation = "\n\n方案说明（模型建议）：" + reason[:240]
+                    payload["recommendation_reason"] = reason
+                if questions:
+                    explanation += (
+                        "\n\n"
+                        + ("需要你决定：" if issues else "审查时可调整：")
+                        + "\n"
+                        + "\n".join(f"- {question}" for question in questions)
+                    )
+                review += explanation
                 if (
                     not issues
                     and selected_stage
@@ -835,7 +869,11 @@ class WorkDialogue:
                             proposal=True,
                             snapshot=snapshot,
                         )
-                        return replace(result, payload={**payload, **result.payload})
+                        return replace(
+                            result,
+                            assistant_content=result.assistant_content + explanation,
+                            payload={**payload, **result.payload},
+                        )
 
                     return replace(reply(review, payload), commit=prepare_review)
                 if not issues and "confirmation_request" not in payload:

@@ -518,11 +518,13 @@ def test_controlled_executor_streams_large_output_to_bounded_local_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     work = prepared_work(tmp_path)
+    progress_chunks: list[str] = []
     executor = ControlledMatlabExecutor(
         MatlabTemplateRenderer(Path("matlab/templates")),
         executable_environment(tmp_path),
         work,
         allow_real_execution=True,
+        on_output=progress_chunks.append,
     )
 
     def file_stream_process(*args: Any, **kwargs: Any) -> FakeProcess:
@@ -538,6 +540,9 @@ def test_controlled_executor_streams_large_output_to_bounded_local_logs(
     result = executor.execute(job(), is_cancelled=lambda: False)
 
     assert result.status.value == "succeeded"
+    assert "".join(progress_chunks).endswith("stdout")
+    assert sum(len(chunk) for chunk in progress_chunks) == 1024 * 1024 + 4096 + len("stdout")
+    assert all(len(chunk) <= 64 * 1024 for chunk in progress_chunks)
     assert result.stdout.startswith("[output truncated")
     assert result.stdout.endswith("stdout")
     assert result.stderr == "synthetic warning"

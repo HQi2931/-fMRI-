@@ -57,6 +57,7 @@ from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.memory.models import MemoryCandidateDraft
+from neuroagent.observability.work_timings import capture_work_timings
 
 
 class ConversationMixin(BaseServiceMixin):
@@ -523,6 +524,11 @@ class ConversationMixin(BaseServiceMixin):
             active_run_id = action_result.active_run_id
             payload = action_result.payload
             payload["context"] = context_metadata
+            timings.add("prepare_total", timings.clock() - request_started)
+            payload["work_timings"] = {
+                "stages": timings.snapshot(),
+                "note": "各阶段可能包含子步骤，耗时不可直接相加；未出现的阶段本轮未测量。",
+            }
 
             stored, user_message, assistant_message, stored_tool = (
                 self.repository.append_conversation_exchange(
@@ -568,15 +574,17 @@ class ConversationMixin(BaseServiceMixin):
                 tool_calls=_turn_loop_steps(stored, user_message),
             )
 
-        return await self._idempotent_async(
-            scope=f"conversations:{conversation_id}:"
-            + ("work-confirmation" if _confirmation is not None else "turns"),
-            key=idempotency_key,
-            request=_confirmation if _confirmation is not None else request,
-            response_type=ConversationTurnView,
-            prepare=prepare,
-            finalize=finalize,
-        )
+        with capture_work_timings() as timings:
+            request_started = timings.clock()
+            return await self._idempotent_async(
+                scope=f"conversations:{conversation_id}:"
+                + ("work-confirmation" if _confirmation is not None else "turns"),
+                key=idempotency_key,
+                request=_confirmation if _confirmation is not None else request,
+                response_type=ConversationTurnView,
+                prepare=prepare,
+                finalize=finalize,
+            )
 
     async def _send_chat_turn(
         self,

@@ -28,6 +28,7 @@ from neuroagent.agent.models import (
 from neuroagent.agent.tool_result import ToolCallOutcome, ToolCallStatus
 from neuroagent.agent.tool_spec import LlmTool
 from neuroagent.context.engine import RegexTokenCounter
+from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,12 @@ class AgentLoop:
                         working,
                         provider_model,
                     )
-                outcome = await _dispatch_with_optional_timeout(self._dispatcher, call, remaining)
+                with measure_work_stage(
+                    "file_tools" if "workspace_content" in call.name else "other_tools"
+                ):
+                    outcome = await _dispatch_with_optional_timeout(
+                        self._dispatcher, call, remaining
+                    )
                 outcomes.append(outcome)
                 working.append(_tool_message(outcome))
                 if self._emit is not None:

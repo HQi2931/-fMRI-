@@ -23,6 +23,7 @@ from neuroagent.domain.fmri.dpabi_stages import (
     stage_rule,
 )
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
+from neuroagent.observability.work_timings import measure_work_stage
 from neuroagent.skills.compiler import SkillCompileError
 from neuroagent.skills.models import (
     IssueSeverity,
@@ -359,7 +360,8 @@ class SkillPlanMixin(BaseServiceMixin):
             skill_request = self._materialize_skill_request(request.request, manifest)
             environment = self.environment_provider.current().snapshot
             resolution = self.skill_resolver.resolve(skill_request, environment)
-            report = self.skill_validator.validate_resolution(resolution)
+            with measure_work_stage("validation"):
+                report = self.skill_validator.validate_resolution(resolution)
             if report.has_blockers:
                 raise InputValidationError(
                     "skill_plan_blocked",
@@ -367,7 +369,8 @@ class SkillPlanMixin(BaseServiceMixin):
                     issues=[issue.model_dump(mode="json") for issue in report.issues],
                 )
             try:
-                skill_plan = self.skill_compiler.compile(resolution)
+                with measure_work_stage("compilation"):
+                    skill_plan = self.skill_compiler.compile(resolution)
             except SkillCompileError as exc:
                 raise InputValidationError(
                     "skill_compile_failed", "Skill 方案编译失败。", reason=str(exc)

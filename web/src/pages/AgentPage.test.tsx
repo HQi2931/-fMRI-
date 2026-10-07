@@ -108,6 +108,7 @@ type Options = {
   turn?: (init?: RequestInit) => Promise<Response>;
   draftPatch?: (init?: RequestInit) => Promise<Response>;
   confirmation?: (init?: RequestInit) => Promise<Response>;
+  conversation?: () => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -132,6 +133,7 @@ function installFetch(options: Options = {}) {
     }
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();
+    if (path.endsWith("/conversations/work-1")) return options.conversation?.() ?? notFound();
     if (path.endsWith("/turns")) {
       if (options.turn) return options.turn(init);
       const current = conversation({
@@ -148,7 +150,8 @@ function installFetch(options: Options = {}) {
       });
     }
     if (path.includes("/runs/") && (path.endsWith("/artifacts") || path.endsWith("/events"))) return json([]);
-    if (path.includes("/plans/")) return json({});
+    if (path.includes("/runs/") && path.endsWith("/qc-review")) return json(null);
+    if (path.includes("/plans/") || path.includes("/plan-revisions/")) return json({});
     if (path.includes("/runs/")) return (options.run ?? (() => json({})))();
     return notFound();
   });
@@ -175,6 +178,9 @@ describe("agent workbench page", () => {
     });
     render(<AgentPage />);
     await screen.findByText("FunImg · 已确认");
+    await userEvent.click(screen.getByText("预处理起点"));
+    expect(screen.getByRole("button", { name: "起点已确认" })).toBeDisabled();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   });
 
   it("opens mobile review only on request and retains unsaved edits after closing", async () => {
@@ -284,6 +290,23 @@ describe("agent workbench page", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("recovers a saved confirmation after response loss with one read and no second execution request", async () => {
+    const command = "确认方案参数 recover-command";
+    const draft = { hash: "d".repeat(64), draft: { requested_metrics: ["alff"], preprocessing: { tr_seconds: 2 } }, compiled: false };
+    const confirm = vi.fn(() => Promise.reject(new TypeError("response lost")));
+    const recover = vi.fn(() => json(conversation({ messages: [message("u2", "user", command), message("a2", "assistant", "已恢复保存的确认结果")] })));
+    installFetch({ conversations: () => json([conversation({ messages: [message("a1", "assistant", "准备审查", { work_draft: draft, confirmation_request: { title: "确认方案", summary: "审查当前方案", options: [{ label: "确认当前方案", description: "记录审查", command }] } })] })]), confirmation: confirm, conversation: recover });
+    render(<AgentPage />);
+    const plan = await screen.findByRole("complementary", { name: "当前方案审查" });
+    await userEvent.click(within(plan).getByRole("button", { name: "确认当前方案" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认当前方案" }));
+    expect(await screen.findByText("已恢复保存的确认结果")).toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(recover).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/回答未完成/)).not.toBeInTheDocument();
+  });
+
   it("reconnects an interrupted run observation and restores results without starting another computation", async () => {
     const run = vi.fn()
       .mockRejectedValueOnce(new TypeError("暂时断网"))
@@ -312,6 +335,15 @@ describe("agent workbench page", () => {
     await user.selectOptions(screen.getByLabelText("模型"), "deepseek:deepseek-reasoner");
 
     expect(screen.getByLabelText("模型")).toHaveValue("deepseek:deepseek-reasoner");
+  });
+
+  it("restores the selected model when reopening without granting file authorization", async () => {
+    installFetch({ profiles: () => json([profile("deepseek", ["json_object", "tool_use"])]) });
+    window.sessionStorage.setItem("rsfmri-agent-model-v1", "deepseek:deepseek-reasoner");
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "api.deepseek.com · deepseek-reasoner" });
+    expect(screen.getByLabelText("模型")).toHaveValue("deepseek:deepseek-reasoner");
+    expect(vi.mocked(globalThis.fetch).mock.calls.filter(([input, init]) => pathOf(input).endsWith("/workspace/consents") && init?.method === "POST")).toHaveLength(0);
   });
 
   it("falls back to the configured model when the provider cannot be reached", async () => {

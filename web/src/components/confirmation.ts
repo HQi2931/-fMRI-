@@ -11,3 +11,22 @@ export function readConfirmation(value: unknown): ConfirmationRequest | null {
     && typeof option.description === "string" && typeof option.command === "string" && option.command.trim())) return null;
   return request as ConfirmationRequest;
 }
+
+type ConfirmationMessage = { message_id: string; role: string; payload: Record<string, unknown> };
+export function currentConfirmation(messages: ConfirmationMessage[], workspacePath: string | null | undefined) {
+  const draftMessages = [...messages].reverse().filter((message) => message.payload.work_draft && typeof message.payload.work_draft === "object");
+  const draft = draftMessages[0]?.payload.work_draft as { hash?: unknown; consumed?: unknown; compiled?: unknown; workspace_path?: unknown } | undefined;
+  if (draft?.consumed === true) return null;
+  if (typeof draft?.workspace_path === "string" && draft.workspace_path !== workspacePath) return null;
+  for (const [index, message] of [...messages].reverse().entries()) {
+    if (message.role !== "assistant") continue;
+    const request = readConfirmation(message.payload.confirmation_request);
+    if (!request) continue;
+    const offered = message.payload.work_draft as { hash?: unknown; compiled?: unknown } | undefined;
+    if (index > 0 && (!draft || !offered || offered.hash !== draft.hash)) continue;
+    if (offered && draft && offered.hash !== draft.hash) continue;
+    if (offered?.compiled === true && draft?.compiled !== true) continue;
+    return { request, messageId: message.message_id };
+  }
+  return null;
+}

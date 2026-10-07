@@ -566,6 +566,8 @@ export const api = {
     post<QcReview>("/qc-reviews", body, signal),
   qcReview: (reviewId: string, signal?: AbortSignal) =>
     request<QcReview>(`/qc-reviews/${reviewId}`, { signal }),
+  runQcReview: (runId: string, signal?: AbortSignal) =>
+    request<QcReview | null>(`/runs/${encodeURIComponent(runId)}/qc-review`, { signal }),
   approveQcReview: (
     reviewId: string,
     body: Schemas["QcReviewApprove"],

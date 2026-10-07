@@ -39,3 +39,20 @@ def test_observed_spm25_spacing_and_old_segment_messages():
         ("segmentation", "started"),
         ("segmentation", "finished"),
     ]
+
+
+def test_observed_legacy_normalization_and_metric_calculation_messages():
+    events = []
+    observer = MatlabProgressObserver(lambda phase, state: events.append((phase, state)))
+    observer.feed(
+        "07-Oct-2026 00:39:20 - Running 'Old Normalise: Write'\n"
+        "07-Oct-2026 00:41:03 - Done    'Old Normalise: Write'\n"
+        "Computing ALFF...\n"
+        "\t ALFF and fALFF compution over, elapsed time: 1.79688 seconds.\n"
+    )
+    assert events == [
+        ("normalization", "started"),
+        ("normalization", "finished"),
+        ("metric_calculation", "started"),
+        ("metric_calculation", "finished"),
+    ]

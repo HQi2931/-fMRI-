@@ -13,6 +13,7 @@ _SPM_PHASES = {
     "Old Segment": "segmentation",
     "Normalise: Estimate & Write": "normalization",
     "Normalise: Write": "normalization",
+    "Old Normalise: Write": "normalization",
     "Smooth": "smoothing",
 }
 
@@ -35,4 +36,10 @@ class MatlabProgressObserver:
                 self.publish("nuisance", "started")
             elif line.strip() == "Regressing Out Covariates finished.":
                 self.publish("nuisance", "finished")
+            elif line.strip() == "Computing ALFF...":
+                self.publish("metric_calculation", "started")
+            elif re.fullmatch(
+                r"ALFF and fALFF compution over, elapsed time: [0-9.]+ seconds\.", line.strip()
+            ):
+                self.publish("metric_calculation", "finished")
         self.buffer = self.buffer[-4096:]

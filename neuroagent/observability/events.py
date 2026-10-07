@@ -65,6 +65,40 @@ _CREDENTIAL = re.compile(
     r"\b(?:api[_ -]?key|secret|token|password)\s*[:=]\s*\S{12,})",
     re.IGNORECASE,
 )
+_SYSTEM_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+_SYSTEM_HASH = re.compile(r"[0-9a-f]{64}", re.IGNORECASE)
+_SYSTEM_REFERENCE_KEYS = frozenset(
+    {
+        "project_id",
+        "run_id",
+        "job_id",
+        "artifact_id",
+        "plan_revision_id",
+        "review_revision_id",
+        "approval_record_id",
+        "conversation_id",
+        "message_id",
+        "dataset_id",
+        "manifest_id",
+        "confirmation_id",
+        "design_id",
+        "profile_id",
+    }
+)
+_SYSTEM_HASH_KEYS = frozenset(
+    {
+        "plan_hash",
+        "review_hash",
+        "manifest_hash",
+        "input_manifest_hash",
+        "job_hash",
+        "environment_hash",
+        "design_hash",
+        "content_hash",
+        "parameters_hash",
+        "proposal_hash",
+    }
+)
 
 
 def redact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -78,10 +112,7 @@ def redact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     def redact(value: Any) -> Any:
         if isinstance(value, dict):
-            return {
-                key: "[REDACTED]" if sensitive_key(key) else redact(nested)
-                for key, nested in value.items()
-            }
+            return {key: redact_field(key, nested) for key, nested in value.items()}
         if isinstance(value, list):
             return [redact(item) for item in value]
         if isinstance(value, tuple):
@@ -95,6 +126,17 @@ def redact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return _SUBJECT_TOKEN.sub("[REDACTED-SUBJECT]", cleaned)
         return value
 
-    return {
-        key: "[REDACTED]" if sensitive_key(key) else redact(value) for key, value in payload.items()
-    }
+    def redact_field(key: str, value: Any) -> Any:
+        if sensitive_key(key):
+            return "[REDACTED]"
+        normalized = key.lower()
+        # Only complete, typed system references bypass free-text phone matching.
+        # Identity/credential keys above always take precedence.
+        if isinstance(value, str) and (
+            (normalized in _SYSTEM_REFERENCE_KEYS and _SYSTEM_UUID.fullmatch(value))
+            or (normalized in _SYSTEM_HASH_KEYS and _SYSTEM_HASH.fullmatch(value))
+        ):
+            return value
+        return redact(value)
+
+    return {key: redact_field(key, value) for key, value in payload.items()}

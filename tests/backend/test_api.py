@@ -927,6 +927,13 @@ def test_sse_returns_persisted_run_events_and_supports_resume_cursor(
     )
     build_worker(service, worker_id="sse-worker").run_once()
     with TestClient(create_app(service=service)) as client:
+        review = client.get(f"/api/v1/runs/{run.run_id}/qc-review")
+        assert review.status_code == 200
+        expected_review = service.repository.get_latest_qc_review_for_run(run.run_id)
+        assert review.json() == (
+            expected_review.model_dump(mode="json") if expected_review else None
+        )
+        assert client.get("/api/v1/runs/not-found/qc-review").status_code == 404
         response = client.get(f"/api/v1/runs/{run.run_id}/events?once=true")
         assert response.status_code == 200
         assert "event: RunQueued" in response.text

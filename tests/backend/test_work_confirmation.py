@@ -126,6 +126,9 @@ def test_direct_confirmation_queues_once_and_recovers_response_after_later_edit(
     assert replay.status_code == 200, replay.json().get("error")
     assert replay.json() == first.json()
     assert len(service.repository.list_runs()) == 1
+    measurements = first.json()["assistant_message"]["payload"]["work_timings"]["stages"]
+    assert "queueing" in {item["stage"] for item in measurements}
+    assert "model_response" not in {item["stage"] for item in measurements}
     model.assert_not_called()
 
 

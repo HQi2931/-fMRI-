@@ -9,6 +9,7 @@ from neuroagent.application.work_presentation import (
     constrained_patch,
     explicit_user_patch,
     observed_facts,
+    pending_review_questions,
     semantic_patch,
 )
 
@@ -121,6 +122,78 @@ def test_differing_acquisitions_are_not_collapsed_to_the_last_header():
     assert any("读取的输入存在不同值" in issue for issue in review_issues(draft, facts))
     snapshot = draft_snapshot(draft, workspace_path=None, sources={}, facts=facts)
     assert snapshot["field_states"]["preprocessing.tr_seconds"] == "conflict"
+
+
+def test_anatomical_sidecar_tr_does_not_contaminate_functional_facts():
+    def read(path, content):
+        return {
+            "tool_name": "read_workspace_content",
+            "status": "succeeded",
+            "output": {"format": "json", "path": path, "content": json.dumps(content)},
+        }
+
+    facts = observed_facts(
+        {
+            "calls": [
+                read("T1Img/anon/anat.json", {"RepetitionTime": 0.008}),
+                read("FunImg/anon/rest.json", {"RepetitionTime": 2}),
+                read("FunImg/anon/invalid.json", {"RepetitionTime": True}),
+                read("FunImg/anon/invalid2.json", {"RepetitionTime": float("nan")}),
+            ]
+        }
+    )
+    assert facts == {"preprocessing.tr_seconds": 2}
+
+
+def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices():
+    values = {
+        "preprocessing": {"tr_seconds": 2, "dummy_scans": 0},
+        "alff_falff": {"result_smoothing_fwhm_mm": [4, 4, 4]},
+    }
+    questions = [
+        {"text": "TR 使用 2 秒吗？", "parameter_paths": ["preprocessing.tr_seconds"]},
+        "结果图需要平滑为 4 mm 吗？",
+        {"text": "删除初始时间点吗？", "parameter_paths": ["preprocessing.dummy_scans"]},
+        {"text": "采用哪个掩膜？", "parameter_paths": ["alff_falff.mask_source"]},
+        "采用哪个掩膜？",
+    ]
+    assert pending_review_questions(
+        questions,
+        values,
+        {"alff_falff.result_smoothing_fwhm_mm": "user", "preprocessing.dummy_scans": "user"},
+        {"preprocessing.tr_seconds": 2},
+    ) == ["采用哪个掩膜？"]
+
+
+def test_complete_protocol_explicit_choices_are_protected_from_later_model_replacement():
+    text = (
+        "只计算 ALFF，保留全部234个时间点，采用 T1 Segment 标准化到 MNI 3 mm。"
+        "已有 T1 是裁剪好的结构像，直接使用并配准到功能像，仿射正则化采用 MNI。"
+        "标准化功能像，范围为[-90,-126,-72]至[90,90,108]；标准化后做 Friston-24、"
+        "白质和脑脊液均值回归。组织掩膜来自本次 Segment、阈值均0.9，包含一次线性趋势、"
+        "加回均值，不做全局信号回归，不把掩膜再变回个体空间，不剔除时间点，不另做线性去趋势。"
+        "计算前不带通滤波、不空间平滑，结果图平滑4 mm，使用 DPABI 自动掩膜，生成头动 QC。"
+        "输出原始 ALFF、全脑均值归一化和 z 标准化结果。"
+    )
+    patch, sources, _ = constrained_patch({}, {}, {}, text)
+    assert patch["preprocessing"]["dummy_scans"] == 0
+    assert patch["preprocessing"]["normalization"]["voxel_size_mm"] == [3, 3, 3]
+    assert patch["preprocessing"]["normalization"]["bounding_box_mm"] == [
+        [-90, -126, -72],
+        [90, 90, 108],
+    ]
+    assert patch["preprocessing"]["nuisance"]["white_matter"]["mask_threshold"] == 0.9
+    assert patch["qc_mode"] == "head_motion"
+    assert patch["alff_falff"]["requested_scalings"] == ["raw", "global_mean", "z_score"]
+    retained, _, blocked = constrained_patch(
+        patch,
+        sources,
+        {"qc_mode": "skip", "preprocessing": {"normalization": {"voxel_size_mm": [6, 6, 6]}}},
+        "解释当前方案",
+    )
+    assert retained["qc_mode"] == "head_motion"
+    assert retained["preprocessing"]["normalization"]["voxel_size_mm"] == [3, 3, 3]
+    assert set(blocked) == {"qc_mode", "preprocessing.normalization.voxel_size_mm"}
 
 
 def test_reho_only_smoothing_change_does_not_create_an_alff_branch():

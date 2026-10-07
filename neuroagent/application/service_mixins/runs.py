@@ -60,6 +60,7 @@ from neuroagent.domain.fmri.statistics import (
     StatisticalQcSource,
     StatisticalTest,
 )
+from neuroagent.observability.work_timings import measure_work_stage
 
 
 class RunMixin(BaseServiceMixin):
@@ -123,13 +124,14 @@ class RunMixin(BaseServiceMixin):
                 payload["approval_record_id"] = self.repository.get_approved_plan_approval(
                     plan.plan_revision_id
                 ).approval_id
-            result = self.repository.create_run(
-                project_id=request.project_id,
-                plan_revision_id=request.plan_revision_id,
-                expected_plan_hash=request.expected_plan_hash,
-                max_attempts=request.max_attempts,
-                payload=payload,
-            )
+            with measure_work_stage("queueing"):
+                result = self.repository.create_run(
+                    project_id=request.project_id,
+                    plan_revision_id=request.plan_revision_id,
+                    expected_plan_hash=request.expected_plan_hash,
+                    max_attempts=request.max_attempts,
+                    payload=payload,
+                )
             self.repository.append_event(
                 project_id=result.project_id,
                 run_id=result.run_id,
@@ -835,6 +837,10 @@ class RunMixin(BaseServiceMixin):
 
     def get_qc_review(self, review_revision_id: str) -> QcReviewView:
         return self.repository.get_qc_review(review_revision_id)
+
+    def get_run_qc_review(self, run_id: str) -> QcReviewView | None:
+        self.repository.get_run(run_id)
+        return self.repository.get_latest_qc_review_for_run(run_id)
 
     def approve_qc_review(
         self,

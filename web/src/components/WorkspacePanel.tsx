@@ -51,12 +51,14 @@ export function WorkspacePanel(props: Props) {
         </summary>
         <fieldset className="work-stage-options" disabled={props.busy}>
           <legend className="sr-only">DPABI 预处理起始阶段</legend>
-          {candidates.map((item) => <label className={`work-stage-option${props.selectedStage === item.stage ? " is-selected" : ""}${!item.selectable ? " is-unavailable" : ""}`} key={item.stage}>
-            <input type="radio" name="workspace-input-stage" value={item.stage} checked={props.selectedStage === item.stage} disabled={!item.selectable} onChange={() => props.onStageChange(item.stage)} />
+          {candidates.map((item) => { const Container = candidates.length === 1 ? "div" : "label"; return <Container className={`work-stage-option${props.selectedStage === item.stage ? " is-selected" : ""}${!item.selectable ? " is-unavailable" : ""}`} key={item.stage}>
+            {candidates.length === 1
+              ? <button type="button" disabled={props.busy || !item.selectable || props.selectedStage === item.stage} onClick={() => props.onStageChange(item.stage)}>{props.selectedStage === item.stage ? props.stageConfirmed ? "起点已确认" : "已选择，待确认" : `选择 ${item.stage}`}</button>
+              : <input type="radio" name="workspace-input-stage" value={item.stage} checked={props.selectedStage === item.stage} disabled={!item.selectable} onChange={() => props.onStageChange(item.stage)} />}
             <span className="work-stage-description"><strong>{item.stage}</strong><span>{item.label}</span><small>{item.subject_count} 个受试者 · {item.file_count} 个文件</small>{item.issues.length > 0 && <small className="work-stage-issue">{item.issues.join("；")}</small>}</span>
-          </label>)}
+          </Container>; })}
         </fieldset>
-        <div className="work-stage-help"><p>可以先告诉助手已完成哪些处理，由模型建议起点。选择后，请在对话中确认起始阶段。</p>{props.selectedStage && <button className="work-folder-link" type="button" disabled={props.busy} onClick={() => props.onStageChange("")}>清除选择</button>}</div>
+        <div className="work-stage-help"><p>可以先告诉助手已完成哪些处理，由模型建议起点。选择后，使用方案中的确认入口核对起始阶段。</p>{props.selectedStage && <button className="work-folder-link" type="button" disabled={props.busy} onClick={() => props.onStageChange("")}>清除选择</button>}</div>
       </details>}
       <div className="work-folder-access">
         <span><span className={`work-access-dot${props.consentGranted ? " is-granted" : ""}`} aria-hidden="true" />{props.consentGranted ? "文件分析已授权" : "文件分析未授权"}<small>{props.consentGranted ? "授权绑定当前工作区、模型和配置" : props.canAuthorize ? "授权时会先发送不含文件内容的工具测试" : props.authorizationUnavailableReason}</small></span>

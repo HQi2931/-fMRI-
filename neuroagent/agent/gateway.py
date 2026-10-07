@@ -24,6 +24,7 @@ from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import SecretResolver
 from neuroagent.agent.streaming import current_answer_stream
 from neuroagent.agent.tool_spec import LlmTool
+from neuroagent.observability.work_timings import measure_work_stage
 
 
 class ModelGatewayError(RuntimeError):
@@ -103,7 +104,8 @@ _WORK_SYSTEM_PROMPT = (
     + " 之一），draft_patch（对象，默认空），workspace_citations（数组，默认空），"
     "workspace_edits（数组，默认空），recommended_input_stage（字符串或 null），"
     "stage_intent（字符串或 null），stage_reasoning（字符串或 null），"
-    "stage_questions（字符串数组，默认空），questions（最多五个简短中文待决定问题，默认空），"
+    "stage_questions（字符串数组，默认空），questions（最多五个待决定问题，默认空；"
+    "推荐使用对象{text:简短中文问题,parameter_paths:相关草稿参数路径数组}），"
     "recommendation_reason（简短中文推荐理由或 null）。"
     "规划时将需要用户回答的问题放入 questions，不只藏在 answer。"
     "已经明确的指标与参数不要重复询问，数据事实由文件证据核实，不询问是否接受真实数值。"
@@ -528,13 +530,15 @@ class ModelGateway:
             await observer.reset()
             stream = getattr(provider, "generate_stream", None)
             if stream is not None and ModelCapability.STREAMING in profile.capabilities:
-                response: ProviderResponse = await stream(
-                    profile, api_key, messages, on_text=observer.text, **options
-                )
+                with measure_work_stage("model_response"):
+                    response: ProviderResponse = await stream(
+                        profile, api_key, messages, on_text=observer.text, **options
+                    )
                 if response.tool_calls:
                     await observer.reset()
                 return response
-        response = await provider.generate(profile, api_key, messages, **options)  # type: ignore[arg-type]
+        with measure_work_stage("model_response"):
+            response = await provider.generate(profile, api_key, messages, **options)  # type: ignore[arg-type]
         if observer is not None and not response.tool_calls:
             await observer.text(response.content)
         return response

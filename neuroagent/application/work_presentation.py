@@ -56,6 +56,9 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
     patch: dict[str, Any] = {}
     if re.search(r"什么|为什么|区别|是否|可否", text) and not re.search(r"改为|改成|设为", text):
         return patch
+    metric_section = (
+        "reho" if metrics == ["reho"] and not re.search(r"\bALFF\b", text, re.I) else "alff_falff"
+    )
     for expression, path, integer in (
         (
             r"\bTR\s*(?:是|为|改为|改成|设为|=|：|:)?\s*(\d+(?:\.\d+)?)",
@@ -86,6 +89,36 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
         match = re.search(expression, text, re.I)
         if match:
             set_value(patch, path, int(match[1]) if integer else float(match[1]))
+    if re.search(r"保留全部\s*\d+\s*(?:个)?时间点|不(?:删除|移除)初始时间点", text):
+        set_value(patch, "preprocessing.dummy_scans", 0)
+    voxel = re.search(
+        r"MNI\s*(\d+(?:\.\d+)?)\s*mm|(?:体素(?:大小)?(?:为|是)?\s*)(\d+(?:\.\d+)?)\s*mm|(\d+(?:\.\d+)?)\s*(?:mm|毫米)体素",
+        text,
+        re.I,
+    )
+    if voxel:
+        value = float(next(item for item in voxel.groups() if item is not None))
+        set_value(patch, "preprocessing.normalization.voxel_size_mm", [value] * 3)
+    bounds = re.search(r"范围(?:为|是)?\s*\[([^\]]+)\]\s*(?:至|到)\s*\[([^\]]+)\]", text)
+    if bounds:
+        try:
+            box = [
+                [float(value.strip()) for value in group.split(",")] for group in bounds.groups()
+            ]
+            if all(len(row) == 3 for row in box):
+                set_value(patch, "preprocessing.normalization.bounding_box_mm", box)
+        except ValueError:
+            pass
+    if re.search(
+        r"T1.{0,30}(?:直接使用|直接用|使用已准备)|(?:直接使用|使用已准备).{0,10}T1", text, re.I
+    ):
+        set_value(patch, "preprocessing.t1.preparation", "prepared")
+    if re.search(r"(?:配准到功能像|T1\s*与功能像配准)", text, re.I):
+        set_value(patch, "preprocessing.t1.coregister_to_functional", True)
+    if re.search(r"标准化功能像|标准化功能时序|功能像标准化", text):
+        set_value(patch, "preprocessing.normalization.timing", "on_functional_data")
+    if re.search(r"(?:仿射正则化|仿射正则).{0,10}MNI", text, re.I):
+        set_value(patch, "preprocessing.t1.affine_regularization", "mni")
     if re.search(
         r"(?:使用|采用|用|选择|标准化.{0,8})\s*(?:T1\s*)?Segment\b", text, re.I
     ) and not re.search(
@@ -110,8 +143,23 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
                 "method": None,
             },
         )
-    if re.search(r"(?:去噪|回归).{0,40}线性趋势", text):
+    if re.search(r"(?:去噪|回归).{0,40}线性趋势|包含一次线性趋势", text):
         set_value(patch, "preprocessing.nuisance.polynomial_trend", 1)
+    if re.search(r"标准化后.{0,18}(?:回归|Friston)", text, re.I):
+        set_value(patch, "preprocessing.nuisance.enabled", True)
+        set_value(patch, "preprocessing.nuisance.timing", "after_normalize")
+    if re.search(r"不(?:另)?做线性去趋势|不(?:另外)?去趋势", text):
+        set_value(patch, "preprocessing.detrend", False)
+    if re.search(r"不剔除时间点|不做\s*scrubbing", text, re.I):
+        set_value(patch, "preprocessing.scrubbing.enabled", False)
+    if re.search(r"不把掩膜.{0,12}个体空间|不将掩膜.{0,12}个体空间", text):
+        set_value(patch, "preprocessing.nuisance.warp_masks_to_individual_space", False)
+    if (
+        re.search(r"加回均值", text)
+        and re.search(r"去噪|回归", text)
+        and not re.search(r"不加回均值", text)
+    ):
+        set_value(patch, "preprocessing.nuisance.add_mean_back", True)
     for expression, tissue in (
         (r"(?:白质|WM).{0,12}均值回归", "white_matter"),
         (r"(?:脑脊液|CSF).{0,8}均值回归", "csf"),
@@ -119,6 +167,38 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
         if re.search(expression, text, re.I):
             set_value(patch, f"preprocessing.nuisance.{tissue}.enabled", True)
             set_value(patch, f"preprocessing.nuisance.{tissue}.method", "mean")
+    if re.search(r"组织掩膜.{0,12}(?:来自|使用).{0,8}Segment", text, re.I):
+        for tissue in ("white_matter", "csf"):
+            set_value(patch, f"preprocessing.nuisance.{tissue}.mask_source", "segment")
+    threshold = re.search(
+        r"(?:组织掩膜|白质和脑脊液|WM.{0,3}CSF).{0,30}阈值(?:均|都|为)?\s*(\d+(?:\.\d+)?)",
+        text,
+        re.I,
+    )
+    if threshold:
+        for tissue in ("white_matter", "csf"):
+            set_value(patch, f"preprocessing.nuisance.{tissue}.mask_threshold", float(threshold[1]))
+    if re.search(r"(?:使用|用|采用)\s*DPABI\s*自动掩膜", text, re.I):
+        set_value(patch, f"{metric_section}.mask_source", "dpabi_auto")
+        set_value(patch, f"{metric_section}.mask_artifact_id", None)
+    if re.search(r"(?:做|生成|进行)头动\s*QC", text, re.I) and not re.search(
+        r"不(?:做|生成|进行)头动\s*QC", text, re.I
+    ):
+        set_value(patch, "qc_mode", "head_motion")
+    if re.search(r"(?:明确)?跳过(?:头动)?\s*QC", text, re.I):
+        set_value(patch, "qc_mode", "skip")
+    if metric_section == "alff_falff":
+        if re.search(r"计算前不(?:带通)?滤波|不另(?:做|行)?(?:带通)?滤波", text):
+            set_value(patch, "preprocessing.temporal_filter.timing", "disabled")
+            set_value(patch, "alff_falff.filter_timing", "disabled")
+        if re.search(r"计算前不.{0,12}空间平滑|计算前不滤波不平滑", text):
+            set_value(patch, "preprocessing.smoothing.timing", "disabled")
+    if (
+        re.search(r"输出.*原始", text)
+        and re.search(r"均值归一化", text)
+        and re.search(r"z\s*标准化", text, re.I)
+    ):
+        set_value(patch, f"{metric_section}.requested_scalings", ["raw", "global_mean", "z_score"])
     band = re.search(
         r"(?:ALFF\s*)?频段\s*(\d+(?:\.\d+)?)\s*[-–—~至]\s*(\d+(?:\.\d+)?)\s*Hz", text, re.I
     )
@@ -178,6 +258,7 @@ def constrained_patch(
         change["global_result_smoothing_fwhm_mm"] = change.pop("smooth_reho_fwhm_mm")
     old_values = leaf_values(old)
     user_values = leaf_values(user)
+    proposed_values = leaf_values(patch)
     blocked: list[str] = []
     # Restore the entire protected leaf even if the model replaces its parent
     # with null. Only a direct user choice or the parameter editor can unlock it.
@@ -196,6 +277,9 @@ def constrained_patch(
             continue
         if leaf_values(merged).get(path) != old_values[path]:
             set_value(patch, path, old_values[path])
+            blocked.append(path)
+    for path, value in user_values.items():
+        if path in proposed_values and proposed_values[path] != value and path not in blocked:
             blocked.append(path)
     merge(patch, user)
     updated_sources = dict(sources)
@@ -228,9 +312,22 @@ def observed_facts(metadata: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             if not isinstance(sidecar, dict):
                 continue
-            if isinstance(sidecar.get("RepetitionTime"), (int, float)):
-                values["preprocessing.tr_seconds"] = sidecar["RepetitionTime"]
             timings = sidecar.get("SliceTiming")
+            # Anatomical sidecars also contain RepetitionTime. Bind functional
+            # facts to slice metadata or the trusted functional-stage path.
+            functional = isinstance(timings, list) and bool(timings)
+            functional = functional or bool(
+                re.search(r"(?:^|/)(?:FunRaw|FunImg[A-Z]*|func)(?:/|$)", str(data.get("path", "")))
+            )
+            tr = sidecar.get("RepetitionTime")
+            if (
+                functional
+                and isinstance(tr, (int, float))
+                and not isinstance(tr, bool)
+                and math.isfinite(tr)
+                and tr > 0
+            ):
+                values["preprocessing.tr_seconds"] = tr
             if (
                 isinstance(timings, list)
                 and timings
@@ -271,6 +368,12 @@ def human_issue(issue: str) -> str:
         detail = "必须大于 0。"
     if "scientific parameter provenance" in detail:
         detail = "缺少可靠的参数来源。"
+    if "Field required" in detail:
+        detail = "尚未填写，请在方案中补充。"
+    if "Input should be None" in detail:
+        detail = "此参数所属步骤已停用，请清除不适用的值。"
+    if "Input should be a valid" in detail:
+        detail = "输入格式不符合要求，请检查参数类型与范围。"
     return f"{label}：{detail}" if detail else label
 
 
@@ -281,6 +384,39 @@ def draft_delta(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]
         for path in sorted(set(before) | set(after))
         if before.get(path) != after.get(path) and path != "confirmed_hash"
     ]
+
+
+def pending_review_questions(
+    questions: list[dict[str, Any] | str],
+    values: dict[str, Any],
+    sources: dict[str, str],
+    facts: dict[str, Any],
+) -> list[str]:
+    """Hide questions already settled by user choices or matching read evidence."""
+    leaves = leaf_values(values)
+    pending: list[str] = []
+    aliases = (
+        (r"\bTR\b|重复时间", "preprocessing.tr_seconds"),
+        (r"参考层", "preprocessing.slice_timing.reference_slice"),
+        (r"初始|删除|丢弃", "preprocessing.dummy_scans"),
+        (r"结果.*平滑|平滑.*结果", "alff_falff.result_smoothing_fwhm_mm"),
+        (r"全局信号|GSR", "preprocessing.nuisance.global_signal.enabled"),
+    )
+    for question in questions:
+        text = question if isinstance(question, str) else str(question.get("text", ""))
+        paths = [] if isinstance(question, str) else question.get("parameter_paths", [])
+        if not paths:
+            paths = [path for pattern, path in aliases if re.search(pattern, text, re.I)]
+        settled = bool(paths) and all(
+            path in leaves
+            and leaves[path] is not None
+            and (sources.get(path) == "user" or (path in facts and leaves[path] == facts[path]))
+            for path in paths
+        )
+        text = text.strip()
+        if not settled and text and text not in pending:
+            pending.append(text[:400])
+    return pending
 
 
 def complete_inactive_parameters(values: dict[str, Any]) -> dict[str, Any]:

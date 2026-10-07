@@ -26,6 +26,7 @@ from neuroagent.domain.fmri.dpabi_stages import (
     stage_rule,
 )
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.observability.work_timings import measure_work_stage
 
 NIFTI_SUFFIXES = (".nii", ".nii.gz")
 DICOM_SUFFIXES = (".dcm", ".ima")
@@ -41,7 +42,7 @@ PLAIN_INVENTORY_DIRECTORIES = frozenset(
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with measure_work_stage("hashing"), path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()

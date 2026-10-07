@@ -24,3 +24,24 @@ def test_event_payload_redacts_nested_keys_paths_and_clinical_free_text() -> Non
 def test_event_payload_rejects_credential_shaped_free_text_by_redaction() -> None:
     payload = redact_event_payload({"message": "token=abcdefghijklmnopqrstuv"})
     assert payload["message"] == "[REDACTED-SENSITIVE-TEXT]"
+
+
+def test_system_references_survive_phone_shaped_digits_but_identities_do_not() -> None:
+    identifier = "823ac579-a123-4567-890c-5791bfa49be4"
+    checksum = "a" * 20 + "12345678901" + "b" * 33
+    payload = redact_event_payload(
+        {
+            "review_revision_id": identifier,
+            "nested": {"review_hash": checksum},
+            "patient_id": identifier,
+            "subject_id": identifier,
+            "phone_id": "13812345678",
+            "review_revision_id_invalid": "13812345678",
+            "arbitrary_id": identifier,
+        }
+    )
+    assert payload["review_revision_id"] == identifier
+    assert payload["nested"]["review_hash"] == checksum
+    assert payload["patient_id"] == payload["subject_id"] == "[REDACTED]"
+    assert payload["phone_id"] == payload["review_revision_id_invalid"] == "[REDACTED-PHONE]"
+    assert payload["arbitrary_id"] != identifier
