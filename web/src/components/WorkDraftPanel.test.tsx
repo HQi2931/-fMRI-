@@ -10,6 +10,33 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it("withdraws saved metadata provenance from a locally edited summary and restores it on discard", () => {
+    render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { tr_seconds: 2 } }), sources: { "preprocessing.tr_seconds": "data" }, field_states: { "preprocessing.tr_seconds": "verified" } }} onSave={vi.fn()} />);
+    const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("TR").closest("li")!;
+    fireEvent.change(screen.getByLabelText("重复时间 TR（秒）"), { target: { value: "3" } });
+    expect(row).toHaveTextContent("来源：用户指定 · 状态：未保存");
+    expect(within(row).getByText("3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "放弃本地修改" }));
+    expect(row).toHaveTextContent("来源：数据读取 · 状态：已核实");
+    expect(within(row).getByText("2")).toBeInTheDocument();
+  });
+  it("marks a newly supplied required value as unsaved until server validation", () => {
+    render(<WorkDraftPanel snapshot={snapshot()} issues={["study_protocol_ref：尚未提供"]} onSave={vi.fn()} />);
+    const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("研究方案引用").closest("li")!;
+    fireEvent.change(screen.getByLabelText("研究方案引用（编译必填）"), { target: { value: "protocol-2026" } });
+    expect(row).toHaveTextContent("来源：用户指定 · 状态：未保存");
+    expect(screen.getByRole("button", { name: "确认并生成方案" })).toBeDisabled();
+  });
+  it("distinguishes a partial group edit from the original recommendations and validation", () => {
+    render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { nuisance: { enabled: true, head_motion_model: 1 } } }), sources: { "preprocessing.nuisance": "suggested" } }} issues={["preprocessing.nuisance.head_motion_model：与研究方案冲突"]} onSave={vi.fn()} />);
+    const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("协变量回归").closest("li")!;
+    expect(row).toHaveTextContent("来源：模型推荐 · 状态：存在冲突");
+    fireEvent.change(screen.getByLabelText("头动回归模型"), { target: { value: "4" } });
+    expect(row).toHaveTextContent("来源：用户修改（部分参数） · 状态：未保存");
+    expect(row).toHaveTextContent("Friston-24");
+    fireEvent.click(screen.getByRole("button", { name: "放弃本地修改" }));
+    expect(row).toHaveTextContent("来源：模型推荐 · 状态：存在冲突");
+  });
   it("preserves requested output names while translating known artifact identifiers", () => {
     render(<WorkDraftPanel snapshot={snapshot()} preview={{ outputs: ["raw_alff", "ALFF 标准化结果图", "头动质量报告"] }} onSave={vi.fn()} />);
     expect(screen.getByText("预期输出：原始 ALFF、ALFF 标准化结果图、头动质量报告")).toBeInTheDocument();

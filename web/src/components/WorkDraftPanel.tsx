@@ -174,10 +174,10 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
   }
   function summaryState(path: string): string {
     if (path.startsWith("alff_falff.") && !draft.alff_falff) return "不适用";
+    if (edited.some((item) => item === path || item.startsWith(path + ".") || path.startsWith(item + "."))) return "未保存";
     const matchingIssues = issues.filter((item) => item.startsWith(path + "：") || item.startsWith(path + ":") || item.startsWith(path + "."));
     const validationState = issueState(matchingIssues);
     if (validationState) return validationState;
-    if (edited.some((item) => item === path || item.startsWith(path + ".") || path.startsWith(item + "."))) return "未保存";
     if (get(draft, path) === undefined || get(draft, path) === null) return "待选择";
     const direct = inheritedFieldValue(snapshot.field_states, path);
     if (direct) return reviewLabel(direct);
@@ -188,6 +188,8 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
     return "待审查";
   }
   function summarySource(path: string): string {
+    if (edited.some((item) => item === path || path.startsWith(item + "."))) return "用户指定";
+    if (edited.some((item) => item.startsWith(path + "."))) return "用户修改（部分参数）";
     const direct = inheritedFieldValue(snapshot.sources, path);
     if (direct) return sourceLabel(direct);
     const descendants = Object.entries(snapshot.sources ?? {}).filter(([key]) => key.startsWith(path + ".")).map(([, value]) => sourceLabel(value));
