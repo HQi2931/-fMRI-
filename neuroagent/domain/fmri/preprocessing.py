@@ -127,6 +127,8 @@ class T1Parameters(FrozenModel):
     def validate_dependencies(self) -> T1Parameters:
         if self.dartel and self.segmentation is not T1Segmentation.NEW_SEGMENT:
             raise ValueError("DARTEL requires New Segment")
+        if self.segmentation is T1Segmentation.NEW_SEGMENT and not self.dartel:
+            raise ValueError("New Segment requires DARTEL")
         if (self.segmentation is T1Segmentation.DISABLED) != (self.affine_regularization is None):
             raise ValueError("segmentation requires explicit affine regularization")
         return self

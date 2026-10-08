@@ -142,13 +142,19 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
         set_value(patch, "preprocessing.normalization.timing", "on_functional_data")
     if re.search(r"(?:仿射正则化|仿射正则).{0,10}MNI", text, re.I):
         set_value(patch, "preprocessing.t1.affine_regularization", "mni")
+    if re.search(r"\bNew\s*Segment\b|\bDARTEL\b", text, re.I) and not re.search(
+        r"(?:不要|不|别)(?:采用|使用|用|做)?\s*(?:New\s*Segment|DARTEL)", text, re.I
+    ):
+        set_value(patch, "preprocessing.normalization.mode", 3)
+        set_value(patch, "preprocessing.t1.segmentation", "new_segment")
+        set_value(patch, "preprocessing.t1.dartel", True)
     if re.search(
         r"(?:使用|采用|用|选择|标准化.{0,8})\s*(?:T1\s*)?(?:Old\s*)?Segment\b", text, re.I
     ) and not re.search(
         r"(?:不要|不|别)(?:采用|使用|用|做)?\s*(?:T1\s*)?(?:Old\s*)?Segment",
         text,
         re.I,
-    ):
+    ) and not re.search(r"\bNew\s*Segment\b", text, re.I):
         set_value(patch, "preprocessing.normalization.mode", 2)
         set_value(patch, "preprocessing.t1.segmentation", "segment")
         set_value(patch, "preprocessing.t1.dartel", False)

@@ -18,7 +18,7 @@ const p = "preprocessing";
 const groups: Array<{ title: string; fields: Field[] }> = [
   { title: "数据与采集", fields: [array("primary_outputs", "补充主要输出（可选）"), number(`${p}.tr_seconds`, "重复时间 TR（秒）"), number(`${p}.expected_time_points`, "时间点数"), number(`${p}.dummy_scans`, "删除初始时间点")] },
   { title: "基础预处理", fields: [bool(`${p}.slice_timing.enabled`, "层时间校正"), number(`${p}.slice_timing.slice_count`, "层数"), array(`${p}.slice_timing.slice_order`, "层采集顺序"), number(`${p}.slice_timing.reference_slice`, "参考层"), bool(`${p}.realignment.enabled`, "头动校正"), choice(`${p}.realignment.options_source`, "头动校正选项来源", [["dpabi_v82_jobmat", "DPABI Jobmat"]])] },
-  { title: "T1 处理", fields: [choice(`${p}.t1.preparation`, "T1 准备", [["reorient_crop", "重定向与裁剪"], ["prepared", "使用已准备 T1"]]), bool(`${p}.t1.bet`, "BET 去颅骨（T1 与功能均值像）"), f(`${p}.t1.structural_artifact_id`, "T1 结构像输入绑定"), bool(`${p}.t1.coregister_to_functional`, "T1 与功能像配准"), choice(`${p}.t1.segmentation`, "T1 分割", [["disabled", "停用"], ["segment", "Segment"], ["new_segment", "New Segment"]]), choice(`${p}.t1.affine_regularization`, "T1 分割仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]]), bool(`${p}.t1.dartel`, "DARTEL 构建模板"), f(`${p}.normalization.structural_artifact_id`, "标准化结构像产物绑定"), choice(`${p}.normalization.affine_regularization`, "标准化仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]])] },
+  { title: "T1 处理", fields: [choice(`${p}.t1.preparation`, "T1 准备", [["reorient_crop", "重定向与裁剪"], ["prepared", "使用已准备 T1"]]), bool(`${p}.t1.bet`, "BET 去颅骨（T1 与功能均值像）"), f(`${p}.t1.structural_artifact_id`, "T1 结构像输入绑定"), bool(`${p}.t1.coregister_to_functional`, "T1 与功能像配准"), choice(`${p}.t1.segmentation`, "T1 分割", [["disabled", "停用"], ["segment", "Segment"], ["new_segment", "New Segment"]]), choice(`${p}.t1.affine_regularization`, "T1 分割仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]]), bool(`${p}.t1.dartel`, "DARTEL 构建模板（与 New Segment 联动）"), f(`${p}.normalization.structural_artifact_id`, "标准化结构像产物绑定"), choice(`${p}.normalization.affine_regularization`, "标准化仿射正则化", [["mni", "MNI"], ["eastern", "东亚"]])] },
   { title: "协变量回归", fields: [bool(`${p}.nuisance.enabled`, "协变量回归"), choice(`${p}.nuisance.timing`, "回归阶段", [["after_realign", "头动校正后"], ["after_normalize", "标准化后"]]), number(`${p}.nuisance.polynomial_trend`, "多项式趋势"), choice(`${p}.nuisance.head_motion_model`, "头动回归模型", [[0, "无"], [1, "刚体 6 参数"], [2, "导数 12 参数"], [3, "6 参数及平方项"], [4, "Friston-24"]]), ...motion(`${p}.nuisance.head_motion_scrubbing`), ...tissue(`${p}.nuisance.white_matter`, "WM 白质"), ...tissue(`${p}.nuisance.csf`, "CSF 脑脊液"), bool(`${p}.nuisance.global_signal.enabled`, "全局信号回归"), choice(`${p}.nuisance.global_signal.mask_source`, "全局信号掩膜", [["spm", "SPM"], ["auto_mask", "AutoMask"]]), choice(`${p}.nuisance.global_signal.method`, "全局信号方法", [["mean", "均值"]]), bool(`${p}.nuisance.warp_masks_to_individual_space`, "将掩膜变换到个体空间"), bool(`${p}.nuisance.add_mean_back`, "加回均值")] },
   { title: "标准化", fields: [choice(`${p}.normalization.mode`, "标准化方法", [[0, "停用"], [1, "EPI 模板"], [2, "T1 Segment"], [3, "DARTEL"]]), choice(`${p}.normalization.timing`, "标准化阶段", [["on_functional_data", "功能像"], ["on_results", "指标结果"]]), array(`${p}.normalization.bounding_box_mm`, "空间边界（毫米）"), array(`${p}.normalization.voxel_size_mm`, "体素大小（毫米）")] },
   { title: "滤波、剔除与平滑", fields: [bool(`${p}.detrend`, "线性去趋势"), choice(`${p}.temporal_filter.timing`, "滤波阶段", [["disabled", "停用"], ["before_normalize", "标准化前"], ["after_normalize", "标准化后"]]), ...band(`${p}.temporal_filter.frequency_band`), bool(`${p}.temporal_filter.add_mean_back`, "滤波后加回均值"), bool(`${p}.scrubbing.enabled`, "时间点剔除"), choice(`${p}.scrubbing.timing`, "剔除阶段", [["after_preprocessing", "预处理后"]]), ...motion(`${p}.scrubbing.censoring`), choice(`${p}.scrubbing.method`, "剔除方法", [["cut", "删除时间点"], ["nearest", "最近邻插值"], ["linear", "线性插值"], ["spline", "样条插值"], ["pchip", "分段三次插值"]]), choice(`${p}.smoothing.timing`, "平滑阶段", [["disabled", "停用"], ["on_functional_data", "功能像"], ["on_results", "指标结果"]]), choice(`${p}.smoothing.method`, "平滑方法", [[1, "SPM"], [2, "DARTEL"]]), array(`${p}.smoothing.fwhm_mm`, "平滑核（毫米）")] },
@@ -200,6 +200,20 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
   }
   function change(path: string, value: unknown) {
     const next = structuredClone(draft); put(next, path, value);
+    const synchronizedPaths = new Set([path]);
+    if (path === "preprocessing.t1.segmentation") {
+      put(next, "preprocessing.t1.dartel", value === "new_segment");
+      synchronizedPaths.add("preprocessing.t1.dartel");
+    }
+    if (path === "preprocessing.t1.dartel") {
+      if (value === true) {
+        put(next, "preprocessing.t1.segmentation", "new_segment");
+        synchronizedPaths.add("preprocessing.t1.segmentation");
+      } else if (get(next, "preprocessing.t1.segmentation") === "new_segment") {
+        put(next, "preprocessing.t1.segmentation", "segment");
+        synchronizedPaths.add("preprocessing.t1.segmentation");
+      }
+    }
     if (path === "preprocessing.normalization.mode" && (value === 2 || value === 3) && !get(next, "preprocessing.normalization.structural_artifact_id")) put(next, "preprocessing.normalization.structural_artifact_id", "workspace:anatomical-source");
     // Disabled choices explicitly clear their inactive parameters, never populate study defaults.
     const parts = path.split("."); const leaf = parts.pop(); const parent = parts.join(".");
@@ -218,7 +232,7 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
     // Inactive fields must not retain invalid text or block saving unrelated choices.
     setArrayText((items) => Object.fromEntries(Object.entries(items).filter(([key]) => !disabledReason(next, key))));
     setInputErrors((items) => Object.fromEntries(Object.entries(items).filter(([key]) => !disabledReason(next, key))));
-    setDraft(next); setEdited((items) => [...new Set([...items, path])]); onDirty?.(true); setSaveError("");
+    setDraft(next); setEdited((items) => [...new Set([...items, ...synchronizedPaths])]); onDirty?.(true); setSaveError("");
   }
   async function save() {
     setSaving(true); setSaveError("");

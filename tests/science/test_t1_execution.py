@@ -94,7 +94,12 @@ def test_prepared_t1_bet_coregistration_and_segmentation_without_reorientation(s
     original = t1_parameters(manifest, dartel=False)
     assert "bet" not in original.model_dump(mode="json")["t1"]
     values = original.model_dump(mode="json")
-    values["t1"].update(preparation="prepared", bet=True, segmentation=segmentation)
+    values["t1"].update(
+        preparation="prepared",
+        bet=True,
+        segmentation=segmentation,
+        dartel=segmentation == "new_segment",
+    )
     parameters = PreprocessingParameters.model_validate(values)
     compilation = compile_t1(parameters, manifest, content)
     assert compilation.spec.payload.t1_preparation == "prepared"
@@ -105,7 +110,7 @@ def test_prepared_t1_bet_coregistration_and_segmentation_without_reorientation(s
     assert cfg["IsNeedReorientCropT1Img"] == 0
     assert cfg["IsNeedReorientT1ImgInteractively"] == 0
     assert cfg["IsNeedReorientInteractivelyAfterCoreg"] == 0
-    assert cfg["IsDARTEL"] == 0
+    assert cfg["IsDARTEL"] == int(segmentation == "new_segment")
 
 
 def test_integrated_t1_has_no_intermediate_review_requirement():

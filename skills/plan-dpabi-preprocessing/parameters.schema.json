@@ -69,8 +69,12 @@
         "coregister_to_functional": {"type": "boolean"},
         "segmentation": {"enum": ["disabled", "segment", "new_segment"]},
         "affine_regularization": {"enum": ["mni", "eastern", null]},
-        "dartel": {"type": "boolean"}
-      }
+        "dartel": {"type": "boolean", "description": "Must be true exactly when segmentation is new_segment; New Segment and DARTEL are selected together"}
+      },
+      "oneOf": [
+        {"properties": {"segmentation": {"const": "new_segment"}, "dartel": {"const": true}}},
+        {"properties": {"segmentation": {"enum": ["disabled", "segment"]}, "dartel": {"const": false}}}
+      ]
     },
     "slice_timing": {
       "type": "object",
