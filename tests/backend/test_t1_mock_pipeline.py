@@ -71,7 +71,6 @@ def approved_t1_plan(service, source_root, work_root):
                 input_manifest_hash=manifest.content_hash,
                 requested_metrics=(),
                 primary_outputs=(),
-                study_protocol_ref="synthetic-test-only",
                 request_preprocessing=True,
                 preprocessing=parameters,
             ),

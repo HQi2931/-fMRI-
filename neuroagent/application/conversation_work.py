@@ -1290,7 +1290,6 @@ class ConversationWorkCoordinator:
                 "input_manifest_hash": manifest.content_hash,
                 "requested_metrics": ["alff"],
                 "primary_outputs": ["raw_alff"],
-                "study_protocol_ref": "compatibility-smoke://demo-alff-v1",
                 "request_preprocessing": True,
                 "preprocessing": {
                     "tr_seconds": 2.0,

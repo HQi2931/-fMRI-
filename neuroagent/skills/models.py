@@ -139,7 +139,6 @@ class SkillRequest(FrozenSkillModel):
     input_artifact: ArtifactLineage
     alff_falff: AlffFalffParameters | None
     reho: RehoParameters | None
-    study_protocol_ref: str = Field(min_length=1)
     request_preprocessing: bool = False
     preprocessing: PreprocessingParameters | None = None
     base_cfg_artifact_id: str | None = None

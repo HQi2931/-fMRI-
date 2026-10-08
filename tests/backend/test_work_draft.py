@@ -25,7 +25,6 @@ def complete_draft() -> WorkDraft:
     return WorkDraft(
         preprocessing=values,
         primary_outputs=["preprocessed_bold"],
-        study_protocol_ref="test:reviewed-protocol",
         qc_mode="skip",
     )
 
@@ -106,34 +105,19 @@ def test_model_cannot_supply_confirmation_or_provenance() -> None:
 def test_empty_draft_and_invalid_scientific_choices_are_actionable() -> None:
     issues = "\n".join(draft_issues(WorkDraft()))
     assert "tr_seconds" in issues
-    assert "qc_mode" in issues
-    assert "primary_outputs" in issues
+    assert "qc_mode" not in issues
+    assert "primary_outputs" not in issues
     assert "provenance" not in issues
     invalid = merge_work_draft(complete_draft(), {"preprocessing": {"tr_seconds": -1}})
     assert any("tr_seconds" in item for item in draft_issues(invalid))
 
 
-def test_missing_protocol_reference_becomes_one_deterministic_blocking_question() -> None:
-    question = "是否提供研究方案引用?留空不影响本轮方案编译。"
-    missing = pending_review_questions(
-        [question],
-        {"study_protocol_ref": None},
-        {},
-        {},
-    )
-    assert len(missing) == 1
-    assert "编译必填项" in missing[0]
-    assert "真实方案编号、文档引用或 DOI" in missing[0]
-    assert "留空不影响" not in missing[0]
-    assert (
-        pending_review_questions(
-            [question],
-            {"study_protocol_ref": "protocol-2026-001"},
-            {"study_protocol_ref": "user"},
-            {},
-        )
-        == []
-    )
+def test_removed_protocol_reference_is_ignored_in_old_saved_drafts_and_questions() -> None:
+    legacy = WorkDraft.model_validate({"study_protocol_ref": "old-reference"})
+    assert "study_protocol_ref" not in legacy.model_dump()
+    assert pending_review_questions(
+        ["是否提供研究方案引用？"], {}, {}, {}
+    ) == []
 
 
 def test_confirmation_binds_review_and_generates_user_evidence() -> None:

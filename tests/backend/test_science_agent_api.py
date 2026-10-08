@@ -211,7 +211,6 @@ def _skill_request(
                 "global_result_smoothing",
             ),
         ),
-        study_protocol_ref="protocol-001",
     )
 
 
@@ -419,7 +418,6 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
                     "input_manifest_hash": manifest.content_hash,
                     "requested_metrics": [],
                     "primary_outputs": [],
-                    "study_protocol_ref": "protocol-initial-preprocessing",
                     "request_preprocessing": True,
                     "preprocessing": _minimal_preprocessing_payload(),
                 },
@@ -683,7 +681,6 @@ def test_skill_resolution_binds_required_manifest_inputs(
                 "input_manifest_hash": manifest_hash,
                 "requested_metrics": [],
                 "primary_outputs": [],
-                "study_protocol_ref": "protocol-input-contract",
                 "request_preprocessing": True,
                 "preprocessing": preprocessing,
             },
@@ -831,7 +828,6 @@ def test_skill_resolution_rejects_ambiguous_bids_bold_runs(
                     "input_manifest_hash": manifest.content_hash,
                     "requested_metrics": [],
                     "primary_outputs": [],
-                    "study_protocol_ref": "protocol-multi-run",
                     "request_preprocessing": True,
                     "preprocessing": _minimal_preprocessing_payload(),
                 },
@@ -903,7 +899,6 @@ def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
                     "input_manifest_hash": manifest.content_hash,
                     "requested_metrics": [],
                     "primary_outputs": [],
-                    "study_protocol_ref": "protocol-derivative-only",
                     "request_preprocessing": True,
                     "preprocessing": _minimal_preprocessing_payload(),
                 },
@@ -952,7 +947,6 @@ def test_plain_nifti_multiple_functional_candidates_require_explicit_selection(
                     "input_manifest_hash": manifest.content_hash,
                     "requested_metrics": [],
                     "primary_outputs": [],
-                    "study_protocol_ref": "protocol-plain-multi",
                     "request_preprocessing": True,
                     "preprocessing": _minimal_preprocessing_payload(),
                 },
@@ -999,7 +993,6 @@ def test_dicom_manifest_is_inventory_only_for_skill_planning(
                         "input_manifest_hash": manifest.content_hash,
                         "requested_metrics": [],
                         "primary_outputs": [],
-                        "study_protocol_ref": "protocol-dicom-inventory",
                         "request_preprocessing": True,
                         "preprocessing": _minimal_preprocessing_payload(),
                     },
@@ -1022,7 +1015,6 @@ def test_dpabi_manifest_plan_validation_rejects_checkpoint_mixing() -> None:
             "input_manifest_hash": "a" * 64,
             "requested_metrics": [],
             "primary_outputs": [],
-            "study_protocol_ref": "protocol-dpabi-stage",
             "request_preprocessing": True,
             "preprocessing": _minimal_preprocessing_payload(),
         }

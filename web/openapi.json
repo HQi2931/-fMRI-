@@ -6465,11 +6465,6 @@
             },
             "title": "Requested Metrics",
             "type": "array"
-          },
-          "study_protocol_ref": {
-            "minLength": 1,
-            "title": "Study Protocol Ref",
-            "type": "string"
           }
         },
         "required": [
@@ -6477,8 +6472,7 @@
           "dataset_ref",
           "input_manifest_hash",
           "requested_metrics",
-          "primary_outputs",
-          "study_protocol_ref"
+          "primary_outputs"
         ],
         "title": "SkillPlanIntent",
         "type": "object"

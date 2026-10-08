@@ -90,13 +90,6 @@ describe("editable DPARSF draft", () => {
     expect(row).toHaveTextContent("来源：数据读取 · 状态：已核实");
     expect(within(row).getByText("2")).toBeInTheDocument();
   });
-  it("marks a newly supplied required value as unsaved until server validation", () => {
-    render(<WorkDraftPanel snapshot={snapshot()} issues={["study_protocol_ref：尚未提供"]} onSave={vi.fn()} />);
-    const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("研究方案引用").closest("li")!;
-    fireEvent.change(screen.getByLabelText("研究方案引用（编译必填）"), { target: { value: "protocol-2026" } });
-    expect(row).toHaveTextContent("来源：用户指定 · 状态：未保存");
-    expect(screen.getByRole("button", { name: "确认并生成方案" })).toBeDisabled();
-  });
   it("distinguishes a partial group edit from the original recommendations and validation", () => {
     render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { nuisance: { enabled: true, head_motion_model: 1 } } }), sources: { "preprocessing.nuisance": "suggested" } }} issues={["preprocessing.nuisance.head_motion_model：与研究方案冲突"]} onSave={vi.fn()} />);
     const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("协变量回归").closest("li")!;
@@ -226,15 +219,10 @@ describe("editable DPARSF draft", () => {
     expect(screen.getByText(/extra_review_value/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并生成方案" })).toBeDisabled();
   });
-  it.each(["study_protocol_ref：尚未提供", "研究方案引用（study_protocol_ref）：尚未提供"])("surfaces and locates the required protocol reference: %s", async (issue) => {
-    render(<WorkDraftPanel snapshot={snapshot()} issues={[issue]} onSave={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "研究方案引用是编译必填项。填写真实方案编号、文档引用或 DOI；未知时不要编造。" })).toBeInTheDocument();
-    const row = screen.getByLabelText("研究方案引用（编译必填）").closest(".draft-field") as HTMLElement;
-    expect(within(row).getByText("状态：待补充")).toBeInTheDocument();
-    const summaryRow = screen.getByRole("region", { name: "关键参数状态" }).querySelector("li")!;
-    expect(within(summaryRow).getByText(/状态：待补充/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "研究方案引用是编译必填项。填写真实方案编号、文档引用或 DOI；未知时不要编造。" }));
-    expect(screen.getByLabelText("研究方案引用（编译必填）")).toHaveFocus();
+  it("does not expose a removed protocol reference field", () => {
+    render(<WorkDraftPanel snapshot={snapshot()} issues={["study_protocol_ref：尚未提供"]} onSave={vi.fn()} />);
+    expect(screen.queryByText("研究方案引用")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/研究方案引用/)).not.toBeInTheDocument();
   });
   it("ignores malformed old payloads", () => {
     expect(readWorkDraft(undefined)).toBeUndefined();

@@ -607,7 +607,6 @@ class SkillPlanIntent(StrictModel):
     input_artifact_id: str | None = None
     alff_falff: AlffFalffParameters | None = None
     reho: RehoParameters | None = None
-    study_protocol_ref: str = Field(min_length=1)
     request_preprocessing: bool = False
     preprocessing: PreprocessingParameters | None = None
 

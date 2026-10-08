@@ -328,6 +328,63 @@ class WorkDialogue:
             ],
         }
 
+    def run_confirmation_request(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: QcExecutionMode | None,
+        summary: str,
+    ) -> dict[str, Any]:
+        """Create final run choices without making QC a plan-compilation input."""
+        if qc_mode is not None:
+            choices = [
+                (
+                    qc_mode,
+                    "做头动QC" if qc_mode is QcExecutionMode.REQUIRE else "跳过QC",
+                    "确认并启动计算",
+                    "仅授权本次方案与所选 QC 方式。",
+                )
+            ]
+        else:
+            choices = [
+                (
+                    QcExecutionMode.REQUIRE,
+                    "做头动QC",
+                    "启动并做头动 QC",
+                    "计算后生成头动 QC 草稿，供人工审查。",
+                ),
+                (
+                    QcExecutionMode.SKIP,
+                    "跳过QC",
+                    "启动并跳过 QC",
+                    "记录跳过决定，计算后不进行本次头动 QC。",
+                ),
+            ]
+        options = []
+        for mode, command_choice, label, description in choices:
+            confirmation_id = self.coordinator.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=project_id,
+                plan_revision_id=plan_revision_id,
+                plan_hash=plan_hash,
+                qc_mode=mode,
+            )
+            options.append(
+                {
+                    "label": label,
+                    "description": description,
+                    "command": execution_command(plan_hash, command_choice, confirmation_id),
+                }
+            )
+        return {
+            "title": "确认并启动计算",
+            "summary": summary,
+            "options": options,
+        }
+
     async def respond(
         self,
         conversation: ConversationView,
@@ -925,23 +982,9 @@ class WorkDialogue:
                 payload["questions"] = questions
                 explanation = ""
                 reason = interpreted.recommendation_reason
-                missing_protocol_reference = (
-                    not draft.study_protocol_ref or not draft.study_protocol_ref.strip()
-                )
-                contradictory_protocol_reason = bool(
-                    missing_protocol_reference
-                    and reason
-                    and re.search(
-                        r"(?:研究方案引用|study_protocol_ref|protocol).{0,60}(?:留空|可选|不影响|非必需|无需|不需要)"
-                        r"|(?:留空|可选|不影响|非必需|无需|不需要).{0,60}(?:研究方案引用|study_protocol_ref|protocol)",
-                        reason,
-                        re.I,
-                    )
-                )
                 if (
                     reason
                     and not blocked
-                    and not contradictory_protocol_reason
                     and not re.search(
                         r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b|workspace:[\w-]+|\bt1_segment\b",
                         reason,
@@ -1301,30 +1344,20 @@ class WorkDialogue:
             )
         plan = payload["plan_revision"]
         qc_mode = (
-            QcExecutionMode.REQUIRE if draft.qc_mode == "head_motion" else QcExecutionMode.SKIP
+            QcExecutionMode.REQUIRE
+            if draft.qc_mode == "head_motion"
+            else QcExecutionMode.SKIP
+            if draft.qc_mode == "skip"
+            else None
         )
-        confirmation_id = self.coordinator.create_confirmation_challenge(
+        payload["confirmation_request"] = self.run_confirmation_request(
             conversation_id=conversation.conversation_id,
             project_id=str(result.project_id or project_id),
             plan_revision_id=str(plan["plan_revision_id"]),
             plan_hash=str(plan["plan_hash"]),
             qc_mode=qc_mode,
+            summary=execution_summary(draft),
         )
-        payload["confirmation_request"] = {
-            "title": "确认并启动计算",
-            "summary": execution_summary(draft),
-            "options": [
-                {
-                    "label": "确认并启动计算",
-                    "description": "仅授权本次方案与所选 QC 方式。",
-                    "command": execution_command(
-                        str(plan["plan_hash"]),
-                        "做头动QC" if draft.qc_mode == "head_motion" else "跳过QC",
-                        confirmation_id,
-                    ),
-                }
-            ],
-        }
         return replace(
             result,
             payload=payload,

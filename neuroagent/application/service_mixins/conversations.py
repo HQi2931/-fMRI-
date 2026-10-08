@@ -45,7 +45,6 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.work_dialogue import (
     STAGE_CONFIRMATION_PATTERN,
     WorkDialogue,
-    execution_command,
     latest_payload,
 )
 from neuroagent.application.work_draft import (
@@ -319,13 +318,16 @@ class ConversationMixin(BaseServiceMixin):
                     QcExecutionMode.REQUIRE
                     if draft.qc_mode == "head_motion"
                     else QcExecutionMode.SKIP
+                    if draft.qc_mode == "skip"
+                    else None
                 )
-                challenge = self.conversation_work.create_confirmation_challenge(
+                confirmation_request = self.work_dialogue.run_confirmation_request(
                     conversation_id=conversation_id,
                     project_id=conversation.project_id,
                     plan_revision_id=plan.plan_revision_id,
                     plan_hash=plan.plan_hash,
                     qc_mode=qc,
+                    summary=execution_summary(draft),
                 )
                 result = WorkActionResult(
                     "方案保持原版本，启动确认已更新。请审查后确认本次计算。",
@@ -335,21 +337,7 @@ class ConversationMixin(BaseServiceMixin):
                         "plan_preview": plan_preview(draft),
                         "planning_decisions": planning_decisions(draft, saved.get("sources", {})),
                         "plan_revision": plan.model_dump(mode="json"),
-                        "confirmation_request": {
-                            "title": "确认并启动计算",
-                            "summary": execution_summary(draft),
-                            "options": [
-                                {
-                                    "label": "确认并启动计算",
-                                    "description": "仅用于本次运行。",
-                                    "command": execution_command(
-                                        plan.plan_hash,
-                                        "做头动QC" if draft.qc_mode == "head_motion" else "跳过QC",
-                                        challenge,
-                                    ),
-                                }
-                            ],
-                        },
+                        "confirmation_request": confirmation_request,
                     },
                 )
             else:

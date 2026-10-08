@@ -203,7 +203,7 @@ describe("agent workbench page", () => {
   });
   it("embeds and saves the latest structured draft while preserving historical read-only panels", async () => {
     const draft = { preprocessing: { tr_seconds: 2 }, requested_metrics: [] };
-    const payload = { work_draft: { draft, hash: "a".repeat(64), workspace_path: "D:/demo-work", compiled: false }, draft_issues: ["study_protocol_ref：尚未提供"] };
+    const payload = { work_draft: { draft, hash: "a".repeat(64), workspace_path: "D:/demo-work", compiled: false }, draft_issues: [] };
     const first = message("a1", "assistant", "参数建议", payload);
     const changed = message("a2", "assistant", "修改已保存", { ...payload, work_draft: { ...payload.work_draft, hash: "b".repeat(64), draft: { ...draft, preprocessing: { tr_seconds: 3 } } } });
     const patch = vi.fn((init?: RequestInit) => { expect(init?.method).toBe("PATCH"); return json({ conversation: conversation({ messages: [first, changed] }), user_message: message("u2", "user", "参数修改"), assistant_message: changed, tool_calls: [], tool_call: null }); });

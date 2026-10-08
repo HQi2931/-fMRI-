@@ -83,11 +83,11 @@ def test_work_prompt_does_not_advertise_server_only_actions() -> None:
         assert action not in _WORK_SYSTEM_PROMPT
 
 
-def test_work_prompt_matches_the_required_protocol_reference_contract() -> None:
+def test_work_prompt_does_not_request_a_removed_protocol_reference() -> None:
     from neuroagent.agent.gateway import _WORK_SYSTEM_PROMPT
 
-    assert "study_protocol_ref 是当前方案结构校验的必填项" in _WORK_SYSTEM_PROMPT
-    assert "不得说可以留空、可选、不会影响编译" in _WORK_SYSTEM_PROMPT
+    assert "study_protocol_ref" not in _WORK_SYSTEM_PROMPT
+    assert "研究方案引用" not in _WORK_SYSTEM_PROMPT
 
 
 def test_tier_check_rejects_a_leaked_privileged_action() -> None:

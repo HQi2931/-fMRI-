@@ -196,7 +196,6 @@ def test_anatomical_sidecar_tr_does_not_contaminate_functional_facts():
 
 def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices():
     values = {
-        "study_protocol_ref": "protocol-test",
         "preprocessing": {"tr_seconds": 2, "dummy_scans": 0},
         "alff_falff": {"result_smoothing_fwhm_mm": [4, 4, 4]},
     }
@@ -211,7 +210,6 @@ def test_questions_are_bound_to_unresolved_parameters_not_repeated_known_choices
         questions,
         values,
         {
-            "study_protocol_ref": "user",
             "alff_falff.result_smoothing_fwhm_mm": "user",
             "preprocessing.dummy_scans": "user",
         },

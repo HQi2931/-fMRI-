@@ -743,7 +743,6 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
                 input_manifest_hash=manifest.content_hash,
                 requested_metrics=(),
                 primary_outputs=(),
-                study_protocol_ref="explicit-test-protocol",
                 request_preprocessing=True,
                 preprocessing=_minimal_preprocessing_payload(),
             )

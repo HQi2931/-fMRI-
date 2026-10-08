@@ -295,7 +295,6 @@ class SkillPlanMixin(BaseServiceMixin):
             input_artifact=input_artifact,
             alff_falff=intent.alff_falff,
             reho=intent.reho,
-            study_protocol_ref=intent.study_protocol_ref,
             request_preprocessing=intent.request_preprocessing,
             preprocessing=intent.preprocessing,
             base_cfg_artifact_id=base_cfg_artifact_id,

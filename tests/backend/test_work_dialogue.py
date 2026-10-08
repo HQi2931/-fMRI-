@@ -175,10 +175,6 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
         result = turn(client, session, "请计算 ALFF，TR设为2秒", "questions")
     assistant = result["assistant_message"]
     assert assistant["payload"]["questions"] == [
-        (
-            "研究方案引用是编译必填项，目前尚未提供。请填写真实方案编号、文档引用或 DOI；"
-            "未知时不要编造，补齐后才能校验并编译。"
-        ),
         "指标掩膜使用哪一种？",
     ]
     assert "TR 是否" not in assistant["content"]
@@ -191,14 +187,14 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
     assert assistant["payload"]["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
 
 
-def test_planning_suppresses_model_claim_that_required_protocol_can_be_omitted(
+def test_planning_ignores_obsolete_protocol_reference_questions(
     service, monkeypatch
 ):
     response = generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 2.0}})
     content = json.loads(response.response.content)
     content.update(
         questions=["是否提供研究方案引用?留空不影响本轮方案编译。"],
-        recommendation_reason="研究方案引用可以留空，不影响方案编译。",
+        recommendation_reason="使用适合当前流程的方案。",
     )
     response = response.__class__(
         **{
@@ -210,14 +206,8 @@ def test_planning_suppresses_model_claim_that_required_protocol_can_be_omitted(
     with TestClient(create_app(service=service)) as client:
         result = turn(client, create(client), "请准备 ALFF 预处理方案", "protocol-required")
     assistant = result["assistant_message"]
-    assert assistant["payload"]["questions"] == [
-        (
-            "研究方案引用是编译必填项，目前尚未提供。请填写真实方案编号、文档引用或 DOI；"
-            "未知时不要编造，补齐后才能校验并编译。"
-        )
-    ]
-    assert "留空不影响" not in assistant["content"]
-    assert "recommendation_reason" not in assistant["payload"]
+    assert assistant["payload"]["questions"] == []
+    assert assistant["payload"]["recommendation_reason"] == "使用适合当前流程的方案。"
 
 
 def test_stage_confirmation_registers_a_fresh_workspace_without_model_execution(
@@ -803,7 +793,6 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
         preprocessing=values,
         requested_metrics=["alff"],
         primary_outputs=["raw_alff"],
-        study_protocol_ref="test:explicit-user-protocol",
         qc_mode="skip",
         alff_falff={
             "tr_seconds": 2.0,

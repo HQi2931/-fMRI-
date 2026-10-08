@@ -106,7 +106,6 @@ project_id
 dataset_ref
 requested_metrics
 requested_primary_outputs
-study_protocol_ref
 user_overrides
 execution_backend
 ```

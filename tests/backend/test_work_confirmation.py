@@ -38,7 +38,6 @@ def reviewed_work(tmp_path, monkeypatch):
         "preprocessing": values,
         "requested_metrics": ["alff"],
         "primary_outputs": ["raw_alff"],
-        "study_protocol_ref": "test:reviewed-protocol",
         "qc_mode": "skip",
         "alff_falff": {
             "tr_seconds": 2.0,

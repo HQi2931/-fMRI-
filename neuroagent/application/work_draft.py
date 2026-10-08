@@ -26,9 +26,16 @@ class WorkDraft(BaseModel):
     reho: dict[str, Any] | None = None
     requested_metrics: list[MetricKind] = Field(default_factory=list)
     primary_outputs: list[str] = Field(default_factory=list)
-    study_protocol_ref: str | None = None
     qc_mode: Literal["head_motion", "skip"] | None = None
     confirmed_hash: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_removed_protocol_reference(cls, value: Any) -> Any:
+        """Allow old saved drafts to load after protocol references were removed."""
+        if isinstance(value, dict) and "study_protocol_ref" in value:
+            value = {key: item for key, item in value.items() if key != "study_protocol_ref"}
+        return value
 
     @model_validator(mode="after")
     def reject_model_evidence(self) -> WorkDraft:
@@ -44,15 +51,21 @@ def execution_summary(draft: WorkDraft) -> str:
         {"alff": "ALFF", "falff": "fALFF", "reho": "ReHo"}[metric.value]
         for metric in draft.requested_metrics
     )
+    time_points = draft.preprocessing["expected_time_points"]
+    time_point_summary = (
+        f"{time_points} 个时间点" if time_points is not None else "时间点数待执行器核实"
+    )
     return (
         f"本次指标：{metrics}；TR {draft.preprocessing['tr_seconds']} 秒，"
-        f"{draft.preprocessing['expected_time_points']} 个时间点，"
+        f"{time_point_summary}，"
         f"删除前 {draft.preprocessing['dummy_scans']} 个时间点。\n"
         "当前方案已通过科学校验。确认后将启动本机 MATLAB 计算。"
         + (
             "计算后生成头动 QC，等待人工审查。"
             if draft.qc_mode == "head_motion"
             else "本次明确跳过头动 QC。"
+            if draft.qc_mode == "skip"
+            else "启动确认时选择本次是否进行头动 QC。"
         )
     )
 
@@ -191,14 +204,8 @@ def validate_draft_patch(patch: dict[str, Any]) -> None:
 
 
 def draft_issues(draft: WorkDraft) -> tuple[str, ...]:
-    """Validate all choices, ignoring only the deliberately absent provenance."""
+    """Validate all scientific and execution choices in the draft."""
     issues: list[str] = []
-    if not draft.study_protocol_ref or not draft.study_protocol_ref.strip():
-        issues.append("研究方案引用（study_protocol_ref）：尚未提供")
-    if draft.qc_mode is None:
-        issues.append("质量控制（qc_mode）：请选择头动 QC 或明确跳过")
-    if not draft.primary_outputs:
-        issues.append("主要输出（primary_outputs）：尚未选择")
     selected = set(draft.requested_metrics)
     if len(selected) != len(draft.requested_metrics):
         issues.append("requested_metrics：指标不得重复")
@@ -588,7 +595,6 @@ def confirmed_skill_intent(
             "input_manifest_hash": input_manifest_hash,
             "requested_metrics": draft.requested_metrics,
             "primary_outputs": draft.primary_outputs,
-            "study_protocol_ref": draft.study_protocol_ref,
             "request_preprocessing": True,
             "preprocessing": preprocessing,
             "alff_falff": confirmed(draft.alff_falff),
@@ -631,7 +637,6 @@ _LABELS = {
     "reho": "ReHo",
     "requested_metrics": "计算指标",
     "primary_outputs": "主要输出",
-    "study_protocol_ref": "研究方案引用",
     "qc_mode": "质量控制",
     "tr_seconds": "重复时间 TR（秒）",
     "expected_time_points": "预期时间点数",

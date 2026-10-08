@@ -133,7 +133,6 @@ def _prepare(
                 input_manifest_hash=manifest.content_hash,
                 requested_metrics=(),
                 primary_outputs=(),
-                study_protocol_ref="synthetic-software-smoke-only",
                 request_preprocessing=True,
                 preprocessing=params,
             ),

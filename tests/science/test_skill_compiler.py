@@ -73,7 +73,6 @@ def request(lineage: ArtifactLineage) -> SkillRequest:
             global_result_smoothing_fwhm_mm=None,
             provenance=provenance(REHO_PROVENANCE),
         ),
-        study_protocol_ref="protocol-1",
     )
 
 
@@ -124,7 +123,6 @@ def test_pure_preprocessing_request_compiles_and_binds_base_cfg(
         input_artifact=base_lineage,
         alff_falff=None,
         reho=None,
-        study_protocol_ref="protocol-1",
         request_preprocessing=True,
         preprocessing=preprocessing_parameters(),
         base_cfg_artifact_id="cfg-base-001",

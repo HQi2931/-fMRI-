@@ -3668,8 +3668,6 @@ export interface components {
             request_preprocessing: boolean;
             /** Requested Metrics */
             requested_metrics: components["schemas"]["MetricKind"][];
-            /** Study Protocol Ref */
-            study_protocol_ref: string;
         };
         /** SkillPlanResolveRequest */
         SkillPlanResolveRequest: {
