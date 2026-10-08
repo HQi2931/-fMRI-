@@ -181,6 +181,8 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
     const matchingIssues = issues.filter((item) => item.startsWith(path + "：") || item.startsWith(path + ":") || item.startsWith(path + "."));
     const validationState = issueState(matchingIssues);
     if (validationState) return validationState;
+    if (disabledReason(draft, path)) return "不适用";
+    if (get(draft, `${path}.enabled`) === false) return reviewLabel(snapshot.field_states?.[`${path}.enabled`]);
     if (get(draft, path) === undefined || get(draft, path) === null) return "待选择";
     const direct = inheritedFieldValue(snapshot.field_states, path);
     if (direct) return reviewLabel(direct);

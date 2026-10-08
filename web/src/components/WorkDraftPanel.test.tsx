@@ -10,6 +10,15 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it("does not aggregate retired child conflicts into a validated disabled step", () => {
+    const view = render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { slice_timing: { enabled: false, slice_count: null, slice_order: null, reference_slice: null } } }), field_states: { "preprocessing.slice_timing.slice_order": "conflict" } }} confirmation={confirmation} onSave={vi.fn()} />);
+    const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("层时间校正").closest("li")!;
+    expect(row).toHaveTextContent("明确停用");
+    expect(row).toHaveTextContent("状态：待审查");
+    expect(row).not.toHaveTextContent("存在冲突");
+    view.rerender(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { slice_timing: { enabled: false } } }), field_states: { "preprocessing.slice_timing.slice_order": "conflict" } }} issues={["preprocessing.slice_timing：停用配置仍含有效参数"]} onSave={vi.fn()} />);
+    expect(row).toHaveTextContent("状态：存在冲突");
+  });
   it.each([
     ["alff_falff", "result_smoothing", "结果图平滑", "结果图 平滑核（毫米）"],
     ["reho", "smooth_reho", "ReHo 结果图平滑", "ReHo 平滑核（毫米）"],
