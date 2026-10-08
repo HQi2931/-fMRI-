@@ -312,6 +312,21 @@ def test_complete_protocol_explicit_choices_are_protected_from_later_model_repla
     assert set(blocked) == {"qc_mode", "preprocessing.normalization.voxel_size_mm"}
 
 
+def test_explicit_bet_and_skipping_manual_t1_reorientation():
+    patch = explicit_user_patch("跳过 T1 重定向，只做 BET 和 T1 与功能像配准，保留 Segment")
+    assert patch["preprocessing"]["t1"]["preparation"] == "prepared"
+    assert patch["preprocessing"]["t1"]["bet"] is True
+    assert (
+        explicit_user_patch("T1 coreg to fun")["preprocessing"]["t1"]["coregister_to_functional"]
+        is True
+    )
+    assert explicit_user_patch("不要 BET")["preprocessing"]["t1"]["bet"] is False
+    assert explicit_user_patch("启用BET去颅骨")["preprocessing"]["t1"]["bet"] is True
+    assert explicit_user_patch("只做Bet和T1 coreg to fun")["preprocessing"]["t1"]["bet"] is True
+    assert explicit_user_patch("不想做BET")["preprocessing"]["t1"]["bet"] is False
+    assert "bet" not in explicit_user_patch("BET是什么？").get("preprocessing", {}).get("t1", {})
+
+
 def test_reho_only_smoothing_change_does_not_create_an_alff_branch():
     patch, sources, _ = constrained_patch(
         {"requested_metrics": ["reho"], "reho": {"smooth_reho_fwhm_mm": [4, 4, 4]}},

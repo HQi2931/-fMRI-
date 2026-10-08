@@ -251,6 +251,7 @@ class DpabiV82Adapter:
             t1 = parameters.t1
             cfg.update(
                 {
+                    "IsBet": int(t1.bet),
                     "IsNeedT1CoregisterToFun": int(t1.coregister_to_functional),
                     "IsSegment": {"disabled": 0, "segment": 1, "new_segment": 2}[
                         t1.segmentation.value

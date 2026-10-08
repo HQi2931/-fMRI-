@@ -190,6 +190,25 @@ def test_preview_labels_prepared_t1_and_disabled_smoothing_accurately() -> None:
     assert not any("裁剪" in label for label in labels)
 
 
+def test_bet_preview_precedes_coregistration_and_segmentation() -> None:
+    preview = plan_preview(
+        WorkDraft(
+            preprocessing={
+                "t1": {
+                    "preparation": "prepared",
+                    "bet": True,
+                    "coregister_to_functional": True,
+                    "segmentation": "segment",
+                    "dartel": False,
+                }
+            }
+        )
+    )
+    steps = [item["step_id"] for item in preview["common_steps"]]
+    assert steps.index("bet") < steps.index("coregister_t1") < steps.index("segment_t1")
+    assert not any("重定向" in item["label"] for item in preview["common_steps"])
+
+
 def test_plan_preview_keeps_alff_and_reho_checkpoints_separate() -> None:
     draft = WorkDraft(
         preprocessing={"smoothing": {"timing": "disabled"}},

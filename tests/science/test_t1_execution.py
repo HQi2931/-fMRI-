@@ -88,6 +88,26 @@ def test_segment_projects_without_normalization():
     assert cfg["IsAllowGUI"] == 0
 
 
+@pytest.mark.parametrize("segmentation", ["segment", "new_segment"])
+def test_prepared_t1_bet_coregistration_and_segmentation_without_reorientation(segmentation):
+    manifest, content = manifest_for()
+    original = t1_parameters(manifest, dartel=False)
+    assert "bet" not in original.model_dump(mode="json")["t1"]
+    values = original.model_dump(mode="json")
+    values["t1"].update(preparation="prepared", bet=True, segmentation=segmentation)
+    parameters = PreprocessingParameters.model_validate(values)
+    compilation = compile_t1(parameters, manifest, content)
+    assert compilation.spec.payload.t1_preparation == "prepared"
+    cfg = compilation.spec.payload.metric_projection.cfg
+    assert cfg["IsBet"] == 1
+    assert cfg["IsNeedT1CoregisterToFun"] == 1
+    assert cfg["IsSegment"] == (1 if segmentation == "segment" else 2)
+    assert cfg["IsNeedReorientCropT1Img"] == 0
+    assert cfg["IsNeedReorientT1ImgInteractively"] == 0
+    assert cfg["IsNeedReorientInteractivelyAfterCoreg"] == 0
+    assert cfg["IsDARTEL"] == 0
+
+
 def test_integrated_t1_has_no_intermediate_review_requirement():
     manifest, content = manifest_for()
     compilation = compile_t1(t1_parameters(manifest, normalize=True), manifest, content)

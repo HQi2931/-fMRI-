@@ -354,6 +354,15 @@ def plan_preview(draft: WorkDraft) -> dict[str, Any]:
                 "evidence": "draft.preprocessing.t1",
             },
         ]
+        if t1.get("bet"):
+            t1_steps.append(
+                {
+                    "step_id": "bet",
+                    "label": "BET 去颅骨（T1 与功能均值像，DPABI 内置设置）",
+                    "status": "planned",
+                    "evidence": "draft.preprocessing.t1.bet",
+                }
+            )
         if t1.get("coregister_to_functional"):
             t1_steps.append(
                 {
@@ -591,6 +600,7 @@ def confirmed_skill_intent(
 _LABELS = {
     "t1": "T1 结构像处理",
     "preparation": "T1 输入准备方式",
+    "bet": "BET 去颅骨（T1 与功能均值像）",
     "coregister_to_functional": "T1 配准到功能像",
     "segmentation": "组织分割方法",
     "dartel": "DARTEL 模板构建",

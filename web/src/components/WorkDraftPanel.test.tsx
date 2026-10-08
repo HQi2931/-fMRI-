@@ -10,6 +10,17 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it("saves an explicit BET choice without changing the prepared T1 or segmentation", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<WorkDraftPanel snapshot={snapshot({ preprocessing: { t1: { preparation: "prepared", coregister_to_functional: true, segmentation: "segment", dartel: false } } })} onSave={save} />);
+    const field = screen.getByLabelText("BET 去颅骨（T1 与功能均值像）");
+    expect(field).toHaveValue("__unknown");
+    fireEvent.change(field, { target: { value: "true" } });
+    expect(screen.getByLabelText("T1 准备")).toHaveValue("prepared");
+    expect(screen.getByLabelText("T1 分割")).toHaveValue("segment");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(save).toHaveBeenCalledWith("a".repeat(64), { preprocessing: { t1: { bet: true } } });
+  });
   it("does not aggregate retired child conflicts into a validated disabled step", () => {
     const view = render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { slice_timing: { enabled: false, slice_count: null, slice_order: null, reference_slice: null } } }), field_states: { "preprocessing.slice_timing.slice_order": "conflict" } }} confirmation={confirmation} onSave={vi.fn()} />);
     const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("层时间校正").closest("li")!;

@@ -64,6 +64,7 @@
       "required": ["preparation", "structural_artifact_id", "coregister_to_functional", "segmentation", "affine_regularization", "dartel"],
       "properties": {
         "preparation": {"enum": ["reorient_crop", "prepared"]},
+        "bet": {"type": "boolean", "description": "DPABI BET on T1 and mean functional image; absent retains legacy disabled behavior"},
         "structural_artifact_id": {"type": "string", "minLength": 1},
         "coregister_to_functional": {"type": "boolean"},
         "segmentation": {"enum": ["disabled", "segment", "new_segment"]},

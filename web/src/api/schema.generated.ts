@@ -4025,6 +4025,11 @@ export interface components {
         /** T1Parameters */
         T1Parameters: {
             affine_regularization: components["schemas"]["AffineRegularization"] | null;
+            /**
+             * Bet
+             * @default false
+             */
+            bet: boolean;
             /** Coregister To Functional */
             coregister_to_functional: boolean;
             /** Dartel */

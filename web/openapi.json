@@ -7573,6 +7573,11 @@
               }
             ]
           },
+          "bet": {
+            "default": false,
+            "title": "Bet",
+            "type": "boolean"
+          },
           "coregister_to_functional": {
             "title": "Coregister To Functional",
             "type": "boolean"

@@ -109,11 +109,19 @@ class T1Segmentation(StrEnum):
 
 class T1Parameters(FrozenModel):
     preparation: T1Preparation
+    bet: bool = False
     structural_artifact_id: str = Field(min_length=1)
     coregister_to_functional: bool
     segmentation: T1Segmentation
     affine_regularization: AffineRegularization | None
     dartel: bool
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_bet_choice(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        value = cast(dict[str, Any], handler(self))
+        if "bet" not in self.model_fields_set:
+            value.pop("bet", None)
+        return value
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> T1Parameters:

@@ -113,7 +113,30 @@ def explicit_user_patch(text: str, metrics: list[str] | None = None) -> dict[str
         r"T1.{0,30}(?:直接使用|直接用|使用已准备)|(?:直接使用|使用已准备).{0,10}T1", text, re.I
     ):
         set_value(patch, "preprocessing.t1.preparation", "prepared")
-    if re.search(r"(?:配准到功能像|T1\s*与功能像配准)", text, re.I):
+    if re.search(
+        r"(?:跳过|不做|无需|不需要).{0,8}T1.{0,8}重定向|T1.{0,8}重定向.{0,8}(?:跳过|不做)",
+        text,
+        re.I,
+    ):
+        set_value(patch, "preprocessing.t1.preparation", "prepared")
+    bet_choice = re.search(
+        r"(不想做|不做|停用|跳过|不需要|不要|禁用|不用|启用|使用|采用|执行|做)\s*BET(?![A-Za-z0-9_])",
+        text,
+        re.I,
+    )
+    if bet_choice:
+        enabled = bet_choice[1] not in {
+            "不想做",
+            "不做",
+            "停用",
+            "跳过",
+            "不需要",
+            "不要",
+            "禁用",
+            "不用",
+        }
+        set_value(patch, "preprocessing.t1.bet", enabled)
+    if re.search(r"(?:配准到功能像|T1\s*与功能像配准|T1\s+coreg(?:ister)?\s+to\s+fun)", text, re.I):
         set_value(patch, "preprocessing.t1.coregister_to_functional", True)
     if re.search(r"标准化功能像|标准化功能时序|功能像标准化", text):
         set_value(patch, "preprocessing.normalization.timing", "on_functional_data")

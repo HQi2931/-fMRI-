@@ -7,7 +7,7 @@ const RUN_LABELS: Record<string, string> = {
   failed_retryable: "计算失败 · 可重试", failed_terminal: "计算失败", timed_out: "计算超时",
   qc_review: "计算完成 · 待 QC 审查", succeeded: "计算完成",
 };
-const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归", metric_calculation: "指标计算" };
+const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", brain_extraction: "BET 去颅骨", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归", metric_calculation: "指标计算" };
 const activeStates = new Set(["queued", "running", "cancelling"]);
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {

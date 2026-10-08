@@ -32,6 +32,10 @@ class MatlabProgressObserver:
                 self.publish(
                     _SPM_PHASES[match[2]], "started" if match[1] == "Running" else "finished"
                 )
+            elif line.strip() in {"Bet begin...", "Bet finished"}:
+                self.publish(
+                    "brain_extraction", "started" if line.strip() == "Bet begin..." else "finished"
+                )
             elif line.strip() == "Regressing Out Covariates...":
                 self.publish("nuisance", "started")
             elif line.strip() == "Regressing Out Covariates finished.":

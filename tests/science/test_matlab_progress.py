@@ -18,6 +18,15 @@ def test_progress_only_uses_actual_allowlisted_messages_and_handles_partial_line
     assert "synthetic-secret" not in str(events)
 
 
+def test_bet_progress_requires_actual_complete_dpabi_messages():
+    events = []
+    observer = MatlabProgressObserver(lambda phase, state: events.append((phase, state)))
+    observer.feed("Bet be")
+    assert not events
+    observer.feed("gin...\nBet synthetic-patient-file.nii\nBet finished\n")
+    assert events == [("brain_extraction", "started"), ("brain_extraction", "finished")]
+
+
 def test_unterminated_log_lines_are_bounded():
     observer = MatlabProgressObserver(lambda *_: None)
     observer.feed("x" * 100_000)
