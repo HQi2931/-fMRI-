@@ -12,6 +12,17 @@ const option = { label: "确认并启动计算", description: "按当前方案�
 const request = { title: "启动计算", summary: "ALFF · Segment · 头动 QC", options: [option] };
 
 describe("final confirmation", () => {
+  it("wraps keyboard focus between the first and last enabled controls", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmationDialog request={request} busy={false} error="" onConfirm={vi.fn()} onDismiss={vi.fn()} onEdit={vi.fn()} />);
+    const first = screen.getByRole("button", { name: "关闭确认" });
+    const last = screen.getByRole("button", { name: option.label });
+    last.focus();
+    await user.tab();
+    expect(first).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(last).toHaveFocus();
+  });
   it("directly confirms one server option without an unnecessary radio or displaying its command", async () => {
     const confirm = vi.fn();
     render(<ConfirmationDialog request={request} busy={false} error="" onConfirm={confirm} onDismiss={vi.fn()} onEdit={vi.fn()} />);

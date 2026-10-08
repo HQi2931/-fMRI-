@@ -22,7 +22,16 @@ export function ConfirmationDialog({ request, busy, error, onConfirm, onDismiss,
   }, []);
 
   return <dialog ref={dialog} className="confirmation-dialog" aria-labelledby="confirmation-title"
-    aria-describedby="confirmation-description" onCancel={(event) => { event.preventDefault(); if (!busy) onDismiss(); }}>
+    aria-describedby="confirmation-description" onCancel={(event) => { event.preventDefault(); if (!busy) onDismiss(); }}
+    onKeyDown={(event) => {
+      if (event.key !== "Tab") return;
+      const controls = [...event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)")];
+      const current = controls.indexOf(document.activeElement as HTMLElement);
+      if (!controls.length || (event.shiftKey ? current <= 0 : current < 0 || current === controls.length - 1)) {
+        event.preventDefault();
+        (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+      }
+    }}>
     <div className="confirmation-heading"><span>需要你的确认</span><button type="button" aria-label="关闭确认" disabled={busy} onClick={onDismiss}>×</button></div>
     <h2 id="confirmation-title">{request.title}</h2>
     <p id="confirmation-description">请核对本次操作。修改方案后需要重新确认。</p>
