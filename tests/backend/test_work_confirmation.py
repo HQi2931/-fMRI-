@@ -154,6 +154,11 @@ def test_second_click_with_new_key_does_not_create_another_run(reviewed_work):
     second = confirm(client, session, payload, key="second-click")
     assert second.status_code == 200, second.json().get("error")
     assert (
+        second.json()["conversation"]["workspace_path"]
+        == first.json()["conversation"]["workspace_path"]
+    )
+    assert second.json()["conversation"]["workspace_path"] is not None
+    assert (
         second.json()["conversation"]["active_run_id"]
         == first.json()["conversation"]["active_run_id"]
     )

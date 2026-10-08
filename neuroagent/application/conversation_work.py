@@ -356,7 +356,11 @@ class ConversationWorkCoordinator:
             if action is ConversationAction.PREVIEW_PREPROCESSING_RUN:
                 return self._preview_preprocessing_run(request, workspace_path, project_id)
             if action is ConversationAction.GET_PROGRESS:
-                return self._progress(active_run_id)
+                return replace(
+                    self._progress(active_run_id),
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                )
             if action is ConversationAction.GET_QC_STATUS:
                 return self._qc_status(request, active_run_id, project_id)
             if action is ConversationAction.CREATE_HEAD_MOTION_QC:
