@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import os
+import struct
 from pathlib import Path
 
 import pytest
@@ -112,3 +114,46 @@ def test_planning_revision_tracks_metadata_and_inventory_changes(tmp_path: Path)
     assert revision() == changed
     (dataset / "empty-directory").mkdir()
     assert revision() != changed
+
+
+def test_deep_compressed_inputs_keep_fast_inventory_and_frozen_integrity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    functional = source / "FunImg" / "Sub_001" / "visit" / "acquisition"
+    anatomical = source / "T1Img" / "Sub_001" / "visit" / "acquisition"
+    header = struct.pack("<I", 348) + bytes(348)
+    for directory in (functional, anatomical):
+        directory.mkdir(parents=True)
+        (directory / "image.nii.gz").write_bytes(gzip.compress(header, mtime=0))
+    inspector = DatasetInspector(PathPolicy([source], tmp_path / "work"))
+    original_hash = dataset_inspector.sha256_file
+    hashed: list[Path] = []
+
+    def observed_hash(path: Path) -> str:
+        hashed.append(path)
+        return original_hash(path)
+
+    monkeypatch.setattr(dataset_inspector, "sha256_file", observed_hash)
+    report = inspector.inspect(source, report_only=True, selected_input_stage="FunImg")
+    assert not hashed
+    assert report["profile"]["subject_count"] == 1
+    assert len(report["file_sizes"]) == 2
+    frozen = inspector.inspect(source, selected_input_stage="FunImg")
+    assert len(hashed) == 2
+    MatlabJobExecutor._verify_manifest_file_hashes(frozen, source)
+
+    # Alter a valid gzip metadata byte without changing file size or voxel data.
+    image = functional / "image.nii.gz"
+    stat = image.stat()
+    changed = bytearray(image.read_bytes())
+    changed[4] = 1
+    image.write_bytes(changed)
+    os.utime(image, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert gzip.decompress(changed) == header
+    assert image.stat().st_size == stat.st_size
+    new_report = inspector.inspect(source, report_only=True, selected_input_stage="FunImg")
+    assert len(hashed) == 2
+    assert new_report["metadata_revision"] != report["metadata_revision"]
+    with pytest.raises(ValueError, match="file hash changed"):
+        MatlabJobExecutor._verify_manifest_file_hashes(frozen, source)
