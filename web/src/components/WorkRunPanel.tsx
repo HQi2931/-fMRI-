@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, describeError, type Artifact, type PlanRevision, type QcReview, type Run, type RuntimeEvent } from "../api/client";
+import { api, describeError, type Artifact, type PlanRevision, type QcReview, type Run, type RunDiagnosis, type RuntimeEvent } from "../api/client";
 import "./WorkRunPanel.css";
 
 const RUN_LABELS: Record<string, string> = {
@@ -9,6 +9,7 @@ const RUN_LABELS: Record<string, string> = {
 };
 const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", brain_extraction: "BET 去颅骨", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归", metric_calculation: "指标计算" };
 const activeStates = new Set(["queued", "running", "cancelling"]);
+const failedStates = new Set(["failed_retryable", "failed_terminal", "timed_out"]);
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {
   "metric.alff": "ALFF 指标图", "metric.alff.raw": "原始 ALFF", "metric.alff.global_mean": "均值归一化 ALFF", "metric.alff.z_score": "z 标准化 ALFF",
@@ -52,6 +53,20 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [now, setNow] = useState(Date.now());
+  const [diagnosis, setDiagnosis] = useState<{ runId: string; attempt: number; error: string; value: RunDiagnosis["diagnosis"] } | null>(null);
+  useEffect(() => {
+    if (!failedStates.has(run.state) || !run.error?.trim()) return;
+    const controller = new AbortController();
+    const rawError = run.error;
+    void (async () => {
+      try {
+        const result = await api.diagnoseRun(run.run_id, { log_text: rawError.slice(-200_000) }, controller.signal);
+        if (!controller.signal.aborted) setDiagnosis({ runId: run.run_id, attempt: run.attempt, error: rawError, value: result.diagnosis });
+      } catch { /* Keep the neutral explanation and original technical details available. */ }
+    })();
+    return () => controller.abort();
+  }, [run.run_id, run.attempt, run.state, run.error]);
+  const currentDiagnosis = diagnosis?.runId === run.run_id && diagnosis.attempt === run.attempt && diagnosis.error === run.error ? diagnosis.value : null;
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -138,7 +153,12 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
     {run.state === "qc_review" && <p>指标计算已完成，科学质量审查尚未通过。</p>}
     {run.state === "succeeded" && <p>{run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
-    {run.error && <p role="alert">运行失败：{run.error}</p>}
+    {failedStates.has(run.state) && <div className="work-run-failure">
+      <p role="alert">{currentDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
+      {currentDiagnosis && currentDiagnosis.suggestions.length > 0 && <ul>{currentDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+      <p>如需调整输入或参数，请在对话中准备新方案并重新审查。</p>
+      {run.error && <details><summary>错误技术详情</summary><pre>{run.error}</pre></details>}
+    </div>}
     {actionError?.runId === run.run_id && <p role="alert">{actionError.message}</p>}
     {error && <div role="alert">{error}<p>已显示的详情可能不是最新，请重新加载核对。</p><button type="button" onClick={() => setReload((value) => value + 1)}>重新加载详情</button></div>}
     <div className="work-run-actions">

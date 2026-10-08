@@ -4,6 +4,7 @@
 .work-run-panel details { margin: .65rem 0; padding: .75rem; background: var(--surface-muted, #f5f7fa); border-radius: .5rem; }
 .work-run-panel summary { cursor: pointer; overflow-wrap: anywhere; }
 .work-run-panel p { overflow-wrap: anywhere; line-height: 1.6; }
+.work-run-failure pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
 .work-run-panel a { display: inline-block; margin: .5rem 0; }
 .work-run-panel figure { margin: .75rem 0; }
 .work-run-panel img { display: block; max-width: 100%; width: min(100%, 28rem); max-height: 28rem; object-fit: contain; image-rendering: pixelated; background: #111; }

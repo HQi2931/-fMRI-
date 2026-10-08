@@ -47,6 +47,15 @@ def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:
     assert diagnose_dpabi_log("unexpected output").code is FailureCode.UNKNOWN
 
 
+def test_t1_conversion_diagnosis_does_not_infer_a_specific_root_cause() -> None:
+    diagnosis = diagnose_dpabi_log("���� assert\nT1 converter failed.\nrsfmri:t1:ConverterFailed")
+    assert diagnosis.code is FailureCode.INPUT_FORMAT
+    assert diagnosis.summary == "T1 重定向与裁剪未完成"
+    assert diagnosis.requires_new_plan
+    assert not any("不存在" in suggestion for suggestion in diagnosis.suggestions)
+    assert any("在新方案" in suggestion for suggestion in diagnosis.suggestions)
+
+
 def test_table_inspection_detects_quality_issues(tmp_path: Path) -> None:
     path = tmp_path / "features.csv"
     path.write_text("subject_id,target,score\nsub-01,A,1.2\nsub-01,A,1.2\n", encoding="utf-8")

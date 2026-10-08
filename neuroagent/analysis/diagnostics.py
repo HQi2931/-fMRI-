@@ -9,6 +9,15 @@ from neuroagent.analysis.models import FailureCode, FailureDiagnosis
 
 _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
+        FailureCode.INPUT_FORMAT,
+        r"T1 converter failed|rsfmri:t1:ConverterFailed",
+        ("T1 重定向与裁剪未完成",),
+        (
+            "检查本次转换工具日志与输入文件",
+            "若 T1 已完成手动标定与裁剪, 在新方案中明确使用已准备 T1; 不要自动更改本次批准方案",
+        ),
+    ),
+    (
         FailureCode.INPUT_MISSING,
         r"(file|directory|folder).*(not found|does not exist)|no such file|无法找到|不存在",
         ("输入文件或目录不存在",),
