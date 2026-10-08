@@ -4,7 +4,7 @@ const subscribe = (changed: () => void) => {
   window.addEventListener("resize", changed);
   return () => window.removeEventListener("resize", changed);
 };
-const narrowScreen = () => window.innerWidth <= 980;
+const narrowScreen = () => window.innerWidth <= 1180;
 
 /** Keep the same editor mounted when the review switches between layouts. */
 export function WorkReviewRegion({ open, onClose, children }: {

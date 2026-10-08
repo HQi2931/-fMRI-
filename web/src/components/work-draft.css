@@ -1,8 +1,21 @@
-.work-draft-panel { border: 1px solid var(--line, #d4dce6); border-radius: 12px; padding: 16px; margin-top: 12px; background: var(--panel, #fff); color: var(--ink, #223348); }
-.work-draft-panel h3 { margin: 0 0 8px; }
+.work-draft-panel { border: 1px solid var(--line, #d4dce6); border-radius: 16px; padding: 20px; margin-top: 12px; background: var(--panel, #fff); color: var(--ink, #223348); }
+.work-draft-panel h3 { margin: 0 0 8px; font-size: 18px; letter-spacing: -.02em; }
 .work-draft-panel p { font-size: 13px; white-space: normal; }
 .work-draft-panel details { border-top: 1px solid #e1e6ed; padding: 10px 0; }
 .work-draft-panel summary { cursor: pointer; font-weight: 600; }
+.work-draft-panel > .draft-group { margin-top: 8px; padding: 0; border: 1px solid #e1e9e3; border-radius: 12px; background: #fff; overflow: clip; }
+.work-draft-panel > .draft-group[open] { border-color: #b8d2c3; box-shadow: 0 3px 14px rgb(25 59 47 / 4%); }
+.draft-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 10px 14px; list-style: none; }
+.draft-group > summary::-webkit-details-marker { display: none; }
+.draft-group > summary::after { content: "＋"; color: #71847a; font-size: 16px; font-weight: 400; }
+.draft-group[open] > summary::after { content: "−"; }
+.draft-group-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.draft-group-title small { color: #75867d; font-size: 11px; font-weight: 400; }
+.draft-group-meta { margin-left: auto; color: #71847a; font-size: 11px; font-weight: 400; }
+.draft-group-issues { color: #9b493c; }
+.draft-group > .draft-fields, .draft-group > details { margin: 0 14px 14px; }
+.draft-group > details { padding: 10px 0 0; }
+.draft-group > details > summary { color: #52675b; font-size: 12px; }
 .draft-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 12px 18px; margin-top: 12px; }
 .draft-field { display: grid; align-content: start; gap: 4px; }
 .draft-field label { font-size: 13px; font-weight: 600; }
@@ -11,6 +24,18 @@
 .draft-field input:disabled, .draft-field select:disabled { background: #f1f4f8; color: #748091; }
 .draft-metrics, .draft-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 0; }
 .draft-metrics label { display: inline-flex; gap: 6px; align-items: center; }
+.draft-metric-picker { min-width: 0; margin: 18px 0; padding: 0; border: 0; }
+.draft-metric-picker legend { padding: 0; color: #2c4639; font-size: 14px; font-weight: 700; }
+.draft-metric-picker > p { margin: 4px 0 10px; color: #718078; font-size: 12px; }
+.draft-metric-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.draft-metric-options label { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid #dfe8e1; border-radius: 11px; background: #fbfdfb; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
+.draft-metric-options label:hover { border-color: #91b6a0; }
+.draft-metric-options label.is-selected { border-color: #398873; background: #edf6ef; box-shadow: inset 0 0 0 1px #398873; }
+.draft-metric-options input { width: 16px; height: 16px; min-height: 0; margin: 0; flex: 0 0 auto; accent-color: #237866; }
+.draft-metric-options label > span { display: grid; gap: 2px; }
+.draft-metric-options strong { color: #294c3d; font-size: 13px; }
+.draft-metric-options small { color: #75867d; font-size: 11px; }
+.draft-metric-picker:disabled .draft-metric-options label { cursor: default; opacity: .68; }
 .draft-actions span { font-size: 12px; margin-right: auto; }
 .work-draft-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto; }
 .work-draft-panel textarea { width: 100%; min-height: 140px; box-sizing: border-box; }
@@ -30,4 +55,4 @@
 .draft-actions { position: sticky; bottom: 0; z-index: 1; background: var(--panel, #fff); border-top: 1px solid var(--line, #d4dce6); }
 .work-draft-panel :is(input, select, button, summary, textarea):focus-visible { outline: 3px solid #237866; outline-offset: 3px; }
 .work-draft-panel nav li { margin: 4px 0; }
-@media (max-width: 640px) { .draft-fields { grid-template-columns: 1fr; } .draft-actions button { flex: 1 1 140px; } }
+@media (max-width: 640px) { .work-draft-panel { padding: 14px; } .draft-fields, .draft-metric-options { grid-template-columns: 1fr; } .draft-group > .draft-fields, .draft-group > details { margin-right: 10px; margin-left: 10px; } .draft-group > summary { padding: 10px; } .draft-actions button { flex: 1 1 140px; } }

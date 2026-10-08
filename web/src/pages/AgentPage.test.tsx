@@ -6,6 +6,7 @@ import { resetWorkspace } from "../workspace";
 import { AgentPage } from "./AgentPage";
 
 const now = "2026-09-18T00:00:00Z";
+const initialWindowWidth = window.innerWidth;
 
 function json(value: unknown, status = 200): Promise<Response> {
   const body = status === 204 ? null : JSON.stringify(value);
@@ -161,6 +162,7 @@ function installFetch(options: Options = {}) {
 
 describe("agent workbench page", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
     window.localStorage.clear();
     window.sessionStorage.clear();
     resetWorkspace();
@@ -170,6 +172,7 @@ describe("agent workbench page", () => {
 
   afterEach(() => {
     cleanup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: initialWindowWidth });
     vi.restoreAllMocks();
   });
 

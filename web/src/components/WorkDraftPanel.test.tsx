@@ -192,7 +192,7 @@ describe("editable DPARSF draft", () => {
     render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn()} />);
     expect(screen.getByLabelText("T1 分割")).toContainHTML('value="new_segment"');
     expect(screen.getByLabelText("T1 结构像输入绑定")).toBeInTheDocument();
-    expect(screen.getByLabelText("DARTEL 构建模板")).toBeInTheDocument();
+    expect(screen.getByLabelText("DARTEL 构建模板（与 New Segment 联动）")).toBeInTheDocument();
     expect(screen.getByLabelText("平滑方法").querySelector('option[value="2"]')).toBeDisabled();
     fireEvent.change(screen.getByLabelText("标准化方法"), { target: { value: "3" } });
     expect(screen.getByLabelText("平滑方法").querySelector('option[value="2"]')).not.toBeDisabled();

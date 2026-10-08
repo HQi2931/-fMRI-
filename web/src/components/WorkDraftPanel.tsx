@@ -111,6 +111,7 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
   const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState("");
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ "数据与采集": true, "基础预处理": true });
   const actionLocked = readOnly || snapshot.consumed || busy || saving;
   const inputNeedsReview = snapshot.input_evidence_stale || snapshot.input_manifest_stale;
   const locked = actionLocked || inputNeedsReview;
@@ -120,6 +121,8 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
     if (saveError) saveErrorRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [saveError]);
   function locate(path: string) {
+    const group = groups.find((item) => item.fields.some((field) => field.path === path));
+    if (group) setOpenGroups((current) => ({ ...current, [group.title]: true }));
     const element = document.getElementById(`draft-${panelId}-${path}`);
     if (!element) return;
     let parent = element.parentElement;
@@ -281,16 +284,24 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
       <h4>关键参数状态 <small>来源与核验状态分别显示 · 启动仍需独立确认</small></h4>
       <ul>{statusSummaryFields.map((field) => <li key={field.path}><strong>{field.label}</strong><span>{summaryValue(field.path)}</span><small>来源：{summarySource(field.path)} · 状态：{summaryState(field.path)}</small></li>)}</ul>
     </section>
-    <div className="draft-metrics" role="group" aria-label="计算指标">{["alff", "falff", "reho"].map((metric) => <label key={metric}><input type="checkbox" disabled={locked} checked={Array.isArray(draft.requested_metrics) && draft.requested_metrics.includes(metric)} onChange={(event) => {
+    <fieldset className="draft-metric-picker" disabled={locked}>
+      <legend>计算指标</legend>
+      <p>选择本次要生成的指标；每个指标的参数在下方单独核对。</p>
+      <div className="draft-metric-options">{["alff", "falff", "reho"].map((metric) => <label key={metric} className={Array.isArray(draft.requested_metrics) && draft.requested_metrics.includes(metric) ? "is-selected" : ""}><input type="checkbox" aria-label={metric.toUpperCase()} checked={Array.isArray(draft.requested_metrics) && draft.requested_metrics.includes(metric)} onChange={(event) => {
       const current = Array.isArray(draft.requested_metrics) ? draft.requested_metrics : [];
       change("requested_metrics", event.target.checked ? [...current, metric] : current.filter((m) => m !== metric));
-    }} />{metric.toUpperCase()}</label>)}</div>
+    }} /><span><strong>{metric.toUpperCase()}</strong><small>{metric === "reho" ? "局部一致性" : metric === "falff" ? "低频振幅分数" : "低频振幅"}</small></span></label>)}</div>
+    </fieldset>
     <div className="draft-metrics">{[["preprocessing.t1", "T1 处理"], ["preprocessing.nuisance.head_motion_scrubbing", "头动回归时间点剔除"], ["reho.temporal_filter_band", "ReHo 分支滤波"]].map(([path, label]) => <label key={path}>{label}<select aria-label={`${label}配置状态`} disabled={locked || (path.startsWith("reho") && !draft.reho)} value={get(draft, path) === undefined ? "unknown" : get(draft, path) === null ? "off" : "on"} onChange={(event) => change(path, event.target.value === "off" ? null : path === "preprocessing.t1" ? { structural_artifact_id: "workspace:anatomical-source" } : {})}><option value="unknown" disabled>未填写</option><option value="off">停用 / 不适用</option><option value="on">配置参数</option></select></label>)}</div>
     {groups.map((group) => {
       const main = group.fields.filter((field) => keyFields.has(field.path) && !disabledReason(draft, field.path));
       const advancedFields = group.fields.filter((field) => !main.includes(field));
       const inactive = group.title === "ALFF / fALFF" && !draft.alff_falff ? "未选择该指标" : group.title === "ReHo" && !draft.reho ? "未选择该指标" : group.title === "T1 处理" && get(draft, "preprocessing.t1") === null ? "已停用" : undefined;
-      return <details key={group.title} open={!readOnly && main.length > 0}><summary>{group.title}{inactive ? ` · ${inactive}` : ""}</summary><div className="draft-fields">{main.map(renderField)}</div>{advancedFields.length > 0 && <details><summary>更多{group.title}参数</summary><div className="draft-fields">{advancedFields.map(renderField)}</div></details>}</details>;
+      const issueCount = issues.filter((issue) => group.fields.some((field) => issue.startsWith(`${field.path}：`) || issue.startsWith(`${field.path}:`))).length;
+      return <details className="draft-group" key={group.title} open={Boolean(openGroups[group.title])} onToggle={(event) => { const isOpen = event.currentTarget.open; setOpenGroups((current) => Boolean(current[group.title]) === isOpen ? current : { ...current, [group.title]: isOpen }); }}>
+        <summary><span className="draft-group-title">{group.title}{inactive ? <small>{inactive}</small> : null}</span><span className="draft-group-meta">{issueCount > 0 ? <span className="draft-group-issues">{issueCount} 项待处理</span> : main.length > 0 ? "常用参数" : "更多参数"}</span></summary>
+        <div className="draft-fields">{main.map(renderField)}</div>{advancedFields.length > 0 && <details><summary>更多{group.title}参数</summary><div className="draft-fields">{advancedFields.map(renderField)}</div></details>}
+      </details>;
     })}
     <details><summary>技术详情与高级配置</summary><p>方案标识：{snapshot.hash}。尚未通过校验的值不会执行。</p><pre>{JSON.stringify(draft, null, 2)}</pre>{!readOnly && <><label htmlFor={`advanced-${panelId}`}>完整参数 JSON（替换本地编辑）</label><textarea id={`advanced-${panelId}`} disabled={locked} value={advanced} onChange={(event) => setAdvanced(event.target.value)} placeholder="粘贴完整草稿 JSON；不含 confirmed_hash 或 provenance" /><button type="button" className="button button-secondary" disabled={locked || !advanced.trim()} onClick={() => {
       try { const parsed: unknown = JSON.parse(advanced); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("需要 JSON 对象"); const object = parsed as ObjectValue; if ("confirmed_hash" in object || JSON.stringify(object).includes('"provenance"')) throw new Error("不能编辑服务端确认与来源字段"); setDraft(object); setEdited(["advanced"]); setArrayText({}); setInputErrors({}); onDirty?.(true); setSaveError(""); }
