@@ -49,6 +49,8 @@ const statusSummaryFields = [
   { path: "alff_falff.result_smoothing_fwhm_mm", label: "结果图平滑核（毫米）" },
 ];
 
+const resultSmoothingFields = ["alff_falff.result_smoothing", "reho.smooth_reho", "reho.global_result_smoothing"];
+
 function get(value: ObjectValue, path: string): unknown {
   return path.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as ObjectValue)[key] : undefined, value);
 }
@@ -76,6 +78,7 @@ function issueState(issues: string[]): string | undefined {
 function disabledReason(draft: ObjectValue, path: string): string | undefined {
   if (path.startsWith("alff_falff.") && !draft.alff_falff) return "未选择 ALFF/fALFF";
   if (path.startsWith("reho.") && !draft.reho) return "未选择 ReHo";
+  for (const flag of resultSmoothingFields) if (path === `${flag}_fwhm_mm` && get(draft, flag) === false) return "结果图平滑已停用";
   if (path.startsWith("preprocessing.t1.") && get(draft, "preprocessing.t1") === null) return "T1 处理已停用";
   for (const prefix of ["preprocessing.slice_timing", "preprocessing.realignment", "preprocessing.nuisance", "preprocessing.scrubbing", "preprocessing.nuisance.white_matter", "preprocessing.nuisance.csf", "preprocessing.nuisance.global_signal"]) {
     if (path.startsWith(`${prefix}.`) && path !== `${prefix}.enabled` && get(draft, `${prefix}.enabled`) === false) return "此步骤已停用";
@@ -211,6 +214,10 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
       } else next.alff_falff = null;
       if (metrics.includes("reho")) next.reho ??= {}; else next.reho = null;
     }
+    if (resultSmoothingFields.includes(path) && value === false) put(next, `${path}_fwhm_mm`, null);
+    // Inactive fields must not retain invalid text or block saving unrelated choices.
+    setArrayText((items) => Object.fromEntries(Object.entries(items).filter(([key]) => !disabledReason(next, key))));
+    setInputErrors((items) => Object.fromEntries(Object.entries(items).filter(([key]) => !disabledReason(next, key))));
     setDraft(next); setEdited((items) => [...new Set([...items, path])]); onDirty?.(true); setSaveError("");
   }
   async function save() {

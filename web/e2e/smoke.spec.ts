@@ -183,7 +183,8 @@ test("recovers a rejected stale input into a read-only, clearly invalidated draf
   await page.getByRole("dialog").getByRole("button", { name: "确认并启动计算" }).click();
   await expect(page.getByText("旧输入事实已撤回，请确认输入阶段并重新读取。", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "预处理方案参数" }).getByRole("status")).toContainText("参数选择已保留");
-  await expect(page.getByText("来源：历史读取（待重读）")).toBeVisible();
+  await expect(page.getByText("来源：历史读取（待重读）", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "关键参数状态" })).toContainText("来源：历史读取（待重读）");
   await expect(page.getByRole("spinbutton", { name: "重复时间 TR（秒）" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "使用 FunRaw", exact: true })).toBeEnabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);

@@ -10,6 +10,56 @@ const snapshot = (draft: Record<string, unknown> = {}): WorkDraftSnapshot => ({ 
 const confirmation = { title: "确认方案参数", summary: "仅编译", options: [{ label: "确认", description: "审查参数", command: "确认方案参数 aaaaaaaaaaaa" }] };
 
 describe("editable DPARSF draft", () => {
+  it.each([
+    ["alff_falff", "result_smoothing", "结果图平滑", "结果图 平滑核（毫米）"],
+    ["reho", "smooth_reho", "ReHo 结果图平滑", "ReHo 平滑核（毫米）"],
+    ["reho", "global_result_smoothing", "ReHo 全局结果平滑", "ReHo 全局 平滑核（毫米）"],
+  ])("clears the inactive kernel for %s.%s and requires a new choice on re-enable", async (section, flag, label, kernelLabel) => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<WorkDraftPanel snapshot={snapshot({ requested_metrics: [section === "reho" ? "reho" : "alff"], [section]: { [flag]: true, [`${flag}_fwhm_mm`]: [4, 4, 4] } })} onSave={save} />);
+    fireEvent.change(screen.getByLabelText(kernelLabel), { target: { value: "[4," } });
+    fireEvent.change(screen.getByLabelText(label), { target: { value: "false" } });
+    expect(screen.getByLabelText(kernelLabel)).toBeDisabled();
+    expect(screen.getByLabelText(kernelLabel)).toHaveValue("");
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(save).toHaveBeenCalledWith("a".repeat(64), { [section]: { [flag]: false, [`${flag}_fwhm_mm`]: null } });
+    fireEvent.change(screen.getByLabelText(label), { target: { value: "true" } });
+    expect(screen.getByLabelText(kernelLabel)).toBeEnabled();
+    expect(screen.getByLabelText(kernelLabel)).toHaveValue("");
+  });
+  it("clears inactive array errors when slice timing is disabled and leaves re-enabled choices unresolved", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<WorkDraftPanel snapshot={snapshot({ preprocessing: { tr_seconds: 2, slice_timing: { enabled: true, slice_count: 3, slice_order: [1, 2, 3], reference_slice: 2 } } })} onSave={save} />);
+    fireEvent.change(screen.getByLabelText("层采集顺序"), { target: { value: "[1," } });
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("层时间校正"), { target: { value: "false" } });
+    expect(screen.getByLabelText("层采集顺序")).toBeDisabled();
+    expect(screen.getByLabelText("层采集顺序")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(save).toHaveBeenCalledWith("a".repeat(64), { preprocessing: { slice_timing: { enabled: false, slice_count: null, slice_order: null, reference_slice: null } } });
+    fireEvent.change(screen.getByLabelText("层时间校正"), { target: { value: "true" } });
+    expect(screen.getByLabelText("层采集顺序")).toBeEnabled();
+    expect(screen.getByLabelText("层采集顺序")).toHaveValue("");
+    expect(screen.getByLabelText("层数")).toHaveValue(null);
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
+  });
+  it("drops invalid buffers from removed metrics while retaining errors for active parameters", () => {
+    render(<WorkDraftPanel snapshot={snapshot({ requested_metrics: ["alff", "reho"], alff_falff: { result_smoothing_fwhm_mm: [4, 4, 4] }, reho: { smooth_reho_fwhm_mm: [6, 6, 6] } })} onSave={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("结果图 平滑核（毫米）"), { target: { value: "[4," } });
+    fireEvent.change(screen.getByLabelText("ReHo 平滑核（毫米）"), { target: { value: "[6," } });
+    fireEvent.click(screen.getByLabelText("ALFF"));
+    expect(screen.getByLabelText("结果图 平滑核（毫米）")).toBeDisabled();
+    expect(screen.getByLabelText("结果图 平滑核（毫米）")).toHaveValue("");
+    expect(screen.getByLabelText("ReHo 平滑核（毫米）")).toHaveValue("[6,");
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("ReHo 平滑核（毫米）"), { target: { value: "6, 6, 6" } });
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("ALFF"));
+    expect(screen.getByLabelText("结果图 平滑核（毫米）")).toBeEnabled();
+    expect(screen.getByLabelText("结果图 平滑核（毫米）")).toHaveValue("");
+  });
   it("withdraws saved metadata provenance from a locally edited summary and restores it on discard", () => {
     render(<WorkDraftPanel snapshot={{ ...snapshot({ preprocessing: { tr_seconds: 2 } }), sources: { "preprocessing.tr_seconds": "data" }, field_states: { "preprocessing.tr_seconds": "verified" } }} onSave={vi.fn()} />);
     const row = within(screen.getByRole("region", { name: "关键参数状态" })).getByText("TR").closest("li")!;
