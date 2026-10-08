@@ -33,6 +33,7 @@ from neuroagent.application.work_draft import (
     draft_hash,
     draft_schema,
     draft_snapshot,
+    execution_summary,
     invalidate_input_evidence,
     merge_work_draft,
     plan_preview,
@@ -1311,14 +1312,7 @@ class WorkDialogue:
         )
         payload["confirmation_request"] = {
             "title": "确认并启动计算",
-            "summary": (
-                "当前方案已通过科学校验。确认后将启动本机 MATLAB 计算。"
-                + (
-                    "计算后生成头动 QC，等待人工审查。"
-                    if draft.qc_mode == "head_motion"
-                    else "本次明确跳过头动 QC。"
-                )
-            ),
+            "summary": execution_summary(draft),
             "options": [
                 {
                     "label": "确认并启动计算",

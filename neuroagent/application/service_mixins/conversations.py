@@ -52,6 +52,7 @@ from neuroagent.application.work_draft import (
     WorkDraft,
     draft_hash,
     draft_snapshot,
+    execution_summary,
     invalidate_input_evidence,
     merge_work_draft,
     plan_preview,
@@ -336,8 +337,7 @@ class ConversationMixin(BaseServiceMixin):
                         "plan_revision": plan.model_dump(mode="json"),
                         "confirmation_request": {
                             "title": "确认并启动计算",
-                            "summary": "确认后启动本机 MATLAB 计算，"
-                            "沿用当前方案及已选择的 QC 方式。",
+                            "summary": execution_summary(draft),
                             "options": [
                                 {
                                     "label": "确认并启动计算",

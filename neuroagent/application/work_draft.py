@@ -38,6 +38,25 @@ class WorkDraft(BaseModel):
         return self
 
 
+def execution_summary(draft: WorkDraft) -> str:
+    """Describe the validated choices identically for new and renewed confirmations."""
+    metrics = "、".join(
+        {"alff": "ALFF", "falff": "fALFF", "reho": "ReHo"}[metric.value]
+        for metric in draft.requested_metrics
+    )
+    return (
+        f"本次指标：{metrics}；TR {draft.preprocessing['tr_seconds']} 秒，"
+        f"{draft.preprocessing['expected_time_points']} 个时间点，"
+        f"删除前 {draft.preprocessing['dummy_scans']} 个时间点。\n"
+        "当前方案已通过科学校验。确认后将启动本机 MATLAB 计算。"
+        + (
+            "计算后生成头动 QC，等待人工审查。"
+            if draft.qc_mode == "head_motion"
+            else "本次明确跳过头动 QC。"
+        )
+    )
+
+
 def draft_hash(draft: WorkDraft) -> str:
     payload = draft.model_dump(mode="json", exclude={"confirmed_hash"})
     return hashlib.sha256(

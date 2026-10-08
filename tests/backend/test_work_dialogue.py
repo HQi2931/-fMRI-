@@ -698,6 +698,11 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
     assert confirmation["title"] == "确认方案参数"
     assert confirmation["options"][0]["command"] == f"确认方案参数 {draft_hash(draft)[:12]}"
     assert confirmed["assistant_message"]["payload"]["work_draft"]["compiled"]
+    summary = confirmed["assistant_message"]["payload"]["confirmation_request"]["summary"]
+    assert "本次指标：" in summary
+    assert f"TR {draft.preprocessing['tr_seconds']} 秒" in summary
+    assert f"{draft.preprocessing['expected_time_points']} 个时间点" in summary
+    assert f"删除前 {draft.preprocessing['dummy_scans']} 个时间点" in summary
 
 
 @pytest.mark.asyncio
