@@ -19,6 +19,13 @@ beforeEach(() => {
 });
 
 describe("Work run and results", () => {
+  it.each(["failed_retryable", "failed_terminal", "timed_out", "cancelled"] as const)("keeps registered files clearly qualified after %s", async (state) => {
+    vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "partial", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);
+    render(<WorkRunPanel run={run(state)} />);
+    await screen.findByText("本次执行未成功完成。以下为已登记文件，请核对处理是否完整及科研适用性。");
+    expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/partial/content");
+    expect(screen.queryByText("QC 审查已通过。")).not.toBeInTheDocument();
+  });
   it("retains loaded results after a refresh fails but never carries them into another attempt", async () => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "a1", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);
     vi.mocked(api.runQcReview).mockRejectedValue(new Error("review unavailable"));

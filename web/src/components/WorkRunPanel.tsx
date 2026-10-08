@@ -147,6 +147,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       {run.state === "cancelling" && <span>正在等待执行器确认取消。</span>}
     </div>
     {artifacts.length > 0 && <div className="work-run-results"><h4>结果与记录（{artifacts.length}）</h4>
+      {["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state) && <p className="work-run-warning">本次执行未成功完成。以下为已登记文件，请核对处理是否完整及科研适用性。</p>}
       {gallery.length > 0 && <div className="work-run-gallery">{gallery.map((artifact) => <div key={artifact.artifact_id}><strong>{artifactLabel(artifact)}</strong><ImagePreview artifact={artifact} /></div>)}</div>}
       {artifacts.map((artifact) => <details key={artifact.artifact_id}><summary>{artifactLabel(artifact)} · {artifact.relative_path.split("/").at(-1)}</summary>
         {!gallery.includes(artifact) && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path) && <ImagePreview artifact={artifact} />}
