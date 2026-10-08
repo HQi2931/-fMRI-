@@ -48,6 +48,11 @@ describe("Work run and results", () => {
     expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/a1/content");
     expect(api.runQcReview).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
     expect(api.qcReview).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "采用这些阈值生成审查" })).not.toBeInTheDocument();
+    expect(api.createHeadMotionQc).not.toHaveBeenCalled();
+    vi.mocked(api.runQcReview).mockResolvedValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "重新加载详情" }));
+    expect(await screen.findByRole("button", { name: "采用这些阈值生成审查" })).toBeEnabled();
   });
   it("keeps registered artifacts available when only the QC report is broken", async () => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "qc-broken", run_id: "run-1", project_id: "project", artifact_type: "qc.head_motion_report", relative_path: "qc/report.json", size_bytes: 800, checksum: "a".repeat(64), created_at: "2026-10-06T10:07:20Z", provenance: {} }]);

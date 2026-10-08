@@ -46,7 +46,7 @@ function elapsedLabel(events: RuntimeEvent[], now: number) {
 }
 
 export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (updated: Run) => void }) {
-  const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; qcSubjects: Array<Record<string, unknown>> } | null>(null);
+  const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; reviewLoaded: boolean; qcSubjects: Array<Record<string, unknown>> } | null>(null);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState<{ runId: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -77,7 +77,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
             if (qc && typeof qc === "object" && "subjects" in qc && Array.isArray(qc.subjects)) qcSubjects = qc.subjects.filter((subject): subject is Record<string, unknown> => Boolean(subject) && typeof subject === "object");
           } catch { reportError = "自动 QC 报告暂时无法读取。计算产物仍可查看和下载，请重新加载详情或检查报告文件。"; }
         }
-        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, qcSubjects }); setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" ")); }
+        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, reviewLoaded: !reviewError, qcSubjects }); setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" ")); }
       } catch (caught) {
         if (!controller.signal.aborted) setError(`运行详情暂时不可用：${describeError(caught)}`);
       }
@@ -144,7 +144,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       </details>)}
     </div>}
     {current && current.qcSubjects.length > 0 && <div><h4>自动头动 QC</h4><p>自动测量不代表人工科学审查已通过。</p><table><thead><tr><th>受试者</th><th>最大平移（mm）</th><th>最大旋转（°）</th><th>平均 FD（mm）</th><th>自动检查</th></tr></thead><tbody>{current.qcSubjects.map((subject, index) => <tr key={index}><td>{String(subject.subject_id ?? "—")}</td>{["max_translation_mm", "max_rotation_deg", "mean_fd_power"].map((key) => <td key={key}>{typeof subject[key] === "number" ? subject[key].toFixed(3) : "—"}</td>)}<td>{subject.passed === true ? "通过" : "需检查"}</td></tr>)}</tbody></table></div>}
-    {run.state === "qc_review" && !review && <details><summary>生成头动 QC 审查</summary><p>阈值：平移 2 mm，旋转 2°，平均 FD 0.2 mm，FD &gt; 0.5 mm 比例 20%。请核对本项目要求后选择。</p><button type="button" disabled={busy} onClick={() => void action("qc")}>采用这些阈值生成审查</button></details>}
+    {run.state === "qc_review" && current?.reviewLoaded && !review && <details><summary>生成头动 QC 审查</summary><p>阈值：平移 2 mm，旋转 2°，平均 FD 0.2 mm，FD &gt; 0.5 mm 比例 20%。请核对本项目要求后选择。</p><button type="button" disabled={busy} onClick={() => void action("qc")}>采用这些阈值生成审查</button></details>}
     {review && <div><h4>QC 检查</h4><ul>{review.review.checks.map((check) => <li key={check.code}>{check.passed ? "通过" : "需处理"}：{QC_CHECK_LABELS[check.code]?.[check.passed ? 0 : 1] ?? check.message}</li>)}</ul><p>纳入 {review.review.included_subject_ids.length} 人，排除 {review.review.excluded_subject_ids.length} 人。</p>
       {review.state === "draft" && run.state === "qc_review" && <button type="button" disabled={busy || review.review.checks.some((check) => !check.passed && check.severity === "blocking")} onClick={() => void action("approve")}>确认 QC 结论并批准</button>}
     </div>}
