@@ -19,6 +19,25 @@ beforeEach(() => {
 });
 
 describe("Work run and results", () => {
+  it("retains loaded results after a refresh fails but never carries them into another attempt", async () => {
+    vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "a1", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);
+    vi.mocked(api.runQcReview).mockRejectedValue(new Error("review unavailable"));
+    const view = render(<WorkRunPanel run={run()} />);
+    await screen.findByText(/QC 审查记录暂时无法读取/);
+    expect(screen.getByRole("link", { name: "下载产物" })).toBeInTheDocument();
+    vi.mocked(api.artifacts).mockRejectedValue(new Error("artifacts unavailable"));
+    vi.mocked(api.runEvents).mockRejectedValue(new Error("events unavailable"));
+    vi.mocked(api.plan).mockRejectedValue(new Error("plan unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "重新加载详情" }));
+    await screen.findByText(/产物列表暂时不可用/);
+    expect(screen.getByRole("link", { name: "下载产物" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "下载对应方案" })).toBeInTheDocument();
+    expect(screen.getByText("计算耗时：6 分 20 秒")).toBeInTheDocument();
+    view.rerender(<WorkRunPanel run={{ ...run(), attempt: 2 }} />);
+    await waitFor(() => expect(api.artifacts).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("link", { name: "下载产物" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "下载对应方案" })).not.toBeInTheDocument();
+  });
   it.each([
     ["skipped", "QC 已明确跳过，请自行评估使用限制。"],
     ["approved", "QC 审查已通过。"],

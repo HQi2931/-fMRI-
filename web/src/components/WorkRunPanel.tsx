@@ -46,7 +46,7 @@ function elapsedLabel(events: RuntimeEvent[], now: number) {
 }
 
 export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (updated: Run) => void }) {
-  const [data, setData] = useState<{ runId: string; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; reviewLoaded: boolean; qcSubjects: Array<Record<string, unknown>> } | null>(null);
+  const [data, setData] = useState<{ runId: string; attempt: number; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; reviewLoaded: boolean; qcSubjects: Array<Record<string, unknown>> } | null>(null);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState<{ runId: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -77,7 +77,17 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
             if (qc && typeof qc === "object" && "subjects" in qc && Array.isArray(qc.subjects)) qcSubjects = qc.subjects.filter((subject): subject is Record<string, unknown> => Boolean(subject) && typeof subject === "object");
           } catch { reportError = "自动 QC 报告暂时无法读取。计算产物仍可查看和下载，请重新加载详情或检查报告文件。"; }
         }
-        if (!controller.signal.aborted) { setData({ runId: run.run_id, artifacts, events, plan, review, reviewLoaded: !reviewError, qcSubjects }); setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" ")); }
+        if (!controller.signal.aborted) {
+          setData((previous) => {
+            const sameAttempt = previous?.runId === run.run_id && previous.attempt === run.attempt ? previous : null;
+            return { runId: run.run_id, attempt: run.attempt,
+              artifacts: artifactResult.status === "fulfilled" ? artifacts : sameAttempt?.artifacts ?? [],
+              events: eventResult.status === "fulfilled" ? events : sameAttempt?.events ?? [],
+              plan: planResult.status === "fulfilled" ? plan : sameAttempt?.plan ?? null,
+              review, reviewLoaded: !reviewError, qcSubjects };
+          });
+          setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" "));
+        }
       } catch (caught) {
         if (!controller.signal.aborted) setError(`运行详情暂时不可用：${describeError(caught)}`);
       }
@@ -85,13 +95,13 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     }
     void load();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [run.run_id, run.plan_revision_id, run.version, run.state, reload]);
+  }, [run.run_id, run.plan_revision_id, run.version, run.state, run.attempt, reload]);
   useEffect(() => {
     if (!activeStates.has(run.state)) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [run.state]);
-  const current = data?.runId === run.run_id ? data : null;
+  const current = data?.runId === run.run_id && data.attempt === run.attempt ? data : null;
   const events = current?.events ?? [];
   const artifacts = current?.artifacts ?? [];
   const gallery = artifacts.filter((artifact) => artifact.artifact_type.startsWith("metric.") && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path)).slice(0, 3);
@@ -130,7 +140,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {run.state === "succeeded" && <p>{run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
     {run.error && <p role="alert">运行失败：{run.error}</p>}
     {actionError?.runId === run.run_id && <p role="alert">{actionError.message}</p>}
-    {error && <div role="alert">{error} <button type="button" onClick={() => setReload((value) => value + 1)}>重新加载详情</button></div>}
+    {error && <div role="alert">{error}<p>已显示的详情可能不是最新，请重新加载核对。</p><button type="button" onClick={() => setReload((value) => value + 1)}>重新加载详情</button></div>}
     <div className="work-run-actions">
       {["queued", "running"].includes(run.state) && <button type="button" disabled={busy} onClick={() => void action("cancel")}>取消计算</button>}
       {["failed_retryable", "timed_out"].includes(run.state) && <button type="button" disabled={busy} onClick={() => void action("retry")}>确认重试计算</button>}
