@@ -3,6 +3,9 @@
 from neuroagent.infrastructure.persistence.repository_mixins._base import RepositoryBaseMixin
 from neuroagent.infrastructure.persistence.repository_mixins.artifacts import ArtifactEventMixin
 from neuroagent.infrastructure.persistence.repository_mixins.conversations import ConversationMixin
+from neuroagent.infrastructure.persistence.repository_mixins.external_imports import (
+    ExternalAnalysisImportMixin,
+)
 from neuroagent.infrastructure.persistence.repository_mixins.idempotency import IdempotencyMixin
 from neuroagent.infrastructure.persistence.repository_mixins.jobs import JobExecutionMixin
 from neuroagent.infrastructure.persistence.repository_mixins.literature import LiteratureMixin
@@ -18,6 +21,7 @@ from neuroagent.infrastructure.persistence.repository_mixins.workspace_assistant
 __all__ = [
     "ArtifactEventMixin",
     "ConversationMixin",
+    "ExternalAnalysisImportMixin",
     "IdempotencyMixin",
     "JobExecutionMixin",
     "LiteratureMixin",

@@ -30,8 +30,16 @@ from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.tool_result import ToolCallOutcome
 from neuroagent.agent.tool_spec import LlmTool, ToolTier
 from neuroagent.application.agent_tools import AuditSink, ToolBinding, ToolDispatcher
+from neuroagent.application.contracts import StatisticalClusterRoiView, StatisticalResultDetailView
 from neuroagent.application.errors import NotFoundError
 from neuroagent.application.ports import WorkspaceFilePolicyPort
+from neuroagent.application.statistical_capabilities import model_visible_capabilities
+from neuroagent.application.statistical_result_facts import (
+    aggregate_roi,
+    localization_model_facts,
+    result_model_facts,
+    verified_result_design,
+)
 
 logger = logging.getLogger(__name__)
 MAX_WORKSPACE_RETURN_CHARS = 16_000
@@ -43,6 +51,10 @@ MAX_CORRECTIONS_REPORTED = 20
 GetRunCall = Callable[[str], Mapping[str, Any]]
 ListArtifactsCall = Callable[[str], Sequence[Mapping[str, Any]]]
 ListResultsCall = Callable[[str], Sequence[Mapping[str, Any]]]
+GetResultDetailCall = Callable[[str], Mapping[str, Any]]
+ResultLocalizationCall = Callable[[str, str], Mapping[str, Any]]
+ClusterRoiCall = Callable[[str, str | None], Mapping[str, Any]]
+ListExternalImportsCall = Callable[[str], Sequence[Mapping[str, Any]]]
 RunDiagnosisCall = Callable[[str], Mapping[str, Any]]
 CorrectionCapabilitiesCall = Callable[[], Sequence[Mapping[str, Any]]]
 ListSkillsCall = Callable[[], Sequence[Mapping[str, Any]]]
@@ -67,6 +79,7 @@ class AgentExecutionContext:
     workspace_file_scope: tuple[str, ...] = ()
     workspace_content_consent: bool = False
     workspace_stage_candidates: tuple[Mapping[str, Any], ...] = ()
+    work_agent_role: str = "preprocessing"
 
 
 GET_RUN_STATUS_TOOL = LlmTool(
@@ -127,6 +140,74 @@ GET_STATISTICAL_RESULTS_TOOL = LlmTool(
     },
     tier=ToolTier.READ,
     max_result_bytes=16_384,
+)
+
+GET_STATISTICAL_RESULT_DETAIL_TOOL = LlmTool(
+    name="get_statistical_result_detail",
+    description=(
+        "Read verified, aggregate method and inference facts plus bounded cluster summaries. "
+        "This does not expose full reports, participant IDs, or covariate values. "
+        "The result must belong to the current project and a run in this conversation's scope."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"result_id": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "required": ["result_id"],
+        "additionalProperties": False,
+    },
+    tier=ToolTier.READ,
+    max_result_bytes=65_536,
+)
+
+GET_RESULT_LOCALIZATION_TOOL = LlmTool(
+    name="get_statistical_result_localization",
+    description=(
+        "Read deterministic peak localization and cluster atlas coverage using the atlas frozen "
+        "in the formal plan. Unknown/different space or changed atlas blocks localization. "
+        "An empty result is a normal no-significant-voxels result. A legacy result without an "
+        "atlas requires an explicit researcher selection in a new formal plan."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"result_id": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "required": ["result_id"],
+        "additionalProperties": False,
+    },
+    tier=ToolTier.READ,
+    max_result_bytes=65_536,
+)
+
+GET_CLUSTER_SUMMARY_TOOL = LlmTool(
+    name="get_statistical_cluster_summary",
+    description=(
+        "Read descriptive ROI aggregates for one registered cluster, grouped by group and paired "
+        "condition. Returns counts, mean, sample standard deviation and range only; no participant "
+        "IDs or individual values. These same-data ROI summaries are not independent validation "
+        "and do not provide another p value."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "result_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "cluster_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+        },
+        "required": ["result_id"],
+        "additionalProperties": False,
+    },
+    tier=ToolTier.READ,
+    max_result_bytes=32_768,
+)
+
+GET_EXTERNAL_ANALYSIS_IMPORTS_TOOL = LlmTool(
+    name="get_external_analysis_imports",
+    description=(
+        "List external DPABI subject-level metric directories already inspected for this project. "
+        "The list distinguishes pending researcher review from explicitly included sources and "
+        "shows known and unknown processing information. It never includes raw filenames or paths."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    tier=ToolTier.READ,
+    max_result_bytes=32_768,
 )
 
 DESCRIBE_CORRECTIONS_TOOL = LlmTool(
@@ -223,6 +304,11 @@ def build_work_tool_bindings(
     list_artifacts: ListArtifactsCall | None = None,
     diagnose_run: RunDiagnosisCall | None = None,
     list_results: ListResultsCall | None = None,
+    get_result_detail: GetResultDetailCall | None = None,
+    get_result_summary: GetResultDetailCall | None = None,
+    localize_result: ResultLocalizationCall | None = None,
+    cluster_roi: ClusterRoiCall | None = None,
+    list_external_imports: ListExternalImportsCall | None = None,
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
     project_id: str | None = None,
@@ -232,6 +318,7 @@ def build_work_tool_bindings(
     workspace_scope: tuple[str, ...] = (),
     workspace_stage_candidates: tuple[Mapping[str, Any], ...] = (),
     workspace_stage_check_available: bool = False,
+    work_agent_role: str = "preprocessing",
 ) -> list[ToolBinding]:
     """Bind the Work read catalog to injected application-service callables."""
 
@@ -332,10 +419,111 @@ def build_work_tool_bindings(
             ],
         }
 
+    def scoped_result(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+        if get_result_detail is None:
+            return None
+        result_id = str(arguments["result_id"])
+        try:
+            result = dict(get_result_detail(result_id))
+        except NotFoundError:
+            return None
+        if project_id is not None and str(result.get("project_id", "")) != project_id:
+            return None
+        if allowed_run_ids is not None and str(result.get("run_id", "")) not in allowed_run_ids:
+            return None
+        return result
+
+    def get_statistical_result_detail(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = scoped_result(arguments)
+        if result is None:
+            return {"status": "not_available_in_scope"}
+        result_id = str(arguments["result_id"])
+        detail = StatisticalResultDetailView.model_validate(
+            get_result_summary(result_id) if get_result_summary else result
+        )
+        return result_model_facts(detail)
+
+    def get_statistical_result_localization(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = scoped_result(arguments)
+        if result is None:
+            return {"status": "not_available_in_scope"}
+        detail = StatisticalResultDetailView.model_validate(result)
+        manifest, _, report = verified_result_design(detail)
+        if localize_result is None:
+            return {"status": "localization_unavailable"}
+        selected = report.get("localization_plan")
+        if not manifest.clusters:
+            # The application returns an empty result before any atlas/space lookup.
+            return localization_model_facts(localize_result(detail.result_id, ""))
+        spaces = sorted({cluster.coordinate_space for cluster in manifest.clusters})
+        if spaces != ["MNI"]:
+            return {
+                "status": "coordinate_space_unknown"
+                if any(space.lower() in {"unknown", "unreported", ""} for space in spaces)
+                else "coordinate_space_mismatch",
+                "result_id": detail.result_id,
+                "result_spaces": spaces,
+                "atlas_space": "MNI",
+            }
+        if selected is None:
+            return {"status": "atlas_selection_required", "result_id": detail.result_id}
+        return localization_model_facts(
+            localize_result(detail.result_id, str(selected["atlas_id"]))
+        )
+
+    def get_statistical_cluster_summary(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = scoped_result(arguments)
+        if result is None:
+            return {"status": "not_available_in_scope"}
+        detail = StatisticalResultDetailView.model_validate(result)
+        verified_result_design(detail)
+        if cluster_roi is None:
+            return {"status": "roi_unavailable"}
+        roi = StatisticalClusterRoiView.model_validate(
+            cluster_roi(detail.result_id, arguments.get("cluster_id"))
+        )
+        return aggregate_roi(roi)
+
+    def get_external_analysis_imports(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        del arguments
+        if project_id is None or list_external_imports is None:
+            return {"status": "not_available_in_scope", "imports": []}
+        all_records = list(list_external_imports(project_id))
+        records = all_records[:MAX_ARTIFACTS_REPORTED]
+        public_records: list[dict[str, Any]] = []
+        for record in records:
+            public_records.append(
+                {
+                    "import_id": record.get("import_id"),
+                    "status": record.get("status"),
+                    "version": record.get("version"),
+                    "metric_kind": record.get("metric_kind"),
+                    "scaling": record.get("scaling"),
+                    "subject_count": record.get("subject_count"),
+                    "group_counts": dict(record.get("group_counts", {})),
+                    "grid_consistent": not bool(record.get("blocking_issues")),
+                    "blocking_issues": list(record.get("blocking_issues", ()))[:20],
+                    "warnings": list(record.get("warnings", ()))[:20],
+                    "unknown_processing_fields": list(record.get("unknown_processing_fields", ())),
+                    "coordinate_space": record.get("coordinate_space", "unknown"),
+                    "inclusion_hash": record.get("inclusion_hash"),
+                }
+            )
+        return {
+            "status": "succeeded",
+            "total": len(all_records),
+            "imports": public_records,
+            "truncated": len(all_records) > len(public_records),
+        }
+
     def describe_corrections(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         del arguments
         if correction_capabilities is None:
-            return {"total": 0, "corrections": []}
+            return {
+                "total": 0,
+                "corrections": [],
+                "tests": model_visible_capabilities(),
+            }
         items = list(correction_capabilities())
         return {
             "total": len(items),
@@ -347,6 +535,7 @@ def build_work_tool_bindings(
                 }
                 for item in items[:MAX_CORRECTIONS_REPORTED]
             ],
+            "tests": model_visible_capabilities(),
         }
 
     def list_available_skills(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -529,6 +718,16 @@ def build_work_tool_bindings(
         ToolBinding(tool=GET_RUN_STATUS_TOOL, handler=get_run_status),
         ToolBinding(tool=LIST_RUN_ARTIFACTS_TOOL, handler=list_run_artifacts),
         ToolBinding(tool=GET_STATISTICAL_RESULTS_TOOL, handler=get_statistical_results),
+        ToolBinding(
+            tool=GET_STATISTICAL_RESULT_DETAIL_TOOL,
+            handler=get_statistical_result_detail,
+        ),
+        ToolBinding(tool=GET_RESULT_LOCALIZATION_TOOL, handler=get_statistical_result_localization),
+        ToolBinding(tool=GET_CLUSTER_SUMMARY_TOOL, handler=get_statistical_cluster_summary),
+        ToolBinding(
+            tool=GET_EXTERNAL_ANALYSIS_IMPORTS_TOOL,
+            handler=get_external_analysis_imports,
+        ),
         ToolBinding(tool=DESCRIBE_CORRECTIONS_TOOL, handler=describe_corrections),
         ToolBinding(tool=LIST_SKILLS_TOOL, handler=list_available_skills),
     ]
@@ -548,7 +747,34 @@ def build_work_tool_bindings(
                 ToolBinding(tool=READ_WORKSPACE_CONTENT_TOOL, handler=read_workspace_content),
             ]
         )
-    return bindings
+    if work_agent_role == "analysis":
+        analysis_tools = {
+            "get_run_status",
+            "list_run_artifacts",
+            "get_statistical_results",
+            "get_statistical_result_detail",
+            "get_statistical_result_localization",
+            "get_statistical_cluster_summary",
+            "get_external_analysis_imports",
+            "describe_statistical_capabilities",
+            "list_skills",
+            "list_workspace_entries",
+            "search_workspace_content",
+            "read_workspace_content",
+        }
+        return [item for item in bindings if item.tool.name in analysis_tools]
+    preprocessing_tools = {
+        "get_run_status",
+        "list_run_artifacts",
+        "get_statistical_results",
+        "get_run_diagnosis",
+        "list_skills",
+        "list_workspace_stages",
+        "list_workspace_entries",
+        "search_workspace_content",
+        "read_workspace_content",
+    }
+    return [item for item in bindings if item.tool.name in preprocessing_tools]
 
 
 def build_work_dispatcher(
@@ -558,6 +784,11 @@ def build_work_dispatcher(
     list_artifacts: ListArtifactsCall | None = None,
     diagnose_run: RunDiagnosisCall | None = None,
     list_results: ListResultsCall | None = None,
+    get_result_detail: GetResultDetailCall | None = None,
+    get_result_summary: GetResultDetailCall | None = None,
+    localize_result: ResultLocalizationCall | None = None,
+    cluster_roi: ClusterRoiCall | None = None,
+    list_external_imports: ListExternalImportsCall | None = None,
     correction_capabilities: CorrectionCapabilitiesCall | None = None,
     list_skills: ListSkillsCall | None = None,
     audit: AuditSink | None = None,
@@ -567,6 +798,7 @@ def build_work_dispatcher(
     workspace_scope: tuple[str, ...] = (),
     workspace_stage_candidates: tuple[Mapping[str, Any], ...] = (),
     workspace_stage_check_available: bool = False,
+    work_agent_role: str = "preprocessing",
 ) -> ToolDispatcher:
     return ToolDispatcher(
         build_work_tool_bindings(
@@ -574,6 +806,11 @@ def build_work_dispatcher(
             list_artifacts=list_artifacts,
             diagnose_run=diagnose_run,
             list_results=list_results,
+            get_result_detail=get_result_detail,
+            get_result_summary=get_result_summary,
+            localize_result=localize_result,
+            cluster_roi=cluster_roi,
+            list_external_imports=list_external_imports,
             correction_capabilities=correction_capabilities,
             list_skills=list_skills,
             project_id=project_id,
@@ -583,6 +820,7 @@ def build_work_dispatcher(
             workspace_scope=workspace_scope,
             workspace_stage_candidates=workspace_stage_candidates,
             workspace_stage_check_available=workspace_stage_check_available,
+            work_agent_role=work_agent_role,
         ),
         policy=policy,
         audit=audit,
@@ -596,6 +834,7 @@ class WorkToolLoopResult(BaseModel):
     finish_reason: str | None = None
     stop_reason: str
     steps: int = Field(default=0, ge=0)
+    estimated_tokens: int = Field(default=0, ge=0)
     tool_names: tuple[str, ...] = ()
     outcomes: tuple[ToolCallOutcome, ...] = ()
     usage: dict[str, int] = Field(default_factory=dict)
@@ -650,6 +889,7 @@ class WorkToolRunner:
         execution_context: AgentExecutionContext | None = None,
         context_window_tokens: int = 16_384,
         max_output_tokens: int = 2_048,
+        request_budget: AgentLoopBudget | None = None,
     ) -> WorkToolLoopResult:
         rendered = self._build_messages(
             question=question,
@@ -689,7 +929,7 @@ class WorkToolRunner:
             return turn.response
 
         budget = replace(
-            self._budget,
+            request_budget or self._budget,
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
         )
@@ -705,6 +945,7 @@ class WorkToolRunner:
             tool_names=tuple(outcome.name for outcome in result.outcomes),
             outcomes=result.outcomes,
             usage=result.usage,
+            estimated_tokens=result.estimated_tokens,
             context_hash=rendered.context_hash,
             redaction_count=rendered.redaction_count,
             model=result.provider_model,

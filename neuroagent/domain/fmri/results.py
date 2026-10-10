@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import PurePosixPath
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -12,11 +13,33 @@ from neuroagent.domain.fmri.artifacts import FrozenModel
 from neuroagent.domain.fmri.statistics import CorrectionSpec
 
 
+class StatisticalAtlasSelection(FrozenModel):
+    """Server-frozen post-analysis method and installed atlas evidence."""
+
+    atlas_id: Literal["aal", "aal3", "brodmann"]
+    atlas_name: str = Field(min_length=1)
+    atlas_content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    coordinate_space: Literal["MNI"]
+    localization_method: Literal["nearest_neighbor_inverse_nifti_affine"] = (
+        "nearest_neighbor_inverse_nifti_affine"
+    )
+    cluster_connectivity: Literal[26] = 26
+
+
 class StatisticalResultMode(StrEnum):
     """Whether a result contains real executor evidence or a test fixture."""
 
     REAL = "real"
     SYNTHETIC_NON_SCIENTIFIC = "synthetic_non_scientific"
+
+
+class StatisticalInferenceStatus(StrEnum):
+    """Deterministic interpretation scope of a registered result map."""
+
+    SIGNIFICANT_VOXELS = "significant_voxels"
+    NO_SIGNIFICANT_VOXELS = "no_significant_voxels"
+    UNCORRECTED_DESCRIPTIVE = "uncorrected_descriptive"
+    NOT_ASSESSED_SYNTHETIC = "not_assessed_synthetic"
 
 
 class StatisticalArtifactRole(StrEnum):
@@ -30,6 +53,12 @@ class StatisticalArtifactRole(StrEnum):
     CLUSTER_TABLE = "cluster_table"
     EXECUTION_LOG = "execution_log"
     SOFTWARE_VERSION_EVIDENCE = "software_version_evidence"
+    CORRECTION_EVIDENCE = "correction_evidence"
+    CORRECTED_Z_MAP = "corrected_z_map"
+    EXECUTION_SCRIPT = "execution_script"
+    EXECUTION_BOOTSTRAP = "execution_bootstrap"
+    JOB_CONFIGURATION = "job_configuration"
+    INPUT_MANIFEST = "input_manifest"
 
 
 def _canonical_artifact_type(role: StatisticalArtifactRole, mode: StatisticalResultMode) -> str:
@@ -95,6 +124,8 @@ class ClusterRecord(FrozenModel):
     peak_statistic: float
     peak_coordinate_mm: tuple[float, float, float]
     coordinate_space: str = Field(min_length=1)
+    inference: str = Field(default="unknown", min_length=1)
+    direction: Literal[-1, 1] | None = None
 
     @field_validator("peak_statistic")
     @classmethod
@@ -122,6 +153,8 @@ class StatisticalResultManifest(FrozenModel):
     non_scientific: bool
     non_scientific_reason: str | None = Field(default=None, min_length=1)
     correction: CorrectionSpec | None = None
+    inference_status: StatisticalInferenceStatus | None = None
+    significant_voxel_count: int | None = Field(default=None, ge=0)
     cluster_connectivity_definition: str = Field(min_length=1)
     artifacts: tuple[RegisteredArtifactMetadata, ...] = Field(min_length=1)
     clusters: tuple[ClusterRecord, ...] = ()
@@ -181,6 +214,28 @@ class StatisticalResultManifest(FrozenModel):
                 raise ValueError("real result mode must not carry synthetic-result markers")
             if any(artifact.placeholder for artifact in self.artifacts):
                 raise ValueError("real result mode forbids placeholder artifacts")
+
+        if synthetic:
+            expected_status = StatisticalInferenceStatus.NOT_ASSESSED_SYNTHETIC
+            expected_voxel_count = None
+        elif self.correction is None:
+            expected_status = StatisticalInferenceStatus.UNCORRECTED_DESCRIPTIVE
+            expected_voxel_count = None
+        else:
+            expected_voxel_count = sum(cluster.extent_voxels for cluster in self.clusters)
+            expected_status = (
+                StatisticalInferenceStatus.NO_SIGNIFICANT_VOXELS
+                if expected_voxel_count == 0
+                else StatisticalInferenceStatus.SIGNIFICANT_VOXELS
+            )
+        if self.inference_status is not None and self.inference_status is not expected_status:
+            raise ValueError("inference status does not match correction and cluster evidence")
+        if self.significant_voxel_count is not None and (
+            self.significant_voxel_count != expected_voxel_count
+        ):
+            raise ValueError("significant voxel count does not match corrected cluster extents")
+        object.__setattr__(self, "inference_status", expected_status)
+        object.__setattr__(self, "significant_voxel_count", expected_voxel_count)
 
         map_artifact_ids = {
             artifact.artifact_id

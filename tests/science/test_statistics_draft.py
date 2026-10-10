@@ -325,7 +325,7 @@ def test_empty_and_duplicated_subject_lists_are_blocked() -> None:
     assert [issue.code for issue in issues] == ["duplicate_subject"]
 
 
-def test_unsupported_test_types_are_reported_rather_than_guessed() -> None:
+def test_regression_requires_explicit_predictors_instead_of_guessing() -> None:
     design, issues = _assemble(
         choices=StatisticsChoices(test=StatisticalTest.REGRESSION),
         subjects=tuple(
@@ -335,7 +335,10 @@ def test_unsupported_test_types_are_reported_rather_than_guessed() -> None:
     )
 
     assert design is None
-    assert [issue.code for issue in issues] == ["test_not_assembled"]
+    assert {issue.code for issue in issues} == {
+        "predictor_required",
+        "target_predictor_required",
+    }
 
 
 def test_domain_rule_violations_surface_as_issues_not_exceptions() -> None:

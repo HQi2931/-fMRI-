@@ -416,7 +416,6 @@ def _alff_intent(
             ),
         ),
         reho=None,
-        study_protocol_ref="synthetic-non-scientific://demo/alff",
     )
 
 

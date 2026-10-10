@@ -76,6 +76,26 @@ def _messages() -> list[dict[str, Any]]:
 
 
 @pytest.mark.asyncio
+async def test_unreported_usage_is_accumulated_across_turns() -> None:
+    calls = 0
+
+    async def call_model(messages: list[dict[str, Any]]) -> ProviderResponse:
+        nonlocal calls
+        calls += 1
+        return _response(
+            tool_calls=(_tool_call(f"call-{calls}", "get_run_status"),),
+            usage={"total_tokens": 1000} if calls == 1 else {},
+        )
+
+    result = await AgentLoop(
+        ScriptedDispatcher([]), budget=AgentLoopBudget(max_steps=10, max_total_tokens=1050)
+    ).run(messages=_messages(), call_model=call_model)
+    assert result.stop_reason is AgentLoopStopReason.BUDGET_TOKENS
+    assert result.usage["total_tokens"] > 1050
+    assert calls == 2
+
+
+@pytest.mark.asyncio
 async def test_loop_returns_final_text_when_the_model_stops_calling_tools() -> None:
     call = _tool_call("c1", "get_run_status")
     responses = [

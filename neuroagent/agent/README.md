@@ -3,8 +3,8 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-09-23
-- 关联：[系统设计](../../docs/architecture/system-design.md)、[ADR 0014](../../docs/adr/0014-bounded-tool-loop.md)
+- 更新日期：2026-10-10
+- 关联：[系统设计](../../docs/architecture/system-design.md)、[ADR 0014](../../docs/adr/0014-bounded-tool-loop.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.agent` 是 Provider 中立的模型边界：它只做路由、脱敏、结构化输出和受控工具循环，不决定科研参数，也不执行任何工作。
 
@@ -23,5 +23,8 @@
 - DeepSeek 官方接口可显式选择 `thinking_mode=disabled`，避免默认思考占用结构化输出预算；此参数不发送到其他服务商。工具授权测试按截断、超时、HTTP 拒绝、缺少调用或参数错误分类，测试失败不等同于模型不支持工具。
 - Work 工具循环超时或服务失败后直接返回诊断，保留工具审计，不重复整轮请求；只有完整但不符合 JSON 契约的回答允许一次简洁结构回退。截断回复不进入草稿。
 - Work 可通过只读 `get_run_diagnosis` 工具读取失败 attempt 的有限日志分类结果；工具只返回分类、摘要和建议，不传递日志证据文本，不重试运行或修改科研参数。
+- Work 按服务端确定的 `agent_role` 选择预处理或分析系统提示词；统计草稿字段与预处理参数草稿隔离，动作和读取工具由角色目录过滤。
+- 分析角色仅按已核验方法、定位和 ROI 聚合事实解释。结果工具先检查项目与允许的运行，初始上下文也向单次模型提供当前任务摘要；零结果正常报告无脑区可定位，不证明等价。总体 F 不赋予组别方向，ROI 描述不作独立验证，不虚构机制或文献。
+- 每次调用都累计 usage；未报告 usage 时估算输入和输出，避免混合报告场景漏计调用。Work 两角色的工具循环和结构回退共用请求次数、token 与剩余时间，预算耗尽不重新调用模型。
 
 本层不写数据库、不推进工作流状态、不持有审批权限。未声明 `ModelCapability.TOOL_USE` 的模型走原有单次调用路径。Agent 工具的是非权威集合由 `neuroagent/application/work_actions.py` 单一维护。

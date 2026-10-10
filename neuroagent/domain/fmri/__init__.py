@@ -59,6 +59,7 @@ from neuroagent.domain.fmri.results import (
     ClusterRecord,
     RegisteredArtifactMetadata,
     StatisticalArtifactRole,
+    StatisticalInferenceStatus,
     StatisticalResultManifest,
     StatisticalResultMode,
 )
@@ -135,6 +136,7 @@ __all__ = [
     "SmoothingTiming",
     "StatisticalArtifactRole",
     "StatisticalDesignRevision",
+    "StatisticalInferenceStatus",
     "StatisticalMapType",
     "StatisticalResultManifest",
     "StatisticalResultMode",

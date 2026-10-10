@@ -20,11 +20,11 @@
 - 工具调用循环是有界的：步数、墙钟、token 三重预算与重复失败熔断，停止原因是显式枚举；循环未产出答案时回退单次路径。每次工具调用的名称、层级、状态与耗时随会话在同一事务内落库，并在前端按执行顺序展示。
 
 - 前端只保留 Chat 与 Work 两种对话模式：主导航只有“对话工作台”，MATLAB/SPM/DPABI、本机目录与模型连接集中在右上角“设置”。所有业务请求都从 Work 自然语言进入类型化应用服务，不再渲染项目、数据、方案、运行、QC、统计、扩展分析页面或消息操作卡片；旧业务地址统一回到工作台且不会自动执行。
-- 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、三类 t 检验的设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
+- 可运行：项目/数据集、只读扫描、人口学映射、受试者级划分、Skill 解析与计划审批、SQLite 队列、SSE、统一 ToolRuntime Mock 执行、人工 QC、双 Agent Work 路由与独立草稿、六类 DPABI 统计设计/审批、FDR/GRF 参数校验、模型路由与中文 Web 工作台。
 - 已实现：用户选择本机 MATLAB/SPM/DPABI 路径、入口探测、受控 DPABI `Cfg` 投影、固定 MATLAB 模板、Windows 空格路径、超时/取消、预期产物完整性检查，以及真实统计结果的证据登记与确定性 Markdown/JSON 复现报告。
 - 已接入公共 Worker：从冻结 SkillPlan/manifest 编译预处理 JobSpec、逐次独立工作目录、实际影像元数据与 lineage 登记，以及受控统计执行和结果报告。预处理单会话 4D 及组合 ALFF/fALFF/ReHo 路径已完成小型合成 smoke；T1 准备、分割/DARTEL 新增无 GUI 固定模板与输入/产物检查，真实 MATLAB 新路径尚未验证。
 - Work 在启动 DPABI 预处理或指标任务前要求用户明确选择头动 QC 或跳过 QC。选择头动 QC 时会解析本次 `RealignParameter` 并生成 QC 草稿；选择跳过时，成功登记的指标图可直接进入后续统计设计，系统仍记录跳过决定、操作者和原因。
-- 已完成真实统计 smoke：三类 t 检验、显式基线、协变量、FDR、负尾 GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。
+- 已完成本机真实统计 smoke：六类 DPABI 统计入口、FDR/GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。统计结果支持簇定位、切片联动与报告下载；外部 DPABI 目录导入及独立纳入确认仍未实现。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
 - Work 对话只绑定用户选择的本机工作区，目录中的 DPABI 输入文件由用户自行准备。建立项目时冻结当前文件清单用于审计，并可用完整类型化参数编译纯预处理或指标计划。当前提供一个受控的 DemoData 单受试者 ALFF 自然语言路径：先展示固定冒烟参数和计划哈希，用户按精确语句确认后才批准并排队真实 MATLAB/DPABI。活动运行由页面自动恢复并显示进度，QC revision 与统计结果可从 Work 只读查询。
 - Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。上传后点击“加入知识库”才会将脱敏文本发送到 DashScope 并建立独立索引；支持选择论文、连续追问和逐消息引用定位，旧索引缺失页码保持未知。详情见 [实施报告](docs/development/rsfmri-chat-phase1-implementation-report.md)。

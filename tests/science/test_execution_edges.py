@@ -224,7 +224,7 @@ def test_statistics_payload_rejects_map_type_and_df_mismatch() -> None:
     wrong_type = fdr_correction().model_copy(
         update={"parameters": {**fdr_correction().parameters, "statistic_type": "Z"}}
     )
-    with pytest.raises(ValidationError, match="produce T maps"):
+    with pytest.raises(ValidationError, match="statistic type does not match"):
         StatisticsJobPayload(
             statistics=statistics_job().payload.statistics,  # type: ignore[union-attr]
             correction=wrong_type,
@@ -232,7 +232,7 @@ def test_statistics_payload_rejects_map_type_and_df_mismatch() -> None:
     wrong_df = fdr_correction().model_copy(
         update={"parameters": {**fdr_correction().parameters, "df1": 2.0}}
     )
-    with pytest.raises(ValidationError, match="residual DF"):
+    with pytest.raises(ValidationError, match="correction df1 does not match"):
         StatisticsJobPayload(
             statistics=statistics_job().payload.statistics,  # type: ignore[union-attr]
             correction=wrong_df,

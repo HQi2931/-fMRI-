@@ -69,6 +69,7 @@ class StatisticsChoices(BaseModel):
     test: StatisticalTest
     grouping_column: str | None = Field(default=None, max_length=100)
     group_order: tuple[str, ...] = ()
+    target_predictor: str | None = Field(default=None, max_length=100)
     condition_column: str | None = Field(default=None, max_length=100)
     condition_order: tuple[str, ...] = ()
     covariates: tuple[CovariateChoice, ...] = ()
@@ -108,6 +109,8 @@ class QcBinding(BaseModel):
     qc_skip_id: str | None = None
     qc_skip_hash: str | None = None
     qc_source_run_id: str | None = None
+    external_import_id: str | None = None
+    external_import_hash: str | None = None
 
 
 class ArtifactRef(BaseModel):
@@ -244,11 +247,15 @@ def _issue(code: str, message: str) -> DesignIssue:
 _SERVER_OWNED_FIELDS = frozenset(
     {
         "source_run_id",
+        "external_import_id",
+        "external_import_hash",
         "qc_review_revision_id",
         "qc_review_hash",
         "qc_skip_id",
         "qc_skip_hash",
         "input_manifest_hash",
+        "demographics_revision_id",
+        "demographics_hash",
         "confirmed_hash",
     }
 )
@@ -262,6 +269,7 @@ class StatisticsDraft(BaseModel):
     test: StatisticalTest | None = None
     grouping_column: str | None = Field(default=None, max_length=100)
     group_order: list[str] = Field(default_factory=list)
+    target_predictor: str | None = Field(default=None, max_length=100)
     condition_column: str | None = Field(default=None, max_length=100)
     condition_order: list[str] = Field(default_factory=list)
     covariates: list[CovariateChoice] = Field(default_factory=list)
@@ -274,9 +282,15 @@ class StatisticsDraft(BaseModel):
     correction_parameters: dict[str, float] = Field(default_factory=dict)
     # Server-owned bindings; never supplied by a model.
     source_run_id: str | None = None
+    external_import_id: str | None = None
+    external_import_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     qc_review_revision_id: str | None = None
     qc_review_hash: str | None = None
+    qc_skip_id: str | None = None
+    qc_skip_hash: str | None = None
     input_manifest_hash: str | None = None
+    demographics_revision_id: str | None = None
+    demographics_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     confirmed_hash: str | None = None
 
     @model_validator(mode="after")
@@ -319,6 +333,11 @@ def statistics_draft_issues(draft: StatisticsDraft) -> tuple[str, ...]:
             issues.append("分组列尚未指定")
         if len(draft.group_order) != 2 or len(set(draft.group_order)) != 2:
             issues.append("分组顺序尚未明确给出两个分组")
+    elif draft.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+        if not draft.grouping_column:
+            issues.append("分组列尚未指定")
+        if len(draft.group_order) < 2 or len(set(draft.group_order)) != len(draft.group_order):
+            issues.append("ANOVA/ANCOVA 分组顺序尚未明确给出至少两个分组")
     elif draft.test is StatisticalTest.PAIRED_T:
         if not draft.condition_column:
             issues.append("条件列尚未指定")
@@ -327,8 +346,13 @@ def statistics_draft_issues(draft: StatisticsDraft) -> tuple[str, ...]:
     elif draft.test is StatisticalTest.ONE_SAMPLE_T:
         if draft.one_sample_baseline is None:
             issues.append("单样本检验基线尚未给出")
-    else:
-        issues.append("该检验类型尚未由本流程支持")
+    elif draft.test in {StatisticalTest.CORRELATION, StatisticalTest.REGRESSION}:
+        if not draft.covariates:
+            issues.append("相关／回归至少需要一个已登记数值预测变量")
+        if not draft.target_predictor:
+            issues.append("目标预测变量尚未指定")
+        elif draft.target_predictor not in {item.name for item in draft.covariates}:
+            issues.append("目标预测变量必须出现在已登记预测变量清单中")
     if not draft.metric_artifact_type:
         issues.append("指标产物类型尚未选择")
     if draft.correction_method and not draft.correction_parameters:
@@ -347,6 +371,8 @@ def render_statistics_draft_review(draft: StatisticsDraft) -> str:
     if draft.grouping_column:
         order = "、".join(draft.group_order) or "未指定顺序"
         lines.append(f"- 分组列：{draft.grouping_column}（顺序：{order}）")
+    if draft.target_predictor:
+        lines.append(f"- 目标预测变量：{draft.target_predictor}")
     if draft.condition_column:
         order = "、".join(draft.condition_order) or "未指定顺序"
         lines.append(f"- 条件列：{draft.condition_column}（顺序：{order}）")
@@ -365,7 +391,10 @@ def render_statistics_draft_review(draft: StatisticsDraft) -> str:
     else:
         lines.append("- 多重比较校正：未校正")
     lines.append(
-        "- 受试者顺序、逐受试者产物与掩膜：由服务端在确认时从已批准的 QC 决定冻结登记，"
+        "- 受试者顺序、逐受试者产物与掩膜：由服务端从已确认的外部纳入记录冻结登记，"
+        "不由模型或本草稿提供"
+        if draft.external_import_id
+        else "- 受试者顺序、逐受试者产物与掩膜：由服务端在确认时从已批准的 QC 决定冻结登记，"
         "不由模型或本草稿提供"
     )
     return "\n".join(lines)
@@ -385,19 +414,29 @@ class StatisticalDesignProposal(BaseModel):
     project_id: str = Field(min_length=1)
     project_version: int = Field(ge=1)
     input_manifest_hash: str = Field(min_length=64, max_length=64)
-    source_run_id: str = Field(min_length=1)
+    source_run_id: str | None = Field(default=None, min_length=1)
     frozen_subject_order: tuple[str, ...]
     metric_artifact_ids: tuple[str, ...]
+    demographics_revision_id: str | None = None
+    demographics_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     review: str = Field(min_length=1)
     proposal_hash: str = Field(min_length=64, max_length=64)
 
 
-def proposal_hash(design: StatisticalDesignRevision, correction: CorrectionSpec | None) -> str:
+def proposal_hash(
+    design: StatisticalDesignRevision,
+    correction: CorrectionSpec | None,
+    *,
+    demographics_revision_id: str | None = None,
+    demographics_hash: str | None = None,
+) -> str:
     """Hash exactly what the user reviews, so a stale confirmation is refused."""
 
     payload = {
         "design": design.model_dump(mode="json"),
         "correction": correction.model_dump(mode="json") if correction is not None else None,
+        "demographics_revision_id": demographics_revision_id,
+        "demographics_hash": demographics_hash,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
@@ -419,6 +458,23 @@ def build_correction(
 
     parameters = draft.correction_parameters
     tail_two_sided = design.tail is Tail.TWO_SIDED
+    statistic_type = (
+        StatisticalMapType.F
+        if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+        else StatisticalMapType.R
+        if design.test is StatisticalTest.CORRELATION
+        else StatisticalMapType.T
+    )
+    numerator_df = (
+        float(len(design.group_order) - 1)
+        if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+        else float(residual_degrees_of_freedom(design))
+    )
+    denominator_df = (
+        float(residual_degrees_of_freedom(design))
+        if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+        else None
+    )
     try:
         if draft.correction_method == "fdr":
             threshold = parameters.get("q_threshold")
@@ -431,9 +487,9 @@ def build_correction(
                     method="fdr",
                     q_threshold=threshold,
                     mask_artifact_id=design.mask_artifact_id,
-                    statistic_type=StatisticalMapType.T,
-                    df1=float(residual_degrees_of_freedom(design)),
-                    df2=None,
+                    statistic_type=statistic_type,
+                    df1=numerator_df,
+                    df2=denominator_df,
                 ),
                 (),
             )
@@ -452,11 +508,15 @@ def build_correction(
                     method="grf",
                     voxel_p_threshold=voxel,
                     cluster_p_threshold=cluster,
-                    two_tailed=tail_two_sided,
+                    two_tailed=(
+                        False
+                        if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+                        else tail_two_sided
+                    ),
                     mask_artifact_id=design.mask_artifact_id,
-                    statistic_type=StatisticalMapType.T,
-                    df1=float(residual_degrees_of_freedom(design)),
-                    df2=None,
+                    statistic_type=statistic_type,
+                    df1=numerator_df,
+                    df2=denominator_df,
                     smoothness_mode=GrfSmoothnessMode.DPABI_HEADER_OR_ESTIMATE,
                     smoothness_dlh=None,
                 ),
@@ -484,7 +544,10 @@ def _covariate_columns(
     columns: list[CovariateColumn] = []
     issues: list[DesignIssue] = []
     order = tuple(subject.subject_id for subject in subjects)
-    for choice in choices.covariates:
+    covariate_choices = list(choices.covariates)
+    if choices.test is StatisticalTest.CORRELATION and choices.target_predictor is not None:
+        covariate_choices.sort(key=lambda item: item.name != choices.target_predictor)
+    for choice in covariate_choices:
         column = covariate_values.get(choice.name)
         if column is None:
             issues.append(
@@ -605,6 +668,8 @@ def _column_count(choices: StatisticsChoices, subject_count: int) -> int:
         return 1 + subject_count + covariates
     if choices.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
         return 2 + covariates
+    if choices.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+        return len(choices.group_order) + covariates
     return 1 + covariates
 
 
@@ -615,7 +680,25 @@ def _contrast(choices: StatisticsChoices, subject_count: int) -> tuple[float, ..
     the design including every covariate column.
     """
 
-    return (1.0, *(0.0 for _ in range(_column_count(choices, subject_count) - 1)))
+    columns = _column_count(choices, subject_count)
+    if choices.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+        return (
+            *(1.0 for _ in range(len(choices.group_order) - 1)),
+            *(0.0 for _ in range(columns - len(choices.group_order) + 1)),
+        )
+    if choices.test is StatisticalTest.REGRESSION:
+        if choices.target_predictor is None:
+            return tuple(0.0 for _ in range(columns))
+        index = next(
+            (
+                position + 1
+                for position, item in enumerate(choices.covariates)
+                if item.name == choices.target_predictor
+            ),
+            -1,
+        )
+        return tuple(1.0 if column == index else 0.0 for column in range(columns))
+    return (1.0, *(0.0 for _ in range(columns - 1)))
 
 
 def assemble_statistical_design(
@@ -653,15 +736,24 @@ def assemble_statistical_design(
 
     subject_order = _subject_order(subjects)
     issues: list[DesignIssue] = []
-    if choices.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
+    if choices.test in {
+        StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+        StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
+    }:
         if choices.grouping_column is None:
-            issues.append(_issue("grouping_column_required", "两独立样本 t 检验必须指定分组列。"))
+            issues.append(_issue("grouping_column_required", "组间统计必须指定分组列。"))
         declared = choices.group_order or _declared_groups(subjects)
-        if len(declared) != 2:
+        valid_group_count = (
+            len(declared) == 2
+            if choices.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T
+            else len(declared) >= 2
+        )
+        if not valid_group_count:
             issues.append(
                 _issue(
                     "group_order_unsupported",
-                    "两独立样本 t 检验需要恰好两个分组；分组顺序必须显式给出。",
+                    "两独立样本 t 检验需要恰好两个分组；ANOVA/ANCOVA 至少需要两个。"
+                    "分组顺序必须显式给出。",
                 )
             )
         unlabelled = [subject.subject_id for subject in subjects if subject.group is None]
@@ -701,6 +793,20 @@ def assemble_statistical_design(
     elif choices.test is StatisticalTest.ONE_SAMPLE_T:
         if choices.one_sample_baseline is None:
             issues.append(_issue("baseline_required", "单样本 t 检验必须显式给出检验基线。"))
+    elif choices.test in {StatisticalTest.CORRELATION, StatisticalTest.REGRESSION}:
+        if not choices.covariates:
+            issues.append(
+                _issue("predictor_required", "相关／回归至少需要一个已登记数值预测变量。")
+            )
+        elif choices.target_predictor not in {item.name for item in choices.covariates}:
+            issues.append(
+                _issue(
+                    "target_predictor_required",
+                    "目标预测变量必须是本方案明确列出的数值预测变量。",
+                )
+            )
+        if choices.test is StatisticalTest.REGRESSION and choices.target_predictor is None:
+            issues.append(_issue("target_predictor_required", "多变量回归需要指定一个目标系数。"))
     else:
         issues.append(
             _issue(
@@ -717,10 +823,19 @@ def assemble_statistical_design(
 
     group_order = (
         choices.group_order
-        if choices.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T and choices.group_order
+        if choices.test
+        in {
+            StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+            StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
+        }
+        and choices.group_order
         else (
             _declared_groups(subjects)
-            if choices.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T
+            if choices.test
+            in {
+                StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+                StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
+            }
             else ()
         )
     )
@@ -750,6 +865,8 @@ def assemble_statistical_design(
             qc_skip_id=qc.qc_skip_id,
             qc_skip_hash=qc.qc_skip_hash,
             qc_source_run_id=qc.qc_source_run_id,
+            external_import_id=qc.external_import_id,
+            external_import_hash=qc.external_import_hash,
         )
     except ValidationError as exc:
         return None, tuple(

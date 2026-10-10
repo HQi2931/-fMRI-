@@ -34,6 +34,12 @@ from neuroagent.application.contracts import (
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
     EnvironmentProbeView,
+    ExternalAnalysisImportIncludeRequest,
+    ExternalAnalysisImportInspectRequest,
+    ExternalAnalysisImportSummaryView,
+    ExternalAnalysisImportView,
+    ExternalDemographicsImportRequest,
+    ExternalDemographicsRevisionView,
     HeadMotionQcCreate,
     HealthView,
     ManifestRevisionView,
@@ -73,12 +79,17 @@ from neuroagent.application.contracts import (
     RunView,
     SkillPlanResolveRequest,
     SkillPlanResolveView,
+    StatisticalAtlasView,
+    StatisticalClusterRoiView,
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalDesignView,
     StatisticalResultDetailView,
+    StatisticalResultLocalizationView,
+    StatisticalResultSliceInfoView,
     StatisticalResultView,
     StatisticsRunCreate,
+    WorkAgentSelection,
     WorkConfirmationCreate,
     WorkDraftUpdate,
     WorkflowState,
@@ -249,6 +260,18 @@ async def index_conversation_memories(conversation_id: str, request: Request) ->
 @router.get("/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"])
 def get_conversation(conversation_id: str, request: Request) -> ConversationView:
     return service_from(request).get_conversation(conversation_id)
+
+
+@router.patch(
+    "/conversations/{conversation_id}/work-agent", response_model=ConversationView, tags=["agent"]
+)
+def select_work_agent(
+    conversation_id: str,
+    body: WorkAgentSelection,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationView:
+    return service_from(request).select_work_agent(conversation_id, body, idempotency_key)
 
 
 @router.get(
@@ -642,6 +665,81 @@ def create_statistics_run(
     return service_from(request).create_statistics_run(body, idempotency_key)
 
 
+@router.post(
+    "/statistics/external-imports/inspect",
+    response_model=ExternalAnalysisImportView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["statistics", "external-data"],
+)
+def inspect_external_analysis_import(
+    body: ExternalAnalysisImportInspectRequest,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ExternalAnalysisImportView:
+    return service_from(request).inspect_external_analysis_import(body, idempotency_key)
+
+
+@router.get(
+    "/statistics/external-imports",
+    response_model=list[ExternalAnalysisImportSummaryView],
+    tags=["statistics", "external-data"],
+)
+def list_external_analysis_imports(
+    request: Request,
+    project_id: str = Query(...),
+) -> list[ExternalAnalysisImportSummaryView]:
+    return service_from(request).list_external_analysis_imports(project_id=project_id)
+
+
+@router.get(
+    "/statistics/external-imports/{import_id}",
+    response_model=ExternalAnalysisImportView,
+    tags=["statistics", "external-data"],
+)
+def get_external_analysis_import(import_id: str, request: Request) -> ExternalAnalysisImportView:
+    return service_from(request).get_external_analysis_import(import_id)
+
+
+@router.post(
+    "/statistics/external-imports/{import_id}/include",
+    response_model=ExternalAnalysisImportView,
+    tags=["statistics", "external-data"],
+)
+def include_external_analysis_import(
+    import_id: str,
+    body: ExternalAnalysisImportIncludeRequest,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ExternalAnalysisImportView:
+    return service_from(request).include_external_analysis_import(import_id, body, idempotency_key)
+
+
+@router.post(
+    "/statistics/external-imports/{import_id}/demographics",
+    response_model=ExternalDemographicsRevisionView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["statistics", "external-data"],
+)
+def import_external_demographics(
+    import_id: str,
+    body: ExternalDemographicsImportRequest,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ExternalDemographicsRevisionView:
+    return service_from(request).import_external_demographics(import_id, body, idempotency_key)
+
+
+@router.get(
+    "/statistics/external-imports/{import_id}/demographics",
+    response_model=ExternalDemographicsRevisionView | None,
+    tags=["statistics", "external-data"],
+)
+def get_external_demographics(
+    import_id: str, request: Request
+) -> ExternalDemographicsRevisionView | None:
+    return service_from(request).get_external_demographics(import_id)
+
+
 @router.get(
     "/statistics/results",
     response_model=list[StatisticalResultView],
@@ -662,6 +760,67 @@ def list_statistical_results(
 )
 def get_statistical_result(result_id: str, request: Request) -> StatisticalResultDetailView:
     return service_from(request).get_statistical_result(result_id)
+
+
+@router.get(
+    "/statistics/atlases",
+    response_model=tuple[StatisticalAtlasView, ...],
+    tags=["statistics", "localization"],
+)
+def list_statistical_atlases(request: Request) -> tuple[StatisticalAtlasView, ...]:
+    return service_from(request).list_statistical_atlases()
+
+
+@router.get(
+    "/statistics/results/{result_id}/localization",
+    response_model=StatisticalResultLocalizationView,
+    tags=["statistics", "localization"],
+)
+def localize_statistical_result(
+    result_id: str,
+    request: Request,
+    atlas_id: str = Query(..., min_length=1, max_length=40),
+) -> StatisticalResultLocalizationView:
+    return service_from(request).localize_statistical_result(result_id, atlas_id)
+
+
+@router.get(
+    "/statistics/results/{result_id}/slice-info",
+    response_model=StatisticalResultSliceInfoView,
+    tags=["statistics", "preview"],
+)
+def statistical_result_slice_info(
+    result_id: str, request: Request
+) -> StatisticalResultSliceInfoView:
+    return service_from(request).statistical_result_slice_info(result_id)
+
+
+@router.get(
+    "/statistics/results/{result_id}/roi",
+    response_model=StatisticalClusterRoiView,
+    tags=["statistics", "roi"],
+)
+def statistical_cluster_roi(
+    result_id: str, request: Request, cluster_id: str | None = Query(default=None, max_length=100)
+) -> StatisticalClusterRoiView:
+    return service_from(request).statistical_cluster_roi(result_id, cluster_id)
+
+
+@router.get(
+    "/statistics/results/{result_id}/slice.png",
+    response_class=Response,
+    tags=["statistics", "preview"],
+)
+def statistical_result_slice_preview(
+    result_id: str,
+    request: Request,
+    slice_index: int = Query(..., ge=0, le=511),
+) -> Response:
+    return Response(
+        service_from(request).statistical_result_slice_png(result_id, slice_index),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from neuroagent.application.contracts import (
     ApprovalCreate,
     ApprovalView,
@@ -14,6 +16,9 @@ from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class PlanApprovalMixin(BaseServiceMixin):
+    _validate_work_plan_handoff: Callable[..., None]
+    _validate_statistical_atlas: Callable[..., None]
+
     def create_plan(self, request: PlanRevisionCreate, idempotency_key: str) -> PlanRevisionView:
         def action() -> PlanRevisionView:
             lock = {
@@ -95,7 +100,20 @@ class PlanApprovalMixin(BaseServiceMixin):
     def approve_plan(
         self, plan_revision_id: str, request: ApprovalCreate, idempotency_key: str
     ) -> ApprovalView:
-        def action() -> ApprovalView:
+        def prepare() -> None:
+            if request.decision.value == "approved":
+                current = self.repository.get_plan(plan_revision_id)
+                self._validate_work_plan_handoff(current)
+                self._validate_statistical_atlas(current)
+
+        def finalize(_prepared: None) -> ApprovalView:
+            from neuroagent.application.work_tasks import require_statistical_work_plan
+
+            current = self.repository.get_plan(plan_revision_id)
+            require_statistical_work_plan(self.repository.get_conversation, current)
+            if request.decision.value == "approved":
+                self._validate_work_plan_handoff(current, verify_files=False)
+                self._validate_statistical_atlas(current)
             approval, plan = self.repository.record_approval(plan_revision_id, request)
             self.repository.append_event(
                 project_id=plan.project_id,
@@ -111,10 +129,11 @@ class PlanApprovalMixin(BaseServiceMixin):
             )
             return approval
 
-        return self._idempotent(
+        return self._idempotent_prepared(
             scope=f"plans:{plan_revision_id}:approve",
             key=idempotency_key,
             request=request,
             response_type=ApprovalView,
-            action=action,
+            prepare=prepare,
+            finalize=finalize,
         )

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
@@ -28,6 +29,7 @@ from neuroagent.application.contracts import (
     RsFmriQuestionRequest,
     RunCreate,
     RunView,
+    WorkAgentSelection,
     WorkConfirmationCreate,
     WorkDraftUpdate,
     WorkReviewCreate,
@@ -42,6 +44,7 @@ from neuroagent.application.conversation_work import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.service_mixins._base import BaseServiceMixin
+from neuroagent.application.work_agents import work_agent_role_for_turn
 from neuroagent.application.work_dialogue import (
     STAGE_CONFIRMATION_PATTERN,
     WorkDialogue,
@@ -60,14 +63,44 @@ from neuroagent.application.work_draft import (
     review_issues,
     validate_draft_patch,
 )
+from neuroagent.application.work_tasks import run_for_agent_context
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
 from neuroagent.memory.models import MemoryCandidateDraft
+from neuroagent.multi_agent.registry import WorkAgentRole
 from neuroagent.observability.work_timings import capture_work_timings
 
 
 class ConversationMixin(BaseServiceMixin):
+    def select_work_agent(
+        self,
+        conversation_id: str,
+        request: WorkAgentSelection,
+        idempotency_key: str,
+    ) -> ConversationView:
+        def action() -> ConversationView:
+            selected = self.repository.select_work_agent(conversation_id, request)
+            self.repository.append_event(
+                project_id=selected.project_id,
+                run_id=selected.active_run_id,
+                event_type="WorkAgentSelected",
+                severity="info",
+                payload={
+                    "conversation_id": conversation_id,
+                    "agent_role": request.agent_role.value,
+                },
+            )
+            return selected
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:work-agent",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationView,
+            action=action,
+        )
+
     work_dialogue: WorkDialogue
 
     def _check_work_input_revision(
@@ -247,6 +280,10 @@ class ConversationMixin(BaseServiceMixin):
         if conversation.mode is not ConversationMode.WORK:
             raise InputValidationError(
                 "work_confirmation_mode_required", "此操作仅用于 Work 会话。"
+            )
+        if conversation.foreground_agent_role is not WorkAgentRole.PREPROCESSING:
+            raise ConflictError(
+                "work_agent_confirmation_mismatch", "当前负责 Agent 已切换，请先切回预处理 Agent。"
             )
         saved = latest_payload(conversation, "work_draft")
         # Re-freezing is the recovery operation itself. The exact issued option
@@ -461,7 +498,30 @@ class ConversationMixin(BaseServiceMixin):
                 else conversation.preferred_profile_id
             )
             project_id = request.project_id or conversation.project_id
-            active_run_id = conversation.active_run_id
+            selected_role = work_agent_role_for_turn(
+                request.content,
+                requested=WorkAgentRole.ANALYSIS
+                if request.external_analysis_import_id
+                else request.agent_role,
+                conversation=conversation,
+            )
+            active_run_id = request.target_run_id or run_for_agent_context(
+                conversation, selected_role
+            )
+            # This turn's context must use the selected role's run, while the
+            # persisted conversation retains both roles' independent references.
+            if active_run_id is not None:
+                target_run = self.repository.get_run(active_run_id)
+                if project_id is None or target_run.project_id != project_id:
+                    if request.target_run_id is not None:
+                        raise InputValidationError(
+                            "work_target_run_project_mismatch",
+                            "所选运行不属于当前 Work 项目，无法将它绑定到本轮分析。",
+                            run_id=request.target_run_id,
+                            project_id=project_id,
+                        )
+                    active_run_id = None
+            conversation = conversation.model_copy(update={"active_run_id": active_run_id})
             confirmed_stage = None
             for message in reversed(conversation.messages):
                 manifest_payload = message.payload.get("manifest")
@@ -519,6 +579,21 @@ class ConversationMixin(BaseServiceMixin):
                     idempotency_key=idempotency_key,
                     conversation_id=conversation_id,
                 )
+                role = request.agent_role or (
+                    WorkAgentRole.ANALYSIS
+                    if request.action is ConversationAction.GET_STATISTICAL_RESULTS
+                    else WorkAgentRole.PREPROCESSING
+                )
+                action_result = replace(
+                    action_result,
+                    payload={
+                        "agent_role": role.value,
+                        "agent_name": (
+                            "数据分析 Agent" if role is WorkAgentRole.ANALYSIS else "预处理 Agent"
+                        ),
+                        **action_result.payload,
+                    },
+                )
             model_metadata = action_result.payload.get("model")
             return (
                 conversation.version,
@@ -560,11 +635,26 @@ class ConversationMixin(BaseServiceMixin):
                     "工作请求准备期间对话已变化，请基于最新状态重试。",
                 )
             if action_result.commit is not None:
-                action_result = action_result.commit()
+                proposed = action_result
+                committed = action_result.commit()
+                action_result = replace(
+                    committed,
+                    payload={**proposed.payload, **committed.payload},
+                )
             project_id = action_result.project_id or request.project_id or conversation.project_id
             workspace_path = action_result.workspace_path
+            if conversation.mode is ConversationMode.WORK and workspace_path is None:
+                workspace_path = request.workspace_path or conversation.workspace_path
             active_run_id = action_result.active_run_id
             payload = action_result.payload
+            if action_result.tool is not None:
+                action_result = replace(
+                    action_result,
+                    tool={
+                        **action_result.tool,
+                        "agent_role": payload.get("agent_role"),
+                    },
+                )
             payload["context"] = context_metadata
             timings.add("prepare_total", timings.clock() - request_started)
             payload["work_timings"] = {
@@ -877,6 +967,7 @@ def _loop_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "risk_tier": entry.get("risk_tier"),
                 "provider_call_id": entry.get("provider_call_id"),
                 "duration_ms": entry.get("duration_ms"),
+                "agent_role": loop.get("agent_role") or payload.get("agent_role"),
             }
         )
     return calls

@@ -163,9 +163,6 @@ class MatlabTemplateRenderer:
         generated.append("provenance.json")
         command = (
             str(environment.matlab_executable.resolve()),
-            "-nodisplay",
-            "-nosplash",
-            "-nodesktop",
             "-batch",
             f"run('{_matlab_quote(entry_path)}');",
         )
@@ -228,6 +225,19 @@ class MatlabTemplateRenderer:
             "design_hash": call.design_hash,
             "test": _statistics_test_name(call.function.value),
             "group_counts": [len(group) for group in call.dependent_artifact_groups],
+            "statistic_type": (
+                "F"
+                if call.function.value == "y_ANCOVA1_Image"
+                else "R"
+                if call.function.value == "y_Correlation_Image"
+                else "T"
+            ),
+            "df1": (
+                len(call.dependent_artifact_groups) - 1
+                if call.function.value == "y_ANCOVA1_Image"
+                else call.residual_df
+            ),
+            "df2": (call.residual_df if call.function.value == "y_ANCOVA1_Image" else None),
         }
         if payload.correction is not None:
             parameters = dict(payload.correction.parameters)
@@ -248,6 +258,9 @@ def _statistics_test_name(function: str) -> str:
         "y_TTest1_Image": "one_sample_t",
         "y_TTest2_Image": "independent_two_sample_t",
         "y_TTestPaired_Image": "paired_t",
+        "y_Correlation_Image": "correlation",
+        "y_GroupAnalysis_Image": "regression",
+        "y_ANCOVA1_Image": "one_way_anova_ancova",
     }.get(function, "unsupported")
 
 

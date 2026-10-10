@@ -130,7 +130,9 @@ class StatisticsFunction(StrEnum):
     TTEST1 = "y_TTest1_Image"
     TTEST2 = "y_TTest2_Image"
     TTEST_PAIRED = "y_TTestPaired_Image"
+    CORRELATION = "y_Correlation_Image"
     GROUP_ANALYSIS = "y_GroupAnalysis_Image"
+    ANCOVA1 = "y_ANCOVA1_Image"
 
 
 class StatisticsCall(FrozenToolModel):
@@ -426,15 +428,19 @@ class DpabiV82Adapter:
             StatisticalTest.ONE_SAMPLE_T: StatisticsFunction.TTEST1,
             StatisticalTest.INDEPENDENT_TWO_SAMPLE_T: StatisticsFunction.TTEST2,
             StatisticalTest.PAIRED_T: StatisticsFunction.TTEST_PAIRED,
-            StatisticalTest.CORRELATION: StatisticsFunction.GROUP_ANALYSIS,
+            StatisticalTest.CORRELATION: StatisticsFunction.CORRELATION,
             StatisticalTest.REGRESSION: StatisticsFunction.GROUP_ANALYSIS,
+            StatisticalTest.ONE_WAY_ANOVA_ANCOVA: StatisticsFunction.ANCOVA1,
         }[design.test]
         centered_columns = centered_covariate_columns(design)
         covariate_by_subject = {
             subject_id: tuple(column[index] for column in centered_columns)
             for index, subject_id in enumerate(design.subject_order)
         }
-        if design.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
+        if design.test in {
+            StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+            StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
+        }:
             groups = tuple(
                 tuple(image.artifact_id for image in design.images if image.group == group)
                 for group in design.group_order
@@ -456,11 +462,17 @@ class DpabiV82Adapter:
                 tuple(covariate_by_subject[subject_id] for subject_id in design.subject_order)
                 for _condition in design.condition_order
             )
-        else:
+        elif design.test in {
+            StatisticalTest.ONE_SAMPLE_T,
+            StatisticalTest.CORRELATION,
+            StatisticalTest.REGRESSION,
+        }:
             groups = (tuple(image.artifact_id for image in design.images),)
             covariate_groups = (
                 tuple(covariate_by_subject[subject_id] for subject_id in design.subject_order),
             )
+        else:
+            raise ValueError(f"unsupported statistical design: {design.test.value}")
         body = {
             "function": function.value,
             "subjects": design.subject_order,

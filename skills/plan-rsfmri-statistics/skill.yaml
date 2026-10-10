@@ -33,6 +33,9 @@ evidence_refs:
   - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest1_Image.m:1"
   - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest2_Image.m:1"
   - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTestPaired_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_Correlation_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_GroupAnalysis_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_ANCOVA1_Image.m:1"
   - "DPABI_V9.0_250415/StatisticalAnalysis/y_FDR_Image.m:1"
   - "DPABI_V9.0_250415/StatisticalAnalysis/y_GRF_Threshold.m:1"
 known_limitations:

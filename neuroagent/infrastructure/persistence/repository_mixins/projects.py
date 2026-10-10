@@ -178,6 +178,18 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
                 raise NotFoundError("demographics_revision", demographics_id)
             return self._demographics(row)
 
+    def get_latest_demographics_for_dataset(
+        self, dataset_id: str
+    ) -> DemographicsRevisionView | None:
+        with self._read_session() as session:
+            row = session.scalar(
+                select(DemographicsRevisionRow)
+                .where(DemographicsRevisionRow.dataset_id == dataset_id)
+                .order_by(DemographicsRevisionRow.revision.desc())
+                .limit(1)
+            )
+            return self._demographics(row) if row is not None else None
+
     def create_split(
         self, dataset_id: str, *, expected_version: int, content: dict[str, Any]
     ) -> DatasetSplitView:

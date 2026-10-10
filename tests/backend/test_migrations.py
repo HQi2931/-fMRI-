@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 
 def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
@@ -32,6 +33,82 @@ def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
     assert application_logger.isEnabledFor(logging.ERROR), (
         "migrations raised the effective level of application logging"
     )
+
+
+def test_work_task_migration_preserves_legacy_preprocessing_run_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    from neuroagent.infrastructure.persistence.models import (
+        PlanRevisionRow,
+        ProjectRow,
+        WorkflowRunRow,
+    )
+
+    url = f"sqlite:///{(tmp_path / 'work-tasks.sqlite').as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0020_external_demographics")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                ProjectRow.__table__.insert().values(
+                    project_id="legacy-project",
+                    name="Legacy Work",
+                    source_roots_json="[]",
+                    work_root="fixture",
+                )
+            )
+            connection.execute(
+                PlanRevisionRow.__table__.insert().values(
+                    plan_revision_id="legacy-plan",
+                    project_id="legacy-project",
+                    revision=1,
+                    state="approved",
+                    plan_hash="a" * 64,
+                    manifest_hash="b" * 64,
+                    environment_hash="c" * 64,
+                    plan_json="{}",
+                )
+            )
+            connection.execute(
+                WorkflowRunRow.__table__.insert().values(
+                    run_id="legacy-run",
+                    project_id="legacy-project",
+                    plan_revision_id="legacy-plan",
+                    state="succeeded",
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO conversations (conversation_id,mode,title,project_id,"
+                    "active_run_id,version,created_at,updated_at) "
+                    "VALUES ('legacy-work','work','Old Work','legacy-project','legacy-run',"
+                    "1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT active_run_id,foreground_agent_role,work_tasks_json FROM conversations"
+                )
+            ).one()
+        assert row.active_run_id == "legacy-run"
+        assert row.foreground_agent_role == "preprocessing"
+        assert json.loads(row.work_tasks_json)["preprocessing"]["run_id"] == "legacy-run"
+        command.downgrade(config, "0020_external_demographics")
+        assert "work_tasks_json" not in {
+            item["name"] for item in inspect(engine).get_columns("conversations")
+        }
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            tasks = connection.execute(
+                text("SELECT work_tasks_json FROM conversations")
+            ).scalar_one()
+        assert json.loads(tasks)["preprocessing"]["run_id"] == "legacy-run"
+    finally:
+        engine.dispose()
 
 
 def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> None:

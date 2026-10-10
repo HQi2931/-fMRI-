@@ -14,3 +14,17 @@
 .work-run-panel table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .work-run-panel th, .work-run-panel td { padding: .5rem; text-align: left; border-bottom: 1px solid var(--border, #d4dce6); white-space: nowrap; }
 .work-run-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem; margin: 1rem 0; }
+.work-run-panel .link-button { border: 0; padding: 0; color: var(--link, #135fa8); background: transparent; font: inherit; text-decoration: underline; cursor: pointer; }
+.work-run-panel .selected-result-cluster td { background: color-mix(in srgb, var(--accent, #2e74b5) 12%, transparent); }
+.statistical-slice-viewer label { display: grid; gap: .4rem; max-width: 30rem; }
+.statistical-slice-viewer input[type="range"] { width: 100%; }
+.statistical-roi-panel svg { display: block; width: min(100%, 40rem); margin: .75rem 0; }
+.statistical-method-grid {
+  display: grid;
+  grid-template-columns: minmax(100px, 150px) minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.statistical-method-grid dt { color: var(--text-muted, #596678); }
+.statistical-method-grid dd { margin: 0; overflow-wrap: anywhere; }
+.statistical-method-panel { margin-block: 14px; }

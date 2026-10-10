@@ -111,12 +111,14 @@ type Options = {
   confirmation?: (init?: RequestInit) => Promise<Response>;
   review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
+  selectAgent?: (init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    if (path.endsWith("/work-agent")) return options.selectAgent?.(init) ?? notFound();
     if (path.endsWith("/work-review")) return options.review?.(init) ?? notFound();
     if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
@@ -174,6 +176,51 @@ describe("agent workbench page", () => {
     cleanup();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: initialWindowWidth });
     vi.restoreAllMocks();
+  });
+
+  it("switches the responsible Agent on the server while retaining drafts and hiding the other role's confirmation", async () => {
+    const messages = [message("pre-draft", "assistant", "已保存预处理草稿", { agent_role: "preprocessing",
+      work_draft: { hash: "a".repeat(64), version: 2, draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, compiled: false },
+      confirmation_request: { title: "确认预处理参数", summary: "当前预处理草稿", options: [{ label: "确认参数", description: "建立正式方案", command: "confirm-current-draft" }] },
+    }), message("analysis-draft", "assistant", "已保存统计草稿", { agent_role: "analysis", analysis_draft: { hash: "b".repeat(64), draft: { test: "independent_two_sample_t" } } })];
+    let version = 4;
+    const switchAgent = vi.fn((init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.expected_version).toBe(version);
+      version += 1;
+      return json(conversation({ messages, version, foreground_agent_role: body.agent_role }));
+    });
+    const confirmation = vi.fn();
+    installFetch({ conversations: () => json([conversation({ messages, version, foreground_agent_role: "preprocessing" })]), selectAgent: switchAgent, confirmation });
+    render(<AgentPage />);
+    await screen.findByText("当前负责：预处理 Agent");
+    expect(screen.getByRole("button", { name: /待确认 · 确认预处理参数/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "analysis" } });
+    await screen.findByText("当前负责：数据分析 Agent");
+    expect(screen.queryByRole("button", { name: /待确认/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("预处理方案参数")).not.toBeInTheDocument();
+    expect(screen.getByText("已保存预处理草稿")).toBeInTheDocument();
+    expect(screen.getByText("已保存统计草稿")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "preprocessing" } });
+    await screen.findByText("当前负责：预处理 Agent");
+    expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
+    expect(screen.getByRole("button", { name: /待确认 · 确认预处理参数/ })).toBeInTheDocument();
+    expect(switchAgent).toHaveBeenCalledTimes(2);
+    expect(confirmation).not.toHaveBeenCalled();
+  });
+
+  it("retains the authoritative Agent after a version-conflicted switch and refreshes the current conversation", async () => {
+    const current = conversation({ version: 6, foreground_agent_role: "preprocessing" });
+    const refresh = vi.fn(() => json({ ...current, version: 7 }));
+    installFetch({ conversations: () => json([current]), conversation: refresh,
+      selectAgent: () => json({ error: { code: "version_conflict", message: "会话已变化，请重新核对当前任务。", details: {}, trace_id: null } }, 409) });
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "analysis" } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("会话已变化");
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(screen.getByText("当前负责：预处理 Agent")).toBeInTheDocument();
+    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("auto");
   });
 
   it("restores the confirmed input stage when loading a conversation", async () => {

@@ -92,6 +92,7 @@ export type ConversationToolCall = {
   // Agent tool-loop telemetry; null for single-shot tool calls.
   step_index: number | null;
   risk_tier: "read" | "propose" | "execute" | string | null;
+  agent_role?: "preprocessing" | "analysis" | null;
   duration_ms: number | null;
   created_at: string;
   updated_at: string;
@@ -104,6 +105,8 @@ export type Conversation = {
   preferred_profile_id: string | null;
   project_id: string | null;
   active_run_id: string | null;
+  foreground_agent_role?: "preprocessing" | "analysis";
+  work_tasks?: Schemas["ConversationWorkTaskView"][];
   version: number;
   created_at: string;
   updated_at: string;
@@ -125,8 +128,18 @@ export type ConversationTurnBody = Omit<Schemas["ConversationTurnCreate"], Conve
   & Partial<Pick<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>>
   & { workspace_file_scope?: { paths: string[] } | null };
 export type StatisticalDesign = Schemas["StatisticalDesignView"];
+export type StatisticalDesignCreateBody = Schemas["StatisticalDesignCreate"];
 export type StatisticalResult = Schemas["StatisticalResultView"];
 export type StatisticalResultDetail = Schemas["StatisticalResultDetailView"];
+export type ExternalAnalysisImport = Schemas["ExternalAnalysisImportView"];
+export type ExternalAnalysisImportSummary = Schemas["ExternalAnalysisImportSummaryView"];
+export type ExternalDemographicsRevision = Schemas["ExternalDemographicsRevisionView"];
+export type StatisticalClusterRoi = Schemas["StatisticalClusterRoiView"];
+export type StatisticalAtlas = Schemas["StatisticalAtlasView"];
+export type StatisticalAtlasSelection = Schemas["StatisticalAtlasSelection"];
+export type StatisticalMethodSummary = Schemas["StatisticalMethodSummary"];
+export type StatisticalResultLocalization = Schemas["StatisticalResultLocalizationView"];
+export type StatisticalResultSliceInfo = Schemas["StatisticalResultSliceInfoView"];
 export type RunDiagnosis = Schemas["RunDiagnosisView"];
 export type MlTableInspection = Schemas["MlTableInspectView"];
 export type MlTemplate = Schemas["MlTemplateView"];
@@ -478,6 +491,8 @@ export const api = {
   ) => post<Conversation>("/conversations", body, signal),
   conversation: (conversationId: string, signal?: AbortSignal) =>
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  selectWorkAgent: (conversationId: string, body: Schemas["WorkAgentSelection"], signal?: AbortSignal) =>
+    patch<Conversation>(`/conversations/${conversationId}/work-agent`, body, signal),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>
     request<ConversationContext>(`/conversations/${conversationId}/context`, { signal }),
   indexConversationMemories: (conversationId: string, signal?: AbortSignal) =>
@@ -590,8 +605,45 @@ export const api = {
     post<Run>("/statistics/runs", body, signal),
   statisticalResults: (projectId: string, signal?: AbortSignal) =>
     request<StatisticalResult[]>(`/statistics/results?project_id=${encodeURIComponent(projectId)}`, { signal }),
+  externalAnalysisImports: (projectId: string, signal?: AbortSignal) =>
+    request<ExternalAnalysisImportSummary[]>(
+      `/statistics/external-imports?project_id=${encodeURIComponent(projectId)}`,
+      { signal },
+    ),
+  externalAnalysisImport: (importId: string, signal?: AbortSignal) =>
+    request<ExternalAnalysisImport>(`/statistics/external-imports/${encodeURIComponent(importId)}`, { signal }),
+  externalDemographics: (importId: string, signal?: AbortSignal) =>
+    request<ExternalDemographicsRevision | null>(`/statistics/external-imports/${encodeURIComponent(importId)}/demographics`, { signal }),
+  statisticalClusterRoi: (resultId: string, clusterId: string, signal?: AbortSignal) =>
+    request<StatisticalClusterRoi>(`/statistics/results/${encodeURIComponent(resultId)}/roi?cluster_id=${encodeURIComponent(clusterId)}`, { signal }),
+  importExternalDemographics: (importId: string, body: Schemas["ExternalDemographicsImportRequest"], signal?: AbortSignal) =>
+    post<ExternalDemographicsRevision>(`/statistics/external-imports/${encodeURIComponent(importId)}/demographics`, body, signal),
+  inspectExternalAnalysisImport: (
+    body: Schemas["ExternalAnalysisImportInspectRequest"], signal?: AbortSignal,
+  ) => post<ExternalAnalysisImport>("/statistics/external-imports/inspect", body, signal),
+  includeExternalAnalysisImport: (
+    importId: string,
+    body: Schemas["ExternalAnalysisImportIncludeRequest"],
+    signal?: AbortSignal,
+  ) => post<ExternalAnalysisImport>(
+    `/statistics/external-imports/${encodeURIComponent(importId)}/include`, body, signal,
+  ),
   statisticalResult: (resultId: string, signal?: AbortSignal) =>
     request<StatisticalResultDetail>(`/statistics/results/${resultId}`, { signal }),
+  statisticalResultSliceInfo: (resultId: string, signal?: AbortSignal) =>
+    request<StatisticalResultSliceInfo>(
+      `/statistics/results/${encodeURIComponent(resultId)}/slice-info`,
+      { signal },
+    ),
+  statisticalResultSliceUrl: (resultId: string, sliceIndex: number) =>
+    `/api/v1/statistics/results/${encodeURIComponent(resultId)}/slice.png?slice_index=${sliceIndex}`,
+  statisticalAtlases: (signal?: AbortSignal) =>
+    request<StatisticalAtlas[]>("/statistics/atlases", { signal }),
+  localizeStatisticalResult: (resultId: string, atlasId: string, signal?: AbortSignal) =>
+    request<StatisticalResultLocalization>(
+      `/statistics/results/${encodeURIComponent(resultId)}/localization?atlas_id=${encodeURIComponent(atlasId)}`,
+      { signal },
+    ),
   profiles: (signal?: AbortSignal) => request<ModelProfile[]>("/model-profiles", { signal }),
   createProfile: (body: Schemas["ModelProfileCreate"], signal?: AbortSignal) =>
     post<ModelProfile>("/model-profiles", body, signal),

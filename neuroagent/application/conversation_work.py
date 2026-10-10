@@ -118,6 +118,7 @@ class ConversationWorkCoordinator:
         approve_plan: Callable[[str, ApprovalCreate, str], ApprovalView],
         tool_result: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]],
         work_root: Path,
+        get_result_facts: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         self._repository = repository
         self._path_policy = path_policy
@@ -133,6 +134,7 @@ class ConversationWorkCoordinator:
         self._approve_qc_review = approve_qc_review
         self._skip_qc = skip_qc
         self._list_statistical_results = list_statistical_results
+        self._get_result_facts = get_result_facts
         self._get_run = get_run
         self._create_run = create_run
         self._approve_plan = approve_plan
@@ -930,15 +932,24 @@ class ConversationWorkCoordinator:
                     "output": {},
                 },
             )
-        run_id = request.target_run_id
+        run_id = request.target_run_id or active_run_id
         results = self._list_statistical_results(project_id=project_id, run_id=run_id)
-        payload = {"statistical_results": [item.model_dump(mode="json") for item in results]}
+        payload: dict[str, Any] = {
+            "statistical_results": [item.model_dump(mode="json") for item in results]
+        }
         if results:
             scientific_count = sum(not item.non_scientific for item in results)
             message = (
                 f"找到 {len(results)} 个已登记统计结果，"
                 f"其中 {scientific_count} 个具有真实科学证据合同。"
             )
+            if self._get_result_facts is not None:
+                from neuroagent.application.statistical_result_facts import render_result_readout
+
+                facts = [self._get_result_facts(item.result_id) for item in results[:5]]
+                payload["result_fact_summaries"] = facts
+                payload["result_fact_summaries_truncated"] = len(results) > 5
+                message += "\n\n" + "\n\n".join(render_result_readout(item) for item in facts)
         else:
             message = "当前项目尚无符合条件的已登记统计结果。"
         return WorkActionResult(

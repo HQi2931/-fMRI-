@@ -722,6 +722,22 @@
             "title": "Coordinate Space",
             "type": "string"
           },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "inference": {
+            "default": "unknown",
+            "title": "Inference",
+            "type": "string"
+          },
           "peak_x": {
             "title": "Peak X",
             "type": "number"
@@ -980,6 +996,16 @@
       "ConversationToolCallView": {
         "additionalProperties": false,
         "properties": {
+          "agent_role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkAgentRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "conversation_id": {
             "title": "Conversation Id",
             "type": "string"
@@ -1095,6 +1121,16 @@
             "$ref": "#/components/schemas/ConversationAction",
             "default": "auto"
           },
+          "agent_role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkAgentRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "allow_remote_search": {
             "default": false,
             "title": "Allow Remote Search",
@@ -1143,6 +1179,19 @@
               }
             ],
             "title": "Expected Project Version"
+          },
+          "external_analysis_import_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Analysis Import Id"
           },
           "model": {
             "anyOf": [
@@ -1364,6 +1413,10 @@
             "title": "Created At",
             "type": "string"
           },
+          "foreground_agent_role": {
+            "$ref": "#/components/schemas/WorkAgentRole",
+            "default": "preprocessing"
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/ConversationMessageView"
@@ -1416,6 +1469,14 @@
             "title": "Version",
             "type": "integer"
           },
+          "work_tasks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ConversationWorkTaskView"
+            },
+            "title": "Work Tasks",
+            "type": "array"
+          },
           "workspace_path": {
             "anyOf": [
               {
@@ -1437,6 +1498,74 @@
           "updated_at"
         ],
         "title": "ConversationView",
+        "type": "object"
+      },
+      "ConversationWorkTaskView": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_role": {
+            "$ref": "#/components/schemas/WorkAgentRole"
+          },
+          "draft_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Hash"
+          },
+          "plan_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Revision Id"
+          },
+          "proposal_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Hash"
+          },
+          "proposal_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Message Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "agent_role"
+        ],
+        "title": "ConversationWorkTaskView",
         "type": "object"
       },
       "CorrectionCapabilityView": {
@@ -2212,6 +2341,871 @@
         ],
         "title": "ExecutionWorkspaceMode",
         "type": "string"
+      },
+      "ExternalAnalysisImportIncludeRequest": {
+        "additionalProperties": false,
+        "description": "Explicit human decision to make an inspected import selectable for analysis.",
+        "properties": {
+          "acknowledge_unknown_processing": {
+            "const": true,
+            "title": "Acknowledge Unknown Processing",
+            "type": "boolean"
+          },
+          "actor": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "coordinate_space": {
+            "enum": [
+              "MNI",
+              "Talairach",
+              "unknown"
+            ],
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "group_order": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "title": "Group Order",
+            "type": "array"
+          },
+          "included_subject_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "title": "Included Subject Ids",
+            "type": "array"
+          },
+          "mask_relative_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Relative Path"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "included_subject_ids",
+          "group_order",
+          "coordinate_space",
+          "acknowledge_unknown_processing",
+          "actor",
+          "reason"
+        ],
+        "title": "ExternalAnalysisImportIncludeRequest",
+        "type": "object"
+      },
+      "ExternalAnalysisImportInspectRequest": {
+        "additionalProperties": false,
+        "description": "Inspect a user-selected external DPABI metric directory without inclusion.",
+        "properties": {
+          "layout": {
+            "default": "grouped",
+            "enum": [
+              "grouped",
+              "paired_conditions"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Source Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_path"
+        ],
+        "title": "ExternalAnalysisImportInspectRequest",
+        "type": "object"
+      },
+      "ExternalAnalysisImportSummaryView": {
+        "additionalProperties": false,
+        "description": "Bounded list projection that omits per-subject paths and file hashes.",
+        "properties": {
+          "blocking_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Issues",
+            "type": "array"
+          },
+          "coordinate_space": {
+            "enum": [
+              "MNI",
+              "Talairach",
+              "unknown"
+            ],
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "grid_signature": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grid Signature"
+          },
+          "group_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Group Counts",
+            "type": "object"
+          },
+          "import_id": {
+            "title": "Import Id",
+            "type": "string"
+          },
+          "inclusion_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inclusion Hash"
+          },
+          "layout": {
+            "default": "grouped",
+            "enum": [
+              "grouped",
+              "paired_conditions"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "metric_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricScaling"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_tree_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Tree Hash",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "needs_review",
+              "included"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject_count": {
+            "minimum": 0.0,
+            "title": "Subject Count",
+            "type": "integer"
+          },
+          "unknown_processing_fields": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Processing Fields",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "import_id",
+          "project_id",
+          "status",
+          "version",
+          "source_tree_hash",
+          "subject_count",
+          "group_counts",
+          "coordinate_space",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ExternalAnalysisImportSummaryView",
+        "type": "object"
+      },
+      "ExternalAnalysisImportView": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "import_id": {
+            "title": "Import Id",
+            "type": "string"
+          },
+          "inclusion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExternalMetricInclusion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inclusion_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inclusion Hash"
+          },
+          "inspection": {
+            "$ref": "#/components/schemas/ExternalMetricInspection"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExternalAnalysisSelectionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "needs_review",
+              "included"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "import_id",
+          "project_id",
+          "source_path",
+          "status",
+          "version",
+          "inspection",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ExternalAnalysisImportView",
+        "type": "object"
+      },
+      "ExternalAnalysisSelectionImageView": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "group",
+          "artifact_id"
+        ],
+        "title": "ExternalAnalysisSelectionImageView",
+        "type": "object"
+      },
+      "ExternalAnalysisSelectionView": {
+        "additionalProperties": false,
+        "description": "Opaque IDs and manifest needed to freeze a reviewed external design.",
+        "properties": {
+          "group_order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Order",
+            "type": "array"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalAnalysisSelectionImageView"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "input_manifest_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Input Manifest Hash",
+            "type": "string"
+          },
+          "mask_artifact_id": {
+            "title": "Mask Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input_manifest_hash",
+          "mask_artifact_id",
+          "images",
+          "group_order"
+        ],
+        "title": "ExternalAnalysisSelectionView",
+        "type": "object"
+      },
+      "ExternalDemographicsImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "column_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Column Mapping",
+            "type": "object"
+          },
+          "encoding": {
+            "default": "utf-8-sig",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "expected_import_version": {
+            "minimum": 1.0,
+            "title": "Expected Import Version",
+            "type": "integer"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "subject_id_column": {
+            "title": "Subject Id Column",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_path",
+          "subject_id_column",
+          "expected_import_version"
+        ],
+        "title": "ExternalDemographicsImportRequest",
+        "type": "object"
+      },
+      "ExternalDemographicsRevisionView": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "demographics_id": {
+            "title": "Demographics Id",
+            "type": "string"
+          },
+          "external_import_id": {
+            "title": "External Import Id",
+            "type": "string"
+          },
+          "inclusion_hash": {
+            "title": "Inclusion Hash",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "demographics_id",
+          "external_import_id",
+          "inclusion_hash",
+          "revision",
+          "content_hash",
+          "source_sha256",
+          "row_count",
+          "columns",
+          "created_at"
+        ],
+        "title": "ExternalDemographicsRevisionView",
+        "type": "object"
+      },
+      "ExternalMetricImage": {
+        "additionalProperties": false,
+        "description": "One hashed, spatially inspected input image within an external import.",
+        "properties": {
+          "affine": {
+            "items": {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Affine",
+            "type": "array"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "grid_signature": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Grid Signature",
+            "type": "string"
+          },
+          "group": {
+            "minLength": 1,
+            "title": "Group",
+            "type": "string"
+          },
+          "metric_kind": {
+            "$ref": "#/components/schemas/MetricKind"
+          },
+          "relative_path": {
+            "minLength": 1,
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "scaling": {
+            "$ref": "#/components/schemas/MetricScaling"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "shape_ijk": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Shape Ijk",
+            "type": "array"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "group",
+          "relative_path",
+          "sha256",
+          "size_bytes",
+          "shape_ijk",
+          "affine",
+          "grid_signature",
+          "metric_kind",
+          "scaling"
+        ],
+        "title": "ExternalMetricImage",
+        "type": "object"
+      },
+      "ExternalMetricInclusion": {
+        "additionalProperties": false,
+        "description": "Researcher decision that permits an inspected import to be selected.",
+        "properties": {
+          "actor": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "coordinate_space": {
+            "enum": [
+              "MNI",
+              "Talairach",
+              "unknown"
+            ],
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "coordinate_space_source": {
+            "enum": [
+              "user_confirmed",
+              "unknown"
+            ],
+            "title": "Coordinate Space Source",
+            "type": "string"
+          },
+          "excluded_subject_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Excluded Subject Ids",
+            "type": "array"
+          },
+          "group_order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Order",
+            "type": "array"
+          },
+          "included_subject_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Subject Ids",
+            "type": "array"
+          },
+          "mask_grid_signature": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Grid Signature"
+          },
+          "mask_relative_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Relative Path"
+          },
+          "mask_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Sha256"
+          },
+          "mask_size_bytes": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Size Bytes"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "unknown_processing_acknowledged": {
+            "title": "Unknown Processing Acknowledged",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "included_subject_ids",
+          "excluded_subject_ids",
+          "group_order",
+          "coordinate_space",
+          "coordinate_space_source",
+          "actor",
+          "reason",
+          "unknown_processing_acknowledged"
+        ],
+        "title": "ExternalMetricInclusion",
+        "type": "object"
+      },
+      "ExternalMetricInspection": {
+        "additionalProperties": false,
+        "description": "Immutable scan result. It is not analysis approval or QC.",
+        "properties": {
+          "blocking_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Issues",
+            "type": "array"
+          },
+          "coordinate_space": {
+            "default": "unknown",
+            "enum": [
+              "MNI",
+              "Talairach",
+              "unknown"
+            ],
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "grid_signature": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grid Signature"
+          },
+          "group_order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Order",
+            "type": "array"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalMetricImage"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "layout": {
+            "default": "grouped",
+            "enum": [
+              "grouped",
+              "paired_conditions"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "metric_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricScaling"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_tree_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Tree Hash",
+            "type": "string"
+          },
+          "unknown_processing_fields": {
+            "default": [
+              "TR and frequency band",
+              "temporal filtering and nuisance regression",
+              "smoothing and scrubbing",
+              "mask source and version",
+              "preprocessing software and version"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Processing Fields",
+            "type": "array"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_tree_hash",
+          "images",
+          "group_order"
+        ],
+        "title": "ExternalMetricInspection",
+        "type": "object"
       },
       "FailureCode": {
         "enum": [
@@ -6906,9 +7900,455 @@
         "title": "SmoothingTiming",
         "type": "string"
       },
+      "StatisticalAtlasPeakLocalization": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_voxel_center_mm": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Voxel Center Mm"
+          },
+          "atlas_voxel_ijk": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Voxel Ijk"
+          },
+          "cluster_id": {
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "coverage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StatisticalAtlasRegionCoverage"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "distance_to_voxel_center_mm": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance To Voxel Center Mm"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "label_value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Value"
+          },
+          "peak_coordinate_mm": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Peak Coordinate Mm",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "peak_coordinate_mm",
+          "label_value",
+          "label",
+          "atlas_voxel_ijk",
+          "atlas_voxel_center_mm"
+        ],
+        "title": "StatisticalAtlasPeakLocalization",
+        "type": "object"
+      },
+      "StatisticalAtlasRegionCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "label_value": {
+            "minimum": 0.0,
+            "title": "Label Value",
+            "type": "integer"
+          },
+          "proportion": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Proportion",
+            "type": "number"
+          },
+          "voxel_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Voxel Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label_value",
+          "label",
+          "voxel_count",
+          "proportion"
+        ],
+        "title": "StatisticalAtlasRegionCoverage",
+        "type": "object"
+      },
+      "StatisticalAtlasSelection": {
+        "additionalProperties": false,
+        "description": "Server-frozen post-analysis method and installed atlas evidence.",
+        "properties": {
+          "atlas_content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Atlas Content Hash",
+            "type": "string"
+          },
+          "atlas_id": {
+            "enum": [
+              "aal",
+              "aal3",
+              "brodmann"
+            ],
+            "title": "Atlas Id",
+            "type": "string"
+          },
+          "atlas_name": {
+            "minLength": 1,
+            "title": "Atlas Name",
+            "type": "string"
+          },
+          "cluster_connectivity": {
+            "const": 26,
+            "default": 26,
+            "title": "Cluster Connectivity",
+            "type": "integer"
+          },
+          "coordinate_space": {
+            "const": "MNI",
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "localization_method": {
+            "const": "nearest_neighbor_inverse_nifti_affine",
+            "default": "nearest_neighbor_inverse_nifti_affine",
+            "title": "Localization Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "atlas_id",
+          "atlas_name",
+          "atlas_content_hash",
+          "coordinate_space"
+        ],
+        "title": "StatisticalAtlasSelection",
+        "type": "object"
+      },
+      "StatisticalAtlasView": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_id": {
+            "title": "Atlas Id",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "coordinate_space": {
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "label_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Count"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "voxel_size_mm": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voxel Size Mm"
+          }
+        },
+        "required": [
+          "atlas_id",
+          "name",
+          "coordinate_space",
+          "available",
+          "voxel_size_mm",
+          "label_count"
+        ],
+        "title": "StatisticalAtlasView",
+        "type": "object"
+      },
+      "StatisticalClusterRoiRow": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "mean_value": {
+            "title": "Mean Value",
+            "type": "number"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "mean_value"
+        ],
+        "title": "StatisticalClusterRoiRow",
+        "type": "object"
+      },
+      "StatisticalClusterRoiView": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Id"
+          },
+          "limitation": {
+            "default": "显著簇内均值仅用于描述性展示；同一数据选择的 ROI 不构成独立验证，不提供二次显著性检验。",
+            "title": "Limitation",
+            "type": "string"
+          },
+          "result_bundle_hash": {
+            "title": "Result Bundle Hash",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StatisticalClusterRoiRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "source_map_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Map Artifact Id"
+          },
+          "status": {
+            "enum": [
+              "descriptive",
+              "no_significant_voxels",
+              "no_reportable_clusters"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "voxel_count": {
+            "minimum": 0.0,
+            "title": "Voxel Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result_id",
+          "result_bundle_hash",
+          "cluster_id",
+          "status",
+          "voxel_count",
+          "rows"
+        ],
+        "title": "StatisticalClusterRoiView",
+        "type": "object"
+      },
+      "StatisticalCovariateSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "centering": {
+            "title": "Centering",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "centering"
+        ],
+        "title": "StatisticalCovariateSummary",
+        "type": "object"
+      },
       "StatisticalDesignCreate": {
         "additionalProperties": false,
         "properties": {
+          "atlas_id": {
+            "anyOf": [
+              {
+                "enum": [
+                  "aal",
+                  "aal3",
+                  "brodmann"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Id"
+          },
           "correction": {
             "anyOf": [
               {
@@ -6950,6 +8390,16 @@
               }
             ],
             "title": "Supersedes Plan Revision Id"
+          },
+          "work_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StatisticalWorkContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -6984,6 +8434,54 @@
             },
             "title": "Covariates",
             "type": "array"
+          },
+          "external_demographics_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Demographics Hash"
+          },
+          "external_demographics_revision_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Demographics Revision Id"
+          },
+          "external_import_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Import Hash"
+          },
+          "external_import_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Import Id"
           },
           "group_order": {
             "items": {
@@ -7165,6 +8663,16 @@
             "title": "Design Matrix",
             "type": "array"
           },
+          "localization_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StatisticalAtlasSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "plan_revision": {
             "$ref": "#/components/schemas/PlanRevisionView"
           }
@@ -7188,13 +8696,364 @@
         "title": "StatisticalMapType",
         "type": "string"
       },
+      "StatisticalMethodSummary": {
+        "additionalProperties": false,
+        "description": "Path-free method facts, derived from a verified frozen result.",
+        "properties": {
+          "actual_p_threshold": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual P Threshold"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "cluster_connectivity": {
+            "anyOf": [
+              {
+                "const": 26,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Connectivity"
+          },
+          "cluster_p_threshold": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster P Threshold"
+          },
+          "condition_order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Condition Order",
+            "type": "array"
+          },
+          "contrast": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Contrast",
+            "type": "array"
+          },
+          "correction_evidence_status": {
+            "enum": [
+              "verified",
+              "not_registered",
+              "unavailable",
+              "not_applicable"
+            ],
+            "title": "Correction Evidence Status",
+            "type": "string"
+          },
+          "correction_method": {
+            "anyOf": [
+              {
+                "enum": [
+                  "fdr",
+                  "grf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Method"
+          },
+          "covariates": {
+            "items": {
+              "$ref": "#/components/schemas/StatisticalCovariateSummary"
+            },
+            "title": "Covariates",
+            "type": "array"
+          },
+          "df1": {
+            "exclusiveMinimum": 0.0,
+            "title": "Df1",
+            "type": "number"
+          },
+          "df2": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Df2"
+          },
+          "effective_fwhm": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Fwhm"
+          },
+          "effective_mask_voxel_count": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Mask Voxel Count"
+          },
+          "effective_smoothness_dlh": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Smoothness Dlh"
+          },
+          "evidence_issues": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Issues",
+            "type": "array"
+          },
+          "function_name": {
+            "title": "Function Name",
+            "type": "string"
+          },
+          "group_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Group Counts",
+            "type": "object"
+          },
+          "image_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Image Count",
+            "type": "integer"
+          },
+          "minimum_cluster_size": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Cluster Size"
+          },
+          "negative_direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Direction"
+          },
+          "positive_direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positive Direction"
+          },
+          "q_threshold": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q Threshold"
+          },
+          "smoothness_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Smoothness Mode"
+          },
+          "smoothness_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "provided",
+                  "header",
+                  "estimated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Smoothness Source"
+          },
+          "software_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Software Versions",
+            "type": "object"
+          },
+          "statistic_type": {
+            "enum": [
+              "T",
+              "R",
+              "F"
+            ],
+            "title": "Statistic Type",
+            "type": "string"
+          },
+          "subject_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Subject Count",
+            "type": "integer"
+          },
+          "tail": {
+            "title": "Tail",
+            "type": "string"
+          },
+          "tail_label": {
+            "title": "Tail Label",
+            "type": "string"
+          },
+          "test": {
+            "title": "Test",
+            "type": "string"
+          },
+          "test_label": {
+            "title": "Test Label",
+            "type": "string"
+          },
+          "voxel_p_threshold": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voxel P Threshold"
+          }
+        },
+        "required": [
+          "test",
+          "test_label",
+          "function_name",
+          "statistic_type",
+          "subject_count",
+          "image_count",
+          "group_counts",
+          "condition_order",
+          "covariates",
+          "contrast",
+          "tail",
+          "tail_label",
+          "df1",
+          "assumptions",
+          "correction_evidence_status",
+          "software_versions"
+        ],
+        "title": "StatisticalMethodSummary",
+        "type": "object"
+      },
       "StatisticalQcSource": {
         "enum": [
           "approved_review",
-          "skipped"
+          "skipped",
+          "external_import"
         ],
         "title": "StatisticalQcSource",
         "type": "string"
+      },
+      "StatisticalResultClusterSliceView": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_id": {
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "slice_index": {
+            "minimum": 0.0,
+            "title": "Slice Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cluster_id",
+          "slice_index"
+        ],
+        "title": "StatisticalResultClusterSliceView",
+        "type": "object"
       },
       "StatisticalResultDetailView": {
         "additionalProperties": false,
@@ -7228,6 +9087,16 @@
             "additionalProperties": true,
             "title": "Manifest",
             "type": "object"
+          },
+          "method_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StatisticalMethodSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "title": "Mode",
@@ -7292,6 +9161,145 @@
           "report_json"
         ],
         "title": "StatisticalResultDetailView",
+        "type": "object"
+      },
+      "StatisticalResultLocalizationView": {
+        "additionalProperties": false,
+        "properties": {
+          "atlas_content_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Content Hash"
+          },
+          "atlas_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Id"
+          },
+          "atlas_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Name"
+          },
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/StatisticalAtlasPeakLocalization"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "coordinate_space": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coordinate Space"
+          },
+          "localization_method": {
+            "default": "nearest-neighbor sampling through inverse NIfTI affine",
+            "title": "Localization Method",
+            "type": "string"
+          },
+          "result_bundle_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Result Bundle Hash",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "significant_voxel_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Significant Voxel Count"
+          },
+          "status": {
+            "default": "localized",
+            "enum": [
+              "localized",
+              "no_significant_voxels",
+              "no_reportable_clusters"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_id",
+          "result_bundle_hash",
+          "clusters"
+        ],
+        "title": "StatisticalResultLocalizationView",
+        "type": "object"
+      },
+      "StatisticalResultSliceInfoView": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_slices": {
+            "items": {
+              "$ref": "#/components/schemas/StatisticalResultClusterSliceView"
+            },
+            "title": "Cluster Slices",
+            "type": "array"
+          },
+          "initial_slice_index": {
+            "minimum": 0.0,
+            "title": "Initial Slice Index",
+            "type": "integer"
+          },
+          "map_artifact_id": {
+            "title": "Map Artifact Id",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "slice_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Slice Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result_id",
+          "map_artifact_id",
+          "slice_count",
+          "initial_slice_index",
+          "cluster_slices"
+        ],
+        "title": "StatisticalResultSliceInfoView",
         "type": "object"
       },
       "StatisticalResultView": {
@@ -7382,10 +9390,32 @@
           "independent_two_sample_t",
           "paired_t",
           "correlation",
-          "regression"
+          "regression",
+          "one_way_anova_ancova"
         ],
         "title": "StatisticalTest",
         "type": "string"
+      },
+      "StatisticalWorkContext": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "proposal_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "proposal_hash"
+        ],
+        "title": "StatisticalWorkContext",
+        "type": "object"
       },
       "StatisticsRunCreate": {
         "additionalProperties": false,
@@ -7926,6 +9956,33 @@
           "severity"
         ],
         "title": "ValidationIssue",
+        "type": "object"
+      },
+      "WorkAgentRole": {
+        "enum": [
+          "preprocessing",
+          "analysis"
+        ],
+        "title": "WorkAgentRole",
+        "type": "string"
+      },
+      "WorkAgentSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_role": {
+            "$ref": "#/components/schemas/WorkAgentRole"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_role",
+          "expected_version"
+        ],
+        "title": "WorkAgentSelection",
         "type": "object"
       },
       "WorkConfirmationCreate": {
@@ -10225,6 +12282,119 @@
           }
         },
         "summary": "Send Conversation Turn",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/work-agent": {
+      "patch": {
+        "operationId": "select_work_agent_api_v1_conversations__conversation_id__work_agent_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkAgentSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Select Work Agent",
         "tags": [
           "agent"
         ]
@@ -16649,6 +18819,714 @@
         ]
       }
     },
+    "/api/v1/statistics/atlases": {
+      "get": {
+        "operationId": "list_statistical_atlases_api_v1_statistics_atlases_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StatisticalAtlasView"
+                  },
+                  "title": "Response List Statistical Atlases Api V1 Statistics Atlases Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Statistical Atlases",
+        "tags": [
+          "statistics",
+          "localization"
+        ]
+      }
+    },
+    "/api/v1/statistics/external-imports": {
+      "get": {
+        "operationId": "list_external_analysis_imports_api_v1_statistics_external_imports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExternalAnalysisImportSummaryView"
+                  },
+                  "title": "Response List External Analysis Imports Api V1 Statistics External Imports Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List External Analysis Imports",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      }
+    },
+    "/api/v1/statistics/external-imports/inspect": {
+      "post": {
+        "operationId": "inspect_external_analysis_import_api_v1_statistics_external_imports_inspect_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalAnalysisImportInspectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalAnalysisImportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Inspect External Analysis Import",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      }
+    },
+    "/api/v1/statistics/external-imports/{import_id}": {
+      "get": {
+        "operationId": "get_external_analysis_import_api_v1_statistics_external_imports__import_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalAnalysisImportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get External Analysis Import",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      }
+    },
+    "/api/v1/statistics/external-imports/{import_id}/demographics": {
+      "get": {
+        "operationId": "get_external_demographics_api_v1_statistics_external_imports__import_id__demographics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ExternalDemographicsRevisionView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get External Demographics Api V1 Statistics External Imports  Import Id  Demographics Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get External Demographics",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      },
+      "post": {
+        "operationId": "import_external_demographics_api_v1_statistics_external_imports__import_id__demographics_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalDemographicsImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalDemographicsRevisionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Import External Demographics",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      }
+    },
+    "/api/v1/statistics/external-imports/{import_id}/include": {
+      "post": {
+        "operationId": "include_external_analysis_import_api_v1_statistics_external_imports__import_id__include_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalAnalysisImportIncludeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalAnalysisImportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Include External Analysis Import",
+        "tags": [
+          "statistics",
+          "external-data"
+        ]
+      }
+    },
     "/api/v1/statistics/results": {
       "get": {
         "operationId": "list_statistical_results_api_v1_statistics_results_get",
@@ -16850,6 +19728,410 @@
         "summary": "Get Statistical Result",
         "tags": [
           "statistics"
+        ]
+      }
+    },
+    "/api/v1/statistics/results/{result_id}/localization": {
+      "get": {
+        "operationId": "localize_statistical_result_api_v1_statistics_results__result_id__localization_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "atlas_id",
+            "required": true,
+            "schema": {
+              "maxLength": 40,
+              "minLength": 1,
+              "title": "Atlas Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticalResultLocalizationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Localize Statistical Result",
+        "tags": [
+          "statistics",
+          "localization"
+        ]
+      }
+    },
+    "/api/v1/statistics/results/{result_id}/roi": {
+      "get": {
+        "operationId": "statistical_cluster_roi_api_v1_statistics_results__result_id__roi_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cluster_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cluster Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticalClusterRoiView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Statistical Cluster Roi",
+        "tags": [
+          "statistics",
+          "roi"
+        ]
+      }
+    },
+    "/api/v1/statistics/results/{result_id}/slice-info": {
+      "get": {
+        "operationId": "statistical_result_slice_info_api_v1_statistics_results__result_id__slice_info_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticalResultSliceInfoView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Statistical Result Slice Info",
+        "tags": [
+          "statistics",
+          "preview"
+        ]
+      }
+    },
+    "/api/v1/statistics/results/{result_id}/slice.png": {
+      "get": {
+        "operationId": "statistical_result_slice_preview_api_v1_statistics_results__result_id__slice_png_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "slice_index",
+            "required": true,
+            "schema": {
+              "maximum": 511,
+              "minimum": 0,
+              "title": "Slice Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Statistical Result Slice Preview",
+        "tags": [
+          "statistics",
+          "preview"
         ]
       }
     },

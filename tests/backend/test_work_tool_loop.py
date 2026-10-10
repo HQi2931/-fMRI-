@@ -26,10 +26,20 @@ from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
 
 _SALT = "stable-work-tool-loop-redaction-salt"
-#: The Work read catalog, in the order the dispatcher advertises it.
-_WORK_CATALOG = (
-    "describe_statistical_capabilities",
+#: Tool catalogs are isolated by the selected Work Agent.
+_PREPROCESSING_CATALOG = (
     "get_run_status",
+    "get_statistical_results",
+    "list_run_artifacts",
+    "list_skills",
+)
+_ANALYSIS_CATALOG = (
+    "describe_statistical_capabilities",
+    "get_external_analysis_imports",
+    "get_run_status",
+    "get_statistical_cluster_summary",
+    "get_statistical_result_detail",
+    "get_statistical_result_localization",
     "get_statistical_results",
     "list_run_artifacts",
     "list_skills",
@@ -125,8 +135,13 @@ def test_work_catalog_is_read_only() -> None:
 
     bindings = build_work_tool_bindings(get_run=lambda run_id: {"run_id": run_id})
 
-    # Declared order is stable for review; the provider sees the sorted catalog.
-    assert sorted(binding.tool.name for binding in bindings) == list(_WORK_CATALOG)
+    # The default Agent is preprocessing; statistical capabilities are only
+    # visible after routing to the analysis Agent.
+    assert sorted(binding.tool.name for binding in bindings) == list(_PREPROCESSING_CATALOG)
+    analysis_bindings = build_work_tool_bindings(
+        get_run=lambda run_id: {"run_id": run_id}, work_agent_role="analysis"
+    )
+    assert sorted(binding.tool.name for binding in analysis_bindings) == list(_ANALYSIS_CATALOG)
     assert all(binding.tool.tier is ToolTier.READ for binding in bindings)
     # A privileged tool must not be reachable through the Work catalog at all.
     assert all(binding.tool.model_visible for binding in bindings)
@@ -163,6 +178,44 @@ def test_work_catalog_handlers_project_only_aggregates() -> None:
     artifacts = dict(bindings["list_run_artifacts"]({"run_id": "r1"}))
     assert artifacts["total"] == 3
     assert {"artifact_type": "metric.alff", "count": 2} in artifacts["artifact_types"]
+
+
+def test_analysis_agent_can_read_import_review_summaries_without_paths_or_subject_ids() -> None:
+    from neuroagent.application.work_tools import build_work_tool_bindings
+
+    bindings = {
+        binding.tool.name: binding.handler
+        for binding in build_work_tool_bindings(
+            get_run=lambda run_id: {"run_id": run_id},
+            project_id="project-a",
+            work_agent_role="analysis",
+            list_external_imports=lambda project_id: [
+                {
+                    "import_id": "import-a",
+                    "project_id": project_id,
+                    "source_path": r"D:\private\dataset",
+                    "status": "included",
+                    "version": 2,
+                    "metric_kind": "alff",
+                    "scaling": "z_score",
+                    "subject_count": 2,
+                    "group_counts": {"ASD": 1, "HC": 1},
+                    "blocking_issues": [],
+                    "warnings": ["Processing history is incomplete."],
+                    "unknown_processing_fields": ["mask source and version"],
+                    "coordinate_space": "unknown",
+                    "inclusion_hash": "a" * 64,
+                }
+            ],
+        )
+    }
+    summary = dict(bindings["get_external_analysis_imports"]({}))
+    record = summary["imports"][0]
+    assert record["group_counts"] == {"ASD": 1, "HC": 1}
+    assert record["coordinate_space"] == "unknown"
+    assert "source_path" not in record
+    assert "images" not in record
+    assert "subject_id" not in json.dumps(record)
 
 
 def test_work_catalog_hides_runs_outside_request_scope() -> None:
@@ -233,7 +286,7 @@ def test_work_tool_loop_answers_in_the_json_contract(
 
     single_shot.assert_not_called()
     # The read catalog was offered, and the tool-gathering turn carried no JSON mode.
-    assert provider.tool_requests[0] == tuple(sorted((*_WORK_CATALOG, "get_run_diagnosis")))
+    assert provider.tool_requests[0] == tuple(sorted(_ANALYSIS_CATALOG))
 
     payload = body["assistant_message"]["payload"]
     loop = payload["tool_loop"]
@@ -278,7 +331,8 @@ def test_work_loop_cannot_reach_a_server_only_action(
         service.close()
 
     execute.assert_not_called()
-    assert "未执行任务" in body["assistant_message"]["content"]
+    content = body["assistant_message"]["content"]
+    assert "未执行" in content or "未能完成" in content
 
 
 def test_work_loop_falls_back_when_the_answer_is_not_json(
@@ -341,7 +395,7 @@ def test_work_timeout_preserves_draft_without_repeating_provider_request(
     fallback.assert_not_called()
     assert len(provider.requests) == 1
     assert result["assistant_message"]["payload"]["model_error"]["provider_timeout"] is True
-    assert "未执行任务" in result["assistant_message"]["content"]
+    assert "已有统计草稿和工作流状态仍保留" in result["assistant_message"]["content"]
 
 
 def test_work_uses_single_shot_when_the_profile_lacks_tool_use(

@@ -18,6 +18,7 @@ from neuroagent.application.contracts import (
     ConversationToolCallView,
     ConversationToolStatus,
     ConversationView,
+    ConversationWorkTaskView,
     MemoryAction,
     MemoryCreate,
     MemoryKind,
@@ -25,9 +26,11 @@ from neuroagent.application.contracts import (
     MemoryStatus,
     MemoryUpdate,
     MemoryView,
+    WorkAgentSelection,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json
+from neuroagent.application.work_tasks import require_analysis_task
 from neuroagent.infrastructure.persistence.models import (
     ConfirmationChallengeRow,
     ContextSnapshotRow,
@@ -37,7 +40,9 @@ from neuroagent.infrastructure.persistence.models import (
     ConversationToolCallRow,
     MemoryEmbeddingRow,
     MemoryRecordRow,
+    PlanRevisionRow,
     ProjectRow,
+    WorkflowRunRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
@@ -45,9 +50,75 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
     _id,
     _load,
 )
+from neuroagent.multi_agent.registry import WorkAgentRole
 
 
 class ConversationMixin(RepositoryBaseMixin):
+    def select_work_agent(
+        self, conversation_id: str, request: WorkAgentSelection
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if row.mode != "work":
+                raise InputValidationError(
+                    "work_agent_mode_required", "仅 Work 会话可以切换负责 Agent。"
+                )
+            self._check_version("conversation", row.version, request.expected_version)
+            row.foreground_agent_role = request.agent_role.value
+            tasks = _load(row.work_tasks_json, {})
+            row.active_run_id = tasks.get(request.agent_role.value, {}).get("run_id")
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
+    def bind_statistics_task(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        proposal_hash: str,
+        plan_revision_id: str,
+        run_id: str | None = None,
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            task = require_analysis_task(
+                self._conversation_view(session, row),
+                project_id=project_id,
+                proposal_hash=proposal_hash,
+                plan_revision_id=plan_revision_id if run_id else None,
+            )
+            plan = session.get(PlanRevisionRow, plan_revision_id)
+            if plan is None or plan.project_id != project_id:
+                raise ConflictError("statistics_work_project_mismatch", "方案不属于此会话项目。")
+            if run_id:
+                run = session.get(WorkflowRunRow, run_id)
+                if (
+                    run is None
+                    or run.project_id != project_id
+                    or run.plan_revision_id != plan_revision_id
+                ):
+                    raise ConflictError(
+                        "statistics_work_run_mismatch", "运行与当前统计方案不匹配。"
+                    )
+            tasks = _load(row.work_tasks_json, {})
+            tasks["analysis"] = task.model_copy(
+                update={
+                    "plan_revision_id": plan_revision_id,
+                    **({"run_id": run_id} if run_id else {}),
+                }
+            ).model_dump(mode="json")
+            row.work_tasks_json = canonical_json(tasks)
+            if run_id:
+                row.active_run_id = run_id
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
     @staticmethod
     def _confirmation_challenge(row: ConfirmationChallengeRow) -> ConfirmationChallengeView:
         from neuroagent.application.contracts import QcExecutionMode
@@ -246,6 +317,7 @@ class ConversationMixin(RepositoryBaseMixin):
                     input_json=canonical_json(tool.get("input", {})),
                     output_json=canonical_json(tool.get("output", {})),
                     error=tool.get("error"),
+                    agent_role=tool.get("agent_role"),
                 )
                 session.add(tool_row)
             for step_index, call in enumerate(tool_calls or (), start=1):
@@ -271,12 +343,69 @@ class ConversationMixin(RepositoryBaseMixin):
                         duration_ms=int(call["duration_ms"])
                         if call.get("duration_ms") is not None
                         else None,
+                        agent_role=str(call["agent_role"])
+                        if call.get("agent_role") is not None
+                        else None,
                     )
                 )
             row.workspace_path = workspace_path
             row.preferred_profile_id = preferred_profile_id
+            tasks = _load(row.work_tasks_json, {}) if row.project_id == project_id else {}
             row.project_id = project_id
             row.active_run_id = active_run_id
+            if row.mode == "work":
+                role = WorkAgentRole(assistant_payload.get("agent_role", "preprocessing"))
+                row.foreground_agent_role = role.value
+                task = ConversationWorkTaskView.model_validate(
+                    tasks.get(role.value, {"agent_role": role.value})
+                )
+                snapshot = assistant_payload.get(
+                    "analysis_draft" if role is WorkAgentRole.ANALYSIS else "work_draft"
+                )
+                if (
+                    isinstance(snapshot, dict)
+                    and isinstance(snapshot.get("hash"), str)
+                    and snapshot["hash"] != task.draft_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "draft_hash": snapshot["hash"],
+                            "proposal_hash": None,
+                            "proposal_message_id": None,
+                            "plan_revision_id": None,
+                        }
+                    )
+                proposal = assistant_payload.get("statistical_design_proposal")
+                if (
+                    role is WorkAgentRole.ANALYSIS
+                    and isinstance(proposal, dict)
+                    and proposal.get("proposal_hash") != task.proposal_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "plan_revision_id": None,
+                            "proposal_hash": proposal["proposal_hash"],
+                            "proposal_message_id": assistant_row.message_id,
+                        }
+                    )
+                # An analysis turn may refer to an upstream run; it must never
+                # replace the analysis run reference with that preprocessing source.
+                if active_run_id:
+                    run = session.get(WorkflowRunRow, active_run_id)
+                    plan = session.get(PlanRevisionRow, run.plan_revision_id) if run else None
+                    is_statistics = (
+                        plan is not None
+                        and _load(plan.plan_json, {}).get("kind") == "statistical_design"
+                    )
+                    if (
+                        run is not None
+                        and run.project_id == project_id
+                        and (role is WorkAgentRole.ANALYSIS) == is_statistics
+                    ):
+                        task = task.model_copy(update={"run_id": active_run_id})
+                tasks[role.value] = task.model_dump(mode="json")
+                row.work_tasks_json = canonical_json(tasks)
+                row.active_run_id = task.run_id
             row.version += 1
             session.flush()
             return (
@@ -752,6 +881,11 @@ class ConversationMixin(RepositoryBaseMixin):
             preferred_profile_id=row.preferred_profile_id,
             project_id=row.project_id,
             active_run_id=row.active_run_id,
+            foreground_agent_role=WorkAgentRole(row.foreground_agent_role),
+            work_tasks=tuple(
+                ConversationWorkTaskView.model_validate(value)
+                for value in _load(row.work_tasks_json, {}).values()
+            ),
             version=row.version,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
@@ -785,6 +919,7 @@ class ConversationMixin(RepositoryBaseMixin):
             step_index=row.step_index,
             risk_tier=row.risk_tier,
             duration_ms=row.duration_ms,
+            agent_role=row.agent_role,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
         )

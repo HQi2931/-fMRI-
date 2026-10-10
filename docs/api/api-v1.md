@@ -3,12 +3,20 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-09-27
+- 更新日期：2026-10-10
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
 
 ## 通用规则
+
+### Work 角色任务引用
+
+会话返回 `foreground_agent_role` 和 `work_tasks`，后者分别保存角色的草稿哈希、当前提案消息/哈希、正式方案与运行引用；`active_run_id` 表示前台角色的运行。旧 Work 会话默认预处理。
+
+`PATCH /conversations/{conversation_id}/work-agent` 接受 `{agent_role, expected_version}` 和幂等键，版本冲突拒绝切换；只适用于 Work，保留其他角色任务。Work 的 `POST /statistical-designs` 传入 `work_context={conversation_id, proposal_hash}`，服务端比对冻结提案并保存绑定。校验、审批与启动时复查前台角色和当前草稿；过期提案或另一角色的确认返回 409。独立统计客户端可继续省略 `work_context`。统计方案/运行与会话引用在同一事务保存，幂等重放不重复建任务或夺回前台角色。
+
+同一 Work 统计方案已有绑定运行时，新幂等键的重复启动返回 `statistics_work_run_already_created` 和已有运行编号；相同幂等键仍重放原响应。运行失败后的恢复继续使用现有 Worker 入口。
 
 ### Work 参数编辑与 T1 预处理
 
@@ -82,6 +90,8 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
 
+Work 回合请求可带 `agent_role: "preprocessing" | "analysis" | null`。省略或传 `null` 时由服务端根据当前任务和最近交接记录路由；显式角色用于界面手动切换。响应的 assistant payload 保存 `agent_role`、角色显示名和该角色独立草稿，工具审计行也记录角色。旧的预处理草稿默认归属 `preprocessing`。
+
 `chat` 先调用本地 `rag_rsfmri_question`；存在模型配置时，将限定范围的问题和本地证据通过
 `OutboundContextPolicy` 脱敏后交给所选 LLM。请求中的 `allow_remote_search=true` 只会路由到
 声明 `web_search` 能力的 Profile，并将 URL 引用、模型 Profile、上下文哈希和用量摘要保存到
@@ -142,6 +152,8 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `get_progress` | read | 读取运行状态 |
 | `get_qc_status` | read | 读取 QC 状态 |
 | `get_statistical_results` | read | 读取已登记统计结果 |
+| `prepare_statistical_analysis` | propose | 更新独立的统计设计草稿，不创建批准或运行 |
+| `request_preprocessing_handoff` | propose | 记录分析所缺的预处理产物与服务端数据引用，交由预处理 Agent 续接 |
 | `prepare_preprocessing_plan` | propose | 合并本轮参数草稿并展示审阅 |
 | `propose_run_confirmation` | propose | 仅展示需要用户本人回复的启动确认指令 |
 
@@ -320,15 +332,34 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | `POST` | `/statistical-designs/{plan_revision_id}/validate` | 校验设计并进入待审批 |
 | `POST` | `/statistical-designs/{plan_revision_id}/approve` | 批准统计设计哈希 |
 | `GET` | `/corrections` | 列出 FDR/GRF 校正能力和 schema |
-| `POST` | `/statistics/runs` | 从已批准设计创建统计 Mock 运行 |
+| `POST` | `/statistics/runs` | 从已批准设计创建 Mock 或 MATLAB 统计运行 |
+| `POST` | `/statistics/external-imports/inspect` | 在项目只读源根内检查分组 DPABI 指标目录，保存待审核记录 |
+| `GET` | `/statistics/external-imports?project_id=...` | 列出状态、组别计数、网格及未知项摘要，不返回逐受试者路径 |
+| `GET` | `/statistics/external-imports/{import_id}` | 读取完整检查、纳入决定和可选的统计输入引用 |
+| `POST` | `/statistics/external-imports/{import_id}/include` | 以精确记录版本、纳入名单、组别、空间、未知项确认及可选 mask 冻结独立纳入决定 |
+| `POST` | `/statistics/external-imports/{import_id}/demographics` | 以精确导入版本登记人口学表、编号列及字段对应，要求恰好覆盖纳入名单 |
+| `GET` | `/statistics/external-imports/{import_id}/demographics` | 读取最新人口学修订的列名、人数、源表和内容哈希；不返回原始行 |
 | `GET` | `/statistics/results?project_id=...&run_id=...` | 按项目（可选运行）列出已登记的统计结果摘要 |
 | `GET` | `/statistics/results/{result_id}` | 读取冻结结果清单与 Markdown/JSON 复现报告 |
+| `GET` | `/statistics/atlases` | 列出本机 DPABI 支持的 AAL、AAL3、Brodmann 图谱及可用性、分辨率和内容指纹 |
+| `GET` | `/statistics/results/{result_id}/localization?atlas_id=aal` | 校验真实统计结果的簇范围与峰值，再用 DPABI 图谱仿射采样峰值标签和整簇脑区覆盖比例 |
+| `GET` | `/statistics/results/{result_id}/roi?cluster_id=...` | 按冻结影像引用复核哈希/网格，返回所选簇逐受试者及条件的描述性指标均值；零结果返回空表 |
+| `GET` | `/statistics/results/{result_id}/slice-info` | 返回统计图轴向层数、默认层及簇峰值所对应的原图层号 |
+| `GET` | `/statistics/results/{result_id}/slice.png?slice_index=...` | 在结果权限和哈希校验后预览指定统计图轴向切片 |
 
-`/statistics/runs` 当前只排队 `statistics_mock`。它不调用 DPABI 统计函数，不产生统计图、效应量、簇表或可复现报告。统计运行完成后，明确标记为合成的复现报告可经 `/statistics/results` 查询；真实执行器产物登记仍待接入。
+结果明细增加可空 `method_summary`：检验、方向、协变量名称/中心化、自由度、冻结校正参数、实际 FDR p 截断及可核验的 GRF 实际平滑度/最小簇和软件版本。报告或设计绑定无效时摘要为空，历史原文仍可读。模型结果工具不转发完整报告；分析上下文与只读工具提供有界聚合事实，作用域绑定当前项目/运行。
+
+`/statistics/runs` 的 `execution_backend` 显式选择 `mock` 或 `matlab`。Mock 运行使用醒目标记的非科学占位产物；MATLAB 固定模板覆盖三类 t 检验、相关／偏相关、多变量回归和单因素 ANOVA/ANCOVA 总体 F 检验，并支持 FDR/GRF 合同。每个真实统计结果登记设计矩阵、contrast、统计图、效应图、经完整性验证的簇表、校正证据、运行日志、软件证据与确定性复现报告。FDR 仅开放双侧 T/R 图并保存 q 与实际 p 截断值；GRF 保留参数及可用的 Z 图。六类统计已在本机 MATLAB R2024b、SPM25、DPABI V9.0_250415 上通过真实执行 smoke，能力目录会记录该本机验证状态。图谱定位复核簇表峰值数值和整簇 26 邻域范围；合成结果与空间未知的结果会被阻止定位。覆盖比例是描述性空间重叠，不是额外统计推断。
 
 运行请求携带 `qc_mode=require|skip`。`require` 时，MATLAB/DPABI 预处理或指标运行成功并登记 Artifact 后，若本次计划启用了 Realign 且存在 `RealignParameter`，Worker 会解析 `HeadMotion.tsv`、FD 文件、`rp_*.txt` 和 DPABI 排除文件，登记 `qc.head_motion_report`，并自动创建 QC 草稿。含指标图的运行生成 `pre_statistics` scope，可在人工批准后作为统计来源；无指标图的纯预处理生成 `head_motion` scope。`skip` 时运行在产物登记完成后进入 `succeeded`，不解析头动文件或创建 QC 草稿。统计设计可绑定已批准 QC review，或绑定同一来源运行的 `qc_skip` 审计记录；后者会在报告中明确标记 QC 已跳过。默认阈值为最大平移/旋转 `≤2mm/2°`、mean FD Power `≤0.2`、FD Power > 0.5 比例 `≤20%`。
 
+外部纳入请求的 `mask_relative_path` 必须指向导入根内的 NIfTI，并通过同网格和非空检查。没有 mask 仍可保存纳入记录，但详细响应 `selection` 为 null，不能建立可执行设计。有完整 mask 时，`selection` 返回服务端生成的影像引用、mask 引用和 `input_manifest_hash`。创建统计设计使用 `qc_source=external_import`、`external_import_id`、`external_import_hash`，其内部 QC review/skip 字段必须为空；服务端核对逐 subject 引用、分组及目录/mask 哈希。设计顺序可以显式打乱，不能改变 subject 与影像、组别的关系。外部人口学可独立登记修订并绑定协变量。inspect 的 layout 显式选择 grouped（默认）或 paired_conditions；配对布局必须恰好有两个完整条件目录，selection.images 增加 condition。纳入名单每 subject 一项，同时纳入两张图；配对 t 的 condition_order 明确引用两个标签。
+
 ## Provider 和 Agent
+
+统计设计创建请求可携带 `atlas_id=aal|aal3|brodmann`；响应 `localization_plan` 返回服务端冻结的名称、内容哈希、空间、定位方法及连通性。缺省为 null，兼容历史设计。图谱不可用时返回 `atlas_unavailable`，冻结图谱改变时返回 `statistics_atlas_changed`（启动入口为包含该原因的 `plan_stale`）；定位请求不能替换方案图谱，违反时返回 `statistics_atlas_selection_mismatch`。零显著体素先返回 `no_significant_voxels`，不触发图谱和空间检查。
+
+Work turn 可显式提交 `external_analysis_import_id`，与 `target_run_id` 互斥且不能指定预处理角色。服务端检查项目、纳入状态和 mask，向分析模型仅提供指标类型、`group` 列、组别、人数及人口学列名摘要。模型不能修改外部来源 ID/hash；方法完整时由服务端重新验证输入并形成统计设计预览。外部预览的 `source_run_id` 为 null，来源保存在 `design.external_import_id/hash`；审批与执行仍使用已有统计入口。外部协变量必须绑定 `external_demographics_revision_id/hash`；新人口学修订使旧方案失效。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |

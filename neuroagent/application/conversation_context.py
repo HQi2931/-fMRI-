@@ -206,6 +206,8 @@ class ConversationContextCoordinator:
                 "state": run.state.value,
                 "attempt": run.attempt,
                 "cancel_requested": run.cancel_requested,
+                "qc_mode": run.qc_mode.value,
+                "qc_status": run.qc_status,
                 "artifact_count": len(artifacts),
                 "artifact_types": sorted({item.artifact_type for item in artifacts}),
             }

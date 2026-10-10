@@ -22,7 +22,7 @@
 - 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及当前门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于全面验证。
 - `docs/archive/architecture/neuroagent-framework-architecture.md` 是已归档的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
-- `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖。
+- `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 为 Work 提供最小的预处理/分析角色目录、权限和交接边界；通用多 Agent 框架与插件系统仍不是近期 MVP 的前置依赖。
 - Agent 已具备**有界工具调用循环**（ADR 0014）：Chat 可多跳检索；Work 可提供运行状态、产物类型汇总、统计结果、校正能力、Skill 清单等工具，以及经用户授权的只读工作区文件工具。文件授权绑定工作区、Profile 配置修订和具体模型，创建授权前使用不含工作区内容的探针验证具体模型。循环的最终文本即 Work 原有 JSON 契约，解析与授权路径未变，非法 JSON 会回退单次路径。Work 的动作集合由 `work_actions.py` 单一维护并只允许 READ/PROPOSE；EXECUTE 动作在目录构建阶段即被丢弃。未声明 `ModelCapability.TOOL_USE` 的模型仍走原有单次路径，行为不变。
 - 优先建立最小垂直闭环：数据检查 → Skill 解析与方案校验 → 人工确认 → Workflow/MATLAB/DPABI 执行 → QC → 统计分析 → 报告。
 
@@ -198,7 +198,7 @@ runs/{run_id}/
 
 ## 8. 统计分析规范
 
-- 首期支持单样本 t 检验、两独立样本 t 检验、配对 t 检验、相关和带协变量回归。
+- 首期支持单样本 t 检验、两独立样本 t 检验、配对 t 检验、相关/偏相关、多变量回归和单因素 ANOVA/ANCOVA 总体 F 检验。
 - 设计必须显式记录受试者顺序、分组编码、协变量列、缺失值处理、中心化方法、对比向量、掩膜和尾部设置。
 - 多重比较校正与统计检验分开建模，支持的具体方法必须与实际安装的 DPABI 接口及已核验的稳定参数映射一致。
 - 输出至少包含设计矩阵、对比、未校正统计图、校正结果、效应量、显著簇表、软件版本和日志。

@@ -323,6 +323,11 @@ class MatlabJobExecutor:
             )
             rendered = executor.dry_run(spec).rendered
             self._stage_inputs(run_id, rendered.run_directory, spec)
+            job_files = (
+                self._statistical_reproducibility_artifacts(rendered.run_directory, spec)
+                if executor_type == "matlab_statistics"
+                else ()
+            )
             if preprocessing_workspace is not None:
                 self._stage_in_place_mask(spec, rendered.run_directory, preprocessing_workspace)
             if (
@@ -344,6 +349,11 @@ class MatlabJobExecutor:
                     run_root=rendered.run_directory,
                 )
             result = executor.execute(spec, is_cancelled=is_cancelled)
+            if result.status is MatlabJobStatus.SUCCEEDED:
+                for item in job_files:
+                    path = rendered.run_directory / item["relative_path"]
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != item["checksum"]:
+                        raise ValueError("statistical execution evidence changed during execution")
         except Exception as exc:
             return ExecutionResult(
                 status="failed_terminal",
@@ -389,6 +399,7 @@ class MatlabJobExecutor:
                 for artifact in result.registered_artifacts
             )
             + log_artifacts
+            + job_files
         )
         if compilation is not None:
             assert isinstance(compilation.spec.payload, PreprocessingJobPayload)
@@ -437,11 +448,90 @@ class MatlabJobExecutor:
         )
 
     @staticmethod
+    def _statistical_reproducibility_artifacts(
+        root: Path, spec: MatlabJobSpec
+    ) -> tuple[dict[str, Any], ...]:
+        """Freeze the actual executed files and independently hash staged inputs."""
+        run_root = root.resolve(strict=True)
+
+        def evidence_path(relative: str) -> Path:
+            path = root / relative
+            if path.is_symlink() or _is_junction(path):
+                raise ValueError("statistical execution evidence cannot be a link")
+            resolved = path.resolve(strict=True)
+            if not _within(resolved, run_root) or not resolved.is_file():
+                raise ValueError("statistical execution evidence is outside its attempt")
+            return resolved
+
+        def read(relative: str) -> bytes:
+            return evidence_path(relative).read_bytes()
+
+        inputs = []
+        for binding in spec.artifact_bindings:
+            path = evidence_path(binding.relative_path)
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            inputs.append(
+                {
+                    "artifact_id": binding.artifact_id,
+                    "relative_path": binding.relative_path,
+                    "sha256": digest.hexdigest(),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+        manifest = {
+            "job_hash": spec.job_hash,
+            "plan_hash": spec.plan_hash,
+            "input_manifest_hash": spec.input_manifest_hash,
+            "inputs": inputs,
+        }
+        text = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        manifest_path = root / "config" / "input-manifest.json"
+        if (
+            manifest_path.parent.is_symlink()
+            or _is_junction(manifest_path.parent)
+            or manifest_path.is_symlink()
+            or not _within(manifest_path.resolve(strict=False), run_root)
+        ):
+            raise ValueError("statistical input manifest is outside its attempt")
+        if manifest_path.exists() and read("config/input-manifest.json") != text.encode("utf-8"):
+            raise ValueError("statistical input manifest already differs")
+        manifest_path.write_text(text, encoding="utf-8", newline="\n")
+        rows = []
+        for role, relative in (
+            ("execution_script", "scripts/run_statistics.m"),
+            ("execution_bootstrap", "scripts/bootstrap.m"),
+            ("job_configuration", "config/statistics.json"),
+            ("input_manifest", "config/input-manifest.json"),
+        ):
+            data = read(relative)
+            if not data:
+                raise ValueError("statistical execution evidence is empty")
+            rows.append(
+                {
+                    "artifact_type": f"statistics.{role}",
+                    "relative_path": relative,
+                    "checksum": hashlib.sha256(data).hexdigest(),
+                    "size_bytes": len(data),
+                    "provenance": {
+                        "executor": "controlled_matlab",
+                        "job_hash": spec.job_hash,
+                        "plan_hash": spec.plan_hash,
+                    },
+                }
+            )
+        return tuple(rows)
+
+    @staticmethod
     def _execution_log_artifacts(root: Path, job_hash: str) -> tuple[dict[str, Any], ...]:
         rows = []
         for path in sorted((root / "logs").rglob("matlab.*.log")):
             if path.is_file() and not path.is_symlink():
                 data = path.read_bytes()
+                if not data:
+                    continue
                 rows.append(
                     {
                         "artifact_type": "execution.matlab_log",
@@ -614,31 +704,96 @@ class MatlabJobExecutor:
         run = self._repository.get_run(run_id)
         project = self._repository.get_project(run.project_id)
         project_root = Path(project.work_root).resolve(strict=True)
+        external_sources: dict[str, tuple[Path, dict[str, tuple[str, str, int]]]] = {}
         for binding in spec.artifact_bindings:
             if binding.artifact_id.startswith("builtin:dpabi-v82-base-cfg:"):
                 continue
-            artifact = self._repository.get_artifact(binding.artifact_id)
-            if artifact.project_id != run.project_id:
-                raise ValueError("cross-project source artifact")
-            operation = StagingCopyOperation(
-                source_artifact_id=artifact.artifact_id,
-                source_relative_path=(
-                    PurePosixPath(artifact.run_id) / artifact.relative_path
-                ).as_posix(),
-                destination_relative_path=binding.relative_path,
-                sha256=artifact.checksum,
-                size_bytes=artifact.size_bytes,
-            )
+            source_root = project_root
+            if binding.external_import_id is not None:
+                if binding.external_import_id not in external_sources:
+                    imported = self._repository.get_external_analysis_import(
+                        binding.external_import_id
+                    )
+                    inclusion = imported.inclusion
+                    selection = imported.selection
+                    if (
+                        imported.project_id != run.project_id
+                        or imported.status != "included"
+                        or inclusion is None
+                        or selection is None
+                        or selection.input_manifest_hash != spec.input_manifest_hash
+                    ):
+                        raise ValueError("external staging source is not approved for this run")
+                    path_policy = PathPolicy(
+                        self._settings.allowed_source_roots, self._settings.allowed_work_root
+                    )
+                    external_root = path_policy.validate_read_path(
+                        imported.source_path,
+                        project_roots=project.source_roots,
+                        expect_directory=True,
+                    )
+                    images = {
+                        (item.subject_id, item.condition): item
+                        for item in imported.inspection.images
+                    }
+                    permitted = {
+                        ref.artifact_id: (
+                            images[(ref.subject_id, ref.condition)].relative_path,
+                            images[(ref.subject_id, ref.condition)].sha256,
+                            images[(ref.subject_id, ref.condition)].size_bytes,
+                        )
+                        for ref in selection.images
+                    }
+                    assert (
+                        inclusion.mask_relative_path
+                        and inclusion.mask_sha256
+                        and inclusion.mask_size_bytes
+                    )
+                    permitted[selection.mask_artifact_id] = (
+                        inclusion.mask_relative_path,
+                        inclusion.mask_sha256,
+                        inclusion.mask_size_bytes,
+                    )
+                    external_sources[imported.import_id] = (external_root, permitted)
+                source_root, allowed = external_sources[binding.external_import_id]
+                evidence = (
+                    binding.external_relative_path,
+                    binding.external_sha256,
+                    binding.external_size_bytes,
+                )
+                if allowed.get(binding.artifact_id) != evidence:
+                    raise ValueError("external staging binding differs from inclusion evidence")
+                source_relative_path, checksum, size_bytes = allowed[binding.artifact_id]
+                operation = StagingCopyOperation(
+                    source_artifact_id=binding.artifact_id,
+                    source_relative_path=source_relative_path,
+                    destination_relative_path=binding.relative_path,
+                    sha256=checksum,
+                    size_bytes=size_bytes,
+                )
+            else:
+                artifact = self._repository.get_artifact(binding.artifact_id)
+                if artifact.project_id != run.project_id:
+                    raise ValueError("cross-project source artifact")
+                operation = StagingCopyOperation(
+                    source_artifact_id=artifact.artifact_id,
+                    source_relative_path=(
+                        PurePosixPath(artifact.run_id) / artifact.relative_path
+                    ).as_posix(),
+                    destination_relative_path=binding.relative_path,
+                    sha256=artifact.checksum,
+                    size_bytes=artifact.size_bytes,
+                )
             StagingCopyTool().execute(
                 StagingCopyPlan(
-                    source_artifact_id=artifact.artifact_id,
+                    source_artifact_id=binding.artifact_id,
                     input_manifest_hash=spec.input_manifest_hash,
                     input_format=InputFormat.NIFTI,
                     source_read_only=True,
                     operations=(operation,),
                     plan_hash=stable_hash(operation.model_dump(mode="json")),
                 ),
-                source_root=project_root,
+                source_root=source_root,
                 run_root=target_root,
             )
 
@@ -762,6 +917,108 @@ class MatlabJobExecutor:
                         operation="t1_preparation",
                     )
         return artifacts
+
+    @staticmethod
+    def _bind_shared_effective_mask(
+        artifacts: tuple[dict[str, Any], ...], root: Path
+    ) -> tuple[dict[str, Any], ...]:
+        """Bind identical effective DPABI masks to one verified cohort mask.
+
+        Preserve each subject's output and evidence. Different masks are never
+        merged, intersected or resampled without a separate scientific choice.
+        """
+        masks = [
+            item
+            for item in artifacts
+            if item["artifact_type"] == "preprocessing.brain_mask"
+            and isinstance(item["provenance"].get("lineage"), dict)
+        ]
+        if not masks:
+            return artifacts
+        lineages = [ArtifactLineage.model_validate(item["provenance"]["lineage"]) for item in masks]
+        if any(not item.metadata_verified or item.subject_id is None for item in lineages):
+            raise ValueError("effective subject mask evidence is not verified")
+        if len({item.subject_id for item in lineages}) != len(lineages):
+            raise ValueError("duplicate effective subject mask")
+        signatures = {
+            (
+                item["checksum"],
+                item["size_bytes"],
+                lineage.space,
+                lineage.grid_signature,
+                lineage.voxel_size_mm,
+                lineage.subject_manifest_hash,
+            )
+            for item, lineage in zip(masks, lineages, strict=True)
+        }
+        if len(signatures) != 1:
+            return artifacts
+        source = masks[0]
+        data = (root / source["relative_path"]).read_bytes()
+        if (
+            len(data) != source["size_bytes"]
+            or hashlib.sha256(data).hexdigest() != source["checksum"]
+        ):
+            raise ValueError("effective mask changed after execution verification")
+        references = []
+        for item, lineage in zip(masks, lineages, strict=True):
+            # Verify every actual file, not just equality of reported metadata.
+            path = root / item["relative_path"]
+            if path.read_bytes() != data:
+                raise ValueError("effective mask changed after execution verification")
+            references.append(
+                {
+                    "subject_id": lineage.subject_id,
+                    "relative_path": (
+                        PurePosixPath("attempts") / root.name / item["relative_path"]
+                    ).as_posix(),
+                    "checksum": item["checksum"],
+                    "size_bytes": item["size_bytes"],
+                }
+            )
+        relative_path = "output/group/brain_mask.nii"
+        destination = root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as stream:
+            stream.write(data)
+        evidence = {
+            "method": "identical_effective_masks",
+            "source_masks": sorted(references, key=lambda item: str(item["subject_id"])),
+        }
+        group_lineage = lineages[0].model_copy(
+            update={
+                "subject_id": None,
+                "session_id": None,
+                "tr_seconds": None,
+                "volume_count": None,
+                "metadata_evidence_hash": stable_hash(evidence),
+            }
+        )
+        group = {
+            "artifact_type": "preprocessing.brain_mask",
+            "relative_path": relative_path,
+            "checksum": source["checksum"],
+            "size_bytes": source["size_bytes"],
+            "provenance": {
+                **source["provenance"],
+                "lineage": group_lineage.model_dump(mode="json"),
+                "shared_effective_mask": evidence,
+            },
+        }
+        group_id = (
+            "generated-output:" + (PurePosixPath("attempts") / root.name / relative_path).as_posix()
+        )
+        for item in artifacts:
+            if item in masks:
+                item["artifact_type"] = "preprocessing.subject_brain_mask"
+            raw = item["provenance"].get("lineage")
+            if (
+                isinstance(raw, dict)
+                and isinstance(raw.get("mask_artifact_id"), str)
+                and raw["mask_artifact_id"].startswith("generated-output:")
+            ):
+                raw["mask_artifact_id"] = group_id
+        return (*artifacts, group)
 
     def _preprocessing_lineage(
         self,
@@ -932,7 +1189,7 @@ class MatlabJobExecutor:
                 producer_step_hash=producer_hash,
             )
             artifact["provenance"]["lineage"] = lineage.model_dump(mode="json")
-        return artifacts
+        return self._bind_shared_effective_mask(artifacts, root)
 
 
 def _parse_correction(value: object) -> CorrectionSpec | None:

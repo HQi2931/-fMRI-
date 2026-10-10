@@ -578,8 +578,12 @@ def test_removed_work_card_endpoints_are_not_exposed(
     assert capabilities.status_code == 404
     assert card_action.status_code == 404
     assert unclear.status_code == 201
-    assert "我可以协助" in unclear.json()["assistant_message"]["content"]
-    assert "work_cards" not in unclear.json()["assistant_message"]["payload"]
+    clarification = unclear.json()["assistant_message"]
+    assert "预处理" in clarification["content"]
+    assert "统计分析" in clarification["content"]
+    assert clarification["payload"]["agent_routing"]["status"] == "needs_clarification"
+    assert "work_cards" not in clarification["payload"]
+    assert unclear.json()["tool_call"] is None
 
 
 def test_work_conversation_naturally_prepares_demo_alff_plan_without_cards(

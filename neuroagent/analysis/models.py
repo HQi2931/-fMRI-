@@ -137,6 +137,8 @@ class ClusterRecord(AnalysisModel):
     voxel_count: int | None = Field(default=None, ge=1)
     statistic: float | None = None
     coordinate_space: str = Field(default="MNI", min_length=1)
+    inference: str = "unknown"
+    direction: int | None = None
 
 
 class ClusterLocalization(AnalysisModel):

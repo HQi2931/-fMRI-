@@ -106,7 +106,7 @@ def test_correction_contract_binds_tail_map_type_and_residual_df() -> None:
     )
     validate_correction_for_design(design, fdr)
 
-    with pytest.raises(ValueError, match="residual DF"):
+    with pytest.raises(ValueError, match="design DF"):
         validate_correction_for_design(design, fdr.model_copy(update={"df1": 2.0}))
     one_tailed = design.model_copy(update={"tail": Tail.ONE_SIDED_NEGATIVE})
     with pytest.raises(ValueError, match="two-sided"):

@@ -187,9 +187,7 @@ def test_planning_asks_only_unresolved_questions_and_labels_recommendation_reaso
     assert assistant["payload"]["work_draft"]["draft"]["preprocessing"]["tr_seconds"] == 2
 
 
-def test_planning_ignores_obsolete_protocol_reference_questions(
-    service, monkeypatch
-):
+def test_planning_ignores_obsolete_protocol_reference_questions(service, monkeypatch):
     response = generated("prepare_preprocessing_plan", {"preprocessing": {"tr_seconds": 2.0}})
     content = json.loads(response.response.content)
     content.update(

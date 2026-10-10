@@ -4,7 +4,7 @@
 - 文档类型：Development
 - 维护者：documentation_maintainer
 - 创建日期：2026-09-23
-- 更新日期：2026-09-23
+- 更新日期：2026-10-09
 - 适用范围：`docs/` 全部文档的导航、权威来源与归档登记
 - 关联：[文档规范](development/documentation-standard.md)
 
@@ -27,6 +27,7 @@
 | API 契约 | [API v1 契约](api/api-v1.md) | `web/openapi.json` 为机器来源 |
 | 数据集输入契约 | [数据集输入与只读契约](domain/dataset-contract.md) | |
 | 统计方法学 | [组统计设计](domain/statistics.md) | |
+| Work 双 Agent 分工 | [ADR 0024](adr/0024-work-dual-agents.md) | [Agent 注册与交接](../neuroagent/multi_agent/README.md) 描述代码边界 |
 | ROI、ML 与定位契约 | [ROI、机器学习与脑区定位领域合同](domain/roi-ml-localization.md) | |
 | MATLAB/DPABI 运行与恢复 | [本地运行、诊断与恢复](operations/local-operations.md) | |
 | 长任务与错误诊断 | [长任务等待、恢复与错误诊断](operations/long-running-jobs.md) | |
@@ -51,6 +52,7 @@
 - [扩展分析服务设计](architecture/analysis-services.md)
 - [统计设计的取值来源与装配](architecture/statistical-design-assembly.md)
 - [项目结构](architecture/project-structure.md)
+- [Work 双 Agent 注册与交接](../neuroagent/multi_agent/README.md)
 
 ### 领域
 
@@ -91,6 +93,7 @@
 - [计划 0009：Agent 控制面与执行授权加固](plans/0009-agent-control-plane-hardening.md)
 - [计划 0010：Chat 与 Work 对话流式响应](plans/0010-conversation-streaming.md)
 - [计划 0012：Work 对话与方案审查体验优化](plans/0012-work-conversation-ux.md)
+- [计划 0013：Work 双 Agent 与数据分析完整交付](plans/0013-work-dual-agent-analysis.md)
 - [Chat / Work 模型理解与参数补全](plans/conversation-model-understanding.md)
 
 ### 决策记录（ADR）
@@ -113,6 +116,18 @@
 - [ADR 0021：DPABI 预处理单次运行](adr/0021-single-pass-dpabi-preprocessing.md)
 - [ADR 0022：Work 候选方案与直接界面确认](adr/0022-work-review-and-direct-confirmation.md)
 - [ADR 0023：Work 阶段反馈与校验后的正式回答](adr/0023-work-validated-answer-stream.md)
+- [ADR 0024：Work 预处理与数据分析双 Agent](adr/0024-work-dual-agents.md)
+- [ADR 0025：外部指标的独立纳入凭据与统计输入](adr/0025-external-statistical-inputs.md)
+- [ADR 0026：外部指标的人口学修订](adr/0026-external-demographics-revisions.md)
+- [ADR 0027：外部条件影像的显式配对](adr/0027-external-paired-inputs.md)
+- [ADR 0028：Work 角色任务引用与确认作用域](adr/0028-work-task-bindings.md)
+- [ADR 0029：预处理到分析的完整交接凭据](adr/0029-work-analysis-handoff-evidence.md)
+- [ADR 0030：上游指标需求与 Work 共用预算](adr/0030-work-upstream-requirements-and-budget.md)
+- [ADR 0031：相同有效指标掩膜的组级引用](adr/0031-shared-effective-metric-mask.md)
+- [ADR 0032：统计方案冻结图谱选择及内容版本](adr/0032-frozen-statistical-atlas.md)
+- [ADR 0033：分析 Agent 使用确定性结果事实](adr/0033-statistical-interpretation-facts.md)
+- [ADR 0034：登记 GRF 实际平滑度与最小簇阈值](adr/0034-grf-effective-evidence.md)
+- [ADR 0035：统计输入保留已完成预处理的历史环境](adr/0035-statistics-producer-environment.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

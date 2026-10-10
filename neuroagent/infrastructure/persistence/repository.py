@@ -52,6 +52,7 @@ from neuroagent.infrastructure.persistence.models import (
 from neuroagent.infrastructure.persistence.repository_mixins import (
     ArtifactEventMixin,
     ConversationMixin,
+    ExternalAnalysisImportMixin,
     IdempotencyMixin,
     JobExecutionMixin,
     LiteratureMixin,
@@ -79,6 +80,7 @@ class SqliteRepository(
     QcReviewMixin,
     JobExecutionMixin,
     ArtifactEventMixin,
+    ExternalAnalysisImportMixin,
     ModelAgentMixin,
     ConversationMixin,
     LiteratureMixin,

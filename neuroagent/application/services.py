@@ -35,7 +35,7 @@ from neuroagent.application.contracts import (
 from neuroagent.application.conversation_context import ConversationContextCoordinator
 from neuroagent.application.conversation_work import ConversationWorkCoordinator
 from neuroagent.application.environment_lock import EnvironmentLockProvider
-from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import canonical_json
 from neuroagent.application.ports import (
     DatabaseLifecyclePort,
@@ -50,6 +50,7 @@ from neuroagent.application.ports import (
 )
 from neuroagent.application.service_mixins import (
     ConversationMixin,
+    ExternalAnalysisImportMixin,
     ModelAgentMixin,
     PlanApprovalMixin,
     ProjectDatasetMixin,
@@ -94,6 +95,7 @@ from neuroagent.tools.registry import build_default_tool_registry
 
 class NeuroAgentService(
     ConversationMixin,
+    ExternalAnalysisImportMixin,
     ProjectDatasetMixin,
     PlanApprovalMixin,
     SkillPlanMixin,
@@ -641,6 +643,7 @@ class NeuroAgentService(
             approve_qc_review=self.approve_qc_review,
             skip_qc=self.skip_qc,
             list_statistical_results=self.list_statistical_results,
+            get_result_facts=self._statistical_result_facts,
             get_run=self.get_run,
             create_run=self.create_run,
             approve_plan=self.approve_plan,
@@ -683,6 +686,22 @@ class NeuroAgentService(
                         item.model_dump(mode="json") for item in self.list_artifacts(run_id)
                     ],
                     list_results=lambda run_id: self._statistical_results_for(run_id),
+                    get_result_detail=lambda result_id: self.repository.get_statistical_result(
+                        result_id
+                    ).model_dump(mode="json"),
+                    get_result_summary=lambda result_id: self.get_statistical_result(
+                        result_id
+                    ).model_dump(mode="json"),
+                    localize_result=lambda result_id, atlas_id: self.localize_statistical_result(
+                        result_id, atlas_id
+                    ).model_dump(mode="json"),
+                    cluster_roi=lambda result_id, cluster_id: self.statistical_cluster_roi(
+                        result_id, cluster_id
+                    ).model_dump(mode="json"),
+                    list_external_imports=lambda project_id: [
+                        item.model_dump(mode="json")
+                        for item in self.list_external_analysis_imports(project_id=project_id)
+                    ],
                     correction_capabilities=lambda: [
                         item.model_dump(mode="json") for item in self.correction_capabilities()
                     ],
@@ -699,6 +718,7 @@ class NeuroAgentService(
                     workspace_scope=context.workspace_file_scope,
                     workspace_stage_candidates=context.workspace_stage_candidates,
                     workspace_stage_check_available=context.workspace_path is not None,
+                    work_agent_role=context.work_agent_role,
                 ),
                 probe_capability=self._tool_capability,
                 budget=tool_budget,
@@ -709,6 +729,18 @@ class NeuroAgentService(
             tool_runner=work_tool_runner,
             create_workspace_proposal=self.create_workspace_proposal,
             confirm_workspace_stage=self.conversation_work.confirm_workspace_stage,
+            prepare_statistical_proposal=self.prepare_work_statistical_design_proposal,
+            get_external_import=self.repository.get_external_analysis_import,
+            get_external_demographics=self.repository.get_latest_external_demographics,
+            prepare_analysis_handoff=self.prepare_work_analysis_handoff,
+            prepare_preprocessing_handoff=self.prepare_work_preprocessing_handoff,
+            get_result_facts=self._analysis_result_facts,
+            model_budget=AgentLoopBudget(
+                max_steps=settings.agent_max_tool_steps,
+                max_seconds=settings.agent_max_tool_seconds,
+                max_total_tokens=settings.agent_max_tool_tokens,
+                max_repeat_failures=settings.agent_max_repeat_tool_failures,
+            ),
         )
         uploaded_index = UploadedLiteratureIndex(
             work_root=settings.allowed_work_root,
@@ -819,6 +851,66 @@ class NeuroAgentService(
             item.model_dump(mode="json")
             for item in self.list_statistical_results(project_id=run.project_id, run_id=run_id)
         ]
+
+    def _analysis_result_facts(
+        self, run_id: str, include_spatial_details: bool = False
+    ) -> list[dict[str, Any]]:
+        run = self.get_run(run_id)
+        facts = [
+            self._statistical_result_facts(result.result_id)
+            for result in self.list_statistical_results(project_id=run.project_id, run_id=run_id)[
+                :5
+            ]
+        ]
+        if include_spatial_details:
+            for fact in facts:
+                self._add_statistical_spatial_facts(fact)
+        return facts
+
+    def _add_statistical_spatial_facts(self, facts: dict[str, Any]) -> None:
+        from neuroagent.application.statistical_result_facts import (
+            aggregate_roi,
+            localization_model_facts,
+        )
+
+        if facts.get("status") != "succeeded" or facts.get("non_scientific"):
+            return
+        result_id = str(facts["result_id"])
+        if facts.get("localization_status") in {
+            "no_significant_voxels",
+            "no_reportable_clusters",
+            "pending_atlas_verification",
+        }:
+            atlas = facts.get("frozen_atlas") or {}
+            try:
+                localized = self.localize_statistical_result(result_id, atlas.get("atlas_id", ""))
+                facts["localization"] = localization_model_facts(localized.model_dump(mode="json"))
+                facts["localization_status"] = localized.status
+            except ApplicationError as exc:
+                facts["localization"] = {"status": "blocked", "error_code": exc.code}
+        else:
+            facts["localization"] = {"status": facts.get("localization_status")}
+        # The initial context describes one registered cluster; other clusters
+        # remain available through explicit, audited READ queries.
+        clusters = facts.get("clusters", [])
+        cluster_id = str(clusters[0]["cluster_id"]) if clusters else None
+        try:
+            facts["roi_summary"] = aggregate_roi(
+                self.statistical_cluster_roi(result_id, cluster_id)
+            )
+            facts["roi_summary_cluster_selection"] = (
+                "first_reported_cluster" if clusters else "empty_result"
+            )
+        except ApplicationError as exc:
+            facts["roi_summary"] = {"status": "blocked", "error_code": exc.code}
+
+    def _statistical_result_facts(self, result_id: str) -> dict[str, Any]:
+        from neuroagent.application.statistical_result_facts import result_model_facts
+
+        try:
+            return result_model_facts(self.get_statistical_result(result_id))
+        except (ValueError, TypeError, KeyError):
+            return {"result_id": result_id, "status": "method_summary_unavailable"}
 
     def environment_probe(self) -> EnvironmentProbeView:
         return self.environment_provider.current().probe

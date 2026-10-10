@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -12,21 +14,44 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from neuroagent.agent.gateway import ChatGatewayResult
+from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.providers import ProviderTimeoutError
 from neuroagent.agent.streaming import current_answer_stream
 from neuroagent.application.contracts import (
     ConversationAction,
     ConversationTurnCreate,
     ConversationView,
+    ExternalAnalysisImportView,
+    ExternalDemographicsRevisionView,
     QcExecutionMode,
     WorkspaceCitation,
 )
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError
+from neuroagent.application.statistical_capabilities import model_visible_capabilities
+from neuroagent.application.statistics_draft import (
+    DesignIssue,
+    StatisticalDesignProposal,
+    StatisticsDraft,
+    merge_statistics_draft,
+    render_statistics_draft_review,
+    statistics_draft_hash,
+    statistics_draft_issues,
+)
 from neuroagent.application.work_actions import (
     SERVER_ONLY_ACTIONS,
     dispatch_target,
     is_model_selectable,
+)
+from neuroagent.application.work_agents import (
+    analysis_dependency_for_request,
+    handoff_identity,
+    latest_agent_payload,
+    latest_analysis_dependency,
+    latest_handoff_for_agent,
+    recent_messages_for_agent,
+    work_agent_role_for_turn,
+    work_agent_routing_question,
 )
 from neuroagent.application.work_draft import (
     WorkDraft,
@@ -41,6 +66,13 @@ from neuroagent.application.work_draft import (
     render_draft_review,
     review_issues,
 )
+from neuroagent.application.work_handoffs import (
+    WorkAnalysisHandoff,
+    WorkPreprocessingHandoff,
+    handoff_reference_summary,
+    require_same_handoff,
+    require_same_preprocessing_handoff,
+)
 from neuroagent.application.work_presentation import (
     constrained_patch,
     leaf_values,
@@ -49,9 +81,15 @@ from neuroagent.application.work_presentation import (
     pending_review_questions,
     set_value,
 )
+from neuroagent.application.work_tasks import preprocessing_source_run
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
+from neuroagent.multi_agent.registry import (
+    WorkAgentRole,
+    resolve_work_agent,
+    work_agent_allows_action,
+)
 from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
@@ -75,6 +113,9 @@ class WorkInterpretation(BaseModel):
     answer: str = Field(min_length=1, max_length=12000)
     action: str = Field(default="conversation", max_length=64)
     draft_patch: dict[str, Any] = Field(default_factory=dict)
+    analysis_patch: dict[str, Any] = Field(default_factory=dict)
+    handoff_reason: str | None = Field(default=None, max_length=1000)
+    required_preprocessing_outputs: tuple[str, ...] = Field(default=(), max_length=12)
     workspace_citations: tuple[WorkspaceCitation, ...] = ()
     workspace_edits: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     recommended_input_stage: str | None = Field(default=None, max_length=64)
@@ -98,6 +139,26 @@ def latest_payload(conversation: ConversationView, key: str) -> dict[str, Any] |
         if isinstance(value, dict):
             return value
     return None
+
+
+def _snapshot_mapping(snapshot: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    value = (snapshot or {}).get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _snapshot_sources(snapshot: dict[str, Any] | None) -> dict[str, str]:
+    value = _snapshot_mapping(snapshot, "sources") or {}
+    return {str(key): source for key, source in value.items() if isinstance(source, str)}
+
+
+def _snapshot_string_list(snapshot: dict[str, Any] | None, key: str) -> list[str]:
+    value = (snapshot or {}).get(key)
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _snapshot_int(snapshot: dict[str, Any] | None, key: str, default: int = 0) -> int:
+    value = (snapshot or {}).get(key)
+    return value if isinstance(value, int) else default
 
 
 def _draft_sources(saved: dict[str, Any] | None, patch: dict[str, Any]) -> dict[str, str]:
@@ -261,6 +322,9 @@ def _work_failure_details(
         )
         diagnostic["status"] = exc.status_code
         reason = "原因：模型请求或服务端校验失败（" + diagnostic["code"] + "），请重试。"
+        if exc.code == "work_model_timeout":
+            diagnostic["provider_timeout"] = True
+            reason = "原因：模型请求超时，请稍后重试或调整模型超时设置。"
     else:
         diagnostic["code"] = "work_draft_invalid"
         reason = "原因：模型提出的动作或参数草稿未通过校验，请重新说明需求。"
@@ -298,6 +362,17 @@ class WorkDialogue:
         tool_runner: WorkToolRunner | None = None,
         create_workspace_proposal: Callable[..., dict[str, Any]] | None = None,
         confirm_workspace_stage: Callable[..., Any] | None = None,
+        prepare_statistical_proposal: Callable[
+            ..., tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]
+        ]
+        | None = None,
+        get_external_import: Callable[[str], ExternalAnalysisImportView] | None = None,
+        get_external_demographics: Callable[[str], ExternalDemographicsRevisionView | None]
+        | None = None,
+        prepare_analysis_handoff: Callable[..., WorkAnalysisHandoff] | None = None,
+        prepare_preprocessing_handoff: Callable[..., WorkPreprocessingHandoff] | None = None,
+        get_result_facts: Callable[[str, bool], list[dict[str, Any]]] | None = None,
+        model_budget: AgentLoopBudget | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.generate = generate
@@ -305,6 +380,13 @@ class WorkDialogue:
         self.tool_runner = tool_runner
         self.create_workspace_proposal = create_workspace_proposal
         self.confirm_workspace_stage = confirm_workspace_stage
+        self.prepare_statistical_proposal = prepare_statistical_proposal
+        self.get_external_import = get_external_import
+        self.get_external_demographics = get_external_demographics
+        self.prepare_analysis_handoff = prepare_analysis_handoff
+        self.prepare_preprocessing_handoff = prepare_preprocessing_handoff
+        self.get_result_facts = get_result_facts
+        self.model_budget = model_budget or AgentLoopBudget()
 
     def input_recovery_confirmation(
         self, workspace_path: str | None, candidates: list[dict[str, Any]]
@@ -398,16 +480,190 @@ class WorkDialogue:
         idempotency_key: str,
         has_profiles: bool,
     ) -> WorkActionResult:
+        run_context = packet.work_context.get("run")
+        qc_context = packet.work_context.get("qc")
+        qc_status = (
+            str(run_context.get("qc_status", "")).casefold()
+            if isinstance(run_context, dict)
+            else ""
+        )
+        qc_review_state = (
+            str(qc_context.get("state", "")).casefold() if isinstance(qc_context, dict) else ""
+        )
+        analysis_ready = bool(
+            isinstance(run_context, dict)
+            and run_context.get("state") == "succeeded"
+            and (
+                qc_status in {"approved", "skipped", "qc_skipped"} or qc_review_state == "approved"
+            )
+        )
+        requested_role = (
+            (request.agent_role or WorkAgentRole.ANALYSIS)
+            if request.external_analysis_import_id
+            else request.agent_role
+        )
+        routing_question = work_agent_routing_question(
+            request.content, requested=requested_role, conversation=conversation
+        )
+        role = (
+            conversation.foreground_agent_role
+            if routing_question
+            else work_agent_role_for_turn(
+                request.content,
+                requested=requested_role,
+                conversation=conversation,
+                analysis_ready=analysis_ready,
+            )
+        )
+        agent_spec = resolve_work_agent(role)
+        request = request.model_copy(update={"agent_role": role})
+        received_handoff: WorkPreprocessingHandoff | None = None
+
         def reply(text: str, payload: dict[str, Any] | None = None) -> WorkActionResult:
+            body = {
+                "agent_role": role.value,
+                "agent_name": agent_spec.display_name,
+                **(payload or {}),
+            }
+            if (
+                role is WorkAgentRole.PREPROCESSING
+                and received_handoff is not None
+                and "agent_handoff" not in body
+            ):
+                body["agent_handoff"] = received_handoff.model_dump(mode="json")
+            dependency = analysis_dependency_for_request(request.content, project_id)
+            if dependency is None:
+                dependency = latest_analysis_dependency(conversation)
+            if dependency is not None:
+                if role is WorkAgentRole.PREPROCESSING:
+                    references: dict[str, Any] = {
+                        "project_id": project_id,
+                        "source_run_id": (
+                            run_context.get("run_id") if isinstance(run_context, dict) else None
+                        ),
+                        "source_run_state": (
+                            run_context.get("state") if isinstance(run_context, dict) else None
+                        ),
+                        "qc_status": qc_status or None,
+                    }
+                    plan_context = packet.work_context.get("plan")
+                    if isinstance(plan_context, dict):
+                        references["source_plan_revision_id"] = plan_context.get("plan_revision_id")
+                        references["source_plan_hash"] = plan_context.get("plan_hash")
+                    dependency["data_references"] = references
+                    dependency["evidence_hash"] = handoff_identity(
+                        {"task_id": dependency.get("task_id"), "data_references": references}
+                    )
+                    dependency["status"] = (
+                        "analysis_ready" if analysis_ready else "waiting_for_preprocessing"
+                    )
+                    source_run_id = references.get("source_run_id")
+                    if self.prepare_analysis_handoff and source_run_id and project_id:
+                        proof = self.prepare_analysis_handoff(
+                            str(source_run_id), project_id, verify_files=analysis_ready
+                        )
+                        body["agent_handoff"] = proof.model_dump(mode="json")
+                        dependency["data_references"] = proof.data_references
+                        dependency["evidence_hash"] = proof.evidence_hash
+                        dependency["status"] = (
+                            "analysis_ready"
+                            if proof.status == "ready"
+                            else "waiting_for_preprocessing"
+                        )
+                elif role is WorkAgentRole.ANALYSIS:
+                    dependency["status"] = "analysis_started"
+                body["analysis_dependency"] = dependency
+            proposal = body.get("statistical_design_proposal")
+            if (
+                role is WorkAgentRole.ANALYSIS
+                and isinstance(proposal, dict)
+                and proposal.get("source_run_id")
+                and project_id
+                and self.prepare_analysis_handoff
+            ):
+                current = self.prepare_analysis_handoff(str(proposal["source_run_id"]), project_id)
+                frozen_raw = latest_handoff_for_agent(conversation, role)
+                try:
+                    frozen_refs = frozen_raw.get("data_references") if frozen_raw else None
+                    frozen = (
+                        WorkAnalysisHandoff.model_validate(frozen_raw)
+                        if frozen_raw
+                        and isinstance(frozen_refs, dict)
+                        and frozen_refs.get("source_run_id") == proposal["source_run_id"]
+                        and frozen_raw.get("status") != "blocked"
+                        else current
+                    )
+                    proof = require_same_handoff(frozen, current)
+                    body["agent_handoff"] = proof.model_dump(mode="json")
+                except (ApplicationError, ValidationError):
+                    body.pop("statistical_design_proposal", None)
+                    body["agent_handoff"] = current.model_copy(
+                        update={"status": "stale" if current.status == "ready" else "blocked"}
+                    ).model_dump(mode="json")
+                    body["statistical_design_issues"] = [
+                        "预处理交接尚未就绪或证据已变化，请重新核实来源及 QC。"
+                    ]
+                    if isinstance(body.get("analysis_dependency"), dict):
+                        body["analysis_dependency"]["status"] = "blocked"
+                    text = "统计草稿已保留；预处理交接尚未就绪或已失效，不能确认这份统计方案。"
             return WorkActionResult(
                 text,
-                payload=payload or {},
+                payload=body,
                 workspace_path=workspace_path,
                 project_id=project_id,
-                active_run_id=conversation.active_run_id,
+                active_run_id=request.target_run_id or conversation.active_run_id,
             )
 
-        saved = latest_payload(conversation, "work_draft")
+        if routing_question:
+            return reply(
+                routing_question,
+                {"agent_routing": {"status": "needs_clarification", "agent_role": role.value}},
+            )
+
+        if role is WorkAgentRole.PREPROCESSING:
+            pending = latest_handoff_for_agent(conversation, role, pending_only=True)
+            if pending is not None:
+                try:
+                    frozen = WorkPreprocessingHandoff.model_validate(pending)
+                    refs = frozen.data_references
+                    if not project_id or self.prepare_preprocessing_handoff is None:
+                        raise ApplicationError("work_handoff_unavailable", "交接证据服务不可用。")
+                    current = self.prepare_preprocessing_handoff(
+                        conversation_id=conversation.conversation_id,
+                        project_id=project_id,
+                        run_id=refs.get("source_run_id"),
+                        external_import_id=refs.get("external_import_id"),
+                        required_outputs=frozen.required_outputs,
+                        reason=frozen.reason,
+                    )
+                    received_handoff = require_same_preprocessing_handoff(frozen, current)
+                except (ApplicationError, ValidationError):
+                    return reply(
+                        "上游指标需求的来源证据已变化或尚未核实，未修改预处理方案。请回到分析 Agent 更新交接。",
+                        {
+                            "agent_handoff": {
+                                **pending,
+                                "status": "stale",
+                                "blocking_items": ["work_handoff_stale"],
+                            }
+                        },
+                    )
+
+        if role is WorkAgentRole.ANALYSIS:
+            return await self._respond_analysis(
+                conversation,
+                request,
+                packet,
+                workspace_path=workspace_path,
+                project_id=project_id,
+                preferred_profile_id=preferred_profile_id,
+                workspace_content_consent=workspace_content_consent,
+                idempotency_key=idempotency_key,
+                has_profiles=has_profiles,
+                reply=reply,
+            )
+
+        saved = latest_agent_payload(conversation, "work_draft", WorkAgentRole.PREPROCESSING)
         # A start confirmation is single use.  It is read before the workspace
         # match so that re-selecting a workspace cannot resurrect a used one.
         start_confirmation_used = bool(saved and saved.get("consumed"))
@@ -484,7 +740,7 @@ class WorkDialogue:
                 refreshed = {**saved, "input_manifest_stale": False} if saved else None
                 if refreshed:
                     registration_payload["work_draft"] = refreshed
-                if saved and not review_issues(draft, saved.get("facts")):
+                if saved and not review_issues(draft, _snapshot_mapping(saved, "facts")):
                     compiled = self._compile(
                         conversation,
                         request,
@@ -525,7 +781,7 @@ class WorkDialogue:
                 return reply("草稿已变化或工作区不匹配，请先查看当前参数草稿并确认最新版本。")
             if saved.get("compiled"):
                 return reply("该参数草稿已经编译，请审查方案后单独确认运行。")
-            issues = review_issues(draft, saved.get("facts"))
+            issues = review_issues(draft, _snapshot_mapping(saved, "facts"))
             if issues:
                 return reply("参数尚未完整，暂不能编译：\n" + "\n".join(issues))
             return replace(
@@ -679,15 +935,16 @@ class WorkDialogue:
         try:
             model_context: dict[str, Any] = {
                 "question": request.content,
-                "recent_messages": [
-                    {"role": m.role, "content": m.content} for m in packet.recent_messages
-                ],
-                "pinned_context": [item.model_dump() for item in packet.pinned_context],
-                "conversation_summary": packet.conversation_summary,
+                "recent_messages": recent_messages_for_agent(
+                    conversation, WorkAgentRole.PREPROCESSING
+                ),
+                "pinned_context": [],
+                "conversation_summary": None,
                 "work_context": {
                     **packet.work_context,
+                    "agent_role": WorkAgentRole.PREPROCESSING.value,
                     "parameter_draft": draft.model_dump(mode="json", exclude={"confirmed_hash"}),
-                    "planning_decisions": planning_decisions(draft, (saved or {}).get("sources")),
+                    "planning_decisions": planning_decisions(draft, _snapshot_sources(saved)),
                     "draft_schema": draft_schema(),
                     "input_evidence": {
                         "requires_fresh_reads": (saved or {}).get("pending_evidence_paths", []),
@@ -697,6 +954,26 @@ class WorkDialogue:
                 "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
                 "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
             }
+            handoff = latest_handoff_for_agent(
+                conversation, WorkAgentRole.PREPROCESSING, pending_only=True
+            )
+            if handoff is not None:
+                model_context["work_context"]["agent_handoff"] = {
+                    key: handoff.get(key)
+                    for key in (
+                        "handoff_id",
+                        "from_agent",
+                        "reason",
+                        "required_outputs",
+                        "data_references",
+                        "evidence_hash",
+                    )
+                }
+                handoff_refs = handoff.get("data_references")
+                if isinstance(handoff_refs, dict):
+                    model_context["work_context"]["agent_handoff"]["data_references"] = (
+                        handoff_reference_summary(handoff_refs)
+                    )
             counter = RegexTokenCounter()
             budget = int(packet.metadata.get("token_budget", 0))
             while counter.count(model_context) > budget and model_context["recent_messages"]:
@@ -740,6 +1017,9 @@ class WorkDialogue:
                         )
                         if isinstance(item, dict)
                     ),
+                    work_agent_role=str(
+                        model_context["work_context"].get("agent_role", "preprocessing")
+                    ),
                 ),
             )
             model_metadata = metadata
@@ -751,14 +1031,37 @@ class WorkDialogue:
                 raise ApplicationError(
                     "work_model_unavailable", "模型工具阶段失败；未重复请求。", status_code=503
                 )
+            if metadata.get("stop_reason") in {"budget_steps", "budget_tokens"}:
+                raise ApplicationError(
+                    "work_model_budget_exhausted", "本轮模型预算已用完，草稿和证据已保留。"
+                )
             failure_stage = "response_validation"
             if metadata.get("finish_reason") == "length":
                 raise ApplicationError("work_response_truncated", "模型输出不完整。")
             interpreted = WorkInterpretation.model_validate_json(raw_content)
+            if not work_agent_allows_action(role, interpreted.action):
+                return reply(
+                    "所选 Agent 不负责本次操作，未修改任何草稿或执行任务。请切换到对应角色。",
+                    {"rejected_action": interpreted.action},
+                )
+            if interpreted.action in {
+                "prepare_statistical_analysis",
+                "request_preprocessing_handoff",
+            }:
+                return reply(
+                    "该操作属于数据分析 Agent，预处理 Agent 本轮未修改草稿。请切换角色后继续。",
+                    {
+                        "agent_handoff": {
+                            "from_agent": role.value,
+                            "to_agent": WorkAgentRole.ANALYSIS.value,
+                            "status": "proposed",
+                        }
+                    },
+                )
             failure_stage = "draft_validation"
             payload: dict[str, Any] = {"model": metadata}
             if loop_metadata is not None:
-                payload["tool_loop"] = loop_metadata
+                payload["tool_loop"] = {**loop_metadata, "agent_role": role.value}
                 payload["workspace_redactions"] = loop_metadata.get("workspace_redactions", 0)
                 payload["workspace_omitted_sensitive"] = loop_metadata.get(
                     "workspace_omitted_sensitive", 0
@@ -913,15 +1216,17 @@ class WorkDialogue:
                     await observer.status("正在校验并整理方案…")
                 patch, sources, blocked = constrained_patch(
                     draft.model_dump(mode="json"),
-                    (saved or {}).get("sources", {}),
+                    _snapshot_sources(saved),
                     interpreted.draft_patch,
                     request.content,
                 )
                 with measure_work_stage("fact_derivation"):
                     current_facts = observed_facts(loop_metadata)
-                    facts = merge_observed_facts((saved or {}).get("facts", {}), current_facts)
+                    facts = merge_observed_facts(
+                        _snapshot_mapping(saved, "facts") or {}, current_facts
+                    )
                 pending_evidence = sorted(
-                    set((saved or {}).get("pending_evidence_paths", [])) - set(current_facts)
+                    set(_snapshot_string_list(saved, "pending_evidence_paths")) - set(current_facts)
                 )
                 for path, value in facts.items():
                     if sources.get(path) != "user" and not isinstance(value, dict):
@@ -929,17 +1234,17 @@ class WorkDialogue:
                 draft = merge_work_draft(draft, patch)
                 merged_preprocessing = draft.preprocessing or {}
                 normalization = merged_preprocessing.get("normalization") or {}
+                saved_preprocessing = (
+                    _snapshot_mapping(_snapshot_mapping(saved, "draft"), "preprocessing") or {}
+                )
+                saved_normalization = saved_preprocessing.get("normalization")
+                if not isinstance(saved_normalization, dict):
+                    saved_normalization = {}
                 if (
                     "structural_artifact_id" in normalization
                     and "preprocessing.normalization.structural_artifact_id"
                     not in leaf_values(patch)
-                    and "structural_artifact_id"
-                    not in (
-                        ((saved or {}).get("draft", {}).get("preprocessing") or {}).get(
-                            "normalization"
-                        )
-                        or {}
-                    )
+                    and "structural_artifact_id" not in saved_normalization
                 ):
                     sources["preprocessing.normalization.structural_artifact_id"] = "system"
                 for path, value in facts.items():
@@ -1169,8 +1474,23 @@ class WorkDialogue:
         call, which is the path that guarantees JSON mode today.
         """
 
+        started = time.monotonic()
+        spent_steps = 0
+        spent_tokens = 0
         loop_metadata: dict[str, Any] | None = None
-        if self.tool_runner is not None and await self.tool_runner.available(preferred_profile_id):
+        tools_available = False
+        if self.tool_runner is not None:
+            try:
+                tools_available = await asyncio.wait_for(
+                    self.tool_runner.available(preferred_profile_id),
+                    timeout=self.model_budget.max_seconds,
+                )
+            except TimeoutError:
+                return "", {"stop_reason": "budget_time"}, None
+        if self.tool_runner is not None and tools_available:
+            remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
+            if remaining_seconds <= 0:
+                return "", {"stop_reason": "budget_time"}, None
             looped = await self.tool_runner.run(
                 question=str(model_context["question"]),
                 recent_messages=model_context["recent_messages"],
@@ -1182,13 +1502,25 @@ class WorkDialogue:
                 execution_context=execution_context,
                 context_window_tokens=int(model_context.get("context_window_tokens", 16_384)),
                 max_output_tokens=int(model_context.get("max_output_tokens", 2_048)),
+                request_budget=replace(self.model_budget, max_seconds=remaining_seconds),
             )
             loop_metadata = _work_loop_metadata(looped)
+            spent_steps = looped.steps
+            spent_tokens = (
+                looped.usage.get("total_tokens", 0)
+                or (looped.usage.get("prompt_tokens", 0) + looped.usage.get("completion_tokens", 0))
+                or max(1, looped.steps)
+                * (looped.estimated_tokens + RegexTokenCounter().count(looped.final_text))
+            )
+            if spent_tokens > self.model_budget.max_total_tokens:
+                return "", {"stop_reason": "budget_tokens", "usage": looped.usage}, loop_metadata
             if looped.stop_reason in {
                 "provider_timeout",
                 "budget_time",
                 "provider_error",
                 "cancelled",
+                "budget_steps",
+                "budget_tokens",
             }:
                 return "", {"stop_reason": looped.stop_reason, "usage": looped.usage}, loop_metadata
             if looped.finish_reason == "length":
@@ -1237,16 +1569,38 @@ class WorkDialogue:
             fallback_context["question"] = str(fallback_context["question"]) + (
                 "\n本轮只重试一次结构化回复：返回简洁的 answer、action 和增量 draft_patch，"
                 "省略没有内容的可选字段。prepare_preprocessing_plan 只能作为最终 JSON 的 action 字段值，"
-                "不是工具，不要调用它；只引用 successful_read_evidence 中逐字提供的 path 和 locator。"
+                "prepare_statistical_analysis 也只能作为最终 JSON 的 action 字段值，不是工具；"
+                "只引用 successful_read_evidence 中逐字提供的 path 和 locator。"
             )
-        generated = await self.generate(
-            **fallback_context,
-            evidence=[],
-            preferred_profile_id=preferred_profile_id,
-            model=model,
-            allow_web_search=False,
-            work_mode=True,
-        )
+        remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
+        reason = None
+        if remaining_seconds <= 0:
+            reason = "budget_time"
+        elif spent_steps >= self.model_budget.max_steps:
+            reason = "budget_steps"
+        elif (
+            spent_tokens
+            + RegexTokenCounter().count(fallback_context)
+            + int(model_context.get("max_output_tokens", 2048))
+            > self.model_budget.max_total_tokens
+        ):
+            reason = "budget_tokens"
+        if reason:
+            return "", {"stop_reason": reason}, loop_metadata
+        try:
+            generated = await asyncio.wait_for(
+                self.generate(
+                    **fallback_context,
+                    evidence=[],
+                    preferred_profile_id=preferred_profile_id,
+                    model=model,
+                    allow_web_search=False,
+                    work_mode=True,
+                ),
+                timeout=remaining_seconds,
+            )
+        except TimeoutError:
+            return "", {"stop_reason": "provider_timeout"}, loop_metadata
         metadata = {
             "profile_id": generated.selected_profile_id,
             "model": generated.response.model,
@@ -1255,13 +1609,462 @@ class WorkDialogue:
             "finish_reason": generated.response.finish_reason,
             "usage": generated.response.usage,
         }
+        fallback_tokens = (
+            generated.response.usage.get("total_tokens", 0)
+            or generated.response.usage.get("prompt_tokens", 0)
+            + generated.response.usage.get("completion_tokens", 0)
+            or RegexTokenCounter().count(fallback_context)
+            + RegexTokenCounter().count(generated.response.content)
+        )
+        metadata["request_budget"] = {
+            "model_steps": spent_steps + 1,
+            "total_tokens": spent_tokens + fallback_tokens,
+            "max_steps": self.model_budget.max_steps,
+            "max_total_tokens": self.model_budget.max_total_tokens,
+        }
         if loop_metadata is not None:
             loop_metadata = {
                 **loop_metadata,
                 "fallback_used": True,
                 "fallback_reason": "tool_loop_unusable_or_incomplete",
+                "request_model_steps": spent_steps + 1,
+                "request_total_tokens": spent_tokens + fallback_tokens,
             }
+        if spent_tokens + fallback_tokens > self.model_budget.max_total_tokens:
+            metadata["stop_reason"] = "budget_tokens"
+            return "", metadata, loop_metadata
         return generated.response.content, metadata, loop_metadata
+
+    async def _respond_analysis(
+        self,
+        conversation: ConversationView,
+        request: ConversationTurnCreate,
+        packet: ContextPacket,
+        *,
+        workspace_path: str | None,
+        project_id: str | None,
+        preferred_profile_id: str | None,
+        workspace_content_consent: bool,
+        idempotency_key: str,
+        has_profiles: bool,
+        reply: Callable[[str, dict[str, Any] | None], WorkActionResult],
+    ) -> WorkActionResult:
+        saved = latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
+        try:
+            draft = (
+                StatisticsDraft.model_validate(saved.get("draft", {}))
+                if saved
+                else StatisticsDraft()
+            )
+        except ValidationError:
+            draft = StatisticsDraft()
+            saved = None
+        external_id = (
+            request.external_analysis_import_id
+            if "external_analysis_import_id" in request.model_fields_set or request.target_run_id
+            else draft.external_import_id
+        )
+        if external_id != draft.external_import_id or (external_id and draft.source_run_id):
+            draft = draft.model_copy(
+                update={
+                    "source_run_id": None,
+                    "qc_review_revision_id": None,
+                    "qc_review_hash": None,
+                    "qc_skip_id": None,
+                    "qc_skip_hash": None,
+                    "input_manifest_hash": None,
+                    "demographics_revision_id": None,
+                    "demographics_hash": None,
+                    "confirmed_hash": None,
+                    "metric_artifact_type": None,
+                }
+            )
+        external_summary: dict[str, Any] | None = None
+        if external_id:
+            if request.target_run_id or not project_id or self.get_external_import is None:
+                return reply("请为本次分析选择一个明确的来源和项目，统计草稿已保留。", None)
+            try:
+                imported = self.get_external_import(external_id)
+            except ApplicationError as exc:
+                return reply(str(exc), None)
+            if (
+                imported.project_id != project_id
+                or imported.status != "included"
+                or imported.selection is None
+                or imported.inspection.metric_kind is None
+                or imported.inspection.scaling is None
+            ):
+                return reply(
+                    "外部来源不属于当前项目，或尚未完成纳入及掩膜登记。统计草稿已保留。", None
+                )
+            metric_type = f"external.{imported.inspection.metric_kind.value}.{imported.inspection.scaling.value}"
+            draft = draft.model_copy(
+                update={
+                    "external_import_id": external_id,
+                    "external_import_hash": imported.inclusion_hash,
+                    "source_run_id": None,
+                    "metric_artifact_type": metric_type,
+                }
+            )
+            external_summary = {
+                "layout": imported.inspection.layout,
+                "metric_artifact_type": metric_type,
+                "grouping_column": "group" if imported.inspection.layout == "grouped" else None,
+                "condition_column": "condition"
+                if imported.inspection.layout == "paired_conditions"
+                else None,
+                "condition_order": list(imported.selection.group_order)
+                if imported.inspection.layout == "paired_conditions"
+                else [],
+                "group_order": list(imported.selection.group_order),
+                "subject_count": len({image.subject_id for image in imported.selection.images}),
+                "unknown_processing_fields": list(imported.inspection.unknown_processing_fields),
+            }
+            demographics = (
+                self.get_external_demographics(external_id)
+                if self.get_external_demographics
+                else None
+            )
+            external_summary["demographics"] = (
+                {
+                    "columns": demographics.columns,
+                    "revision": demographics.revision,
+                    "row_count": demographics.row_count,
+                }
+                if demographics
+                else None
+            )
+        else:
+            draft = draft.model_copy(
+                update={"external_import_id": None, "external_import_hash": None}
+            )
+        if not has_profiles:
+            offline_action = self.coordinator.resolve_action(
+                request,
+                workspace_path,
+                request.target_run_id or conversation.active_run_id,
+            )
+            if offline_action is ConversationAction.GET_STATISTICAL_RESULTS:
+                return replace(
+                    reply("", None),
+                    commit=lambda: self.coordinator.execute(
+                        request.model_copy(update={"action": offline_action}),
+                        workspace_path=workspace_path,
+                        project_id=project_id,
+                        active_run_id=request.target_run_id or conversation.active_run_id,
+                        idempotency_key=idempotency_key,
+                        conversation_id=conversation.conversation_id,
+                    ),
+                )
+        if not has_profiles:
+            return reply(
+                "数据分析 Agent 需要连接模型才能理解分析需求；现有统计结果仍可在会话中查看。",
+                {
+                    "analysis_draft": {
+                        "draft": draft.model_dump(mode="json"),
+                        "issues": list(statistics_draft_issues(draft)),
+                    }
+                },
+            )
+
+        model_context: dict[str, Any] = {
+            "question": request.content,
+            "recent_messages": recent_messages_for_agent(conversation, WorkAgentRole.ANALYSIS),
+            "pinned_context": [],
+            "conversation_summary": None,
+            "work_context": {
+                **{
+                    key: value
+                    for key, value in packet.work_context.items()
+                    if key
+                    not in {
+                        "parameter_draft",
+                        "planning_decisions",
+                        "draft_schema",
+                        "input_evidence",
+                        "workspace_stage_candidates",
+                        "workspace_stage_selection_required",
+                        "selected_input_stage",
+                    }
+                },
+                "agent_role": WorkAgentRole.ANALYSIS.value,
+                "analysis_draft": draft.model_dump(
+                    mode="json",
+                    exclude={
+                        "source_run_id",
+                        "external_import_id",
+                        "external_import_hash",
+                        "qc_review_revision_id",
+                        "qc_review_hash",
+                        "qc_skip_id",
+                        "qc_skip_hash",
+                        "input_manifest_hash",
+                        "demographics_revision_id",
+                        "demographics_hash",
+                        "confirmed_hash",
+                    },
+                ),
+                "analysis_draft_issues": list(statistics_draft_issues(draft)),
+                "statistical_capabilities": model_visible_capabilities(),
+                "selected_external_source": external_summary,
+            },
+            "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
+            "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
+        }
+        model_context["work_context"].setdefault("workspace_path", workspace_path)
+        result_run_id = request.target_run_id or conversation.active_run_id
+        if self.get_result_facts is not None and result_run_id:
+            spatial_requested = bool(
+                re.search(
+                    r"脑区|定位|ROI|解释|解读|结果分析|分析.{0,12}结果|interpret|localiz|region",
+                    request.content,
+                    re.IGNORECASE,
+                )
+            )
+            model_context["work_context"]["analysis_result_facts"] = {
+                "untrusted_content": True,
+                "results": self.get_result_facts(result_run_id, spatial_requested),
+            }
+        dependency = latest_analysis_dependency(conversation)
+        if dependency is not None:
+            model_context["work_context"]["analysis_dependency"] = {
+                key: dependency.get(key)
+                for key in (
+                    "task_id",
+                    "analysis_request",
+                    "status",
+                    "data_references",
+                    "evidence_hash",
+                )
+            }
+            references = dependency.get("data_references")
+            if isinstance(references, dict):
+                model_context["work_context"]["analysis_dependency"]["data_references"] = (
+                    handoff_reference_summary(references)
+                )
+        counter = RegexTokenCounter()
+        budget = int(packet.metadata.get("token_budget", 0))
+        while counter.count(model_context) > budget and model_context["recent_messages"]:
+            model_context["recent_messages"].pop(0)
+        if counter.count(model_context) > budget:
+            return reply(
+                "当前模型上下文窗口不足，分析草稿已保留。", {"analysis_draft": saved or {}}
+            )
+
+        loop_metadata: dict[str, Any] | None = None
+        try:
+            raw, metadata, loop_metadata = await self._interpret(
+                model_context,
+                preferred_profile_id=preferred_profile_id,
+                model=request.model,
+                execution_context=AgentExecutionContext(
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    allowed_run_ids=frozenset(
+                        value
+                        for value in (request.target_run_id, conversation.active_run_id)
+                        if value
+                    ),
+                    selected_profile_id=preferred_profile_id,
+                    context_window_tokens=int(model_context["context_window_tokens"]),
+                    max_output_tokens=int(model_context["max_output_tokens"]),
+                    workspace_path=workspace_path,
+                    workspace_file_scope=(
+                        request.workspace_file_scope.paths if request.workspace_file_scope else ()
+                    ),
+                    workspace_content_consent=workspace_content_consent,
+                    work_agent_role=WorkAgentRole.ANALYSIS.value,
+                ),
+            )
+            if metadata.get("stop_reason") in {"provider_timeout", "budget_time"}:
+                raise ApplicationError(
+                    "work_model_timeout", "数据分析 Agent 请求超时。", status_code=503
+                )
+            if metadata.get("stop_reason") in {"provider_error", "cancelled"}:
+                raise ApplicationError(
+                    "work_model_unavailable", "数据分析 Agent 暂时不可用。", status_code=503
+                )
+            if metadata.get("stop_reason") in {"budget_steps", "budget_tokens"}:
+                raise ApplicationError(
+                    "work_model_budget_exhausted", "本轮模型预算已用完，统计草稿和证据已保留。"
+                )
+            if metadata.get("finish_reason") == "length":
+                raise ApplicationError("work_response_truncated", "数据分析回复不完整。")
+            interpreted = WorkInterpretation.model_validate_json(raw)
+            payload: dict[str, Any] = {
+                "agent_role": WorkAgentRole.ANALYSIS.value,
+                "agent_name": resolve_work_agent(WorkAgentRole.ANALYSIS).display_name,
+                "agent_model": metadata,
+                "analysis_draft": {
+                    "draft": draft.model_dump(mode="json"),
+                    "hash": statistics_draft_hash(draft),
+                    "version": _snapshot_int(saved, "version") + 1,
+                    "issues": list(statistics_draft_issues(draft)),
+                    "review": render_statistics_draft_review(draft),
+                },
+            }
+            if saved is not None and interpreted.action in {
+                "conversation",
+                "get_statistical_results",
+                "get_progress",
+                "get_qc_status",
+            }:
+                payload["analysis_draft"] = saved
+            if not work_agent_allows_action(WorkAgentRole.ANALYSIS, interpreted.action):
+                return reply("该操作不属于数据分析 Agent 的职责范围，未执行任何操作。", payload)
+            if loop_metadata is not None:
+                payload["tool_loop"] = {
+                    **loop_metadata,
+                    "agent_role": WorkAgentRole.ANALYSIS.value,
+                }
+            if interpreted.draft_patch or interpreted.workspace_edits:
+                return reply(
+                    "数据分析 Agent 返回了预处理专属内容，已拒绝本轮草稿变更。请重新描述分析需求。",
+                    payload,
+                )
+            if interpreted.action == "request_preprocessing_handoff":
+                if not project_id or self.prepare_preprocessing_handoff is None:
+                    return reply("请先关联工作项目，分析草稿已保留。", payload)
+                proof = self.prepare_preprocessing_handoff(
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    run_id=None
+                    if external_id
+                    else preprocessing_source_run(conversation, request.target_run_id),
+                    external_import_id=external_id,
+                    reason=interpreted.handoff_reason or interpreted.answer,
+                    required_outputs=interpreted.required_preprocessing_outputs,
+                )
+                payload["agent_handoff"] = proof.model_dump(mode="json")
+                if proof.status == "blocked":
+                    return reply(
+                        "本会话已达到指标需求交接次数上限，草稿和证据已保留，请先核对当前任务。"
+                        if "work_handoff_limit_reached" in proof.blocking_items
+                        else "上游指标需求已保留，但来源证据已变化或无法核实，请重新检查数据。",
+                        payload,
+                    )
+                return reply(
+                    "当前分析缺少必要的已登记指标，已整理需要预处理 Agent 补充的内容。你可以切换到预处理 Agent 继续。",
+                    payload,
+                )
+            if interpreted.action == "prepare_statistical_analysis":
+                if not interpreted.analysis_patch:
+                    return reply("请提供检验类型或分析目标，我会据此整理独立的统计草稿。", payload)
+                updated = merge_statistics_draft(draft, interpreted.analysis_patch)
+                updated = updated.model_copy(
+                    update={
+                        "source_run_id": None,
+                        "qc_review_revision_id": None,
+                        "qc_review_hash": None,
+                        "qc_skip_id": None,
+                        "qc_skip_hash": None,
+                        "input_manifest_hash": None,
+                        "demographics_revision_id": None,
+                        "demographics_hash": None,
+                        "confirmed_hash": None,
+                    }
+                )
+                issues = list(statistics_draft_issues(updated))
+                payload["draft_issues"] = issues
+                run_id = (
+                    None
+                    if external_id
+                    else preprocessing_source_run(conversation, request.target_run_id)
+                )
+                if not issues:
+                    if run_id is None and external_id is None:
+                        payload["statistical_design_issues"] = [
+                            "统计草稿已完整；请先选择一份已成功运行并通过 QC 或记录 QC 跳过的来源运行。"
+                        ]
+                    elif self.prepare_statistical_proposal is None:
+                        payload["statistical_design_issues"] = [
+                            "当前服务未连接统计设计装配器，草稿已保留。"
+                        ]
+                    else:
+                        source_args = (
+                            {"external_import_id": external_id, "project_id": project_id}
+                            if external_id
+                            else {"run_id": run_id}
+                        )
+                        proposal, design_issues = self.prepare_statistical_proposal(
+                            draft=updated, **source_args
+                        )
+                        payload["statistical_design_issues"] = [
+                            issue.message for issue in design_issues
+                        ]
+                        if proposal is not None:
+                            updated = updated.model_copy(
+                                update={
+                                    "source_run_id": proposal.source_run_id,
+                                    "external_import_id": proposal.design.external_import_id,
+                                    "external_import_hash": proposal.design.external_import_hash,
+                                    "qc_review_revision_id": proposal.design.qc_review_revision_id,
+                                    "qc_review_hash": proposal.design.qc_review_hash,
+                                    "qc_skip_id": proposal.design.qc_skip_id,
+                                    "qc_skip_hash": proposal.design.qc_skip_hash,
+                                    "input_manifest_hash": proposal.input_manifest_hash,
+                                    "demographics_revision_id": proposal.demographics_revision_id,
+                                    "demographics_hash": proposal.demographics_hash,
+                                }
+                            )
+                            payload["statistical_design_proposal"] = proposal.model_dump(
+                                mode="json"
+                            )
+                saved_draft = {
+                    "draft": updated.model_dump(mode="json"),
+                    "hash": statistics_draft_hash(updated),
+                    "version": _snapshot_int(saved, "version") + 1,
+                    "issues": issues,
+                    "review": render_statistics_draft_review(updated),
+                    "source_run_id": updated.source_run_id,
+                    "input_manifest_hash": updated.input_manifest_hash,
+                    "demographics_revision_id": updated.demographics_revision_id,
+                    "demographics_hash": updated.demographics_hash,
+                }
+                payload["analysis_draft"] = saved_draft
+                if issues:
+                    answer = "统计分析草稿已更新，请补齐草稿中尚未确定的检验和参数信息。"
+                elif payload.get("statistical_design_proposal"):
+                    answer = (
+                        "统计草稿已绑定所选来源的纳入凭据、受试者顺序及登记指标，服务端形成了可审查的设计。"
+                        "请核对统计设计、校正参数和人口学来源，再进入统计方案审批。"
+                    )
+                else:
+                    answer = (
+                        "统计草稿已完整，但当前来源或登记数据尚不能组成有效设计。"
+                        "请查看阻断项并补齐分组、指标或 QC 证据。"
+                    )
+                return reply(answer, payload)
+            target = dispatch_target(interpreted.action)
+            if target is not None:
+                result = self.coordinator.execute(
+                    request.model_copy(
+                        update={"action": target, "real_execution_confirmed": False}
+                    ),
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=conversation.active_run_id,
+                    idempotency_key=idempotency_key,
+                    conversation_id=conversation.conversation_id,
+                )
+                return replace(result, payload={**payload, **result.payload})
+            if interpreted.action not in {
+                "conversation",
+                "get_statistical_results",
+                "get_progress",
+                "get_qc_status",
+            }:
+                return reply("该动作不属于数据分析 Agent 的职责范围，未执行任何操作。", payload)
+            return reply(interpreted.answer, payload)
+        except (ApplicationError, ValidationError, ValueError) as exc:
+            diagnostic, reason = _work_failure_details(exc, {}, "analysis_response")
+            return reply(
+                "数据分析 Agent 未能完成本轮请求；已有统计草稿和工作流状态仍保留。\n\n" + reason,
+                {
+                    "model_error": diagnostic,
+                    **({"tool_loop": loop_metadata} if loop_metadata else {}),
+                },
+            )
 
     @staticmethod
     def _parses(content: str) -> bool:
@@ -1292,7 +2095,11 @@ class WorkDialogue:
         """
 
         dataset_data = latest_payload(conversation, "dataset")
-        evidence = snapshot or latest_payload(conversation, "work_draft") or {}
+        evidence = (
+            snapshot
+            or latest_agent_payload(conversation, "work_draft", WorkAgentRole.PREPROCESSING)
+            or {}
+        )
         if evidence.get("input_evidence_stale") or evidence.get("input_manifest_stale"):
             return WorkActionResult(
                 "输入文件已变化，请先重新读取并核实采集信息，再生成方案。",
@@ -1322,7 +2129,11 @@ class WorkDialogue:
         )
         payload = dict(result.payload)
         payload["work_draft"] = {
-            **(snapshot or latest_payload(conversation, "work_draft") or {}),
+            **(
+                snapshot
+                or latest_agent_payload(conversation, "work_draft", WorkAgentRole.PREPROCESSING)
+                or {}
+            ),
             "draft": draft.model_dump(mode="json"),
             "hash": draft_hash(draft),
             "workspace_path": workspace_path,

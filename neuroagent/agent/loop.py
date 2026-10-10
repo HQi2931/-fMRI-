@@ -191,7 +191,16 @@ class AgentLoop:
             provider_model = response.model
             finish_reason = response.finish_reason
             for key, value in response.usage.items():
-                usage[key] = usage.get(key, 0) + value
+                if key != "total_tokens":
+                    usage[key] = usage.get(key, 0) + value
+            reported = response.usage.get("total_tokens", 0) or (
+                response.usage.get("prompt_tokens", 0) + response.usage.get("completion_tokens", 0)
+            )
+            turn_tokens = reported or (
+                self._counter.count(working)
+                + self._counter.count(response.model_dump(mode="json", exclude={"usage"}))
+            )
+            usage["total_tokens"] = usage.get("total_tokens", 0) + turn_tokens
 
             if not response.tool_calls:
                 return AgentLoopResult(

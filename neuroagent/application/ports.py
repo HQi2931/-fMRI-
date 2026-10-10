@@ -26,6 +26,9 @@ from neuroagent.application.contracts import (
     DatasetSplitView,
     DatasetView,
     DemographicsRevisionView,
+    ExternalAnalysisImportSummaryView,
+    ExternalAnalysisImportView,
+    ExternalDemographicsRevisionView,
     HeadMotionQcCreate,
     ManifestRevisionView,
     MemoryCreate,
@@ -49,6 +52,7 @@ from neuroagent.application.contracts import (
     StatisticalResultDetailView,
     StatisticalResultView,
     ValidationIssue,
+    WorkAgentSelection,
     WorkflowState,
     WorkspaceChangeProposal,
     WorkspaceContentConsent,
@@ -189,6 +193,20 @@ class RepositoryPort(Protocol):
     ) -> ConversationView: ...
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
+
+    def select_work_agent(
+        self, conversation_id: str, request: WorkAgentSelection
+    ) -> ConversationView: ...
+
+    def bind_statistics_task(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        proposal_hash: str,
+        plan_revision_id: str,
+        run_id: str | None = None,
+    ) -> ConversationView: ...
 
     def create_workspace_consent(
         self,
@@ -419,6 +437,10 @@ class RepositoryPort(Protocol):
 
     def get_demographics(self, demographics_id: str) -> DemographicsRevisionView: ...
 
+    def get_latest_demographics_for_dataset(
+        self, dataset_id: str
+    ) -> DemographicsRevisionView | None: ...
+
     def create_split(
         self,
         dataset_id: str,
@@ -533,6 +555,41 @@ class RepositoryPort(Protocol):
     ) -> list[StatisticalResultView]: ...
 
     def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView: ...
+
+    def create_external_analysis_import(
+        self,
+        *,
+        project_id: str,
+        source_path: str,
+        inspection: dict[str, Any],
+    ) -> ExternalAnalysisImportView: ...
+
+    def get_external_analysis_import(self, import_id: str) -> ExternalAnalysisImportView: ...
+
+    def create_external_demographics(
+        self, import_id: str, *, expected_version: int, content: dict[str, Any]
+    ) -> ExternalDemographicsRevisionView: ...
+
+    def get_latest_external_demographics(
+        self, import_id: str
+    ) -> ExternalDemographicsRevisionView | None: ...
+
+    def get_external_demographics_content(
+        self, demographics_id: str
+    ) -> tuple[ExternalDemographicsRevisionView, dict[str, Any]]: ...
+
+    def list_external_analysis_imports(
+        self, *, project_id: str
+    ) -> list[ExternalAnalysisImportSummaryView]: ...
+
+    def include_external_analysis_import(
+        self,
+        import_id: str,
+        *,
+        expected_version: int,
+        inclusion: dict[str, Any],
+        inclusion_hash: str,
+    ) -> ExternalAnalysisImportView: ...
 
     def append_event(
         self,

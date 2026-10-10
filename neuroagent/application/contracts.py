@@ -29,7 +29,17 @@ from neuroagent.analysis.models import (
     TableInspection,
 )
 from neuroagent.analysis.organization import OrganizationPreview
-from neuroagent.domain.fmri.metrics import AlffFalffParameters, MetricKind, RehoParameters
+from neuroagent.domain.fmri.artifacts import MetricScaling
+from neuroagent.domain.fmri.external_import import (
+    ExternalCoordinateSpace,
+    ExternalMetricInclusion,
+    ExternalMetricInspection,
+)
+from neuroagent.domain.fmri.metrics import (
+    AlffFalffParameters,
+    MetricKind,
+    RehoParameters,
+)
 from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
 from neuroagent.domain.fmri.qc import (
     HeadMotionQcCriteria,
@@ -37,10 +47,12 @@ from neuroagent.domain.fmri.qc import (
     QcReviewRevision,
     QcReviewScope,
 )
+from neuroagent.domain.fmri.results import StatisticalAtlasSelection
 from neuroagent.domain.fmri.statistics import (
     CorrectionSpec,
     StatisticalDesignRevision,
 )
+from neuroagent.multi_agent.registry import WorkAgentRole
 from neuroagent.skills.models import SkillPlan
 
 
@@ -249,6 +261,36 @@ class DemographicsRevisionView(StrictModel):
     columns: list[str]
     missing_subject_ids: list[str]
     extra_subject_ids: list[str]
+    created_at: datetime
+
+
+class ExternalDemographicsImportRequest(StrictModel):
+    source_path: str
+    subject_id_column: str
+    column_mapping: dict[str, str] = Field(default_factory=dict)
+    encoding: str = "utf-8-sig"
+    expected_import_version: int = Field(ge=1)
+
+    @field_validator("subject_id_column")
+    @classmethod
+    def normalize_id_column(cls, value: str) -> str:
+        return DemographicsImportRequest.normalize_subject_id_column(value)
+
+    @field_validator("column_mapping")
+    @classmethod
+    def normalize_mapping(cls, value: dict[str, str]) -> dict[str, str]:
+        return DemographicsImportRequest.protect_canonical_subject_id(value)
+
+
+class ExternalDemographicsRevisionView(StrictModel):
+    demographics_id: str
+    external_import_id: str
+    inclusion_hash: str
+    revision: int
+    content_hash: str
+    source_sha256: str
+    row_count: int
+    columns: list[str]
     created_at: datetime
 
 
@@ -639,13 +681,20 @@ class SkillPlanResolveView(StrictModel):
     plan_revision: PlanRevisionView
 
 
+class StatisticalWorkContext(StrictModel):
+    conversation_id: str = Field(min_length=1)
+    proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class StatisticalDesignCreate(StrictModel):
     project_id: str
     expected_project_version: int = Field(ge=1)
     input_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     design: StatisticalDesignRevision
     correction: CorrectionSpec | None = None
+    atlas_id: Literal["aal", "aal3", "brodmann"] | None = None
     supersedes_plan_revision_id: str | None = None
+    work_context: StatisticalWorkContext | None = None
 
 
 class StatisticalDesignValidationRequest(StrictModel):
@@ -654,6 +703,7 @@ class StatisticalDesignValidationRequest(StrictModel):
 
 class StatisticalDesignView(StrictModel):
     design: StatisticalDesignRevision
+    localization_plan: StatisticalAtlasSelection | None = None
     correction: CorrectionSpec | None
     design_matrix: tuple[tuple[float, ...], ...]
     plan_revision: PlanRevisionView
@@ -698,12 +748,224 @@ class StatisticalResultView(StrictModel):
     created_at: datetime
 
 
+class StatisticalCovariateSummary(StrictModel):
+    name: str
+    centering: str
+
+
+class StatisticalMethodSummary(StrictModel):
+    """Path-free method facts, derived from a verified frozen result."""
+
+    test: str
+    test_label: str
+    function_name: str
+    statistic_type: Literal["T", "R", "F"]
+    subject_count: int = Field(gt=0)
+    image_count: int = Field(gt=0)
+    group_counts: dict[str, int]
+    condition_order: tuple[str, ...]
+    covariates: tuple[StatisticalCovariateSummary, ...]
+    contrast: tuple[float, ...]
+    tail: str
+    tail_label: str
+    df1: float = Field(gt=0, allow_inf_nan=False)
+    df2: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    positive_direction: str | None = None
+    negative_direction: str | None = None
+    assumptions: tuple[str, ...]
+    correction_method: Literal["fdr", "grf"] | None = None
+    q_threshold: float | None = Field(default=None, gt=0, lt=1)
+    actual_p_threshold: float | None = Field(default=None, ge=0, le=1)
+    voxel_p_threshold: float | None = Field(default=None, gt=0, lt=1)
+    cluster_p_threshold: float | None = Field(default=None, gt=0, lt=1)
+    smoothness_mode: str | None = None
+    smoothness_source: Literal["provided", "header", "estimated"] | None = None
+    effective_smoothness_dlh: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    effective_fwhm: tuple[float, float, float] | None = None
+    effective_mask_voxel_count: int | None = Field(default=None, gt=0)
+    minimum_cluster_size: int | None = Field(default=None, ge=0)
+    cluster_connectivity: Literal[26] | None = None
+    correction_evidence_status: Literal[
+        "verified", "not_registered", "unavailable", "not_applicable"
+    ]
+    software_versions: dict[str, str]
+    evidence_issues: tuple[str, ...] = ()
+
+
 class StatisticalResultDetailView(StatisticalResultView):
     """Full registered result including the frozen manifest and both report renderings."""
 
     manifest: dict[str, Any]
     report_markdown: str
     report_json: str
+    method_summary: StatisticalMethodSummary | None = None
+
+
+class StatisticalResultClusterSliceView(StrictModel):
+    cluster_id: str
+    slice_index: int = Field(ge=0)
+
+
+class StatisticalClusterRoiRow(StrictModel):
+    subject_id: str
+    group: str | None = None
+    condition: str | None = None
+    mean_value: float = Field(allow_inf_nan=False)
+
+
+class StatisticalClusterRoiView(StrictModel):
+    result_id: str
+    result_bundle_hash: str
+    cluster_id: str | None
+    status: Literal["descriptive", "no_significant_voxels", "no_reportable_clusters"]
+    source_map_artifact_id: str | None = None
+    voxel_count: int = Field(ge=0)
+    rows: tuple[StatisticalClusterRoiRow, ...]
+    limitation: str = (
+        "显著簇内均值仅用于描述性展示；同一数据选择的 ROI 不构成独立验证，不提供二次显著性检验。"  # noqa: RUF001
+    )
+
+
+class StatisticalResultSliceInfoView(StrictModel):
+    result_id: str
+    map_artifact_id: str
+    slice_count: int = Field(gt=0)
+    initial_slice_index: int = Field(ge=0)
+    cluster_slices: tuple[StatisticalResultClusterSliceView, ...]
+
+    @model_validator(mode="after")
+    def slices_fit_image(self) -> StatisticalResultSliceInfoView:
+        if self.initial_slice_index >= self.slice_count:
+            raise ValueError("initial axial slice must be inside the image")
+        if any(item.slice_index >= self.slice_count for item in self.cluster_slices):
+            raise ValueError("cluster axial slice must be inside the image")
+        if len({item.cluster_id for item in self.cluster_slices}) != len(self.cluster_slices):
+            raise ValueError("cluster slice bindings must have unique IDs")
+        return self
+
+
+class StatisticalAtlasView(StrictModel):
+    atlas_id: str
+    name: str
+    coordinate_space: str
+    available: bool
+    voxel_size_mm: tuple[float, float, float] | None
+    label_count: int | None
+    content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    reason: str | None = None
+
+
+class StatisticalAtlasRegionCoverage(StrictModel):
+    label_value: int = Field(ge=0)
+    label: str = Field(min_length=1)
+    voxel_count: int = Field(gt=0)
+    proportion: float = Field(gt=0, le=1)
+
+
+class StatisticalAtlasPeakLocalization(StrictModel):
+    cluster_id: str
+    peak_coordinate_mm: tuple[float, float, float]
+    label_value: int | None
+    label: str | None
+    atlas_voxel_ijk: tuple[int, int, int] | None
+    atlas_voxel_center_mm: tuple[float, float, float] | None
+    distance_to_voxel_center_mm: float | None = Field(default=None, ge=0)
+    coverage: tuple[StatisticalAtlasRegionCoverage, ...] = ()
+
+
+class StatisticalResultLocalizationView(StrictModel):
+    result_id: str
+    result_bundle_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal["localized", "no_significant_voxels", "no_reportable_clusters"] = "localized"
+    significant_voxel_count: int | None = Field(default=None, ge=0)
+    atlas_id: str | None = None
+    atlas_name: str | None = None
+    atlas_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    coordinate_space: str | None = None
+    localization_method: str = "nearest-neighbor sampling through inverse NIfTI affine"
+    clusters: tuple[StatisticalAtlasPeakLocalization, ...]
+
+
+class ExternalAnalysisImportInspectRequest(StrictModel):
+    """Inspect a user-selected external DPABI metric directory without inclusion."""
+
+    project_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1, max_length=4096)
+    layout: Literal["grouped", "paired_conditions"] = "grouped"
+
+
+class ExternalAnalysisImportIncludeRequest(StrictModel):
+    """Explicit human decision to make an inspected import selectable for analysis."""
+
+    expected_version: int = Field(ge=1)
+    included_subject_ids: tuple[str, ...] = Field(min_length=2)
+    group_order: tuple[str, ...] = Field(min_length=2)
+    coordinate_space: ExternalCoordinateSpace
+    acknowledge_unknown_processing: Literal[True]
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2000)
+    mask_relative_path: str | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def include_lists_are_unambiguous(self) -> ExternalAnalysisImportIncludeRequest:
+        if len(set(self.included_subject_ids)) != len(self.included_subject_ids):
+            raise ValueError("included_subject_ids must be unique")
+        if len(set(self.group_order)) != len(self.group_order):
+            raise ValueError("group_order must be unique")
+        return self
+
+
+class ExternalAnalysisSelectionImageView(StrictModel):
+    subject_id: str
+    group: str
+    condition: str | None = None
+    artifact_id: str
+
+
+class ExternalAnalysisSelectionView(StrictModel):
+    """Opaque IDs and manifest needed to freeze a reviewed external design."""
+
+    input_manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    mask_artifact_id: str
+    images: tuple[ExternalAnalysisSelectionImageView, ...]
+    group_order: tuple[str, ...]
+
+
+class ExternalAnalysisImportView(StrictModel):
+    import_id: str
+    project_id: str
+    source_path: str
+    status: Literal["needs_review", "included"]
+    version: int = Field(ge=1)
+    inspection: ExternalMetricInspection
+    inclusion: ExternalMetricInclusion | None = None
+    inclusion_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    selection: ExternalAnalysisSelectionView | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExternalAnalysisImportSummaryView(StrictModel):
+    """Bounded list projection that omits per-subject paths and file hashes."""
+
+    import_id: str
+    layout: Literal["grouped", "paired_conditions"] = "grouped"
+    project_id: str
+    status: Literal["needs_review", "included"]
+    version: int = Field(ge=1)
+    source_tree_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    metric_kind: MetricKind | None = None
+    scaling: MetricScaling | None = None
+    subject_count: int = Field(ge=0)
+    group_counts: dict[str, int]
+    grid_signature: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    coordinate_space: ExternalCoordinateSpace
+    blocking_issues: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    unknown_processing_fields: tuple[str, ...] = ()
+    inclusion_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    created_at: datetime
+    updated_at: datetime
 
 
 class ModelProfileInput(ModelProfile):
@@ -1084,6 +1346,8 @@ class ConversationToolCallView(StrictModel):
     step_index: int | None = Field(default=None, ge=1)
     risk_tier: str | None = None
     duration_ms: int | None = Field(default=None, ge=0)
+    agent_role: WorkAgentRole | None = None
+
     created_at: datetime
     updated_at: datetime
 
@@ -1103,6 +1367,20 @@ class ConfirmationChallengeView(StrictModel):
     consumed_run_id: str | None = None
 
 
+class ConversationWorkTaskView(StrictModel):
+    agent_role: WorkAgentRole
+    draft_hash: str | None = None
+    proposal_hash: str | None = None
+    proposal_message_id: str | None = None
+    plan_revision_id: str | None = None
+    run_id: str | None = None
+
+
+class WorkAgentSelection(StrictModel):
+    agent_role: WorkAgentRole
+    expected_version: int = Field(ge=1)
+
+
 class ConversationView(StrictModel):
     conversation_id: str
     mode: ConversationMode
@@ -1111,6 +1389,8 @@ class ConversationView(StrictModel):
     preferred_profile_id: str | None = None
     project_id: str | None = None
     active_run_id: str | None = None
+    foreground_agent_role: WorkAgentRole = WorkAgentRole.PREPROCESSING
+    work_tasks: tuple[ConversationWorkTaskView, ...] = ()
     version: int
     created_at: datetime
     updated_at: datetime
@@ -1154,6 +1434,7 @@ class ConversationTurnCreate(StrictModel):
     preferred_profile_id: str | None = Field(default=None, max_length=63)
     project_id: str | None = None
     target_run_id: str | None = None
+    external_analysis_import_id: str | None = Field(default=None, min_length=1, max_length=64)
     qc_review_id: str | None = None
     workspace_setup: WorkspaceSetupIntent | None = None
     skill_plan_intent: SkillPlanIntent | None = None
@@ -1166,6 +1447,15 @@ class ConversationTurnCreate(StrictModel):
     workspace_file_scope: WorkspaceFileScope | None = None
     # Set only by an explicit user/UI confirmation; model output is ignored.
     selected_input_stage: str | None = Field(default=None, min_length=1, max_length=64)
+    agent_role: WorkAgentRole | None = None
+
+    @model_validator(mode="after")
+    def explicit_external_source_requires_analysis(self) -> ConversationTurnCreate:
+        if self.external_analysis_import_id is not None and (
+            self.target_run_id is not None or self.agent_role is WorkAgentRole.PREPROCESSING
+        ):
+            raise ValueError("external analysis input cannot select a run or preprocessing role")
+        return self
 
 
 class ConversationTurnView(StrictModel):

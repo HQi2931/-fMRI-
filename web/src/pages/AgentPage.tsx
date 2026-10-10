@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -9,6 +9,8 @@ import {
   type ConversationMode,
   type ModelProfile,
   type Run,
+  type StatisticalDesign,
+  type StatisticalDesignCreateBody,
   type WorkspaceConsent,
   type WorkspaceCheck,
   type WorkspaceProposal,
@@ -22,6 +24,8 @@ import { WorkTimingDetails } from "../components/WorkTimingDetails";
 import { WorkspacePanel } from "../components/WorkspacePanel";
 import { WorkDraftPanel } from "../components/WorkDraftPanel";
 import { WorkRunPanel } from "../components/WorkRunPanel";
+import { ExternalAnalysisImportPanel } from "../components/ExternalAnalysisImportPanel";
+import { AgentHandoffPanel, type AgentHandoff } from "../components/AgentHandoffPanel";
 import { readWorkDraft, type WorkDraftSnapshot } from "../components/workDraft";
 import { updateWorkspace, useWorkspace } from "../workspace";
 import "./agent-work.css";
@@ -46,7 +50,15 @@ type Message = {
   draftIssues?: string[];
   planPreview?: unknown;
   workTimings?: unknown;
+  agentRole?: "preprocessing" | "analysis";
+  analysisDraft?: { draft: Record<string, unknown>; issues?: string[]; hash?: string; version?: number; review?: string };
+  statisticalProposal?: { design: Record<string, unknown>; correction?: Record<string, unknown> | null; project_id?: string; project_version?: number; input_manifest_hash?: string; source_run_id?: string; frozen_subject_order?: string[]; demographics_revision_id?: string | null; demographics_hash?: string | null; review?: string; proposal_hash?: string };
+  statisticalDesignIssues?: string[];
+  agentHandoff?: AgentHandoff;
+  analysisDependency?: { analysis_request?: string; status?: string; source_run_state?: string; task_id?: string };
+  statisticalResults?: Array<{ result_id: string; run_id: string; mode: string; non_scientific: boolean; artifact_count: number; cluster_count: number }>;
 };
+type WorkAgentRole = "auto" | "preprocessing" | "analysis";
 type ModelChoice = {
   key: string;
   profileId: string;
@@ -107,6 +119,20 @@ function messagesFrom(conversation?: Conversation): Message[] {
         draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : readWorkDraft(item.payload.work_draft)?.review_issues ?? [],
         planPreview: item.payload.plan_preview,
         workTimings: item.payload.work_timings,
+        agentRole: item.payload.agent_role === "analysis" ? "analysis" : "preprocessing",
+        analysisDraft: item.payload.analysis_draft && typeof item.payload.analysis_draft === "object"
+          ? item.payload.analysis_draft as Message["analysisDraft"] : undefined,
+        statisticalProposal: item.payload.statistical_design_proposal && typeof item.payload.statistical_design_proposal === "object"
+          ? item.payload.statistical_design_proposal as Message["statisticalProposal"] : undefined,
+        statisticalDesignIssues: Array.isArray(item.payload.statistical_design_issues)
+          ? item.payload.statistical_design_issues.filter((value): value is string => typeof value === "string") : undefined,
+        agentHandoff: item.payload.agent_handoff && typeof item.payload.agent_handoff === "object"
+          ? item.payload.agent_handoff as Message["agentHandoff"] : undefined,
+        analysisDependency: item.payload.analysis_dependency && typeof item.payload.analysis_dependency === "object"
+          ? item.payload.analysis_dependency as Message["analysisDependency"] : undefined,
+        statisticalResults: Array.isArray(item.payload.statistical_results)
+          ? item.payload.statistical_results.filter((value): value is NonNullable<Message["statisticalResults"]>[number] => Boolean(value && typeof value === "object" && "result_id" in value && "run_id" in value))
+          : undefined,
       };
       const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
       const workspaceCitations = item.payload.workspace_citations as Array<{ path: string; locator: string }> | undefined;
@@ -173,10 +199,148 @@ function HistoricalPlan({ item }: { item: Message }) {
   </details>;
 }
 
-function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onOpenPlan }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onOpenPlan: () => void }) {
+export function AnalysisProposalActions({ proposal, conversation, isCurrent, onTaskChange, onRunChange }: { proposal: NonNullable<Message["statisticalProposal"]>; conversation: Conversation; isCurrent: boolean; onTaskChange: () => Promise<void>; onRunChange: (run: Run) => void }) {
+  const [atlasChoices, setAtlasChoices] = useState<Array<{ atlas_id: "aal" | "aal3" | "brodmann"; name: string }>>([]);
+  const [atlasId, setAtlasId] = useState<"aal" | "aal3" | "brodmann" | "">("");
+  const [atlasLoading, setAtlasLoading] = useState(true);
+  const [atlasError, setAtlasError] = useState("");
+  const [design, setDesign] = useState<StatisticalDesign | null>(null);
+  const [statisticsRun, setStatisticsRun] = useState<Run | null>(null);
+  const [recovering, setRecovering] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const task = conversation.work_tasks?.find((item) => item.agent_role === "analysis" && item.proposal_hash === proposal.proposal_hash);
+  const planId = task?.plan_revision_id;
+  const runId = task?.run_id;
+
+  useEffect(() => {
+    if (!isCurrent || planId) return;
+    const controller = new AbortController();
+    void api.statisticalAtlases(controller.signal).then((items) => {
+      if (controller.signal.aborted) return;
+      const available = items.filter((item) => item.available && ["aal", "aal3", "brodmann"].includes(item.atlas_id)) as Array<{ atlas_id: "aal" | "aal3" | "brodmann"; name: string }>;
+      setAtlasChoices(available);
+      if (available.some((item) => item.atlas_id === "aal")) setAtlasId("aal");
+    }).catch((caught) => {
+      if (!controller.signal.aborted) setAtlasError(`图谱列表暂不可用，可先完成统计分析：${describeError(caught)}`);
+    }).finally(() => { if (!controller.signal.aborted) setAtlasLoading(false); });
+    return () => controller.abort();
+  }, [isCurrent, planId]);
+
+  useEffect(() => {
+    if (!isCurrent || !planId) { setRecovering(false); return; }
+    let current = true;
+    setRecovering(true);
+    void Promise.all([api.statisticalDesign(planId), runId ? api.run(runId) : Promise.resolve(null)])
+      .then(([value, run]) => {
+        if (!current) return;
+        setDesign(value);
+        setStatisticsRun(run?.plan_revision_id === planId ? run : null);
+      })
+      .catch((caught) => { if (current) setError(describeError(caught)); })
+      .finally(() => { if (current) setRecovering(false); });
+    return () => { current = false; };
+  }, [isCurrent, planId, runId]);
+
+  async function createDesign(): Promise<void> {
+    if (!proposal.project_id || !proposal.project_version || !proposal.input_manifest_hash) {
+      setError("统计预览缺少项目版本或输入清单哈希，无法创建正式设计。");
+      return;
+    }
+    setBusy(true); setError("");
+    try {
+      const body = {
+        project_id: proposal.project_id,
+        expected_project_version: proposal.project_version,
+        input_manifest_hash: proposal.input_manifest_hash,
+        design: proposal.design,
+        correction: proposal.correction ?? null,
+        atlas_id: atlasId || null,
+        work_context: { conversation_id: conversation.conversation_id, proposal_hash: proposal.proposal_hash },
+      } as StatisticalDesignCreateBody;
+      const created = await api.createStatisticalDesign(body);
+      setDesign(created);
+      await onTaskChange();
+      const validated = await api.validateStatisticalDesign(created.plan_revision.plan_revision_id, { expected_version: created.plan_revision.version });
+      setDesign(validated);
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  async function validateDesign(): Promise<void> {
+    if (!design) return;
+    setBusy(true); setError("");
+    try { setDesign(await api.validateStatisticalDesign(design.plan_revision.plan_revision_id, { expected_version: design.plan_revision.version })); }
+    catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  async function approveDesign(): Promise<void> {
+    if (!design) return;
+    setBusy(true); setError("");
+    try {
+      await api.approvePlan(design.plan_revision.plan_revision_id, {
+        expected_version: design.plan_revision.version,
+        plan_hash: design.plan_revision.plan_hash,
+        actor: "Work 用户",
+        decision: "approved",
+        reason: "用户在 Work 界面审阅并批准统计设计",
+      });
+      setDesign(await api.statisticalDesign(design.plan_revision.plan_revision_id));
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  async function startRun(executionBackend: "mock" | "matlab"): Promise<void> {
+    if (!design || !proposal.project_id) return;
+    setBusy(true); setError("");
+    try {
+      const run = await api.createStatisticsRun({
+        project_id: proposal.project_id,
+        statistical_design_revision_id: design.plan_revision.plan_revision_id,
+        expected_plan_hash: design.plan_revision.plan_hash,
+        execution_backend: executionBackend,
+        max_attempts: 1,
+        real_execution_confirmed: executionBackend === "matlab",
+      });
+      setStatisticsRun(run);
+      onRunChange(run);
+      await onTaskChange();
+    } catch (caught) { setError(describeError(caught)); }
+    finally { setBusy(false); }
+  }
+
+  const state = design?.plan_revision.state;
+  if (!isCurrent) return <p>历史统计预览或其他 Agent 的方案，仅供查看。请在当前数据分析方案中确认。</p>;
+  return <div className="analysis-proposal-actions">
+    {!design && !recovering && <>
+      <label>结果定位图谱 <select disabled={busy || atlasLoading} value={atlasId} onChange={(event) => setAtlasId(event.target.value as typeof atlasId)}>
+        <option value="">暂不选择图谱</option>
+        {atlasChoices.map((atlas) => <option key={atlas.atlas_id} value={atlas.atlas_id}>{atlas.name}{atlas.atlas_id === "aal" ? "（建议）" : ""}</option>)}
+      </select></label>
+      <p>所选图谱及其版本将写入正式方案；定位仍需影像与图谱空间一致。</p>
+      {atlasError && <p>{atlasError}</p>}
+    </>}
+    {!design && <button className="button button-secondary" type="button" disabled={busy || recovering || atlasLoading} onClick={() => void createDesign()}>{busy ? "正在建立并校验…" : recovering ? "正在恢复已建统计设计…" : "建立并校验正式统计设计"}</button>}
+    {design && <>
+      <p>正式设计：<code>{design.plan_revision.plan_revision_id}</code> · 状态：{state}</p>
+      <p>方案图谱：{design.localization_plan ? `${design.localization_plan.atlas_name} · ${design.localization_plan.coordinate_space} · 版本 ${design.localization_plan.atlas_content_hash.slice(0, 12)}` : "未指定；历史结果可另行选择图谱查看"}</p>
+      {state === "draft" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void validateDesign()}>校验统计设计</button>}
+      {state === "awaiting_approval" && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void approveDesign()}>{busy ? "正在审批…" : "批准统计设计"}</button>}
+      {state === "approved" && !statisticsRun && <div className="analysis-run-actions">
+        <button className="button button-secondary" type="button" disabled={busy || recovering} onClick={() => void startRun("mock")}>启动模拟统计</button>
+        <button className="button button-primary" type="button" disabled={busy || recovering} onClick={() => void startRun("matlab")}>启动真实 MATLAB 统计</button>
+      </div>}
+      {statisticsRun && <p>统计运行已创建：<code>{statisticsRun.run_id}</code> · {statisticsRun.state}</p>}
+    </>}
+    {error && <p className="analysis-action-error" role="alert">{error}</p>}
+  </div>;
+}
+
+function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onOpenPlan, onStatisticsRun, conversation, agentRole, onTaskChange }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onOpenPlan: () => void; onStatisticsRun: (run: Run) => void; conversation?: Conversation; agentRole: "preprocessing" | "analysis"; onTaskChange: () => Promise<void> }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
-      <span>{item.role === "assistant" ? "Agent" : "你"}</span>
+      <span>{item.role === "assistant" ? (item.agentRole === "analysis" ? "数据分析 Agent" : "预处理 Agent") : "你"}</span>
       {item.steps && item.steps.length > 0 && <details className="chat-technical"><summary>查看工具检查详情（{item.steps.length} 项）</summary><ol className="chat-tool-steps" aria-label="Agent 工具步骤">
         {item.steps.map((step) => <li key={step.key} data-tier={step.tier ?? "unknown"} data-status={step.status}>
           <code>{step.name}</code>
@@ -186,6 +350,33 @@ function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, o
         </li>)}
       </ol></details>}
       <ConversationText text={item.text} />
+      {item.analysisDraft && <details className="chat-technical" open>
+        <summary>统计分析草稿{item.analysisDraft.version ? ` · 第 ${item.analysisDraft.version} 版` : ""}</summary>
+        {item.analysisDraft.review && <pre>{item.analysisDraft.review}</pre>}
+        {item.analysisDraft.issues?.length ? <ul>{item.analysisDraft.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul> : <p>草稿结构已校验，仍需绑定服务端数据并建立正式统计设计。</p>}
+      </details>}
+      {item.statisticalProposal && <details className="chat-technical" open>
+        <summary>服务端统计设计预览 · {item.statisticalProposal.design.test as string}</summary>
+        <p>{item.statisticalProposal.design.external_import_id ? `外部纳入记录：${String(item.statisticalProposal.design.external_import_id)}` : `来源运行：${item.statisticalProposal.source_run_id}`} · 受试者：{item.statisticalProposal.frozen_subject_order?.length ?? 0}</p>
+        {item.statisticalProposal.demographics_revision_id && <p>人口学版本：{item.statisticalProposal.demographics_revision_id}</p>}
+        {item.statisticalProposal.review && <pre>{item.statisticalProposal.review}</pre>}
+        <small>该预览已绑定登记产物、QC 决定、受试者顺序和来源哈希。正式设计创建、审批和运行分别由下方操作启动。</small>
+        {conversation && <AnalysisProposalActions key={item.statisticalProposal.proposal_hash ?? item.id} proposal={item.statisticalProposal} conversation={conversation} isCurrent={!busy && agentRole === "analysis" && conversation.foreground_agent_role === "analysis" && conversation.work_tasks?.some((task) => task.agent_role === "analysis" && task.proposal_message_id === item.id && task.proposal_hash === item.statisticalProposal?.proposal_hash) === true} onTaskChange={onTaskChange} onRunChange={onStatisticsRun} />}
+      </details>}
+      {item.statisticalDesignIssues?.length ? <details className="chat-technical" open>
+        <summary>统计设计阻断项</summary><ul>{item.statisticalDesignIssues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
+      </details> : null}
+      {item.agentHandoff && <AgentHandoffPanel handoff={item.agentHandoff} />}
+      {item.analysisDependency && <details className="chat-technical" open>
+        <summary>两阶段任务 · {item.analysisDependency.status === "analysis_ready" ? "预处理与 QC 已满足，可进入统计分析" : item.analysisDependency.status === "analysis_started" ? "已交给数据分析 Agent" : item.analysisDependency.status === "blocked" ? "交接受阻，需更新来源证据" : "等待预处理与 QC"}</summary>
+        {item.analysisDependency.analysis_request && <p>{item.analysisDependency.analysis_request}</p>}
+      </details>}
+      {item.statisticalResults?.length ? <details className="chat-technical" open>
+        <summary>已登记统计结果（{item.statisticalResults.length}）</summary>
+        <ul>{item.statisticalResults.map((result) => <li key={result.result_id}>
+          {result.result_id} · {result.mode === "synthetic_non_scientific" || result.non_scientific ? "合成演示结果" : "真实统计结果"} · {result.artifact_count} 项产物 · {result.cluster_count} 个簇
+        </li>)}</ul>
+      </details> : null}
       <WorkTimingDetails value={item.workTimings} />
       {item.streamingStatus && <small role="status">{item.streamingStatus}</small>}
       {item.workDraft && (item.id === latestDraftId
@@ -223,6 +414,8 @@ export function AgentPage() {
   const workspace = useWorkspace();
   const initialWorkspace = useRef(workspace.workspacePath ?? "").current;
   const [mode, setMode] = useState<ConversationMode>("work");
+  const [agentRole, setAgentRole] = useState<WorkAgentRole>("auto");
+  const [externalSource, setExternalSource] = useState<{ projectId: string; conversationId: string | null; importId: string | null } | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeIds, setActiveIds] = useState<Partial<Record<ConversationMode, string>>>({});
   const [workspacePath, setWorkspacePath] = useState(initialWorkspace);
@@ -253,20 +446,44 @@ export function AgentPage() {
 
   const modeConversations = useMemo(() => conversations.filter((item) => item.mode === mode), [conversations, mode]);
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
+  const currentConversationId = useRef(activeConversation?.conversation_id);
+  currentConversationId.current = activeConversation?.conversation_id;
   const boundToSelectedWorkspace = activeConversation?.workspace_path === workspacePath;
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
-  const offeredConfirmation = mode === "work" && boundToSelectedWorkspace
+  const latestAnalysisPayload = [...(activeConversation?.messages ?? [])].reverse()
+    .find((message) => message.role === "assistant" && message.payload.agent_role === "analysis" && message.payload.analysis_draft)?.payload.analysis_draft;
+  const savedAnalysisDraft = latestAnalysisPayload && typeof latestAnalysisPayload === "object" && "draft" in latestAnalysisPayload ? latestAnalysisPayload.draft : null;
+  const savedExternalImportId = savedAnalysisDraft && typeof savedAnalysisDraft === "object" && "external_import_id" in savedAnalysisDraft && typeof savedAnalysisDraft.external_import_id === "string" ? savedAnalysisDraft.external_import_id : null;
+  const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId ? null
+    : externalSource?.projectId === boundProjectId && externalSource?.conversationId === (activeConversation?.conversation_id ?? null) ? externalSource.importId : savedExternalImportId;
+  const routedRole = [...(activeConversation?.messages ?? [])].reverse()
+    .find((message) => message.role === "assistant" && (message.payload.agent_role === "analysis" || message.payload.agent_role === "preprocessing"))
+    ?.payload.agent_role;
+  const effectiveAgentRole = agentRole === "auto" ? (activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
+  const offeredConfirmation = mode === "work" && effectiveAgentRole === "preprocessing" && boundToSelectedWorkspace
     ? currentConfirmation(activeConversation?.messages ?? [], workspacePath) : null;
   const confirmation = offeredConfirmation?.request ?? null;
   const confirmationKey = offeredConfirmation ? `${activeConversation?.conversation_id}:${offeredConfirmation.messageId}` : null;
   const visibleMessages = messagesFrom(activeConversation);
-  const latestDraftId = mode === "work" && boundToSelectedWorkspace ? [...visibleMessages].reverse().find((item) => item.workDraft)?.id : undefined;
+  const latestDraftId = mode === "work" && effectiveAgentRole === "preprocessing" && boundToSelectedWorkspace ? [...visibleMessages].reverse().find((item) => item.workDraft)?.id : undefined;
   const currentDraftMessage = visibleMessages.find((item) => item.id === latestDraftId);
   if (pendingTurn?.mode === mode) visibleMessages.push(
     { id: "pending-user", role: "user", text: pendingTurn.user },
     { id: "pending-assistant", role: "assistant", text: pendingTurn.text, streamingStatus: pendingTurn.status },
   );
   const selectedModel = choices.find((item) => item.key === selectedModelKey);
+  const receiveStatisticsRun = useCallback((run: Run) => {
+    const conversationId = activeConversation?.conversation_id;
+    if (!conversationId || currentConversationId.current !== conversationId) return;
+    setAgentRole("analysis");
+    setActiveRun(run);
+    updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
+  }, [activeConversation?.conversation_id]);
+  const refreshWorkTask = useCallback(async () => {
+    if (!activeConversation?.conversation_id) return;
+    const latest = await api.conversation(activeConversation.conversation_id);
+    setConversations((items) => items.map((item) => item.conversation_id === latest.conversation_id ? latest : item));
+  }, [activeConversation?.conversation_id]);
   const confirmedWorkspaceStage = confirmedInputStage(activeConversation, workspacePath);
   const canAuthorizeWorkspaceFiles = Boolean(selectedModel?.capabilities.includes("tool_use"));
   const authorizationUnavailableReason = !selectedModel
@@ -303,7 +520,8 @@ export function AgentPage() {
   }, [initialWorkspace]);
 
   useEffect(() => {
-    const runId = mode === "work" && boundToSelectedWorkspace ? activeConversation?.active_run_id : null;
+    const taskRunId = activeConversation?.work_tasks?.find((item) => item.agent_role === effectiveAgentRole)?.run_id;
+    const runId = mode === "work" && boundToSelectedWorkspace ? taskRunId ?? activeConversation?.active_run_id : null;
     setActiveRun(null);
     if (!runId) { setActiveRun(null); return; }
     const controller = new AbortController();
@@ -328,7 +546,7 @@ export function AgentPage() {
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, boundToSelectedWorkspace, mode, pollNonce]);
+  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, activeConversation?.work_tasks, boundToSelectedWorkspace, effectiveAgentRole, mode, pollNonce]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -379,6 +597,16 @@ export function AgentPage() {
     }
   }
 
+  async function selectAgent(role: WorkAgentRole): Promise<void> {
+    if (role === "auto" || !activeConversation) { setAgentRole(role); return; }
+    setBusy(true); setError("");
+    try {
+      cache(await api.selectWorkAgent(activeConversation.conversation_id, { agent_role: role, expected_version: activeConversation.version }));
+      setAgentRole(role);
+    } catch (caught) { setError(describeError(caught)); await refreshWorkTask().catch(() => {}); }
+    finally { setBusy(false); }
+  }
+
   async function ensureConversation(target: ConversationMode): Promise<string> {
     const existing = activeIds[target];
     if (existing) return existing;
@@ -401,7 +629,7 @@ export function AgentPage() {
         workspace_path: mode === "work" ? workspacePath.trim() || null : null,
         preferred_profile_id: selectedModel?.profileId ?? null,
       });
-      cache(created); setPendingTurn(null);
+      cache(created); setPendingTurn(null); setAgentRole("auto");
     } catch (caught) { setError(describeError(caught)); } finally { setBusy(false); }
   }
 
@@ -512,7 +740,9 @@ export function AgentPage() {
         model: selectedModel?.model ?? null,
         allow_remote_search: mode === "chat" && allowRemoteSearch,
         project_id: mode === "work" ? boundProjectId : null,
-        target_run_id: mode === "work" && boundToSelectedWorkspace ? workspace.runId ?? null : null,
+        agent_role: mode === "work" && agentRole !== "auto" ? agentRole : null,
+        external_analysis_import_id: mode === "work" ? selectedExternalImportId : null,
+        target_run_id: mode === "work" && boundToSelectedWorkspace && !selectedExternalImportId ? workspace.runId ?? null : null,
         plan_revision_id: mode === "work" && boundToSelectedWorkspace ? workspace.planRevisionId ?? null : null,
         expected_plan_hash: mode === "work" && boundToSelectedWorkspace ? workspace.planHash ?? null : null,
         workspace_file_scope: mode === "work" && selectedScope.length ? { paths: selectedScope } : null,
@@ -629,8 +859,12 @@ export function AgentPage() {
       <div className="conversation-toolbar">
         <select disabled={busy || draftDirty} aria-label="当前会话" value={activeIds[mode] ?? ""} onChange={(event) => {
           const selected = conversations.find((item) => item.conversation_id === event.target.value);
-          if (selected) { cache(selected); setPendingTurn(null); }
+          if (selected) { cache(selected); setPendingTurn(null); setAgentRole("auto"); }
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
+        {mode === "work" && <select aria-label="Work 负责 Agent" value={agentRole} disabled={busy || draftDirty} onChange={(event) => void selectAgent(event.target.value as WorkAgentRole)}>
+          <option value="auto">自动分派</option><option value="preprocessing">预处理 Agent</option><option value="analysis">数据分析 Agent</option>
+        </select>}
+        {mode === "work" && <span className="work-agent-status" aria-live="polite">当前负责：{effectiveAgentRole === "analysis" ? "数据分析 Agent" : "预处理 Agent"}</span>}
         <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => void newConversation()}>新会话</button>
         {activeConversation && <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => {
           setError(""); void api.conversation(activeConversation.conversation_id).then(cache).catch((caught) => setError(describeError(caught)));
@@ -657,7 +891,9 @@ export function AgentPage() {
         {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
       </WorkspacePanel>}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
-      <div className="work-dialogue-region"><ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} />
+      <div className="work-dialogue-region">
+      {mode === "work" && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
+      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       <div className="chat-composer">

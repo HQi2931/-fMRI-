@@ -67,7 +67,33 @@ def _png_chunk(kind: bytes, payload: bytes) -> bytes:
     )
 
 
-def nifti_preview_png(path: Path) -> bytes:
+def nifti_preview_slice_count(path: Path) -> int:
+    """Read a bounded NIfTI-1 preview's axial slice count from its header."""
+    if not path.name.lower().endswith((".nii", ".nii.gz")):
+        raise InputValidationError("artifact_preview_unsupported", "此产物不支持 NIfTI 切片预览。")
+    opener = gzip.open if path.name.lower().endswith(".gz") else Path.open
+    try:
+        with opener(path, "rb") as stream:
+            header = stream.read(352)
+        if len(header) != 352:
+            raise ValueError("short header")
+        endian = "<" if struct.unpack("<i", header[:4])[0] == 348 else ">"
+        if struct.unpack(endian + "i", header[:4])[0] != 348 or header[344:348] != b"n+1\0":
+            raise ValueError("not single-file NIfTI-1")
+        dimensions = struct.unpack_from(endian + "8h", header, 40)
+        width, height, depth = dimensions[1:4]
+        if dimensions[0] not in {3, 4} or not all(
+            0 < size <= 512 for size in (width, height, depth)
+        ):
+            raise ValueError("unsupported dimensions")
+        return int(depth)
+    except (OSError, EOFError, ValueError, struct.error, OverflowError) as exc:
+        raise InputValidationError(
+            "artifact_preview_invalid", "无法读取受限 NIfTI 预览信息。"
+        ) from exc
+
+
+def nifti_preview_png(path: Path, *, slice_index: int | None = None) -> bytes:
     """Render the central voxel-z slice of the first volume, without resampling.
 
     This inspection image is deliberately not labelled radiological/MNI.  The
@@ -90,6 +116,15 @@ def nifti_preview_png(path: Path) -> bytes:
                 0 < size <= 512 for size in (width, height, depth)
             ):
                 raise ValueError("unsupported dimensions")
+            z_index = depth // 2 if slice_index is None else slice_index
+            if (
+                isinstance(z_index, bool)
+                or not isinstance(z_index, int)
+                or not 0 <= z_index < depth
+            ):
+                raise InputValidationError(
+                    "artifact_preview_slice_invalid", "切片序号超出 NIfTI 图像范围。"
+                )
             formats = {2: "B", 4: "h", 8: "i", 16: "f", 64: "d", 256: "b", 512: "H", 768: "I"}
             datatype, bitpix = struct.unpack_from(endian + "2h", header, 70)
             code = formats.get(datatype)
@@ -99,7 +134,7 @@ def nifti_preview_png(path: Path) -> bytes:
             if not math.isfinite(offset) or offset < 352 or offset > 1024 * 1024:
                 raise ValueError("unsupported data offset")
             count = width * height
-            slice_offset = int(offset) + (depth // 2) * count * (bitpix // 8)
+            slice_offset = int(offset) + z_index * count * (bitpix // 8)
             if slice_offset > 64 * 1024 * 1024:
                 raise ValueError("preview read budget exceeded")
             stream.seek(slice_offset)

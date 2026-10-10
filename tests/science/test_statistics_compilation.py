@@ -232,23 +232,23 @@ def test_uncorrected_design_does_not_require_a_corrected_map() -> None:
     }
 
 
-def test_rejects_design_the_v0_1_matlab_path_cannot_run() -> None:
-    # The domain and the adapter model correlation/regression, but v0.1 ships only
-    # the three t-test designs, so the compiler must refuse before compiling.
+def test_compiles_regression_design_to_the_dpabi_group_analysis_entry() -> None:
+    # Regression is part of the real MATLAB-backed DPABI capability set.
     unsupported = design().model_copy(update={"test": StatisticalTest.REGRESSION})
 
-    with pytest.raises(ValueError, match="only the three t-test designs"):
-        compiler(
-            images={f"image-{subject}": image_lineage(subject) for subject in SUBJECTS}
-        ).compile_statistics(
-            job_id="job-1",
-            run_id="run-1",
-            plan_hash="p" * 64,
-            approval_record_id="approval-1",
-            input_manifest_hash=MANIFEST_HASH,
-            design=unsupported,
-            correction=None,
-        )
+    job = compiler(
+        images={f"image-{subject}": image_lineage(subject) for subject in SUBJECTS}
+    ).compile_statistics(
+        job_id="job-1",
+        run_id="run-1",
+        plan_hash="p" * 64,
+        approval_record_id="approval-1",
+        input_manifest_hash=MANIFEST_HASH,
+        design=unsupported,
+        correction=None,
+    )
+
+    assert job.payload.statistics.function.value == "y_GroupAnalysis_Image"
 
 
 def test_rejects_mask_that_does_not_carry_brain_mask_lineage() -> None:

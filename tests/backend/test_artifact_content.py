@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.artifact_content import nifti_preview_png
+from neuroagent.application.artifact_content import nifti_preview_png, nifti_preview_slice_count
 from neuroagent.application.contracts import RunCreate
 from neuroagent.application.errors import InputValidationError
 from neuroagent.application.services import NeuroAgentService
@@ -85,9 +85,14 @@ def test_registered_download_and_png_preview_enforce_integrity(
 def test_preview_compressed_and_invalid_data_are_bounded(tmp_path: Path) -> None:
     plain = tmp_path / "result.nii"
     compressed = tmp_path / "result.nii.gz"
-    plain.write_bytes(_nifti())
-    compressed.write_bytes(gzip.compress(_nifti()))
+    distinct_slices = _nifti()[:352] + struct.pack("<12f", 0, 1, 2, 3, 4, 5, 7, 7, 7, 7, 7, 7)
+    plain.write_bytes(distinct_slices)
+    compressed.write_bytes(gzip.compress(distinct_slices))
     assert nifti_preview_png(plain) == nifti_preview_png(compressed)
+    assert nifti_preview_slice_count(plain) == 2
+    assert nifti_preview_png(plain, slice_index=0) != nifti_preview_png(plain, slice_index=1)
+    with pytest.raises(InputValidationError, match="切片序号超出"):
+        nifti_preview_png(plain, slice_index=2)
     header = bytearray(_nifti())
     struct.pack_into("<h", header, 42, 32767)
     plain.write_bytes(header)

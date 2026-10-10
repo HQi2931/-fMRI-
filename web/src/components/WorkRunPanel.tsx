@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
-import { api, describeError, type Artifact, type PlanRevision, type QcReview, type Run, type RunDiagnosis, type RuntimeEvent } from "../api/client";
+import { useEffect, useMemo, useState } from "react";
+import { api, describeError, type Artifact, type PlanRevision, type QcReview, type Run, type RunDiagnosis, type RuntimeEvent, type StatisticalAtlas, type StatisticalAtlasSelection, type StatisticalResultDetail, type StatisticalResultLocalization, type StatisticalResultSliceInfo } from "../api/client";
 import "./WorkRunPanel.css";
+import { StatisticalClusterRoiPanel } from "./StatisticalClusterRoiPanel";
+import { StatisticalMethodPanel } from "./StatisticalMethodPanel";
 
 const RUN_LABELS: Record<string, string> = {
   queued: "等待计算", running: "计算中", cancelling: "正在取消计算", cancelled: "计算已取消",
@@ -18,6 +20,8 @@ const ARTIFACT_LABELS: Record<string, string> = {
   "preprocessing.t1_prepared": "已准备的 T1", "preprocessing.t1_inspection_image": "T1 检查图", "preprocessing.t1_preparation_evidence": "T1 处理记录",
   "preprocessing.metadata_evidence": "处理谱系记录", "preprocessing.execution_log": "计算记录", "execution.matlab_log": "MATLAB 日志",
   "qc.head_motion_report": "头动 QC 报告", "qc.head_motion_failure": "头动 QC 诊断",
+  "statistics.execution_script": "统计运行脚本", "statistics.execution_bootstrap": "统计环境脚本",
+  "statistics.job_configuration": "统计运行配置", "statistics.input_manifest": "统计输入清单",
 };
 const artifactLabel = (artifact: Artifact) => ARTIFACT_LABELS[artifact.artifact_type] ?? "计算产物";
 const QC_CHECK_LABELS: Record<string, [string, string]> = {
@@ -36,6 +40,147 @@ function ImagePreview({ artifact }: { artifact: Artifact }) {
     <figcaption>{nifti ? "首个体积的中间轴向切片 · 原始体素坐标 · 自动灰度显示，仅供检查" : "注册图像预览"}</figcaption></figure>;
 }
 
+function delimitedTable(rows: unknown[][], separator: "," | "\t") {
+  return rows.map((row) => row.map((value) => {
+    const text = value == null ? "" : String(value);
+    return separator === "," ? `"${text.replace(/"/g, '""')}"` : text.replace(/[\t\r\n]/g, " ");
+  }).join(separator)).join("\n");
+}
+
+function ResultAtlasLocalization({ result }: { result: StatisticalResultDetail }) {
+  const frozenAtlas = useMemo(() => {
+    try {
+      const value = JSON.parse(result.report_json).localization_plan as StatisticalAtlasSelection | undefined;
+      return value && ["aal", "aal3", "brodmann"].includes(value.atlas_id) ? value : null;
+    } catch { return null; }
+  }, [result.report_json]);
+  const [atlases, setAtlases] = useState<StatisticalAtlas[]>([]);
+  const [atlasId, setAtlasId] = useState<string>(frozenAtlas?.atlas_id ?? "aal");
+  const [localization, setLocalization] = useState<StatisticalResultLocalization | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    void api.statisticalAtlases(controller.signal).then((items) => {
+      setAtlases(items);
+      if (!frozenAtlas && !items.some((item) => item.atlas_id === "aal" && item.available)) {
+        const first = items.find((item) => item.available);
+        if (first) setAtlasId(first.atlas_id);
+      }
+    }).catch((caught) => {
+      if (!controller.signal.aborted) setError(`DPABI 图谱列表暂时不可用：${describeError(caught)}`);
+    });
+    return () => controller.abort();
+  }, [frozenAtlas]);
+  const usableAtlases = atlases.filter((item) => item.available);
+  const correction = result.manifest.correction;
+  const fdrSummary = Boolean(correction && typeof correction === "object" && "method" in correction && correction.method === "fdr");
+  const coverageTable = localization ? delimitedTable([
+    ["cluster_id", "atlas_id", "label_value", "label", "voxel_count", "proportion"],
+    ...localization.clusters.flatMap((cluster) => cluster.coverage.map((region) =>
+      [cluster.cluster_id, localization.atlas_id, region.label_value, region.label, region.voxel_count, region.proportion])),
+  ], "\t") : "";
+  async function localize() {
+    if (busy || !atlasId) return;
+    setBusy(true); setError("");
+    try {
+      const value = await api.localizeStatisticalResult(result.result_id, atlasId);
+      setLocalization(value);
+    } catch (caught) { setError(`脑区定位未完成：${describeError(caught)}`); }
+    finally { setBusy(false); }
+  }
+  return <details className="result-atlas-localization"><summary>DPABI 图谱峰值定位</summary>
+    <p>按统计图和图谱的仿射定位峰值，并计算整个簇在各脑区标签中的体素覆盖比例。</p>
+    {usableAtlases.length > 0 ? <div className="work-run-actions">
+      <label>图谱 <select disabled={Boolean(frozenAtlas)} value={atlasId} onChange={(event) => { setAtlasId(event.target.value); setLocalization(null); }}>
+        {frozenAtlas ? <option value={frozenAtlas.atlas_id}>{frozenAtlas.atlas_name}（方案图谱）</option> : usableAtlases.map((atlas) => <option key={atlas.atlas_id} value={atlas.atlas_id}>{atlas.name}</option>)}
+      </select></label>
+      {frozenAtlas && <p>图谱已写入正式方案，按该图谱版本定位；变更图谱需另建方案。</p>}
+      <button type="button" disabled={busy || result.non_scientific} onClick={() => void localize()}>{busy ? "定位中…" : "定位峰值"}</button>
+    </div> : <p>当前 DPABI 配置下没有可用的 AAL、AAL3 或 Brodmann 图谱。</p>}
+    {error && <p role="alert">{error}</p>}
+    {fdrSummary && <p>FDR 簇按空间汇总展示；簇定位不构成独立的二次显著性检验。</p>}
+    {localization && localization.result_bundle_hash === result.bundle_hash && <>
+      <p>{localization.atlas_name ?? ""} · {localization.coordinate_space ?? ""} · 图谱指纹 {localization.atlas_content_hash?.slice(0, 12) ?? "—"}</p>
+      <a download={`localization-${result.result_id}-${atlasId}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(localization, null, 2))}`}>下载定位及图谱来源记录</a>
+      <a download={`coverage-${result.result_id}-${atlasId}.tsv`} href={`data:text/tab-separated-values;charset=utf-8,${encodeURIComponent(coverageTable)}`}>下载脑区覆盖表</a>
+      {localization.clusters.length > 0 ? <div className="table-scroll"><table><thead><tr><th>簇</th><th>峰值坐标（mm）</th><th>脑区</th><th>标签值</th><th>图谱体素中心距离（mm）</th><th>整簇脑区覆盖</th></tr></thead><tbody>
+        {localization.clusters.map((cluster) => <tr key={cluster.cluster_id}><td>{cluster.cluster_id}</td><td>{cluster.peak_coordinate_mm.map((value) => value.toFixed(1)).join(", ")}</td><td>{cluster.label ?? "图谱范围外或背景区"}</td><td>{cluster.label_value ?? "—"}</td><td>{cluster.distance_to_voxel_center_mm?.toFixed(2) ?? "—"}</td><td><details><summary>{cluster.coverage.length} 个标签</summary><table><thead><tr><th>脑区标签</th><th>体素</th><th>比例</th></tr></thead><tbody>{cluster.coverage.map((region) => <tr key={region.label_value}><td>{region.label}</td><td>{region.voxel_count.toLocaleString()}</td><td>{(region.proportion * 100).toFixed(1)}%</td></tr>)}</tbody></table></details></td></tr>)}
+      </tbody></table></div> : <p>本次结果没有可定位的簇。</p>}
+    </>}
+  </details>;
+}
+
+function StatisticalResultClusters({ result, clusters }: { result: StatisticalResultDetail; clusters: Record<string, unknown>[] }) {
+  const [sliceInfo, setSliceInfo] = useState<StatisticalResultSliceInfo | null>(null);
+  const [sliceIndex, setSliceIndex] = useState(0);
+  const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
+  const [sliceError, setSliceError] = useState("");
+  const [imageFailed, setImageFailed] = useState(false);
+  const clusterTable = [
+    ["cluster_id", "extent_voxels", "peak_statistic", "x_mm", "y_mm", "z_mm", "coordinate_space", "inference", "direction", "source_map_artifact_id"],
+    ...clusters.map((cluster) => [cluster.cluster_id, cluster.extent_voxels, cluster.peak_statistic,
+      ...(Array.isArray(cluster.peak_coordinate_mm) ? cluster.peak_coordinate_mm : [null, null, null]),
+      cluster.coordinate_space, cluster.inference, cluster.direction, cluster.source_map_artifact_id]),
+  ];
+  useEffect(() => {
+    const controller = new AbortController();
+    setSliceInfo(null); setSliceError(""); setImageFailed(false); setSelectedCluster(null);
+    void api.statisticalResultSliceInfo(result.result_id, controller.signal).then((info) => {
+      setSliceInfo(info); setSliceIndex(info.initial_slice_index);
+    }).catch((caught) => {
+      if (!controller.signal.aborted) setSliceError(`统计图切片信息不可用：${describeError(caught)}`);
+    });
+    return () => controller.abort();
+  }, [result.result_id]);
+  function selectCluster(clusterId: string) {
+    setSelectedCluster(clusterId);
+    const linkedSlice = sliceInfo?.cluster_slices.find((item) => item.cluster_id === clusterId);
+    if (linkedSlice) { setSliceIndex(linkedSlice.slice_index); setImageFailed(false); }
+  }
+  return <>
+    <h5>统计簇表</h5>
+    <div className="work-run-actions">
+      <a download={`clusters-${result.result_id}.csv`} href={`data:text/csv;charset=utf-8,${encodeURIComponent(delimitedTable(clusterTable, ","))}`}>下载簇表 CSV</a>
+      <a download={`clusters-${result.result_id}.tsv`} href={`data:text/tab-separated-values;charset=utf-8,${encodeURIComponent(delimitedTable(clusterTable, "\t"))}`}>下载簇表 TSV</a>
+    </div>
+    {clusters.length > 0 ? <div className="table-scroll"><table><thead><tr><th>簇</th><th>体素数</th><th>峰值统计量</th><th>峰值坐标（mm）</th><th>空间</th><th>推断来源</th><th>方向</th></tr></thead><tbody>
+      {clusters.map((cluster, index) => {
+        const clusterId = String(cluster.cluster_id ?? `cluster-${index + 1}`);
+        const coordinate = Array.isArray(cluster.peak_coordinate_mm)
+          ? cluster.peak_coordinate_mm.map((value) => typeof value === "number" ? value.toFixed(1) : "?").join(", ")
+          : "—";
+        return <tr key={clusterId} className={selectedCluster === clusterId ? "selected-result-cluster" : undefined}>
+          <td><button type="button" className="link-button" onClick={() => selectCluster(clusterId)}>簇 {clusterId}</button></td>
+          <td>{String(cluster.extent_voxels ?? "—")}</td>
+          <td>{typeof cluster.peak_statistic === "number" ? cluster.peak_statistic.toFixed(3) : "—"}</td>
+          <td>{coordinate}</td><td>{String(cluster.coordinate_space ?? "—")}</td>
+          <td>{String(cluster.inference ?? "—")}</td><td>{cluster.direction === 1 ? "正向" : cluster.direction === -1 ? "负向" : "—"}</td>
+        </tr>;
+      })}
+    </tbody></table></div> : <p>本次结果没有可定位的簇。</p>}
+    <div className="statistical-slice-viewer">
+      <h5>统计图轴向切片</h5>
+      {sliceError && <p role="alert">{sliceError}</p>}
+      {sliceInfo && <>
+        <label>切片 {sliceIndex + 1} / {sliceInfo.slice_count}
+          <input aria-label="统计图轴向切片" type="range" min={0} max={sliceInfo.slice_count - 1} value={sliceIndex}
+            onChange={(event) => { setSliceIndex(Number(event.target.value)); setImageFailed(false); }} />
+        </label>
+        {selectedCluster && <p>已联动到簇 {selectedCluster} 的峰值切片；拖动滑块可浏览相邻层。</p>}
+        {imageFailed ? <p>此统计图切片无法预览，请下载 NIfTI 文件检查。</p> : <figure>
+          <img loading="lazy" alt={`统计图第 ${sliceIndex + 1} 层轴向切片`}
+            src={api.statisticalResultSliceUrl(result.result_id, sliceIndex)}
+            onError={() => setImageFailed(true)} />
+          <figcaption>基于统计图原始网格显示，不做空间重采样或方向推断。</figcaption>
+        </figure>}
+        <a download={`statistics-${result.result_id}-slice-${sliceIndex + 1}.png`} href={api.statisticalResultSliceUrl(result.result_id, sliceIndex)}>下载当前切片 PNG</a>
+      </>}
+    </div>
+    {selectedCluster && <StatisticalClusterRoiPanel key={`${result.result_id}-${selectedCluster}`} resultId={result.result_id} bundleHash={result.bundle_hash} clusterId={selectedCluster} />}
+  </>;
+}
+
 function elapsedLabel(events: RuntimeEvent[], now: number) {
   const starts = events.filter((event) => event.event_type === "RunStageStarted" && event.payload.stage === "running");
   const started = starts.at(-1);
@@ -47,7 +192,7 @@ function elapsedLabel(events: RuntimeEvent[], now: number) {
 }
 
 export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (updated: Run) => void }) {
-  const [data, setData] = useState<{ runId: string; attempt: number; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; reviewLoaded: boolean; qcSubjects: Array<Record<string, unknown>> } | null>(null);
+  const [data, setData] = useState<{ runId: string; attempt: number; artifacts: Artifact[]; events: RuntimeEvent[]; plan: PlanRevision | null; review: QcReview | null; reviewLoaded: boolean; qcSubjects: Array<Record<string, unknown>>; statisticalResults: StatisticalResultDetail[] } | null>(null);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState<{ runId: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -72,11 +217,19 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function load() {
       try {
-        const [artifactResult, eventResult, planResult] = await Promise.allSettled([api.artifacts(run.run_id, controller.signal), api.runEvents(run.run_id, 0, controller.signal), api.plan(run.plan_revision_id, controller.signal)]);
+        const [artifactResult, eventResult, planResult, statisticsResult] = await Promise.allSettled([
+          api.artifacts(run.run_id, controller.signal),
+          api.runEvents(run.run_id, 0, controller.signal),
+          api.plan(run.plan_revision_id, controller.signal),
+          run.state === "succeeded" ? api.statisticalResults(run.project_id, controller.signal) : Promise.resolve([]),
+        ]);
         const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value : [];
         const events = eventResult.status === "fulfilled" ? eventResult.value : [];
         const plan = planResult.status === "fulfilled" ? planResult.value : null;
-        const detailErrors = [artifactResult.status === "rejected" ? "产物列表暂时不可用。" : "", eventResult.status === "rejected" ? "阶段记录暂时不可用。" : "", planResult.status === "rejected" ? "对应方案暂时不可用。" : ""];
+        const resultSummaries = statisticsResult.status === "fulfilled" ? statisticsResult.value.filter((item) => item.run_id === run.run_id) : [];
+        const statisticsDetailResponses = await Promise.allSettled(resultSummaries.map((item) => api.statisticalResult(item.result_id, controller.signal)));
+        const statisticalResults = statisticsDetailResponses.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+        const detailErrors = [artifactResult.status === "rejected" ? "产物列表暂时不可用。" : "", eventResult.status === "rejected" ? "阶段记录暂时不可用。" : "", planResult.status === "rejected" ? "对应方案暂时不可用。" : "", statisticsResult.status === "rejected" ? "统计结果登记表暂时不可用。" : ""];
         let review: QcReview | null = null;
         let reviewError = "";
         try { review = await api.runQcReview(run.run_id, controller.signal); }
@@ -99,7 +252,8 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
               artifacts: artifactResult.status === "fulfilled" ? artifacts : sameAttempt?.artifacts ?? [],
               events: eventResult.status === "fulfilled" ? events : sameAttempt?.events ?? [],
               plan: planResult.status === "fulfilled" ? plan : sameAttempt?.plan ?? null,
-              review, reviewLoaded: !reviewError, qcSubjects };
+              review, reviewLoaded: !reviewError, qcSubjects,
+              statisticalResults: statisticsResult.status === "fulfilled" ? statisticalResults : sameAttempt?.statisticalResults ?? [] };
           });
           setError([...detailErrors, reviewError, reportError].filter(Boolean).join(" "));
         }
@@ -110,7 +264,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     }
     void load();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [run.run_id, run.plan_revision_id, run.version, run.state, run.attempt, reload]);
+  }, [run.project_id, run.run_id, run.plan_revision_id, run.version, run.state, run.attempt, reload]);
   useEffect(() => {
     if (!activeStates.has(run.state)) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -121,12 +275,13 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const artifacts = current?.artifacts ?? [];
   const gallery = artifacts.filter((artifact) => artifact.artifact_type.startsWith("metric.") && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path)).slice(0, 3);
   const review = current?.review;
+  const statisticalResults = current?.statisticalResults ?? [];
   const elapsed = elapsedLabel(events, now);
   const phaseEvent = [...events].reverse().find((event) => ["MatlabPhaseStarted", "MatlabPhaseFinished"].includes(event.event_type) && event.payload.attempt === run.attempt);
   const observedPhase = phaseEvent?.event_type === "MatlabPhaseStarted" ? String(phaseEvent.payload.phase) : run.state === "running" && run.stage === "queued" ? "running" : run.stage;
   const completedPhases = [...new Set(events.filter((event) => event.event_type === "MatlabPhaseFinished" && event.payload.attempt === run.attempt).map((event) => String(event.payload.phase)))];
   const finished = [...events].reverse().find((event) => event.event_type === "RunStageFinished" && event.payload.stage === "running");
-  const mock = artifacts.some((artifact) => artifact.provenance.non_scientific === true || String(artifact.provenance.executor ?? "").includes("mock")) || events.some((event) => event.payload.execution_backend === "mock");
+  const mock = artifacts.some((artifact) => artifact.provenance.non_scientific === true || String(artifact.provenance.executor ?? "").includes("mock")) || events.some((event) => event.payload.execution_backend === "mock") || statisticalResults.some((result) => result.non_scientific);
   async function action(kind: "cancel" | "retry" | "qc" | "approve") {
     if (busy) return;
     setBusy(true); setActionError(null);
@@ -152,7 +307,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {!activeStates.has(run.state) && elapsed && <p>计算耗时：{elapsed}</p>}
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
     {run.state === "qc_review" && <p>指标计算已完成，科学质量审查尚未通过。</p>}
-    {run.state === "succeeded" && <p>{run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
+    {run.state === "succeeded" && <p>{statisticalResults.length > 0 ? "统计计算及结果登记已完成，请结合本次检验和校正阈值查看结果。" : run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
     {failedStates.has(run.state) && <div className="work-run-failure">
       <p role="alert">{currentDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
       {currentDiagnosis && currentDiagnosis.suggestions.length > 0 && <ul>{currentDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
@@ -174,6 +329,43 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
         <a href={contentUrl(artifact)} download>下载产物</a><p>文件大小：{artifact.size_bytes.toLocaleString()} 字节 · 下载前自动验证完整性</p>
       </details>)}
     </div>}
+    {statisticalResults.map((result) => {
+      const clustersValue = (result.manifest as { clusters?: unknown } | undefined)?.clusters;
+      const clusters = Array.isArray(clustersValue)
+        ? clustersValue.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        : [];
+      const correctionValue = result.manifest.correction;
+      const hasCorrection = Boolean(correctionValue && typeof correctionValue === "object");
+      const inferenceStatus = typeof result.manifest.inference_status === "string"
+        ? result.manifest.inference_status
+        : result.non_scientific
+          ? "not_assessed_synthetic"
+          : hasCorrection
+            ? clusters.length > 0 ? "significant_voxels" : "no_significant_voxels"
+            : "uncorrected_descriptive";
+      const significantVoxelCount = typeof result.manifest.significant_voxel_count === "number"
+        ? result.manifest.significant_voxel_count
+        : inferenceStatus === "no_significant_voxels"
+          ? 0
+          : clusters.reduce((total, cluster) => total + (typeof cluster.extent_voxels === "number" ? cluster.extent_voxels : 0), 0);
+      return <section className="work-run-results" key={result.result_id} aria-label="统计分析结果">
+        <h4>统计分析报告</h4>
+        <p>{result.non_scientific ? "非科学演示结果" : "已登记统计结果"} · {inferenceStatus === "no_significant_voxels" ? "校正后 0 个显著体素" : `${clusters.length} 个簇`} · 结果版本 {result.version}</p>
+        {inferenceStatus === "no_significant_voxels" && <p role="status">本次检验未发现通过多重比较校正的显著差异体素（0 个）。没有显著簇或可定位脑区；空间定位不适用于这个空结果。</p>}
+        {inferenceStatus === "significant_voxels" && significantVoxelCount !== null && <p>校正后保留 {significantVoxelCount.toLocaleString()} 个显著体素，分布于 {clusters.length} 个簇。</p>}
+        {result.non_scientific
+          ? <p>非科学占位结果不提供统计图切片预览。</p>
+          : inferenceStatus === "no_significant_voxels"
+            ? null
+            : <StatisticalResultClusters result={result} clusters={clusters} />}
+        <StatisticalMethodPanel summary={result.method_summary} />
+        {!result.non_scientific && clusters.length > 0 && <ResultAtlasLocalization result={result} />}
+        <details><summary>可复现结果报告</summary><div className="work-run-actions">
+          <a download={`statistics-${result.result_id}.md`} href={`data:text/markdown;charset=utf-8,${encodeURIComponent(result.report_markdown)}`}>下载 Markdown 报告</a>
+          <a download={`statistics-${result.result_id}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(result.report_json)}`}>下载 JSON 报告</a>
+        </div><pre>{result.report_markdown}</pre></details>
+      </section>;
+    })}
     {current && current.qcSubjects.length > 0 && <div><h4>自动头动 QC</h4><p>自动测量不代表人工科学审查已通过。</p><table><thead><tr><th>受试者</th><th>最大平移（mm）</th><th>最大旋转（°）</th><th>平均 FD（mm）</th><th>自动检查</th></tr></thead><tbody>{current.qcSubjects.map((subject, index) => <tr key={index}><td>{String(subject.subject_id ?? "—")}</td>{["max_translation_mm", "max_rotation_deg", "mean_fd_power"].map((key) => <td key={key}>{typeof subject[key] === "number" ? subject[key].toFixed(3) : "—"}</td>)}<td>{subject.passed === true ? "通过" : "需检查"}</td></tr>)}</tbody></table></div>}
     {run.state === "qc_review" && current?.reviewLoaded && !review && <details><summary>生成头动 QC 审查</summary><p>阈值：平移 2 mm，旋转 2°，平均 FD 0.2 mm，FD &gt; 0.5 mm 比例 20%。请核对本项目要求后选择。</p><button type="button" disabled={busy} onClick={() => void action("qc")}>采用这些阈值生成审查</button></details>}
     {review && <div><h4>QC 检查</h4><ul>{review.review.checks.map((check) => <li key={check.code}>{check.passed ? "通过" : "需处理"}：{QC_CHECK_LABELS[check.code]?.[check.passed ? 0 : 1] ?? check.message}</li>)}</ul><p>纳入 {review.review.included_subject_ids.length} 人，排除 {review.review.excluded_subject_ids.length} 人。</p>

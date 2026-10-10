@@ -1,11 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type Artifact, type PlanRevision, type Run, type RunDiagnosis, type RuntimeEvent } from "../api/client";
+import { api, type Artifact, type PlanRevision, type Run, type RunDiagnosis, type RuntimeEvent, type StatisticalAtlas, type StatisticalResultDetail } from "../api/client";
 import { WorkRunPanel } from "./WorkRunPanel";
 
 vi.mock("../api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client")>();
-  return { ...original, api: { artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), qcReview: vi.fn(), runQcReview: vi.fn(), diagnoseRun: vi.fn(), cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(), run: vi.fn() } };
+  return { ...original, api: { artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), qcReview: vi.fn(), runQcReview: vi.fn(), diagnoseRun: vi.fn(), cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(), run: vi.fn(), statisticalResults: vi.fn(), statisticalResult: vi.fn(), statisticalResultSliceInfo: vi.fn(), localizeStatisticalResult: vi.fn(), statisticalAtlases: vi.fn() } };
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const run = (state: Run["state"] = "qc_review"): Run => ({ run_id: "run-1", project_id: "project", plan_revision_id: "plan", version: 4, attempt: 1, state, stage: "running", cancel_requested: false, qc_status: "awaiting_review", created_at: "2026-10-06T10:00:00Z", updated_at: "2026-10-06T10:09:00Z", qc_mode: "require", diagnosis_available: false, log_cursor: 0 });
@@ -18,9 +18,34 @@ beforeEach(() => {
   vi.mocked(api.plan).mockResolvedValue({ plan_revision_id: "plan", plan: {} } as PlanRevision);
   vi.mocked(api.runQcReview).mockResolvedValue(null);
   vi.mocked(api.diagnoseRun).mockResolvedValue(diagnosis);
+  vi.mocked(api.statisticalResults).mockResolvedValue([]);
+  vi.mocked(api.statisticalResult).mockRejectedValue(new Error("unexpected statistical result lookup"));
 });
 
 describe("Work run and results", () => {
+  it("reads the frozen result atlas and prevents a different atlas from replacing the plan", async () => {
+    const detail: StatisticalResultDetail = { result_id: "result-1", run_id: "run-1", project_id: "project", bundle_hash: "a".repeat(64), version: 1, non_scientific: false,
+      artifact_count: 9, cluster_count: 1, created_at: "2026-10-10T09:00:00Z", design_revision_id: "plan", mode: "real", non_scientific_reason: null,
+      manifest: { correction: { method: "fdr", q_threshold: 0.05 }, inference_status: "significant_voxels", significant_voxel_count: 8,
+        clusters: [{ cluster_id: "cluster-1", extent_voxels: 8, peak_statistic: 12, peak_coordinate_mm: [0, 0, 0], coordinate_space: "MNI", inference: "fdr", direction: 1 }] },
+      report_json: JSON.stringify({ localization_plan: { atlas_id: "aal3", atlas_name: "AAL3", atlas_content_hash: "b".repeat(64), coordinate_space: "MNI", cluster_connectivity: 26, localization_method: "nearest_neighbor_inverse_nifti_affine" } }), report_markdown: "",
+    };
+    vi.mocked(api.statisticalResults).mockResolvedValue([detail]);
+    vi.mocked(api.statisticalResult).mockResolvedValue(detail);
+    vi.mocked(api.statisticalResultSliceInfo).mockRejectedValue(new Error("slice not requested in this test"));
+    vi.mocked(api.statisticalAtlases).mockResolvedValue([
+      { atlas_id: "aal", name: "AAL", available: true }, { atlas_id: "aal3", name: "AAL3", available: true },
+    ] as StatisticalAtlas[]);
+    vi.mocked(api.localizeStatisticalResult).mockResolvedValue({ result_id: "result-1", result_bundle_hash: detail.bundle_hash, status: "localized", atlas_id: "aal3", atlas_name: "AAL3", localization_method: "nearest-neighbor sampling through inverse NIfTI affine", clusters: [] });
+    render(<WorkRunPanel run={run("succeeded")} />);
+    await screen.findByText("DPABI 图谱峰值定位");
+    const selector = await screen.findByLabelText("图谱");
+    expect(selector).toBeDisabled();
+    expect(selector).toHaveValue("aal3");
+    expect(screen.getByText(/变更图谱需另建方案/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("定位峰值"));
+    await waitFor(() => expect(api.localizeStatisticalResult).toHaveBeenCalledWith("result-1", "aal3"));
+  });
   it("shows a deterministic explanation and keeps the original stack collapsed with logs downloadable", async () => {
     const raw = "{���� assert\nT1 converter failed.\nrun_preprocessing>prepare_t1 (line 331)\nrsfmri:t1:ConverterFailed}";
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "log", artifact_type: "execution.matlab_log", relative_path: "logs/matlab.stderr.log", size_bytes: 400, provenance: {} } as Artifact]);
@@ -192,5 +217,53 @@ describe("Work run and results", () => {
     expect(screen.getByText("自动测量不代表人工科学审查已通过。")).toBeInTheDocument();
     expect(screen.queryByText("QC 审查已通过。")).not.toBeInTheDocument();
     expect(fetchReport).toHaveBeenCalledWith("/api/v1/artifacts/qc-report/content", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+  it("reports an empty corrected result as no significant differences without requesting localization", async () => {
+    vi.mocked(api.statisticalResults).mockResolvedValue([{
+      artifact_count: 9,
+      bundle_hash: "a".repeat(64),
+      cluster_count: 0,
+      created_at: "2026-10-08T10:00:00Z",
+      design_revision_id: "design-1",
+      mode: "real",
+      non_scientific: false,
+      non_scientific_reason: null,
+      project_id: "project",
+      result_id: "result-1",
+      run_id: "run-1",
+      version: 1,
+    }]);
+    vi.mocked(api.statisticalResult).mockResolvedValue({
+      artifact_count: 9,
+      bundle_hash: "a".repeat(64),
+      cluster_count: 0,
+      created_at: "2026-10-08T10:00:00Z",
+      design_revision_id: "design-1",
+      manifest: {
+        correction: { method: "fdr", q_threshold: 0.05 },
+        clusters: [],
+        inference_status: "no_significant_voxels",
+        significant_voxel_count: 0,
+      },
+      mode: "real",
+      non_scientific: false,
+      non_scientific_reason: null,
+      project_id: "project",
+      report_json: "{}",
+      report_markdown: "",
+      result_id: "result-1",
+      run_id: "run-1",
+      version: 1,
+    });
+
+    render(<WorkRunPanel run={run("succeeded")} />);
+
+    expect(await screen.findByText("本次检验未发现通过多重比较校正的显著差异体素（0 个）。没有显著簇或可定位脑区；空间定位不适用于这个空结果。"))
+      .toBeInTheDocument();
+    expect(screen.getByText("统计计算及结果登记已完成，请结合本次检验和校正阈值查看结果。")).toBeInTheDocument();
+    expect(screen.queryByText("请查看 QC 记录确认审查结论。")).not.toBeInTheDocument();
+    expect(screen.queryByText("DPABI 图谱峰值定位")).not.toBeInTheDocument();
+    expect(api.localizeStatisticalResult).not.toHaveBeenCalled();
+    expect(api.statisticalResultSliceInfo).not.toHaveBeenCalled();
   });
 });

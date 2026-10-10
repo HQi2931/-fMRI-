@@ -65,6 +65,22 @@ class DemographicsRevisionRow(Base):
     __table_args__ = (UniqueConstraint("dataset_id", "revision"),)
 
 
+class ExternalDemographicsRevisionRow(Base):
+    __tablename__ = "external_demographics_revisions"
+    demographics_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    external_import_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("external_analysis_imports.import_id", ondelete="RESTRICT"),
+        index=True,
+    )
+    inclusion_hash: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    content_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    __table_args__ = (UniqueConstraint("external_import_id", "revision"),)
+
+
 class DatasetSplitRevisionRow(Base):
     __tablename__ = "dataset_split_revisions"
     split_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -211,6 +227,25 @@ class StatisticalResultRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ExternalAnalysisImportRow(Base):
+    __tablename__ = "external_analysis_imports"
+    import_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.project_id", ondelete="RESTRICT"), index=True
+    )
+    source_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    source_tree_hash: Mapped[str] = mapped_column(String(64), index=True)
+    inspection_json: Mapped[str] = mapped_column(Text)
+    inclusion_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inclusion_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class RuntimeEventRow(Base):
     __tablename__ = "runtime_events"
     event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -276,6 +311,8 @@ class ConversationRow(Base):
     active_run_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("workflow_runs.run_id", ondelete="RESTRICT"), nullable=True
     )
+    foreground_agent_role: Mapped[str] = mapped_column(String(32), default="preprocessing")
+    work_tasks_json: Mapped[str] = mapped_column(Text, default="{}")
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -386,6 +423,7 @@ class ConversationToolCallRow(Base):
     risk_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     provider_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

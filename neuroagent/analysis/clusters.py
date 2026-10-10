@@ -37,20 +37,37 @@ def parse_cluster_table(path: Path) -> tuple[ClusterRecord, ...]:
         records.append(
             ClusterRecord(
                 cluster_id=cluster_id,
-                peak_x=float(_value(row, ("peak x", "x", "x(mm)")) or 0),
-                peak_y=float(_value(row, ("peak y", "y", "y(mm)")) or 0),
-                peak_z=float(_value(row, ("peak z", "z", "z(mm)")) or 0),
-                voxel_count=(
-                    int(float(_value(row, ("voxels", "voxel count", "size"), False) or 0)) or None
+                peak_x=float(
+                    _value(row, ("peak x", "peak_x", "x_mm", "peak_x_mm", "x", "x(mm)")) or 0
                 ),
-                statistic=(
-                    float(_value(row, ("t", "z", "statistic", "peak statistic"), False) or 0)
+                peak_y=float(
+                    _value(row, ("peak y", "peak_y", "y_mm", "peak_y_mm", "y", "y(mm)")) or 0
+                ),
+                peak_z=float(
+                    _value(row, ("peak z", "peak_z", "z_mm", "peak_z_mm", "z", "z(mm)")) or 0
+                ),
+                voxel_count=(
+                    int(
+                        float(
+                            _value(row, ("voxels", "voxel count", "extent_voxels", "size"), False)
+                            or 0
+                        )
+                    )
                     or None
                 ),
+                statistic=(
+                    float(
+                        _value(
+                            row, ("t", "z", "statistic", "peak statistic", "peak_statistic"), False
+                        )
+                        or 0
+                    )
+                    or None
+                ),
+                inference=_value(row, ("inference",), required=False) or "unknown",
+                direction=(int(float(_value(row, ("direction",), required=False) or 0)) or None),
             )
         )
-    if not records:
-        raise ValueError("cluster table is empty")
     return tuple(records)
 
 

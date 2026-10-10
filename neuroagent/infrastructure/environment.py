@@ -43,7 +43,9 @@ _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("y_TTest1_Image.m", "StatisticalAnalysis/y_TTest1_Image.m"),
             ("y_TTest2_Image.m", "StatisticalAnalysis/y_TTest2_Image.m"),
             ("y_TTestPaired_Image.m", "StatisticalAnalysis/y_TTestPaired_Image.m"),
+            ("y_Correlation_Image.m", "StatisticalAnalysis/y_Correlation_Image.m"),
             ("y_GroupAnalysis_Image.m", "StatisticalAnalysis/y_GroupAnalysis_Image.m"),
+            ("y_ANCOVA1_Image.m", "StatisticalAnalysis/y_ANCOVA1_Image.m"),
         ),
     ),
     (
@@ -51,6 +53,9 @@ _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("y_FDR_Image.m", "StatisticalAnalysis/y_FDR_Image.m"),
             ("y_GRF_Threshold.m", "StatisticalAnalysis/y_GRF_Threshold.m"),
+            ("y_TFRtoZ.m", "StatisticalAnalysis/y_TFRtoZ.m"),
+            ("y_Smoothest.m", "StatisticalAnalysis/y_Smoothest.m"),
+            ("w_ReadFWHM.m", "Subfunctions/w_ReadFWHM.m"),
         ),
     ),
     (

@@ -115,9 +115,15 @@ def test_empty_draft_and_invalid_scientific_choices_are_actionable() -> None:
 def test_removed_protocol_reference_is_ignored_in_old_saved_drafts_and_questions() -> None:
     legacy = WorkDraft.model_validate({"study_protocol_ref": "old-reference"})
     assert "study_protocol_ref" not in legacy.model_dump()
-    assert pending_review_questions(
-        ["是否提供研究方案引用？"], {}, {}, {}
-    ) == []
+    assert (
+        pending_review_questions(
+            ["是否提供研究方案引用？"],  # noqa: RUF001
+            {},
+            {},
+            {},
+        )
+        == []
+    )
 
 
 def test_confirmation_binds_review_and_generates_user_evidence() -> None:
