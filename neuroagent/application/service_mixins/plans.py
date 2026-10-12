@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import ConversationView
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalView,
     PlanRevisionCreate,
@@ -12,12 +13,15 @@ from neuroagent.application.contracts import (
     PlanValidationRequest,
 )
 from neuroagent.application.hashing import content_hash
+from neuroagent.application.repository_ports import PlanRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class PlanApprovalMixin(BaseServiceMixin):
+    repository: PlanRepositoryPort
     _validate_work_plan_handoff: Callable[..., None]
     _validate_statistical_atlas: Callable[..., None]
+    get_conversation: Callable[[str], ConversationView]
 
     def create_plan(self, request: PlanRevisionCreate, idempotency_key: str) -> PlanRevisionView:
         def action() -> PlanRevisionView:
@@ -35,7 +39,7 @@ class PlanApprovalMixin(BaseServiceMixin):
                 environment_hash=request.environment_hash,
                 supersedes_id=request.supersedes_plan_revision_id,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=None,
                 event_type="PlanRevisionCreated",
@@ -71,7 +75,7 @@ class PlanApprovalMixin(BaseServiceMixin):
                 expected_version=request.expected_version,
                 issues=request.issues,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=None,
                 event_type="PlanValidated",
@@ -110,12 +114,12 @@ class PlanApprovalMixin(BaseServiceMixin):
             from neuroagent.application.work_tasks import require_statistical_work_plan
 
             current = self.repository.get_plan(plan_revision_id)
-            require_statistical_work_plan(self.repository.get_conversation, current)
+            require_statistical_work_plan(self.get_conversation, current)
             if request.decision.value == "approved":
                 self._validate_work_plan_handoff(current, verify_files=False)
                 self._validate_statistical_atlas(current)
             approval, plan = self.repository.record_approval(plan_revision_id, request)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=plan.project_id,
                 run_id=None,
                 event_type="PlanApprovalRecorded",

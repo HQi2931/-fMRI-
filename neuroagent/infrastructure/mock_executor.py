@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from neuroagent.application.hashing import content_hash
-from neuroagent.application.ports import ExecutionResult, RepositoryPort
+from neuroagent.execution.ports import ExecutionResult, MockExecutionCatalog
 from neuroagent.skills.models import ResolvedStep, SkillPlan, stable_hash
 from neuroagent.workflow.runtime import (
     RuntimeArtifact,
@@ -62,7 +62,7 @@ class MockJobExecutor:
         self,
         workflow_factory: WorkflowFactory | None = None,
         *,
-        repository: RepositoryPort | None = None,
+        repository: MockExecutionCatalog | None = None,
     ) -> None:
         self._workflow_factory = workflow_factory
         self._repository = repository

@@ -12,7 +12,7 @@ from typing import Any, Literal
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from neuroagent.application.contracts import SkillPlanIntent
+from neuroagent.application.contracts.plans import SkillPlanIntent
 from neuroagent.domain.fmri.metrics import AlffFalffParameters, MetricKind, RehoParameters
 from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
 

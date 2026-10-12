@@ -10,9 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.contracts import RunCreate
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
 from neuroagent.application.errors import ConflictError, NotFoundError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_worker
 from neuroagent.domain.fmri import (
     AnalysisImage,
@@ -92,12 +94,12 @@ def _synthetic_design() -> StatisticalDesignRevision:
 
 
 def _completed_run(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     project_id: str,
     plan_revision_id: str,
     plan_hash: str,
 ) -> str:
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project_id,
             plan_revision_id=plan_revision_id,
@@ -110,7 +112,7 @@ def _completed_run(
 
 
 def test_statistical_results_are_registered_and_queryable(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -119,7 +121,7 @@ def test_statistical_results_are_registered_and_queryable(
     run_id = _completed_run(service, project.project_id, plan.plan_revision_id, plan.plan_hash)
     manifest = _synthetic_manifest(run_id)
 
-    registered = service.register_statistical_result(
+    registered = service.runs.register_statistical_result(
         run_id=run_id,
         manifest=manifest,
         design=_synthetic_design(),
@@ -135,21 +137,22 @@ def test_statistical_results_are_registered_and_queryable(
     assert registered.cluster_count == 0
     assert len(registered.bundle_hash) == 64
 
-    listed = service.list_statistical_results(project_id=project.project_id)
+    listed = service.runs.list_statistical_results(project_id=project.project_id)
     assert [item.result_id for item in listed] == ["synthetic-result-1"]
-    filtered = service.list_statistical_results(project_id=project.project_id, run_id=run_id)
+    filtered = service.runs.list_statistical_results(project_id=project.project_id, run_id=run_id)
     assert [item.result_id for item in filtered] == ["synthetic-result-1"]
     assert (
-        service.list_statistical_results(project_id=project.project_id, run_id="missing-run") == []
+        service.runs.list_statistical_results(project_id=project.project_id, run_id="missing-run")
+        == []
     )
 
-    detail = service.get_statistical_result("synthetic-result-1")
+    detail = service.runs.get_statistical_result("synthetic-result-1")
     assert detail.manifest["mode"] == "synthetic_non_scientific"
     assert "SYNTHETIC / NON-SCIENTIFIC RESULT" in detail.report_markdown
     assert detail.report_json.startswith("{")
 
     # Identical re-registration is idempotent and returns the same record.
-    repeated = service.register_statistical_result(
+    repeated = service.runs.register_statistical_result(
         run_id=run_id,
         manifest=manifest,
         design=_synthetic_design(),
@@ -163,7 +166,7 @@ def test_statistical_results_are_registered_and_queryable(
 
 
 def test_statistical_result_registration_fails_closed_on_binding_mismatch(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -173,7 +176,7 @@ def test_statistical_result_registration_fails_closed_on_binding_mismatch(
     manifest = _synthetic_manifest(run_id)
 
     with pytest.raises(ConflictError):
-        service.register_statistical_result(
+        service.runs.register_statistical_result(
             run_id=run_id,
             manifest=manifest,
             design=_synthetic_design(),
@@ -185,14 +188,14 @@ def test_statistical_result_registration_fails_closed_on_binding_mismatch(
         )
 
     with pytest.raises(NotFoundError):
-        service.get_statistical_result("missing-result")
+        service.runs.get_statistical_result("missing-result")
 
     with pytest.raises(NotFoundError):
-        service.list_statistical_results(project_id="missing-project")
+        service.runs.list_statistical_results(project_id="missing-project")
 
 
 def test_statistical_result_query_api_is_read_only(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -200,7 +203,7 @@ def test_statistical_result_query_api_is_read_only(
     plan = make_approved_plan(service, project.project_id)
     run_id = _completed_run(service, project.project_id, plan.plan_revision_id, plan.plan_hash)
     manifest = _synthetic_manifest(run_id)
-    service.register_statistical_result(
+    service.runs.register_statistical_result(
         run_id=run_id,
         manifest=manifest,
         design=_synthetic_design(),
@@ -233,7 +236,7 @@ def test_statistical_result_query_api_is_read_only(
 
 
 def test_real_result_slice_preview_links_cluster_to_affine_slice(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -262,7 +265,7 @@ def test_real_result_slice_preview_links_cluster_to_affine_slice(
     )
     artifact = next(
         item
-        for item in service.list_artifacts(run_id)
+        for item in service.runs.list_artifacts(run_id)
         if item.relative_path == "output/statistic_corrected.nii"
     )
     other_artifacts = tuple(
@@ -308,7 +311,7 @@ def test_real_result_slice_preview_links_cluster_to_affine_slice(
             ),
         ),
     )
-    service.register_statistical_result(
+    service.runs.register_statistical_result(
         run_id=run_id,
         manifest=manifest,
         design=design,
@@ -337,7 +340,7 @@ def test_real_result_slice_preview_links_cluster_to_affine_slice(
 
 
 def test_roi_query_uses_frozen_subject_images_and_rejects_changed_artifacts(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root)
     plan = make_approved_plan(service, project.project_id)
@@ -366,7 +369,7 @@ def test_roi_query_uses_frozen_subject_images_and_rejects_changed_artifacts(
             }
         )
     service.repository.register_artifacts(project.project_id, run_id, tuple(records))
-    artifacts = {item.relative_path: item for item in service.list_artifacts(run_id)}
+    artifacts = {item.relative_path: item for item in service.runs.list_artifacts(run_id)}
     corrected = artifacts["output/statistic.nii"]
     original_design = _synthetic_design()
     design = original_design.model_copy(
@@ -429,7 +432,7 @@ def test_roi_query_uses_frozen_subject_images_and_rejects_changed_artifacts(
         ),
     )
     manifest = StatisticalResultManifest.model_validate(values)
-    service.register_statistical_result(
+    service.runs.register_statistical_result(
         run_id=run_id,
         manifest=manifest,
         design=design,
@@ -454,7 +457,7 @@ def test_roi_query_uses_frozen_subject_images_and_rejects_changed_artifacts(
 
 
 def test_empty_corrected_result_skips_atlas_space_checks_and_reports_no_localization(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     roles = (
@@ -502,7 +505,7 @@ def test_empty_corrected_result_skips_atlas_space_checks_and_reports_no_localiza
     )
     monkeypatch.setattr(service.repository, "get_statistical_result", lambda _result_id: detail)
 
-    localized = service.localize_statistical_result("empty-corrected-result", "missing-atlas")
+    localized = service.runs.localize_statistical_result("empty-corrected-result", "missing-atlas")
 
     assert localized.status == "no_significant_voxels"
     assert localized.significant_voxel_count == 0
@@ -511,7 +514,7 @@ def test_empty_corrected_result_skips_atlas_space_checks_and_reports_no_localiza
     assert localized.coordinate_space is None
     assert localized.clusters == ()
 
-    roi = service.statistical_cluster_roi("empty-corrected-result", None)
+    roi = service.runs.statistical_cluster_roi("empty-corrected-result", None)
     assert roi.status == "no_significant_voxels"
     assert roi.cluster_id is None
     assert roi.voxel_count == 0

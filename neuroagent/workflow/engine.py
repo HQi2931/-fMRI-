@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from neuroagent.application.contracts import RunView, WorkflowState
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.workflow.state import validate_workflow_transition
 
 
+class WorkflowRun(Protocol):
+    run_id: str
+    project_id: str
+    state: WorkflowState
+    version: int
+
+
 class WorkflowRepository(Protocol):
-    def get_run(self, run_id: str) -> RunView: ...
+    def get_run(self, run_id: str) -> WorkflowRun: ...
 
     def transition_run(
         self,
@@ -19,7 +26,7 @@ class WorkflowRepository(Protocol):
         target: WorkflowState,
         error: str | None = None,
         increment_attempt: bool = False,
-    ) -> RunView: ...
+    ) -> WorkflowRun: ...
 
     def append_event(
         self,
@@ -46,7 +53,7 @@ class WorkflowEngine:
         reason: str,
         error: str | None = None,
         increment_attempt: bool = False,
-    ) -> RunView:
+    ) -> WorkflowRun:
         current = self._repository.get_run(run_id)
         validate_workflow_transition(current.state, target)
         updated = self._repository.transition_run(

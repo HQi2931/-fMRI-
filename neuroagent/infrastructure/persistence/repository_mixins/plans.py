@@ -7,16 +7,16 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
     ApprovalView,
     PlanRevisionView,
-    PlanState,
     ValidationIssue,
 )
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json
+from neuroagent.domain.lifecycle import PlanState
 from neuroagent.infrastructure.persistence.models import ApprovalRow, PlanRevisionRow, ProjectRow
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,

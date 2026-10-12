@@ -4358,7 +4358,7 @@
             "title": "Api Key"
           },
           "profile": {
-            "$ref": "#/components/schemas/ModelProfileInput"
+            "$ref": "#/components/schemas/ModelProfileInput-Input"
           }
         },
         "required": [
@@ -4367,7 +4367,93 @@
         "title": "ModelProfileCreate",
         "type": "object"
       },
-      "ModelProfileInput": {
+      "ModelProfileInput-Input": {
+        "additionalProperties": false,
+        "description": "Validated public profile shape (secrets are provided separately).",
+        "properties": {
+          "api_key_env": {
+            "pattern": "^[A-Z][A-Z0-9_]{2,127}$",
+            "title": "Api Key Env",
+            "type": "string"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ModelCapability"
+            },
+            "title": "Capabilities",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "context_window_tokens": {
+            "default": 16384,
+            "maximum": 2000000.0,
+            "minimum": 4096.0,
+            "title": "Context Window Tokens",
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "default": 2048,
+            "maximum": 65536.0,
+            "minimum": 256.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "priority": {
+            "default": 100,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "provider": {
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "thinking_mode": {
+            "default": "provider_default",
+            "enum": [
+              "provider_default",
+              "disabled"
+            ],
+            "title": "Thinking Mode",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 45.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 300.0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "base_url",
+          "model",
+          "api_key_env"
+        ],
+        "title": "ModelProfileInput",
+        "type": "object"
+      },
+      "ModelProfileInput-Output": {
         "additionalProperties": false,
         "properties": {
           "api_key_env": {
@@ -4461,7 +4547,7 @@
             "type": "string"
           },
           "profile": {
-            "$ref": "#/components/schemas/ModelProfileInput"
+            "$ref": "#/components/schemas/ModelProfileInput-Output"
           },
           "version": {
             "title": "Version",
@@ -10532,6 +10618,105 @@
         "title": "WorkspaceEdit",
         "type": "object"
       },
+      "WorkspaceFileEntryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "kind": {
+            "enum": [
+              "file",
+              "directory"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "readable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readable"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "required": [
+          "path",
+          "name",
+          "kind"
+        ],
+        "title": "WorkspaceFileEntryResponse",
+        "type": "object"
+      },
+      "WorkspaceFileListingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "directory": {
+            "title": "Directory",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceFileEntryResponse"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "directory",
+          "entries",
+          "total"
+        ],
+        "title": "WorkspaceFileListingResponse",
+        "type": "object"
+      },
       "WorkspaceFileScope": {
         "additionalProperties": false,
         "description": "Optional user-selected file scope for the Work file assistant.",
@@ -13065,9 +13250,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response List Workspace Files Api V1 Conversations  Conversation Id  Workspace Files Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/WorkspaceFileListingResponse"
                 }
               }
             },

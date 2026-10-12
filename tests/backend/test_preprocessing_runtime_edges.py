@@ -6,13 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
-    ExecutionBackend,
-    RunCreate,
     SkillPlanIntent,
     SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.runs import (
+    ExecutionBackend,
+    RunCreate,
 )
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.execution.matlab import ControlledMatlabExecutor
@@ -60,7 +62,7 @@ def _payload(service, run):
 
 
 def _register_input(service, run, relative_path, data, lineage):
-    project = service.get_project(run.project_id)
+    project = service.projects.get_project(run.project_id)
     path = Path(project.work_root) / run.run_id / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -78,14 +80,16 @@ def _register_input(service, run, relative_path, data, lineage):
         ),
     )
     artifact = next(
-        item for item in service.list_artifacts(run.run_id) if item.relative_path == relative_path
+        item
+        for item in service.runs.list_artifacts(run.run_id)
+        if item.relative_path == relative_path
     )
     return artifact, path
 
 
 def _metric_run(service, source_run, *, metric_only=False, smooth_results=False):
     frozen = service.repository.get_plan(source_run.plan_revision_id)
-    manifest = service.get_manifest(frozen.plan["dataset_manifest_id"])
+    manifest = service.projects.get_manifest(frozen.plan["dataset_manifest_id"])
     mask, mask_path = _register_input(
         service,
         source_run,
@@ -132,14 +136,14 @@ def _metric_run(service, source_run, *, metric_only=False, smooth_results=False)
             },
         }
         intent.update(request_preprocessing=True, preprocessing=parameters, input_artifact_id=None)
-    plan = service.resolve_skill_plan(
+    plan = service.skills.resolve_skill_plan(
         SkillPlanResolveRequest(
             request=SkillPlanIntent.model_validate(intent),
-            expected_project_version=service.get_project(source_run.project_id).version,
+            expected_project_version=service.projects.get_project(source_run.project_id).version,
         ),
         "metric-resolve",
     ).plan_revision
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -150,7 +154,7 @@ def _metric_run(service, source_run, *, metric_only=False, smooth_results=False)
         ),
         "metric-approve",
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=source_run.project_id,
             plan_revision_id=plan.plan_revision_id,

@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 
-from neuroagent.application.contracts import ConversationView
+from neuroagent.application.contracts.conversations import ConversationView
 from neuroagent.multi_agent.registry import WorkAgentRole
 
 _ANALYSIS_INTENT = re.compile(

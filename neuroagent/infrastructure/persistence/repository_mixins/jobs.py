@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, or_, select, update
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import WorkflowState
+from neuroagent.application.contracts.runs import QcReviewView
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json
-from neuroagent.application.ports import ClaimedJob
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.infrastructure.persistence.models import (
+    ArtifactRow,
     JobRow,
     PlanRevisionRow,
     RuntimeEventRow,
@@ -28,10 +30,44 @@ from neuroagent.infrastructure.persistence.statistical_completion import (
 )
 from neuroagent.observability.events import redact_event_payload
 from neuroagent.observability.tracing import current_trace_id
+from neuroagent.workflow.models import ClaimedJob, JobEnvelope
 from neuroagent.workflow.state import validate_workflow_transition
 
 
+def _decoded_job_payload(job: JobRow) -> dict[str, Any]:
+    """Expose the validated executor command to legacy completion rules."""
+
+    persisted = _load(job.payload_json, {})
+    envelope = JobEnvelope.from_persisted(
+        persisted,
+        job_id=job.job_id,
+        run_id=job.run_id,
+        attempt=max(1, job.attempt),
+    )
+    return envelope.executor_payload()
+
+
 class JobExecutionMixin(RepositoryBaseMixin):
+    @abstractmethod
+    def _register_artifacts_in_session(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        run: WorkflowRunRow,
+        artifacts: tuple[dict[str, Any], ...],
+    ) -> list[ArtifactRow]: ...
+
+    @abstractmethod
+    def _auto_create_head_motion_qc_review_in_session(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        registered_rows: list[ArtifactRow],
+    ) -> QcReviewView | None: ...
+
     def claim_next_job(self, worker_id: str, lease_seconds: int) -> ClaimedJob | None:
         now = datetime.now(UTC)
         with self._write_session() as session:
@@ -312,7 +348,7 @@ class JobExecutionMixin(RepositoryBaseMixin):
                     actor=actor,
                 )
             current = WorkflowState(run.state)
-            payload = _load(job.payload_json, {})
+            payload = _decoded_job_payload(job)
             is_statistics_mock = (
                 isinstance(payload, dict) and payload.get("run_kind") == "statistics_mock"
             )
@@ -344,7 +380,7 @@ class JobExecutionMixin(RepositoryBaseMixin):
                     session,
                     run=run,
                     plan=plan,
-                    payload=cast(dict[str, Any], payload),
+                    payload=payload,
                     artifact_rows=registered_rows,
                     actor=actor,
                     created_at=now,

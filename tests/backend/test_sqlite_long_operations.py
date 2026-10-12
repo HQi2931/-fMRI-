@@ -7,20 +7,26 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from neuroagent.application.contracts import DatasetCreate, ManifestScanRequest, RunCreate
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    ManifestScanRequest,
+)
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
+from neuroagent.application.services import ApplicationServices
 
 from .conftest import make_approved_plan, make_bids_dataset, make_project
 
 
 def _registered_dataset(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> tuple[str, int]:
     project = make_project(service, source_root, work_root)
     dataset_path = make_bids_dataset(source_root)
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Slow scan BIDS",
@@ -33,16 +39,16 @@ def _registered_dataset(
 
 
 def test_slow_scan_does_not_block_worker_heartbeat_or_event_write(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset_id, dataset_version = _registered_dataset(service, source_root, work_root)
-    dataset = service.get_dataset(dataset_id)
-    project = service.get_project(dataset.project_id)
+    dataset = service.projects.get_dataset(dataset_id)
+    project = service.projects.get_project(dataset.project_id)
     plan = make_approved_plan(service, project.project_id)
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -70,7 +76,7 @@ def test_slow_scan_does_not_block_worker_heartbeat_or_event_write(
 
     def scan() -> None:
         try:
-            service.inspect_dataset(
+            service.projects.inspect_dataset(
                 dataset_id,
                 ManifestScanRequest(expected_dataset_version=dataset_version),
                 "slow-scan-idempotency-key",
@@ -113,12 +119,13 @@ def test_slow_scan_does_not_block_worker_heartbeat_or_event_write(
     assert writer_errors == []
     assert scan_errors == []
     assert any(
-        event.event_type == "ConcurrentWriterProbe" for event in service.list_run_events(run.run_id)
+        event.event_type == "ConcurrentWriterProbe"
+        for event in service.runs.list_run_events(run.run_id)
     )
 
 
 def test_scan_prepare_failure_releases_reservation_for_same_key_retry(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -137,15 +144,15 @@ def test_scan_prepare_failure_releases_reservation_for_same_key_retry(
     monkeypatch.setattr(service.dataset_inspector, "inspect", fail_once)
     request = ManifestScanRequest(expected_dataset_version=dataset_version)
     with pytest.raises(RuntimeError, match="simulated scan failure"):
-        service.inspect_dataset(dataset_id, request, "retry-same-scan-key")
+        service.projects.inspect_dataset(dataset_id, request, "retry-same-scan-key")
 
-    manifest = service.inspect_dataset(dataset_id, request, "retry-same-scan-key")
+    manifest = service.projects.inspect_dataset(dataset_id, request, "retry-same-scan-key")
     assert manifest.dataset_id == dataset_id
     assert calls == 2
 
 
 def test_prepared_finalize_and_idempotency_response_commit_atomically(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -170,24 +177,24 @@ def test_prepared_finalize_and_idempotency_response_commit_atomically(
     monkeypatch.setattr(service.repository, "complete_idempotent_request", crash_once)
     request = ManifestScanRequest(expected_dataset_version=dataset_version)
     with pytest.raises(RuntimeError, match="response persistence crash"):
-        service.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
+        service.projects.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
 
-    dataset = service.get_dataset(dataset_id)
+    dataset = service.projects.get_dataset(dataset_id)
     assert dataset.current_manifest_id is None
     assert not any(
         event.event_type == "DatasetInspected"
-        for event in service.list_project_events(dataset.project_id)
+        for event in service.runs.list_project_events(dataset.project_id)
     )
     with service.database.session_factory() as session:
         assert session.scalar(text("SELECT COUNT(*) FROM manifest_revisions")) == 0
 
-    created = service.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
-    repeated = service.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
+    created = service.projects.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
+    repeated = service.projects.inspect_dataset(dataset_id, request, "atomic-scan-finalize")
     assert repeated == created
     assert (
         sum(
             event.event_type == "DatasetInspected"
-            for event in service.list_project_events(dataset.project_id)
+            for event in service.runs.list_project_events(dataset.project_id)
         )
         == 1
     )

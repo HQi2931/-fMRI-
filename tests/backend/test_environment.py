@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import EnvironmentConfigUpdate
+from neuroagent.application.contracts.environment import (
+    EnvironmentConfigUpdate,
+)
 from neuroagent.application.settings import Settings
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 

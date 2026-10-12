@@ -16,21 +16,28 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from neuroagent.application.contracts import (
-    ApprovalCreate,
-    ApprovalDecision,
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportIncludeRequest,
     ExternalAnalysisImportInspectRequest,
-    ExternalDemographicsImportRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
     PlanRevisionCreate,
     PlanValidationRequest,
+)
+from neuroagent.application.contracts.projects import (
+    ExternalDemographicsImportRequest,
+)
+from neuroagent.application.contracts.runs import (
     RunAction,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
-    WorkflowState,
 )
 from neuroagent.application.errors import ApplicationError
 from neuroagent.application.ports import ExecutionResult
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.statistics_draft import StatisticsDraft
 from neuroagent.bootstrap import build_worker
 from neuroagent.domain.fmri.statistics import (
@@ -38,6 +45,9 @@ from neuroagent.domain.fmri.statistics import (
     StatisticalDesignRevision,
     StatisticalTest,
     Tail,
+)
+from neuroagent.domain.lifecycle import (
+    WorkflowState,
 )
 from neuroagent.infrastructure.persistence.models import (
     ArtifactRow,
@@ -268,7 +278,7 @@ class _SyntheticExecutor:
 
 def _statistics_run(service, source_root, work_root, *, attempts=2):
     project = make_project(service, source_root, work_root)
-    plan = service.create_plan(
+    plan = service.plans.create_plan(
         PlanRevisionCreate(
             project_id=project.project_id,
             expected_project_version=project.version,
@@ -278,12 +288,12 @@ def _statistics_run(service, source_root, work_root, *, attempts=2):
         ),
         "statistical-fixture-plan",
     )
-    plan = service.validate_plan(
+    plan = service.plans.validate_plan(
         plan.plan_revision_id,
         PlanValidationRequest(expected_version=plan.version, issues=[]),
         "validate-fixture",
     )
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -313,7 +323,7 @@ def _statistics_run(service, source_root, work_root, *, attempts=2):
     "status", ["cancelled", "timed_out", "failed_retryable", "failed_terminal"]
 )
 def test_failed_statistics_worker_preserves_only_diagnostic_logs(
-    service: NeuroAgentService, source_root: Path, work_root: Path, status: str
+    service: ApplicationServices, source_root: Path, work_root: Path, status: str
 ) -> None:
     run = _statistics_run(service, source_root, work_root)
     partial = {
@@ -340,17 +350,20 @@ def test_failed_statistics_worker_preserves_only_diagnostic_logs(
         "failed_retryable": WorkflowState.FAILED_RETRYABLE,
         "failed_terminal": WorkflowState.FAILED_TERMINAL,
     }[status]
-    assert service.get_run(run.run_id).state is expected
-    assert [x.artifact_type for x in service.list_artifacts(run.run_id)] == ["execution.matlab_log"]
-    assert service.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
+    assert service.runs.get_run(run.run_id).state is expected
+    assert [x.artifact_type for x in service.runs.list_artifacts(run.run_id)] == [
+        "execution.matlab_log"
+    ]
+    assert service.runs.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
     assert not any(
-        e.event_type == "StatisticalResultRegistered" for e in service.list_run_events(run.run_id)
+        e.event_type == "StatisticalResultRegistered"
+        for e in service.runs.list_run_events(run.run_id)
     )
 
 
 @pytest.mark.parametrize("status", ["timed_out", "failed_retryable"])
 def test_statistics_worker_retry_budget_exhaustion_has_no_scientific_success(
-    service: NeuroAgentService, source_root: Path, work_root: Path, status: str
+    service: ApplicationServices, source_root: Path, work_root: Path, status: str
 ) -> None:
     run = _statistics_run(service, source_root, work_root)
     executor = _SyntheticExecutor(
@@ -358,29 +371,29 @@ def test_statistics_worker_retry_budget_exhaustion_has_no_scientific_success(
     )
     worker = build_worker(service, worker_id="retry-matrix", executor=executor)
     assert worker.run_once()
-    first = service.get_run(run.run_id)
+    first = service.runs.get_run(run.run_id)
     expected = WorkflowState.TIMED_OUT if status == "timed_out" else WorkflowState.FAILED_RETRYABLE
     assert first.state is expected
-    service.retry_run(
+    service.runs.retry_run(
         run.run_id, RunAction(expected_version=first.version, reason="Synthetic retry"), "retry"
     )
     assert worker.run_once()
     assert executor.attempts == [1, 2]
-    assert service.get_run(run.run_id).state is WorkflowState.FAILED_TERMINAL
+    assert service.runs.get_run(run.run_id).state is WorkflowState.FAILED_TERMINAL
     assert worker.run_once() is False
-    assert service.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
-    assert service.list_artifacts(run.run_id) == []
+    assert service.runs.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
+    assert service.runs.list_artifacts(run.run_id) == []
 
 
 @pytest.mark.parametrize("returned_status", ["succeeded", "failed_retryable", "timed_out"])
 def test_statistics_cancellation_wins_completion_race_without_result_registration(
-    service: NeuroAgentService, source_root: Path, work_root: Path, returned_status: str
+    service: ApplicationServices, source_root: Path, work_root: Path, returned_status: str
 ) -> None:
     run = _statistics_run(service, source_root, work_root)
 
     def cancel_during_execution(_payload, is_cancelled):
-        active = service.get_run(run.run_id)
-        service.cancel_run(
+        active = service.runs.get_run(run.run_id)
+        service.runs.cancel_run(
             run.run_id,
             RunAction(expected_version=active.version, reason="Cancel fixture"),
             "cancel",
@@ -390,13 +403,13 @@ def test_statistics_cancellation_wins_completion_race_without_result_registratio
 
     executor = _SyntheticExecutor(cancel_during_execution)
     assert build_worker(service, worker_id="cancel-race", executor=executor).run_once()
-    assert service.get_run(run.run_id).state is WorkflowState.CANCELLED
-    assert service.list_artifacts(run.run_id) == []
-    assert service.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
+    assert service.runs.get_run(run.run_id).state is WorkflowState.CANCELLED
+    assert service.runs.list_artifacts(run.run_id) == []
+    assert service.runs.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
 
 
 def test_success_claim_with_partial_statistics_is_rolled_back_and_terminalized(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     run = _statistics_run(service, source_root, work_root)
     partial = {
@@ -409,14 +422,14 @@ def test_success_claim_with_partial_statistics_is_rolled_back_and_terminalized(
         lambda _payload, _cancel: ExecutionResult(status="succeeded", artifacts=(partial,))
     )
     assert build_worker(service, worker_id="partial-success", executor=executor).run_once()
-    completed = service.get_run(run.run_id)
+    completed = service.runs.get_run(run.run_id)
     assert completed.state is WorkflowState.FAILED_TERMINAL
     assert completed.error == "artifact finalization failed: ValidationError"
-    assert service.list_artifacts(run.run_id) == []
-    assert service.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
+    assert service.runs.list_artifacts(run.run_id) == []
+    assert service.runs.list_statistical_results(project_id=run.project_id, run_id=run.run_id) == []
     transitions = [
         e.payload["to_state"]
-        for e in service.list_run_events(run.run_id)
+        for e in service.runs.list_run_events(run.run_id)
         if e.event_type == "WorkflowTransitioned"
     ]
     assert "succeeded" not in transitions
@@ -427,13 +440,13 @@ def _external_fixture(service, source_root, work_root):
     source = source_root / "synthetic-external"
     subjects = _valid_import_tree(source)
     _write_map(source / "Mask.nii")
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(
             project_id=project.project_id, source_path=str(source)
         ),
         "inspect-fixture",
     )
-    imported = service.include_external_analysis_import(
+    imported = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=inspected.version,
@@ -475,7 +488,11 @@ def _external_fixture(service, source_root, work_root):
     ],
 )
 def test_external_statistical_proposal_rejects_invalid_or_stale_source(
-    service: NeuroAgentService, source_root: Path, work_root: Path, change: str, expected_code: str
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    change: str,
+    expected_code: str,
 ) -> None:
     project, source, imported, draft = _external_fixture(service, source_root, work_root)
     project_id = project.project_id
@@ -497,15 +514,15 @@ def test_external_statistical_proposal_rejects_invalid_or_stale_source(
         (source / "ASD" / "sub-01-zALFFMap.nii").unlink()
     elif change == "source_replaced":
         _write_map(source / "ASD" / "sub-01-zALFFMap.nii", offset=25)
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project_id, draft=draft
     )
     assert proposal is None
     assert [issue.code for issue in issues] == [expected_code]
     # Proposal rejection must not turn an explicitly included import into a run.
-    assert service.list_runs(project_id=project.project_id) == []
+    assert service.runs.list_runs(project_id=project.project_id) == []
     assert (
-        service.get_external_analysis_import(imported.import_id).inclusion_hash
+        service.external_imports.get_external_analysis_import(imported.import_id).inclusion_hash
         == imported.inclusion_hash
     )
 
@@ -535,7 +552,7 @@ def test_external_statistical_proposal_rejects_invalid_or_stale_source(
     ],
 )
 def test_internal_statistics_rejects_mixed_or_misaligned_registered_lineage(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch,
@@ -561,7 +578,7 @@ def test_internal_statistics_rejects_mixed_or_misaligned_registered_lineage(
             "mask_artifact_id": mask_id,
         }
     )
-    mask = service.get_artifact(mask_id)
+    mask = service.runs.get_artifact(mask_id)
     # Change the second image to exercise compatibility with the first frozen image.
     target = (
         mask
@@ -618,7 +635,7 @@ def test_internal_statistics_rejects_mixed_or_misaligned_registered_lineage(
         ),
     )
     with pytest.raises(ApplicationError) as error:
-        service._validate_statistical_artifact_lineage(
+        service.statistics._validate_statistical_artifact_lineage(
             design, manifest_hash=manifest.content_hash, source_run_id=run.run_id
         )
     assert error.value.code == expected_code
@@ -635,7 +652,11 @@ def test_internal_statistics_rejects_mixed_or_misaligned_registered_lineage(
     ],
 )
 def test_external_covariate_failures_never_emit_an_executable_proposal(
-    service: NeuroAgentService, source_root: Path, work_root: Path, change: str, expected_code: str
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    change: str,
+    expected_code: str,
 ) -> None:
     project, _source, imported, draft = _external_fixture(service, source_root, work_root)
     values = (
@@ -648,7 +669,7 @@ def test_external_covariate_failures_never_emit_an_executable_proposal(
         "ID,Age\n" + "".join(f"sub-{i:02d},{value}\n" for i, value in enumerate(values, 1)),
         encoding="utf-8",
     )
-    service.import_external_demographics(
+    service.external_imports.import_external_demographics(
         imported.import_id,
         ExternalDemographicsImportRequest(
             source_path=str(table),
@@ -669,12 +690,12 @@ def test_external_covariate_failures_never_emit_an_executable_proposal(
             ],
         }
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project.project_id, draft=draft
     )
     assert proposal is None
     assert expected_code in [issue.code for issue in issues]
-    assert service.list_runs(project_id=project.project_id) == []
+    assert service.runs.list_runs(project_id=project.project_id) == []
 
 
 @pytest.mark.parametrize(
@@ -690,10 +711,14 @@ def test_external_covariate_failures_never_emit_an_executable_proposal(
     ],
 )
 def test_formal_external_design_cannot_override_server_bound_inputs(
-    service: NeuroAgentService, source_root: Path, work_root: Path, change: str, expected_code: str
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    change: str,
+    expected_code: str,
 ) -> None:
     project, _source, imported, draft = _external_fixture(service, source_root, work_root)
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project.project_id, draft=draft
     )
     assert proposal is not None and not issues
@@ -720,7 +745,7 @@ def test_formal_external_design_cannot_override_server_bound_inputs(
             image["group"] = "ASD" if image["group"] == "HC" else "HC"
     changed = StatisticalDesignRevision.model_validate(design)
     with pytest.raises(ApplicationError) as error:
-        service.create_statistical_design(
+        service.statistics.create_statistical_design(
             StatisticalDesignCreate(
                 project_id=project.project_id,
                 expected_project_version=proposal.project_version,
@@ -731,5 +756,5 @@ def test_formal_external_design_cannot_override_server_bound_inputs(
             "invalid-design",
         )
     assert error.value.code == expected_code
-    assert service.get_project(project.project_id).version == proposal.project_version
-    assert service.list_runs(project_id=project.project_id) == []
+    assert service.projects.get_project(project.project_id).version == proposal.project_version
+    assert service.runs.list_runs(project_id=project.project_id) == []

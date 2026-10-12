@@ -1,13 +1,4 @@
-export type AgentHandoff = {
-  from_agent?: string;
-  to_agent?: string;
-  reason?: string;
-  required_outputs?: string[];
-  status?: string;
-  handoff_id?: string;
-  blocking_items?: string[];
-  data_references?: { input_selection_required?: boolean };
-};
+import type { AgentHandoff } from "../shared/types";
 
 const blockingMessages: Record<string, string> = {
   work_handoff_limit_reached: "本会话的指标需求交接次数已达上限，请先核对当前任务。",

@@ -21,7 +21,7 @@ from neuroagent.agent.models import (
 from neuroagent.agent.providers import OpenAICompatibleProvider, ProviderError
 from neuroagent.agent.redaction import OutboundContextPolicy, OutboundPolicyError
 from neuroagent.agent.router import ModelRouter, ModelRoutingError
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.agent import (
     AgentTaskCreate,
     AgentTaskView,
     ModelListRequest,
@@ -37,11 +37,14 @@ from neuroagent.application.errors import (
     InputValidationError,
     NotFoundError,
 )
+from neuroagent.application.repository_ports import ModelAgentRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.skills.models import SkillRequest
 
 
 class ModelAgentMixin(BaseServiceMixin):
+    repository: ModelAgentRepositoryPort
+
     def create_model_profile(
         self, request: ModelProfileCreate, idempotency_key: str
     ) -> ModelProfileView:
@@ -58,7 +61,7 @@ class ModelAgentMixin(BaseServiceMixin):
             except NotFoundError:
                 event_type = "ModelProfileCreated"
             result = self.repository.create_model_profile(request.profile)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=None,
                 run_id=None,
                 event_type=event_type,
@@ -88,7 +91,7 @@ class ModelAgentMixin(BaseServiceMixin):
 
     def delete_model_profile(self, profile_id: str) -> None:
         self.repository.delete_model_profile(profile_id)
-        self.repository.append_event(
+        self.event_store.append_event(
             project_id=None,
             run_id=None,
             event_type="ModelProfileDeleted",
@@ -198,6 +201,7 @@ class ModelAgentMixin(BaseServiceMixin):
         summary_mode: bool = False,
         memory_mode: bool = False,
         work_mode: bool = False,
+        system_prompt: str | None = None,
     ) -> ChatGatewayResult:
         try:
             return await self._model_gateway().generate_chat(
@@ -210,6 +214,7 @@ class ModelAgentMixin(BaseServiceMixin):
                 summary_mode=summary_mode,
                 memory_mode=memory_mode,
                 work_mode=work_mode,
+                system_prompt=system_prompt,
                 evidence=evidence,
                 preferred_profile_id=preferred_profile_id,
                 model=model,
@@ -288,7 +293,7 @@ class ModelAgentMixin(BaseServiceMixin):
                 task_type=request.request.task_type.value,
                 result=result,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=task.project_id,
                 run_id=None,
                 event_type="AgentTaskCompleted",

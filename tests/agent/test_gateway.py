@@ -18,6 +18,7 @@ from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import ProcessEnvironmentSecretResolver
 from neuroagent.agent.tool_spec import LlmTool, ToolTier
+from neuroagent.application.work_prompts import work_system_prompt
 from neuroagent.infrastructure.secrets import LocalDotenvSecretResolver
 
 
@@ -34,6 +35,7 @@ def test_work_prompt_distinguishes_planning_action_from_callable_tools() -> None
         question="Prepare an ALFF plan; do not execute.",
         evidence=[],
         work_mode=True,
+        system_prompt=work_system_prompt("preprocessing"),
     )
 
     system_prompt = rendered.messages[0]["content"]

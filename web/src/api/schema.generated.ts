@@ -3116,10 +3116,57 @@ export interface components {
         ModelProfileCreate: {
             /** Api Key */
             api_key?: string | null;
-            profile: components["schemas"]["ModelProfileInput"];
+            profile: components["schemas"]["ModelProfileInput-Input"];
+        };
+        /**
+         * ModelProfileInput
+         * @description Validated public profile shape (secrets are provided separately).
+         */
+        "ModelProfileInput-Input": {
+            /** Api Key Env */
+            api_key_env: string;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Capabilities
+             * @default []
+             */
+            capabilities: components["schemas"]["ModelCapability"][];
+            /**
+             * Context Window Tokens
+             * @default 16384
+             */
+            context_window_tokens: number;
+            /** Id */
+            id: string;
+            /**
+             * Max Output Tokens
+             * @default 2048
+             */
+            max_output_tokens: number;
+            /** Model */
+            model: string;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            /** Provider */
+            provider: string;
+            /**
+             * Thinking Mode
+             * @default provider_default
+             * @enum {string}
+             */
+            thinking_mode: "provider_default" | "disabled";
+            /**
+             * Timeout Seconds
+             * @default 45
+             */
+            timeout_seconds: number;
         };
         /** ModelProfileInput */
-        ModelProfileInput: {
+        "ModelProfileInput-Output": {
             /** Api Key Env */
             api_key_env: string;
             /** Base Url */
@@ -3169,7 +3216,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-            profile: components["schemas"]["ModelProfileInput"];
+            profile: components["schemas"]["ModelProfileInput-Output"];
             /** Version */
             version: number;
         };
@@ -5214,6 +5261,35 @@ export interface components {
             /** Start Line */
             start_line?: number | null;
         };
+        /** WorkspaceFileEntryResponse */
+        WorkspaceFileEntryResponse: {
+            /** Format */
+            format?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "file" | "directory";
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Readable */
+            readable?: boolean | null;
+            /** Size */
+            size?: number | null;
+        };
+        /** WorkspaceFileListingResponse */
+        WorkspaceFileListingResponse: {
+            /** Directory */
+            directory: string;
+            /** Entries */
+            entries: components["schemas"]["WorkspaceFileEntryResponse"][];
+            /** Next Offset */
+            next_offset?: number | null;
+            /** Total */
+            total: number;
+        };
         /**
          * WorkspaceFileScope
          * @description Optional user-selected file scope for the Work file assistant.
@@ -7070,9 +7146,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["WorkspaceFileListingResponse"];
                 };
             };
             /** @description Bad Request */

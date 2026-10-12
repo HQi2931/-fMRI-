@@ -6,7 +6,9 @@ import pytest
 from openpyxl import Workbook
 from pydantic import ValidationError
 
-from neuroagent.application.contracts import DemographicsImportRequest
+from neuroagent.application.contracts.projects import (
+    DemographicsImportRequest,
+)
 from neuroagent.application.errors import InputValidationError
 from neuroagent.infrastructure.filesystem.demographics import read_demographics
 

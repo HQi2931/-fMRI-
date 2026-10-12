@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from neuroagent.agent.tool_spec import MODEL_VISIBLE_TIERS, ToolTier
-from neuroagent.application.contracts import ConversationAction
+from neuroagent.application.contracts.conversations import ConversationAction
 
 
 class WorkActionError(ValueError):

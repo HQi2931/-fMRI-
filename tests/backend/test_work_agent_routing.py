@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.application.contracts import ConversationCreate, ConversationTurnCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationTurnCreate,
+)
 from neuroagent.application.work_agents import (
     analysis_dependency_for_request,
     work_agent_role_for_turn,
@@ -38,7 +41,9 @@ from .test_work_dialogue import configure, generated
     ],
 )
 def test_new_intent_routes_from_either_current_role(service, prior, content, expected):
-    conversation = service.create_conversation(ConversationCreate(mode="work"), "route")
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "route"
+    )
     conversation = conversation.model_copy(update={"foreground_agent_role": WorkAgentRole(prior)})
     assert (
         work_agent_role_for_turn(content, requested=None, conversation=conversation).value
@@ -50,7 +55,9 @@ def test_new_intent_routes_from_either_current_role(service, prior, content, exp
 @pytest.mark.parametrize("content", ["继续", "查看结果", "continue", "show results", "Next step."])
 @pytest.mark.parametrize("prior", ["preprocessing", "analysis"])
 def test_continuation_keeps_the_current_bound_task(service, content, prior):
-    conversation = service.create_conversation(ConversationCreate(mode="work"), "continue")
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "continue"
+    )
     conversation = conversation.model_copy(
         update={"foreground_agent_role": WorkAgentRole(prior), "active_run_id": "bound-run"}
     )
@@ -76,9 +83,11 @@ def test_two_stage_intent_records_dependency_without_scientific_defaults(content
 async def test_unbound_ambiguous_request_asks_without_model_or_task_creation(
     service, monkeypatch, content
 ):
-    conversation = service.create_conversation(ConversationCreate(mode="work"), "ambiguous")
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "ambiguous"
+    )
     model = configure(service, monkeypatch, [generated("prepare_statistical_analysis")])
-    turn = await service.send_conversation_turn(
+    turn = await service.conversations.send_conversation_turn(
         conversation.conversation_id,
         ConversationTurnCreate(content=content, preferred_profile_id="dialogue-model"),
         "ambiguous-turn",
@@ -92,12 +101,14 @@ async def test_unbound_ambiguous_request_asks_without_model_or_task_creation(
         not (task.draft_hash or task.proposal_hash or task.plan_revision_id or task.run_id)
         for task in turn.conversation.work_tasks
     )
-    assert not service.list_runs() and turn.tool_call is None
+    assert not service.runs.list_runs() and turn.tool_call is None
     model.assert_not_called()
 
 
 def test_explicit_role_selection_is_respected_and_no_clarification_is_needed(service):
-    conversation = service.create_conversation(ConversationCreate(mode="work"), "manual")
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "manual"
+    )
     assert (
         work_agent_role_for_turn(
             "continue", requested=WorkAgentRole.ANALYSIS, conversation=conversation

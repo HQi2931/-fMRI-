@@ -1,7 +1,7 @@
 import { Layout } from "./components/Layout";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { AgentPage } from "./pages/AgentPage";
-import { SettingsPage } from "./pages/SettingsPage";
+import { SettingsPage } from "./features/settings/SettingsPage";
 import { usePathname } from "./routing";
 
 export default function App() {

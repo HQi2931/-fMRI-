@@ -5,14 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
     PlanRevisionCreate,
     PlanValidationRequest,
+)
+from neuroagent.application.contracts.projects import (
     ProjectCreate,
 )
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
 
@@ -32,7 +34,7 @@ def work_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[NeuroAgentService]:
+def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[ApplicationServices]:
     # Tests must never inherit the developer's machine state.  The repository
     # ``.env`` is untracked and holds real DPABI paths, real API keys and
     # ``RSFMRI_ENABLE_REAL_EXECUTION``; inheriting it made the suite report a
@@ -59,9 +61,9 @@ def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[Neur
 
 
 def make_project(
-    service: NeuroAgentService, source_root: Path, work_root: Path, *, key: str = "project-key"
+    service: ApplicationServices, source_root: Path, work_root: Path, *, key: str = "project-key"
 ):
-    return service.create_project(
+    return service.projects.create_project(
         ProjectCreate(
             name="Synthetic project",
             source_roots=[str(source_root)],
@@ -72,27 +74,27 @@ def make_project(
 
 
 def make_approved_plan(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     project_id: str,
     *,
     manifest_hash: str = "a" * 64,
 ):
-    plan = service.create_plan(
+    plan = service.plans.create_plan(
         PlanRevisionCreate(
             project_id=project_id,
-            expected_project_version=service.get_project(project_id).version,
+            expected_project_version=service.projects.get_project(project_id).version,
             plan={"skill_id": "test.mock", "steps": [{"capability": "mock.execute"}]},
             manifest_hash=manifest_hash,
             environment_hash="b" * 64,
         ),
         "plan-create-key",
     )
-    plan = service.validate_plan(
+    plan = service.plans.validate_plan(
         plan.plan_revision_id,
         PlanValidationRequest(expected_version=plan.version, issues=[]),
         "plan-validate-key",
     )
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -103,7 +105,7 @@ def make_approved_plan(
         ),
         "plan-approve-key",
     )
-    return service.get_plan(plan.plan_revision_id)
+    return service.plans.get_plan(plan.plan_revision_id)
 
 
 def make_bids_dataset(root: Path) -> Path:

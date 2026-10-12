@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
     DatasetSplitCreate,
     DatasetSplitView,
@@ -23,10 +23,13 @@ from neuroagent.application.contracts import (
     WorkspaceCheckView,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.repository_ports import ProjectRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 
 
 class ProjectDatasetMixin(BaseServiceMixin):
+    repository: ProjectRepositoryPort
+
     def check_workspace(self, request: WorkspaceCheckRequest) -> WorkspaceCheckView:
         """Inspect a selected workspace without registering or modifying it."""
 
@@ -92,7 +95,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
         def finalize(prepared: tuple[list[str], str]) -> ProjectView:
             roots, work_root = prepared
             result = self.repository.create_project(request.name, roots, work_root)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=None,
                 event_type="ProjectCreated",
@@ -135,7 +138,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 source_path=source_path,
                 expected_project_version=request.expected_project_version,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=project_id,
                 run_id=None,
                 event_type="DatasetRegistered",
@@ -181,7 +184,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 expected_version=request.expected_dataset_version,
                 content=content,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=project_id,
                 run_id=None,
                 event_type="DatasetInspected",
@@ -245,7 +248,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 expected_version=request.expected_dataset_version,
                 content=content,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=project_id,
                 run_id=None,
                 event_type="DemographicsAligned",
@@ -357,7 +360,7 @@ class ProjectDatasetMixin(BaseServiceMixin):
                 expected_version=request.expected_dataset_version,
                 content=content,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=project_id,
                 run_id=None,
                 event_type="DatasetSplitCreated",

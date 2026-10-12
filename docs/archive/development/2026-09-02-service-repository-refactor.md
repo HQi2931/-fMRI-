@@ -6,7 +6,7 @@
 
 **Goal:** Finish the current service/repository split, remove application-to-infrastructure coupling, and standardize the directly related long modules without changing public behavior.
 
-**Architecture:** Keep `NeuroAgentService` and `SqliteRepository` as composition facades over focused mixins. Introduce a small application-owned `SecretWriterPort`; wire the infrastructure implementation only at the composition root. Extract only directly related validation, preparation, persistence, and conversion helpers.
+**Architecture:** Keep `ApplicationServices` and `SqliteRepository` as composition facades over focused mixins. Introduce a small application-owned `SecretWriterPort`; wire the infrastructure implementation only at the composition root. Extract only directly related validation, preparation, persistence, and conversion helpers.
 
 **Tech Stack:** Python 3.11, Pydantic, SQLAlchemy, pytest, Ruff, mypy, PowerShell, React/Vitest.
 
@@ -44,7 +44,7 @@ Do not weaken the assertion or exclude the new mixin directory.
 
 - [ ] **Step 1: Add a failing injection test**
 
-Construct `NeuroAgentService` with a recording secret writer, create a model profile with an API key, and assert the writer receives `(settings.secrets_file, profile.api_key_env, api_key)` exactly once. The test must not import `neuroagent.infrastructure.secrets`.
+Construct `ApplicationServices` with a recording secret writer, create a model profile with an API key, and assert the writer receives `(settings.secrets_file, profile.api_key_env, api_key)` exactly once. The test must not import `neuroagent.infrastructure.secrets`.
 
 - [ ] **Step 2: Run the test and verify RED**
 

@@ -16,14 +16,22 @@ import nibabel as nib
 import numpy as np
 
 from neuroagent.analysis.dpabi_atlas import DPABI_ATLASES
-from neuroagent.application.contracts import (
-    ApprovalCreate,
-    ApprovalDecision,
-    ExecutionBackend,
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportIncludeRequest,
     ExternalAnalysisImportInspectRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
+)
+from neuroagent.application.contracts.projects import (
     ExternalDemographicsImportRequest,
     ProjectCreate,
+)
+from neuroagent.application.contracts.runs import (
+    ExecutionBackend,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticsRunCreate,
@@ -104,7 +112,7 @@ def main() -> None:
 
     service = build_service(settings)
     try:
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="Synthetic external statistics acceptance",
                 source_roots=[str(source)],
@@ -112,7 +120,7 @@ def main() -> None:
             ),
             "acceptance-project",
         )
-        inspected = service.inspect_external_analysis_import(
+        inspected = service.external_imports.inspect_external_analysis_import(
             ExternalAnalysisImportInspectRequest(
                 project_id=project.project_id,
                 source_path=str(source),
@@ -121,7 +129,7 @@ def main() -> None:
             "acceptance-inspect",
         )
         assert not inspected.inspection.blocking_issues
-        included = service.include_external_analysis_import(
+        included = service.external_imports.include_external_analysis_import(
             inspected.import_id,
             ExternalAnalysisImportIncludeRequest(
                 expected_version=inspected.version,
@@ -182,7 +190,7 @@ def main() -> None:
             df2=None,
         )
         if args.paired:
-            proposal, issues = service.prepare_work_statistical_design_proposal(
+            proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
                 project_id=project.project_id,
                 external_import_id=included.import_id,
                 draft=StatisticsDraft(
@@ -206,7 +214,7 @@ def main() -> None:
                 "ID,Age\nsub-06,21\nsub-02,23\nsub-05,23\nsub-01,20\nsub-04,20\nsub-03,21\n",
                 encoding="utf-8",
             )
-            demographics = service.import_external_demographics(
+            demographics = service.external_imports.import_external_demographics(
                 included.import_id,
                 ExternalDemographicsImportRequest(
                     source_path=str(table),
@@ -216,7 +224,7 @@ def main() -> None:
                 ),
                 "acceptance-demographics",
             )
-            proposal, issues = service.prepare_work_statistical_design_proposal(
+            proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
                 project_id=project.project_id,
                 external_import_id=included.import_id,
                 draft=StatisticsDraft(
@@ -236,10 +244,10 @@ def main() -> None:
             design = proposal.design
             assert isinstance(proposal.correction, FdrCorrection)
             correction = proposal.correction
-        proposed = service.create_statistical_design(
+        proposed = service.statistics.create_statistical_design(
             StatisticalDesignCreate(
                 project_id=project.project_id,
-                expected_project_version=service.get_project(project.project_id).version,
+                expected_project_version=service.projects.get_project(project.project_id).version,
                 input_manifest_hash=selection.input_manifest_hash,
                 design=design,
                 correction=correction,
@@ -247,13 +255,13 @@ def main() -> None:
             ),
             "acceptance-design",
         )
-        validated = service.validate_statistical_design(
+        validated = service.statistics.validate_statistical_design(
             proposed.plan_revision.plan_revision_id,
             StatisticalDesignValidationRequest(expected_version=proposed.plan_revision.version),
             "acceptance-validate",
         )
         plan = validated.plan_revision
-        service.approve_plan(
+        service.plans.approve_plan(
             plan.plan_revision_id,
             ApprovalCreate(
                 expected_version=plan.version,
@@ -264,7 +272,7 @@ def main() -> None:
             ),
             "acceptance-approve",
         )
-        run = service.create_statistics_run(
+        run = service.runs.create_statistics_run(
             StatisticsRunCreate(
                 project_id=project.project_id,
                 statistical_design_revision_id=plan.plan_revision_id,
@@ -276,7 +284,7 @@ def main() -> None:
         )
         print(f"QUEUED {run.run_id}", flush=True)
         assert build_worker(service, worker_id="external-acceptance").run_once()
-        completed = service.get_run(run.run_id)
+        completed = service.runs.get_run(run.run_id)
         print(f"COMPLETED {completed.state.value}", flush=True)
         if completed.state.value != "succeeded":
             raise RuntimeError(completed.error or "external acceptance failed")
@@ -328,7 +336,7 @@ def main() -> None:
         detail = service.repository.get_statistical_result(result.result_id)
         report = json.loads(detail.report_json)
         atlas_id = args.atlas or "aal"
-        localization = service.localize_statistical_result(result.result_id, atlas_id)
+        localization = service.runs.localize_statistical_result(result.result_id, atlas_id)
         if args.atlas:
             assert proposed.localization_plan is not None
             assert report["localization_plan"] == proposed.localization_plan.model_dump(mode="json")
@@ -385,7 +393,7 @@ def main() -> None:
                 "independent_affine_sampling_verified": True,
             }
             assert len(clusters) == 1 and clusters[0]["direction"] == 1
-            roi = service.statistical_cluster_roi(result.result_id, clusters[0]["cluster_id"])
+            roi = service.runs.statistical_cluster_roi(result.result_id, clusters[0]["cluster_id"])
             assert roi.status == "descriptive" and roi.voxel_count == int(signal.sum())
             assert len(roi.rows) == 6
             expected_means = {
@@ -410,7 +418,7 @@ def main() -> None:
             assert report["inference_summary"]["significant_voxel_count"] == 0
             assert report["inference_summary"]["localization_applicable"] is False
             assert localization.status == "no_significant_voxels"
-            roi = service.statistical_cluster_roi(result.result_id, None)
+            roi = service.runs.statistical_cluster_roi(result.result_id, None)
             assert roi.status == "no_significant_voxels" and not roi.rows
         (root / "report.md").write_text(detail.report_markdown, encoding="utf-8")
         (root / "report.json").write_text(detail.report_json, encoding="utf-8")

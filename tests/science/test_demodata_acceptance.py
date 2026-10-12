@@ -293,8 +293,8 @@ def test_demodata_real_dpabi_preprocessing_reaches_qc() -> None:
 
             worker = build_worker(service)
             assert worker.run_once() is True
-            run = service.get_run(run_id)
-            artifacts = service.list_artifacts(run_id)
+            run = service.runs.get_run(run_id)
+            artifacts = service.runs.list_artifacts(run_id)
         finally:
             service.close()
 

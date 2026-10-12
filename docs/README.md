@@ -4,7 +4,7 @@
 - 文档类型：Development
 - 维护者：documentation_maintainer
 - 创建日期：2026-09-23
-- 更新日期：2026-10-09
+- 更新日期：2026-10-11
 - 适用范围：`docs/` 全部文档的导航、权威来源与归档登记
 - 关联：[文档规范](development/documentation-standard.md)
 
@@ -94,6 +94,7 @@
 - [计划 0010：Chat 与 Work 对话流式响应](plans/0010-conversation-streaming.md)
 - [计划 0012：Work 对话与方案审查体验优化](plans/0012-work-conversation-ux.md)
 - [计划 0013：Work 双 Agent 与数据分析完整交付](plans/0013-work-dual-agent-analysis.md)
+- [计划 0014：静息态 fMRI Agent 通用自动化体验](plans/0014-general-agent-automation.md)
 - [Chat / Work 模型理解与参数补全](plans/conversation-model-understanding.md)
 
 ### 决策记录（ADR）

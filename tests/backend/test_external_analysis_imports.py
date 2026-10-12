@@ -12,22 +12,30 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from neuroagent.api.app import create_app
-from neuroagent.application.contracts import (
-    ApprovalCreate,
-    ApprovalDecision,
+from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationTurnCreate,
+)
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportIncludeRequest,
     ExternalAnalysisImportInspectRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
+)
+from neuroagent.application.contracts.projects import (
     ExternalDemographicsImportRequest,
     ProjectCreate,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticsRunCreate,
 )
 from neuroagent.application.conversation_work import WorkActionResult
 from neuroagent.application.errors import ConflictError, InputValidationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.statistics_draft import StatisticsDraft, merge_statistics_draft
 from neuroagent.context.interfaces import ContextPacket
 from neuroagent.domain.fmri.statistics import (
@@ -42,8 +50,8 @@ from neuroagent.execution.compiler import MatlabJobCompiler
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 
 
-def _make_project(service: NeuroAgentService, source_root: Path, work_root: Path) -> str:
-    project = service.create_project(
+def _make_project(service: ApplicationServices, source_root: Path, work_root: Path) -> str:
+    project = service.projects.create_project(
         ProjectCreate(
             name="External metric test",
             source_roots=[str(source_root)],
@@ -74,7 +82,7 @@ def _valid_import_tree(root: Path) -> tuple[str, ...]:
 
 
 def test_external_paired_source_binds_both_images_and_explicit_condition_direction(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "paired"
@@ -82,13 +90,13 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
         for index in range(1, 4):
             _write_map(source / condition / f"zALFFMap_sub-{index:02d}.nii", offset=index)
     _write_map(source / "Mask.nii")
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(
             project_id=project_id, source_path=str(source), layout="paired_conditions"
         ),
         "paired-inspect",
     )
-    imported = service.include_external_analysis_import(
+    imported = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=1,
@@ -104,7 +112,7 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
     )
     assert imported.selection is not None
     assert len({image.artifact_id for image in imported.selection.images}) == 6
-    summaries = service.list_external_analysis_imports(project_id=project_id)
+    summaries = service.external_imports.list_external_analysis_imports(project_id=project_id)
     assert summaries[0].subject_count == 3
     draft = StatisticsDraft(
         test=StatisticalTest.PAIRED_T,
@@ -116,7 +124,7 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
         correction_method="fdr",
         correction_parameters={"q_threshold": 0.05},
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project_id, draft=draft
     )
     assert proposal is not None and not issues
@@ -135,13 +143,13 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
         design=proposal.design,
         correction=proposal.correction,
     )
-    service.create_statistical_design(request, "paired-design")
+    service.statistics.create_statistical_design(request, "paired-design")
     bindings = MatlabJobCompiler(service.repository)._external_bindings(
         proposal.design, proposal.input_manifest_hash
     )
     assert len(bindings) == 7
     assert len({binding.external_relative_path for binding in bindings}) == 7
-    reversed_proposal, issues = service.prepare_work_statistical_design_proposal(
+    reversed_proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id,
         project_id=project_id,
         draft=draft.model_copy(update={"condition_order": ["before", "after"]}),
@@ -150,21 +158,21 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
     assert reversed_proposal.proposal_hash != proposal.proposal_hash
     (source / "after" / "zALFFMap_sub-02.nii").unlink()
     with pytest.raises(ConflictError, match="发生变化"):
-        service.create_statistical_design(request, "paired-missing-source")
+        service.statistics.create_statistical_design(request, "paired-missing-source")
 
 
 def test_external_demographics_aligns_covariates_and_invalidates_old_design(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "covariates"
     subjects = _valid_import_tree(source)
     _write_map(source / "Mask.nii")
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "cov-inspect",
     )
-    imported = service.include_external_analysis_import(
+    imported = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=1,
@@ -209,7 +217,7 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
         missing_value_policy=MissingValuePolicy.ERROR,
         covariates=[{"name": "age", "centering": "grand_mean"}],
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project_id, draft=draft
     )
     assert proposal is not None and not issues
@@ -221,10 +229,10 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
         input_manifest_hash=proposal.input_manifest_hash,
         design=proposal.design,
     )
-    frozen = service.create_statistical_design(frozen_request, "cov-design")
+    frozen = service.statistics.create_statistical_design(frozen_request, "cov-design")
     assert frozen.design.external_demographics_hash == demographics["content_hash"]
     for test in (StatisticalTest.CORRELATION, StatisticalTest.REGRESSION):
-        prediction, issues = service.prepare_work_statistical_design_proposal(
+        prediction, issues = service.statistics.prepare_work_statistical_design_proposal(
             external_import_id=imported.import_id,
             project_id=project_id,
             draft=draft.model_copy(
@@ -243,8 +251,8 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
         assert all(image.group is None for image in prediction.design.images)
     # A revised table is a new immutable record, never a replacement of the old rows.
     table.write_text("ID,Age\nsub-02,24\nsub-04,29\nsub-03,25\nsub-01,20\n", encoding="utf-8")
-    latest_import = service.get_external_analysis_import(imported.import_id)
-    revised = service.import_external_demographics(
+    latest_import = service.external_imports.get_external_analysis_import(imported.import_id)
+    revised = service.external_imports.import_external_demographics(
         imported.import_id,
         body.model_copy(update={"expected_import_version": latest_import.version}),
         "cov-revision",
@@ -255,31 +263,25 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
             proposal.design, proposal.input_manifest_hash
         )
     with pytest.raises(ConflictError, match="人口学修订"):
-        service.create_statistical_design(frozen_request, "cov-stale-design")
+        service.statistics.create_statistical_design(frozen_request, "cov-stale-design")
     table.write_text("ID,Age\nsub-01,20\nsub-01,24\n", encoding="utf-8")
+    current_version = service.external_imports.get_external_analysis_import(
+        imported.import_id
+    ).version
     with pytest.raises(InputValidationError, match="重复"):
-        service.import_external_demographics(
+        service.external_imports.import_external_demographics(
             imported.import_id,
-            body.model_copy(
-                update={
-                    "expected_import_version": service.get_external_analysis_import(
-                        imported.import_id
-                    ).version
-                }
-            ),
+            body.model_copy(update={"expected_import_version": current_version}),
             "cov-duplicate",
         )
     table.write_text("ID,Age\nsub-01,20\nsub-02,24\nsub-03,25\n", encoding="utf-8")
+    current_version = service.external_imports.get_external_analysis_import(
+        imported.import_id
+    ).version
     with pytest.raises(InputValidationError, match="恰好覆盖"):
-        service.import_external_demographics(
+        service.external_imports.import_external_demographics(
             imported.import_id,
-            body.model_copy(
-                update={
-                    "expected_import_version": service.get_external_analysis_import(
-                        imported.import_id
-                    ).version
-                }
-            ),
+            body.model_copy(update={"expected_import_version": current_version}),
             "cov-missing-subject",
         )
     for ages, expected_text in (
@@ -291,31 +293,31 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
             + "".join(f"{subject},{age}\n" for subject, age in zip(subjects, ages, strict=True)),
             encoding="utf-8",
         )
-        service.import_external_demographics(
+        current_version = service.external_imports.get_external_analysis_import(
+            imported.import_id
+        ).version
+        service.external_imports.import_external_demographics(
             imported.import_id,
-            body.model_copy(
-                update={
-                    "expected_import_version": service.get_external_analysis_import(
-                        imported.import_id
-                    ).version
-                }
-            ),
+            body.model_copy(update={"expected_import_version": current_version}),
             f"cov-invalid-{ages[0]}",
         )
-        invalid, issues = service.prepare_work_statistical_design_proposal(
+        invalid, issues = service.statistics.prepare_work_statistical_design_proposal(
             external_import_id=imported.import_id, project_id=project_id, draft=draft
         )
         assert invalid is None and any(expected_text in issue.message for issue in issues)
 
 
 def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
-    service: NeuroAgentService, source_root: Path, work_root: Path, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "work-external"
     subjects = _valid_import_tree(source)
     _write_map(source / "Mask.nii")
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "work-inspect",
     )
@@ -330,13 +332,13 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
         correction_parameters={"q_threshold": 0.05},
         external_import_id=inspected.import_id,
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=inspected.import_id,
         project_id=project_id,
         draft=draft,
     )
     assert proposal is None and issues[0].code == "external_import_not_selectable"
-    imported = service.include_external_analysis_import(
+    imported = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=1,
@@ -350,7 +352,7 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
         ),
         "work-include",
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id,
         project_id=project_id,
         draft=draft,
@@ -367,7 +369,7 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
         ("sub-01", "ASD"),
     ]
     assert proposal.correction is not None
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project_id), "external-work-chat"
     )
     patch = draft.model_dump(mode="json", exclude={"external_import_id", "external_import_hash"})
@@ -430,26 +432,26 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
         merge_statistics_draft(draft, {"external_import_id": "model-invented"}).external_import_id
         == imported.import_id
     )
-    invalid, issues = service.prepare_work_statistical_design_proposal(
+    invalid, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id="another-project", draft=draft
     )
     assert invalid is None and issues[0].code == "cross_project_external_import"
     _write_map(source / "ASD" / "sub-01-zALFFMap.nii", offset=42)
-    invalid, issues = service.prepare_work_statistical_design_proposal(
+    invalid, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project_id, draft=draft
     )
     assert invalid is None and issues[0].code == "external_import_source_changed"
 
 
 def test_external_import_requires_review_and_binds_inclusion_to_source_hash(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "Slow-1"
     subjects = _valid_import_tree(source)
     _write_map(source / "Mask.nii")
 
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "external-inspection-key",
     )
@@ -463,7 +465,7 @@ def test_external_import_requires_review_and_binds_inclusion_to_source_hash(
     assert len(inspected.inspection.images) == 4
     assert inspected.inspection.unknown_processing_fields
 
-    included = service.include_external_analysis_import(
+    included = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=1,
@@ -489,28 +491,28 @@ def test_external_import_requires_review_and_binds_inclusion_to_source_hash(
     assert included.inclusion.mask_grid_signature == inspected.inspection.grid_signature
     assert included.inclusion.mask_sha256 is not None
     assert included.inclusion_hash is not None
-    assert service.get_external_analysis_import(inspected.import_id).inclusion_hash == (
-        included.inclusion_hash
-    )
-    assert service.list_external_analysis_imports(project_id=project_id)[0].import_id == (
+    assert service.external_imports.get_external_analysis_import(
         inspected.import_id
-    )
+    ).inclusion_hash == (included.inclusion_hash)
+    assert service.external_imports.list_external_analysis_imports(project_id=project_id)[
+        0
+    ].import_id == (inspected.import_id)
 
 
 def test_external_import_refuses_files_changed_after_inspection(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "Slow-1"
     subjects = _valid_import_tree(source)
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "external-inspection-key-2",
     )
     _write_map(source / "ASD" / "sub-01-zALFFMap.nii", offset=99)
 
     with pytest.raises(ConflictError) as caught:
-        service.include_external_analysis_import(
+        service.external_imports.include_external_analysis_import(
             inspected.import_id,
             ExternalAnalysisImportIncludeRequest(
                 expected_version=1,
@@ -527,20 +529,20 @@ def test_external_import_refuses_files_changed_after_inspection(
 
 
 def test_external_import_rejects_mask_on_another_grid(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "different-mask-grid"
     subjects = _valid_import_tree(source)
     mask = nib.Nifti1Image(np.ones((4, 5, 6), dtype=np.float32), np.diag([2, 1, 1, 1]))
     nib.save(mask, str(source / "Mask.nii"))
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "external-inspection-mask-grid",
     )
 
     with pytest.raises(InputValidationError) as caught:
-        service.include_external_analysis_import(
+        service.external_imports.include_external_analysis_import(
             inspected.import_id,
             ExternalAnalysisImportIncludeRequest(
                 expected_version=1,
@@ -558,20 +560,20 @@ def test_external_import_rejects_mask_on_another_grid(
 
 
 def test_external_import_with_scanner_blockers_cannot_be_included(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "mixed"
     _write_map(source / "ASD" / "sub-01-zALFFMap.nii")
     _write_map(source / "HC" / "sub-02-zReHoMap.nii", offset=1)
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "external-inspection-key-3",
     )
     assert inspected.inspection.blocking_issues
 
     with pytest.raises(InputValidationError, match="阻断项"):
-        service.include_external_analysis_import(
+        service.external_imports.include_external_analysis_import(
             inspected.import_id,
             ExternalAnalysisImportIncludeRequest(
                 expected_version=1,
@@ -587,7 +589,7 @@ def test_external_import_with_scanner_blockers_cannot_be_included(
 
 
 def test_external_import_api_returns_full_scan_once_and_bounded_list_projection(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "Slow-1"
@@ -634,17 +636,17 @@ def test_external_import_api_returns_full_scan_once_and_bounded_list_projection(
 
 
 def test_external_source_freezes_design_and_stages_hash_verified_copies(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project_id = _make_project(service, source_root, work_root)
     source = source_root / "external-execution"
     subjects = _valid_import_tree(source)
     _write_map(source / "Mask.nii")
-    inspected = service.inspect_external_analysis_import(
+    inspected = service.external_imports.inspect_external_analysis_import(
         ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
         "execution-inspect",
     )
-    imported = service.include_external_analysis_import(
+    imported = service.external_imports.include_external_analysis_import(
         inspected.import_id,
         ExternalAnalysisImportIncludeRequest(
             expected_version=1,
@@ -687,21 +689,21 @@ def test_external_source_freezes_design_and_stages_hash_verified_copies(
         external_import_id=imported.import_id,
         external_import_hash=imported.inclusion_hash,
     )
-    frozen = service.create_statistical_design(
+    frozen = service.statistics.create_statistical_design(
         StatisticalDesignCreate(
             project_id=project_id,
-            expected_project_version=service.get_project(project_id).version,
+            expected_project_version=service.projects.get_project(project_id).version,
             input_manifest_hash=selection.input_manifest_hash,
             design=design,
         ),
         "execution-design",
     )
-    validated = service.validate_statistical_design(
+    validated = service.statistics.validate_statistical_design(
         frozen.plan_revision.plan_revision_id,
         StatisticalDesignValidationRequest(expected_version=frozen.plan_revision.version),
         "execution-validate",
     )
-    service.approve_plan(
+    service.plans.approve_plan(
         validated.plan_revision.plan_revision_id,
         ApprovalCreate(
             expected_version=validated.plan_revision.version,
@@ -712,7 +714,7 @@ def test_external_source_freezes_design_and_stages_hash_verified_copies(
         ),
         "execution-approve",
     )
-    run = service.create_statistics_run(
+    run = service.runs.create_statistics_run(
         StatisticsRunCreate(
             project_id=project_id,
             statistical_design_revision_id=validated.plan_revision.plan_revision_id,
@@ -731,7 +733,7 @@ def test_external_source_freezes_design_and_stages_hash_verified_copies(
     )
     assert len(job.artifact_bindings) == 5
     assert all(item.external_import_id == imported.import_id for item in job.artifact_bindings)
-    destination = Path(service.get_project(project_id).work_root) / run.run_id / "attempt"
+    destination = Path(service.projects.get_project(project_id).work_root) / run.run_id / "attempt"
     destination.mkdir(parents=True)
     executor = MatlabJobExecutor(service.repository, service.settings)
     executor._stage_inputs(run.run_id, destination, job)
@@ -743,7 +745,7 @@ def test_external_source_freezes_design_and_stages_hash_verified_copies(
 
     _write_map(source / "ASD" / "sub-01-zALFFMap.nii", offset=100)
     with pytest.raises(ConflictError) as caught:
-        service.create_statistics_run(
+        service.runs.create_statistics_run(
             StatisticsRunCreate(
                 project_id=project_id,
                 statistical_design_revision_id=validated.plan_revision.plan_revision_id,

@@ -14,7 +14,9 @@ from typing import Any
 
 import pytest
 
-from neuroagent.application.contracts import ArtifactView
+from neuroagent.application.contracts.runs import (
+    ArtifactView,
+)
 from neuroagent.domain.fmri import (
     AnalysisImage,
     ArtifactKind,

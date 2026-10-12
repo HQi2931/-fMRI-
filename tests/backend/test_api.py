@@ -14,16 +14,20 @@ from neuroagent.agent.models import (
 )
 from neuroagent.agent.providers import MockProvider
 from neuroagent.api import create_app
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
+    SkillPlanIntent,
+)
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
     ManifestScanRequest,
     ProjectCreate,
-    RunCreate,
-    SkillPlanIntent,
 )
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
 
@@ -32,7 +36,7 @@ from .test_environment import _fake_stack
 from .test_science_agent_api import _minimal_preprocessing_payload
 
 
-def test_health_openapi_and_error_envelope(service: NeuroAgentService) -> None:
+def test_health_openapi_and_error_envelope(service: ApplicationServices) -> None:
     with TestClient(create_app(service=service)) as client:
         assert client.get("/api/v1/health").json() == {"status": "ok", "database": "ok"}
         schema = client.get("/api/v1/openapi.json").json()
@@ -49,7 +53,7 @@ def test_health_openapi_and_error_envelope(service: NeuroAgentService) -> None:
 
 
 def test_workspace_check_reports_dpabi_input_and_outputs(
-    service: NeuroAgentService, source_root: Path
+    service: ApplicationServices, source_root: Path
 ) -> None:
     (source_root / "FunRaw" / "S001").mkdir(parents=True)
     (source_root / "T1Raw" / "S001").mkdir(parents=True)
@@ -75,7 +79,7 @@ def test_workspace_check_reports_dpabi_input_and_outputs(
 
 
 def test_workspace_check_reports_format_risks_without_blocking(
-    service: NeuroAgentService, source_root: Path
+    service: ApplicationServices, source_root: Path
 ) -> None:
     nifti_header = (348).to_bytes(4, "little") + b"\0" * 344
     for stage in ("FunRaw", "FunImg"):
@@ -93,7 +97,7 @@ def test_workspace_check_reports_format_risks_without_blocking(
 
 
 def test_chat_conversation_persists_turns_and_rag_tool_calls(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         created = client.post(
@@ -134,7 +138,7 @@ def test_chat_conversation_persists_turns_and_rag_tool_calls(
 
 
 def test_rebinding_provider_connection_updates_one_record(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     def body(model: str) -> dict[str, object]:
         return {
@@ -253,7 +257,7 @@ def test_chat_uses_selected_llm_and_explicit_web_search(
 
 
 def test_work_conversation_rejects_removed_workspace_check_action(
-    service: NeuroAgentService, source_root: Path
+    service: ApplicationServices, source_root: Path
 ) -> None:
     (source_root / "FunRaw" / "S001").mkdir(parents=True)
     nifti_header = (348).to_bytes(4, "little") + b"\0" * 344
@@ -353,7 +357,7 @@ def test_work_format_advisor_is_not_called_for_removed_check_action(
 
 
 def test_work_conversation_registers_selected_workspace_and_freezes_manifest(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     (source_root / "FunRaw" / "S001").mkdir(parents=True)
     nifti_header = (348).to_bytes(4, "little") + b"\0" * 344
@@ -395,7 +399,7 @@ def test_work_conversation_registers_selected_workspace_and_freezes_manifest(
         == body["assistant_message"]["payload"]["manifest"]["manifest_id"]
     )
     assert body["assistant_message"]["payload"]["manifest"]["profile"]["subject_count"] == 1
-    stored_dataset = service.get_dataset(
+    stored_dataset = service.projects.get_dataset(
         body["assistant_message"]["payload"]["dataset"]["dataset_id"]
     )
     assert (
@@ -405,7 +409,7 @@ def test_work_conversation_registers_selected_workspace_and_freezes_manifest(
 
 
 def test_work_conversation_rejects_removed_organization_preview_action(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     (source_root / "FunRaw" / "S001").mkdir(parents=True)
     (source_root / "T1Raw" / "S001").mkdir(parents=True)
@@ -473,7 +477,7 @@ def test_work_conversation_rejects_removed_organization_preview_action(
 
 
 def test_work_conversation_plan_request_waits_for_explicit_scientific_parameters(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         created = client.post(
@@ -496,7 +500,7 @@ def test_work_conversation_plan_request_waits_for_explicit_scientific_parameters
 
 
 def test_work_conversation_handles_greetings_and_form_questions_naturally(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         created = client.post(
@@ -524,7 +528,7 @@ def test_work_conversation_handles_greetings_and_form_questions_naturally(
 
 
 def test_work_conversation_routes_qc_and_statistical_result_queries(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="work-query-project")
     with TestClient(create_app(service=service)) as client:
@@ -555,7 +559,7 @@ def test_work_conversation_routes_qc_and_statistical_result_queries(
 
 
 def test_removed_work_card_endpoints_are_not_exposed(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         capabilities = client.get("/api/v1/work/capabilities")
@@ -587,7 +591,7 @@ def test_removed_work_card_endpoints_are_not_exposed(
 
 
 def test_work_conversation_naturally_prepares_demo_alff_plan_without_cards(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
 ) -> None:
     subject = source_root / "FunImg" / "Sub_001"
@@ -629,7 +633,7 @@ def test_work_conversation_naturally_prepares_demo_alff_plan_without_cards(
 
 
 def test_work_conversation_requires_approved_plan_and_run_confirmation(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         created = client.post(
@@ -658,7 +662,7 @@ def test_work_conversation_requires_approved_plan_and_run_confirmation(
 
 
 def test_work_conversation_rejects_non_preprocessing_plan_as_a_recorded_tool_failure(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="conversation-project")
     plan = make_approved_plan(service, project.project_id)
@@ -706,7 +710,7 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
     )
     service = build_service(settings)
     try:
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="Conversation run",
                 source_roots=[str(source)],
@@ -714,7 +718,7 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
             ),
             "conversation-run-project",
         )
-        dataset = service.create_dataset(
+        dataset = service.projects.create_dataset(
             project.project_id,
             DatasetCreate(
                 name="DPABI input",
@@ -723,7 +727,7 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
             ),
             "conversation-run-dataset",
         )
-        manifest = service.inspect_dataset(
+        manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(
                 expected_dataset_version=dataset.version,
@@ -756,7 +760,9 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
                     "content": "使用这些显式参数生成预处理方案",
                     "action": "prepare_preprocessing_plan",
                     "skill_plan_intent": intent.model_dump(mode="json"),
-                    "expected_project_version": service.get_project(project.project_id).version,
+                    "expected_project_version": service.projects.get_project(
+                        project.project_id
+                    ).version,
                 },
                 headers={"Idempotency-Key": "conversation-run-plan"},
             )
@@ -767,10 +773,10 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
                 prepared_body["assistant_message"]["payload"]["skill_plan"]["dataset_ref"]
                 == dataset.dataset_id
             )
-            plan = service.get_plan(
+            plan = service.plans.get_plan(
                 prepared_body["assistant_message"]["payload"]["plan_revision"]["plan_revision_id"]
             )
-            service.approve_plan(
+            service.plans.approve_plan(
                 plan.plan_revision_id,
                 ApprovalCreate(
                     expected_version=plan.version,
@@ -833,7 +839,7 @@ def test_work_conversation_starts_approved_preprocessing_and_restores_progress(
 
 
 def test_write_endpoint_requires_idempotency_header(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         response = client.post(
@@ -848,7 +854,7 @@ def test_write_endpoint_requires_idempotency_header(
         assert response.json()["error"]["code"] == "request_validation_failed"
 
 
-def test_environment_probe_never_starts_matlab(service: NeuroAgentService) -> None:
+def test_environment_probe_never_starts_matlab(service: ApplicationServices) -> None:
     with TestClient(create_app(service=service)) as client:
         response = client.get("/api/v1/environment/probe")
         assert response.status_code == 200
@@ -862,7 +868,7 @@ def test_environment_probe_never_starts_matlab(service: NeuroAgentService) -> No
 
 
 def test_environment_config_accepts_user_selected_local_paths(
-    service: NeuroAgentService, tmp_path: Path
+    service: ApplicationServices, tmp_path: Path
 ) -> None:
     matlab = tmp_path / "MATLAB" / "bin" / "matlab.exe"
     spm = tmp_path / "MATLAB" / "toolbox" / "spm"
@@ -894,12 +900,12 @@ def test_environment_config_accepts_user_selected_local_paths(
 
 
 def test_unexpected_error_uses_safe_envelope(
-    service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def explode() -> None:
         raise RuntimeError("private implementation detail")
 
-    monkeypatch.setattr(service, "health", explode)
+    monkeypatch.setattr(service.environment, "health", explode)
     with TestClient(create_app(service=service), raise_server_exceptions=False) as client:
         response = client.get("/api/v1/health", headers={"X-Trace-ID": "test-trace-id"})
 
@@ -916,11 +922,11 @@ def test_unexpected_error_uses_safe_envelope(
 
 
 def test_sse_returns_persisted_run_events_and_supports_resume_cursor(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root)
     plan = make_approved_plan(service, project.project_id)
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -941,7 +947,7 @@ def test_sse_returns_persisted_run_events_and_supports_resume_cursor(
         assert response.status_code == 200
         assert "event: RunQueued" in response.text
         assert "event: WorkflowTransitioned" in response.text
-        last_id = service.list_run_events(run.run_id)[-1].event_id
+        last_id = service.runs.list_run_events(run.run_id)[-1].event_id
         resumed = client.get(
             f"/api/v1/runs/{run.run_id}/events?once=true",
             headers={"Last-Event-ID": str(last_id)},

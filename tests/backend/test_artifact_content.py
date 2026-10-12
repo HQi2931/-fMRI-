@@ -10,9 +10,11 @@ from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
 from neuroagent.application.artifact_content import nifti_preview_png, nifti_preview_slice_count
-from neuroagent.application.contracts import RunCreate
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
 from neuroagent.application.errors import InputValidationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 
 from .conftest import make_approved_plan, make_project
 
@@ -28,11 +30,11 @@ def _nifti() -> bytes:
 
 
 def test_registered_download_and_png_preview_enforce_integrity(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root)
     plan = make_approved_plan(service, project.project_id)
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -57,7 +59,7 @@ def test_registered_download_and_png_preview_enforce_integrity(
             }
         ],
     )
-    artifact = service.list_artifacts(run.run_id)[0]
+    artifact = service.runs.list_artifacts(run.run_id)[0]
     with TestClient(create_app(service=service)) as client:
         response = client.get(f"/api/v1/artifacts/{artifact.artifact_id}/content")
         assert response.status_code == 200

@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from statistics import mean, stdev
 from typing import Any
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.statistics import (
     StatisticalClusterRoiView,
     StatisticalMethodSummary,
     StatisticalResultDetailView,

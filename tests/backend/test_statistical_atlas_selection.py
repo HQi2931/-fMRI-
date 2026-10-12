@@ -8,8 +8,10 @@ import numpy as np
 import pytest
 from scipy.io import savemat
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignValidationRequest,
     StatisticsRunCreate,
 )
@@ -50,18 +52,20 @@ def test_atlas_frozen_in_formal_plan_and_changed_bytes_block_approval(
     root = _atlases(service)
     _, request, _ = _proposal(service, source_root, work_root)
     request = request.model_copy(update={"atlas_id": atlas_id})
-    created = service.create_statistical_design(request, "atlas-create")
+    created = service.statistics.create_statistical_design(request, "atlas-create")
     selection = created.localization_plan
     assert selection is not None and selection.atlas_id == atlas_id
     assert selection.coordinate_space == "MNI" and selection.cluster_connectivity == 26
     assert created.plan_revision.plan["localization_plan"] == selection.model_dump(mode="json")
     assert (
-        service.get_statistical_design(created.plan_revision.plan_revision_id).localization_plan
+        service.statistics.get_statistical_design(
+            created.plan_revision.plan_revision_id
+        ).localization_plan
         == selection
     )
     plan = created.plan_revision
     if stage != "validation":
-        plan = service.validate_statistical_design(
+        plan = service.statistics.validate_statistical_design(
             plan.plan_revision_id,
             StatisticalDesignValidationRequest(expected_version=plan.version),
             "atlas-validate",
@@ -74,7 +78,7 @@ def test_atlas_frozen_in_formal_plan_and_changed_bytes_block_approval(
         reason="Synthetic atlas mutation fixture",
     )
     if stage == "execution":
-        service.approve_plan(plan.plan_revision_id, approval, "atlas-approve")
+        service.plans.approve_plan(plan.plan_revision_id, approval, "atlas-approve")
     path = (
         root
         / {"aal": "aal.nii", "aal3": "AAL3v1_1mm.nii", "brodmann": "Brodmann_YCG.nii"}[atlas_id]
@@ -82,15 +86,15 @@ def test_atlas_frozen_in_formal_plan_and_changed_bytes_block_approval(
     nib.save(nib.Nifti1Image(np.full((3, 4, 5), 2, dtype=np.int16), np.eye(4)), path)
     with pytest.raises(ConflictError) as failure:
         if stage == "validation":
-            service.validate_statistical_design(
+            service.statistics.validate_statistical_design(
                 plan.plan_revision_id,
                 StatisticalDesignValidationRequest(expected_version=plan.version),
                 "atlas-changed-validate",
             )
         elif stage == "approval":
-            service.approve_plan(plan.plan_revision_id, approval, "atlas-approve")
+            service.plans.approve_plan(plan.plan_revision_id, approval, "atlas-approve")
         else:
-            service.create_statistics_run(
+            service.runs.create_statistics_run(
                 StatisticsRunCreate(
                     project_id=plan.project_id,
                     statistical_design_revision_id=plan.plan_revision_id,
@@ -102,7 +106,7 @@ def test_atlas_frozen_in_formal_plan_and_changed_bytes_block_approval(
         "plan_stale" if stage == "execution" else "statistics_atlas_changed"
     )
     assert (
-        service.get_plan(plan.plan_revision_id).state.value
+        service.plans.get_plan(plan.plan_revision_id).state.value
         == {
             "validation": "draft",
             "approval": "awaiting_approval",
@@ -116,10 +120,10 @@ def test_no_atlas_preserves_legacy_statistics_and_unavailable_selection_blocks(
 ):
     _, request, _ = _proposal(service, source_root, work_root)
     with pytest.raises(InputValidationError, match="所选图谱不可用"):
-        service.create_statistical_design(
+        service.statistics.create_statistical_design(
             request.model_copy(update={"atlas_id": "aal"}), "atlas-missing"
         )
-    created = service.create_statistical_design(request, "atlas-none")
+    created = service.statistics.create_statistical_design(request, "atlas-none")
     assert (
         created.localization_plan is None and "localization_plan" not in created.plan_revision.plan
     )
@@ -171,19 +175,19 @@ def test_localization_cannot_replace_frozen_atlas_but_empty_result_skips_atlas_c
     service, monkeypatch
 ):
     _atlases(service)
-    selection = service._freeze_statistical_atlas("aal").model_dump(mode="json")
+    selection = service.statistics._freeze_statistical_atlas("aal").model_dump(mode="json")
     monkeypatch.setattr(service.repository, "get_statistical_result", lambda _: _detail(selection))
     with pytest.raises(ConflictError) as failure:
-        service.localize_statistical_result("atlas-result", "aal3")
+        service.runs.localize_statistical_result("atlas-result", "aal3")
     assert failure.value.code == "statistics_atlas_selection_mismatch"
     selection["atlas_content_hash"] = "e" * 64
     with pytest.raises(ConflictError) as failure:
-        service.localize_statistical_result("atlas-result", "aal")
+        service.runs.localize_statistical_result("atlas-result", "aal")
     assert failure.value.code == "statistics_atlas_changed"
     monkeypatch.setattr(
         service.repository, "get_statistical_result", lambda _: _detail(selection, empty=True)
     )
     assert (
-        service.localize_statistical_result("atlas-result", "missing-atlas").status
+        service.runs.localize_statistical_result("atlas-result", "missing-atlas").status
         == "no_reportable_clusters"
     )

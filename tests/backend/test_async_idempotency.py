@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from neuroagent.application.errors import ConflictError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 
 
 class _Request(BaseModel):
@@ -23,7 +23,7 @@ class _Response(BaseModel):
 
 @pytest.mark.asyncio
 async def test_caller_cancellation_does_not_make_dispatched_operation_retryable(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
@@ -38,7 +38,7 @@ async def test_caller_cancellation_does_not_make_dispatched_operation_retryable(
 
     request = _Request(value="same")
     pending = asyncio.create_task(
-        service._idempotent_async(
+        service.projects._idempotent_async(
             scope="test:async-cancel",
             key="cancelled-caller-key",
             request=request,
@@ -59,7 +59,7 @@ async def test_caller_cancellation_does_not_make_dispatched_operation_retryable(
     async def must_not_repeat() -> str:
         raise AssertionError("the completed operation must be replayed from storage")
 
-    repeated = await service._idempotent_async(
+    repeated = await service.projects._idempotent_async(
         scope="test:async-cancel",
         key="cancelled-caller-key",
         request=request,
@@ -73,7 +73,7 @@ async def test_caller_cancellation_does_not_make_dispatched_operation_retryable(
 
 @pytest.mark.asyncio
 async def test_final_owner_fence_precedes_business_finalization(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     finalized = False
@@ -90,7 +90,7 @@ async def test_final_owner_fence_precedes_business_finalization(
     )
 
     with pytest.raises(ConflictError) as raised:
-        await service._idempotent_async(
+        await service.projects._idempotent_async(
             scope="test:owner-fence",
             key="lost-owner-key",
             request=_Request(value="same"),

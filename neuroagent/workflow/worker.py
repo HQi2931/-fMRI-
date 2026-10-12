@@ -15,10 +15,11 @@ import threading
 import uuid
 from typing import Any, Protocol
 
-from neuroagent.application.contracts import PlanRevisionView, RunView, WorkflowState
-from neuroagent.application.ports import ClaimedJob, JobExecutor
+from neuroagent.domain.lifecycle import WorkflowState
+from neuroagent.execution.ports import JobExecutor
 from neuroagent.observability.events import redact_event_payload
 from neuroagent.observability.tracing import bind_trace_id, reset_trace_id
+from neuroagent.workflow.models import ClaimedJob, JobEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +80,9 @@ class WorkerRepository(Protocol):
         actor: str,
     ) -> bool: ...
 
-    def get_run(self, run_id: str) -> RunView: ...
+    def get_run(self, run_id: str) -> WorkerRun: ...
 
-    def get_plan(self, plan_revision_id: str) -> PlanRevisionView: ...
+    def get_plan(self, plan_revision_id: str) -> WorkerPlan: ...
 
     def register_artifacts(
         self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
@@ -96,6 +97,16 @@ class WorkerRepository(Protocol):
         severity: str,
         payload: dict[str, object],
     ) -> None: ...
+
+
+class WorkerRun(Protocol):
+    project_id: str
+    plan_revision_id: str
+
+
+class WorkerPlan(Protocol):
+    plan_hash: str
+    manifest_hash: str
 
 
 class SQLiteWorker:
@@ -165,13 +176,39 @@ class SQLiteWorker:
         if not isinstance(payload, dict):
             payload = {}
         plan = self._repository.get_plan(run.plan_revision_id)
-        payload = {
-            **payload,
-            "job_id": job_id,
-            "run_id": run_id,
-            "plan_hash": str(payload.get("plan_hash", plan.plan_hash)),
-            "input_manifest_hash": str(payload.get("input_manifest_hash", plan.manifest_hash)),
-        }
+        attempt = int(claimed.get("attempt", 1))
+        try:
+            envelope = JobEnvelope.from_persisted(
+                payload, job_id=job_id, run_id=run_id, attempt=attempt
+            )
+        except (TypeError, ValueError) as exc:
+            finalized = self._repository.finalize_job_failure(
+                job_id,
+                self.worker_id,
+                requested_state=WorkflowState.FAILED_TERMINAL,
+                error=f"invalid_job_envelope:{type(exc).__name__}",
+                actor=self.worker_id,
+            )
+            if not finalized:
+                self._record_lease_lost(run.project_id, run_id, job_id)
+            return True
+        command = dict(envelope.command)
+        approval_binding = dict(envelope.approval_binding)
+        approval_binding.setdefault("plan_hash", plan.plan_hash)
+        approval_binding.setdefault("input_manifest_hash", plan.manifest_hash)
+        envelope = envelope.model_copy(
+            update={
+                "command": command,
+                "approval_binding": approval_binding,
+                "job_id": job_id,
+                "run_id": run_id,
+                "attempt": attempt,
+            }
+        )
+        # Keep the long-standing executor port stable during migration. The
+        # queue and worker boundary use JobEnvelope; controlled adapters receive
+        # the flattened, server-validated command until all plugins migrate.
+        payload = envelope.executor_payload()
         lease_lost = threading.Event()
         heartbeat_stop = threading.Event()
         heartbeat_interval = max(0.05, self._lease_seconds / 3)

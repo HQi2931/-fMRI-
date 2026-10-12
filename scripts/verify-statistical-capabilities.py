@@ -21,14 +21,22 @@ import nibabel as nib
 import numpy as np
 from scipy import ndimage, stats
 
-from neuroagent.application.contracts import (
-    ApprovalCreate,
-    ApprovalDecision,
-    ExecutionBackend,
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportIncludeRequest,
     ExternalAnalysisImportInspectRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
+)
+from neuroagent.application.contracts.projects import (
     ExternalDemographicsImportRequest,
     ProjectCreate,
+)
+from neuroagent.application.contracts.runs import (
+    ExecutionBackend,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticsRunCreate,
@@ -371,7 +379,7 @@ def main() -> None:
     )
     service = build_service(settings)
     try:
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="Synthetic statistical capability acceptance",
                 source_roots=[str(source)],
@@ -379,7 +387,7 @@ def main() -> None:
             ),
             "capability-project",
         )
-        imported = service.inspect_external_analysis_import(
+        imported = service.external_imports.inspect_external_analysis_import(
             ExternalAnalysisImportInspectRequest(
                 project_id=project.project_id,
                 source_path=str(source),
@@ -388,7 +396,7 @@ def main() -> None:
             "capability-inspect",
         )
         assert not imported.inspection.blocking_issues
-        included = service.include_external_analysis_import(
+        included = service.external_imports.include_external_analysis_import(
             imported.import_id,
             ExternalAnalysisImportIncludeRequest(
                 expected_version=imported.version,
@@ -403,7 +411,7 @@ def main() -> None:
             "capability-include",
         )
         assert included.selection is not None
-        demographics = service.import_external_demographics(
+        demographics = service.external_imports.import_external_demographics(
             included.import_id,
             ExternalDemographicsImportRequest(
                 source_path=str(source / "demographics.csv"),
@@ -447,7 +455,7 @@ def main() -> None:
                 else {"q_threshold": 0.05},
             }
         )
-        proposal, issues = service.prepare_work_statistical_design_proposal(
+        proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
             project_id=project.project_id,
             external_import_id=included.import_id,
             draft=draft,
@@ -473,22 +481,22 @@ def main() -> None:
         if args.test == "regression":
             reference["matrix"] = reference["matrix"][:, (0, 2, 1)]
             reference["contrast"] = np.asarray((0.0, 0.0, 1.0))
-        created = service.create_statistical_design(
+        created = service.statistics.create_statistical_design(
             StatisticalDesignCreate(
                 project_id=project.project_id,
-                expected_project_version=service.get_project(project.project_id).version,
+                expected_project_version=service.projects.get_project(project.project_id).version,
                 input_manifest_hash=included.selection.input_manifest_hash,
                 design=design,
                 correction=correction,
             ),
             "capability-design",
         )
-        plan = service.validate_statistical_design(
+        plan = service.statistics.validate_statistical_design(
             created.plan_revision.plan_revision_id,
             StatisticalDesignValidationRequest(expected_version=created.plan_revision.version),
             "capability-validate",
         ).plan_revision
-        service.approve_plan(
+        service.plans.approve_plan(
             plan.plan_revision_id,
             ApprovalCreate(
                 expected_version=plan.version,
@@ -499,7 +507,7 @@ def main() -> None:
             ),
             "capability-approve",
         )
-        run = service.create_statistics_run(
+        run = service.runs.create_statistics_run(
             StatisticsRunCreate(
                 project_id=project.project_id,
                 statistical_design_revision_id=plan.plan_revision_id,
@@ -511,7 +519,7 @@ def main() -> None:
         )
         print(f"QUEUED {args.test} {run.run_id}", flush=True)
         assert build_worker(service, worker_id="statistical-capability-acceptance").run_once()
-        completed = service.get_run(run.run_id)
+        completed = service.runs.get_run(run.run_id)
         assert completed.state.value == "succeeded", (
             "Capability Worker did not complete successfully; inspect retained local logs."
         )
@@ -583,7 +591,7 @@ def main() -> None:
         result = service.repository.list_statistical_results(
             project_id=project.project_id, run_id=run.run_id
         )[0]
-        detail = service.get_statistical_result(result.result_id)
+        detail = service.runs.get_statistical_result(result.result_id)
         assert detail.mode == "real" and not detail.non_scientific
         assert detail.method_summary is not None
         assert detail.method_summary.correction_evidence_status == "verified"

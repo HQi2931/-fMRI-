@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from neuroagent.application.contracts import PlanState, WorkflowState
-from neuroagent.application.errors import ConflictError
+from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.shared.errors import ConflictError
 
 PLAN_TRANSITIONS: dict[PlanState, frozenset[PlanState]] = {
     PlanState.DRAFT: frozenset({PlanState.VALIDATING, PlanState.SUPERSEDED}),

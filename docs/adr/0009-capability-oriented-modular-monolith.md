@@ -16,7 +16,7 @@
 目标架构采用按业务能力组织的模块化单体，并进行以下渐进式调整：
 
 1. 保留单一 FastAPI 进程、独立 Worker、SQLite 和本地文件系统，不引入网络型基础设施。
-2. 将 `NeuroAgentService` 多重继承门面替换为显式应用服务集合；跨能力调用使用窄 Query/Command 端口。
+2. 将 `ApplicationServices` 多重继承门面替换为显式应用服务集合；跨能力调用使用窄 Query/Command 端口。
 3. 将 `RepositoryPort` 拆为能力 repository、`JobQueue`、`EventStore`、`ArtifactCatalog`、`IdempotencyStore` 和 `UnitOfWork`；SQLite adapter 可以同时实现这些端口。
 4. 将 API contracts、routers、SQLite mapper 和前端代码按 `projects`、`protocols`、`execution`、`qc`、`statistics`、`agent`、`environment` 切分。
 5. 将状态机、强类型 ID、Artifact 引用和执行结果移出 HTTP DTO，消除 Workflow/Execution 对 Application contracts 的反向依赖。

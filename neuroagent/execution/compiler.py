@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from neuroagent.application.contracts import ArtifactView
-from neuroagent.application.ports import RepositoryPort
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.statistics import (
     CorrectionSpec,
@@ -21,13 +19,14 @@ from neuroagent.execution.models import (
     PreprocessingJobPayload,
     StatisticsJobPayload,
 )
+from neuroagent.execution.ports import ArtifactMetadata, MatlabJobCatalog
 from neuroagent.tools.dpabi_v82 import CorrectionFunction, DpabiV82Adapter
 
 
 class MatlabJobCompiler:
     """Compile only server-owned, approved data into an immutable JobSpec."""
 
-    def __init__(self, repository: RepositoryPort) -> None:
+    def __init__(self, repository: MatlabJobCatalog) -> None:
         self._repository = repository
         self._adapter = DpabiV82Adapter()
 
@@ -162,7 +161,7 @@ class MatlabJobCompiler:
             payload=StatisticsJobPayload(statistics=call, correction=correction_call),
         )
 
-    def _binding(self, artifact: ArtifactView) -> ArtifactPathBinding:
+    def _binding(self, artifact: ArtifactMetadata) -> ArtifactPathBinding:
         name = PurePosixPath(artifact.relative_path).name
         return ArtifactPathBinding(
             artifact_id=artifact.artifact_id,

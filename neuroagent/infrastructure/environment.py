@@ -9,7 +9,7 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.environment import (
     EnvironmentComponent,
     EnvironmentConfigUpdate,
     EnvironmentConfigView,

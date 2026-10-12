@@ -7,9 +7,10 @@ from typing import Any
 
 from neuroagent.agent.providers import ModelProvider, OpenAICompatibleProvider
 from neuroagent.application.environment_lock import EnvironmentLockProvider
-from neuroagent.application.ports import ExecutionResult, JobExecutor, SecretWriterPort
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.ports import SecretWriterPort, WorkerHostRepositoryPort
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
+from neuroagent.execution.ports import ExecutionResult, JobExecutor
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 from neuroagent.infrastructure.filesystem.dataset_inspector import DatasetInspector
 from neuroagent.infrastructure.filesystem.demographics import read_demographics
@@ -19,10 +20,30 @@ from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.infrastructure.filesystem.workspace_files import WorkspaceFilePolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.infrastructure.mock_executor import MockJobExecutor
+from neuroagent.infrastructure.persistence.artifact_catalog_repository import (
+    SqliteArtifactCatalogRepository,
+)
+from neuroagent.infrastructure.persistence.conversation_repository import (
+    SqliteConversationRepository,
+)
 from neuroagent.infrastructure.persistence.database import Database
+from neuroagent.infrastructure.persistence.event_store import SqliteEventStore
+from neuroagent.infrastructure.persistence.external_import_repository import (
+    SqliteExternalImportRepository,
+)
+from neuroagent.infrastructure.persistence.idempotency_store import SqliteIdempotencyStore
+from neuroagent.infrastructure.persistence.literature_repository import SqliteLiteratureRepository
+from neuroagent.infrastructure.persistence.model_repository import SqliteModelRepository
+from neuroagent.infrastructure.persistence.plan_repository import SqlitePlanRepository
+from neuroagent.infrastructure.persistence.project_repository import SqliteProjectRepository
+from neuroagent.infrastructure.persistence.qc_repository import SqliteQcRepository
 from neuroagent.infrastructure.persistence.repository import SqliteRepository
+from neuroagent.infrastructure.persistence.run_repository import SqliteWorkflowRunRepository
+from neuroagent.infrastructure.persistence.worker_repository import SqliteWorkerRepository
+from neuroagent.infrastructure.persistence.workspace_repository import SqliteWorkspaceRepository
 from neuroagent.infrastructure.secrets import LocalDotenvSecretResolver, LocalDotenvSecretWriter
 from neuroagent.skills.registry import SkillRegistry
+from neuroagent.workflow.models import JobEnvelope, JobKind
 from neuroagent.workflow.runtime import WorkflowFactory
 from neuroagent.workflow.worker import SQLiteWorker
 
@@ -36,7 +57,7 @@ def build_service(
     database: Database | None = None,
     repository: SqliteRepository | None = None,
     secret_writer: SecretWriterPort | None = None,
-) -> NeuroAgentService:
+) -> ApplicationServices:
     """Assemble the local application service and all infrastructure adapters."""
 
     if (database is None) != (repository is None):
@@ -50,6 +71,10 @@ def build_service(
         resolved_database.dispose()
         raise
     resolved_repository = repository or SqliteRepository(resolved_database)
+    resolved_worker_repository: WorkerHostRepositoryPort = repository or SqliteWorkerRepository(
+        resolved_database,
+        unit_of_work=resolved_repository.unit_of_work,
+    )
     path_policy = PathPolicy(
         resolved_settings.allowed_source_roots,
         resolved_settings.allowed_work_root,
@@ -67,10 +92,55 @@ def build_service(
             "openai-compatible": compatible_provider,
             "deepseek": compatible_provider,
         }
-    return NeuroAgentService(
+    return ApplicationServices(
         resolved_settings,
         resolved_database,
-        resolved_repository,
+        resolved_worker_repository,
+        legacy_repository=resolved_repository,
+        idempotency_store=SqliteIdempotencyStore(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        event_store=SqliteEventStore(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        artifact_repository=SqliteArtifactCatalogRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        qc_repository=SqliteQcRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        run_repository=SqliteWorkflowRunRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        project_repository=SqliteProjectRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        conversation_repository=SqliteConversationRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        workspace_repository=SqliteWorkspaceRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        plan_repository=SqlitePlanRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        external_import_repository=SqliteExternalImportRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        model_repository=SqliteModelRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
         path_policy=path_policy,
         dataset_inspector=dataset_inspector,
         demographics_reader=read_demographics,
@@ -86,11 +156,12 @@ def build_service(
             max_document_bytes=resolved_settings.workspace_max_document_bytes,
         ),
         skill_registry=skill_registry,
+        literature_repository=SqliteLiteratureRepository(resolved_database),
     )
 
 
 def build_worker(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     *,
     worker_id: str | None = None,
     executor: JobExecutor | None = None,
@@ -101,19 +172,19 @@ def build_worker(
     if resolved_executor is None:
         mock_executor = MockJobExecutor(
             WorkflowFactory(service.skill_registry, service.tool_registry),
-            repository=service.repository,
+            repository=service.worker_repository,
         )
         resolved_executor = _RoutingExecutor(
             mock=mock_executor,
             matlab=MatlabJobExecutor(
-                service.repository,
+                service.worker_repository,
                 service.settings,
                 environment_provider=service.environment_provider,
                 workflow_factory=WorkflowFactory(service.skill_registry, service.tool_registry),
             ),
         )
     return SQLiteWorker(
-        service.repository,
+        service.worker_repository,
         resolved_executor,
         worker_id=worker_id,
         lease_seconds=service.settings.worker_lease_seconds,
@@ -121,13 +192,13 @@ def build_worker(
 
 
 class _RoutingExecutor:
-    """Dispatch by the server-owned executor_type field in the queued payload."""
+    """Validate the queue contract, then dispatch a registered job capability."""
 
     def __init__(self, *, mock: JobExecutor, matlab: JobExecutor) -> None:
         self._executors = {
-            "workflow_mock": mock,
-            "matlab_preprocessing": matlab,
-            "matlab_statistics": matlab,
+            JobKind.WORKFLOW_MOCK: mock,
+            JobKind.MATLAB_PREPROCESSING: matlab,
+            JobKind.MATLAB_STATISTICS: matlab,
         }
 
     def execute(
@@ -136,10 +207,18 @@ class _RoutingExecutor:
         *,
         is_cancelled: Callable[[], bool],
     ) -> ExecutionResult:
-        executor_type = payload.get("executor_type", "workflow_mock")
-        executor = self._executors.get(executor_type)
-        if executor is None:
-            return ExecutionResult(
-                status="failed_terminal", error="requested executor type is not registered"
+        try:
+            envelope = JobEnvelope.from_persisted(
+                payload,
+                job_id=str(payload.get("job_id", "unknown-job")),
+                run_id=str(payload.get("run_id", "unknown-run")),
+                attempt=int(payload.get("attempt", 1)),
             )
-        return executor.execute(payload, is_cancelled=is_cancelled)
+        except (TypeError, ValueError):
+            return ExecutionResult(
+                status="failed_terminal", error="job envelope is invalid or unsupported"
+            )
+        executor = self._executors.get(envelope.kind)
+        if executor is None:
+            return ExecutionResult(status="failed_terminal", error="job kind is not registered")
+        return executor.execute(envelope.executor_payload(), is_cancelled=is_cancelled)

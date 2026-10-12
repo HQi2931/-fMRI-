@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：system_architect
-- 更新日期：2026-09-23
+- 更新日期：2026-10-11
 - 关联：[系统设计](system-design.md)、[目标架构](target-architecture.md)
 
 本仓库采用模块化单体：FastAPI、独立 SQLite Worker、React 前端和受控 MATLAB 适配器共享一套领域契约，但依赖方向保持单向。当前主要目录如下。
@@ -28,14 +28,15 @@ rs_fMRI_Agent/
 │  └─ security/                数据边界与模型外发策略
 ├─ matlab/templates/           固定 MATLAB 模板；不接收任意脚本文本
 ├─ neuroagent/
-│  ├─ agent/                   模型路由、Provider、脱敏和结构化输出
-│  ├─ api/                     FastAPI 路由、错误映射、静态前端入口
-│  ├─ application/             用例编排、公共契约、端口、环境锁和确定性报告
+│  ├─ agent/                   模型路由、Provider、脱敏和结构化输出；业务角色提示词由应用层注入
+│  ├─ api/                     按能力拆分的 FastAPI 路由、HTTP 请求 schemas 与应用消息 mapper、共享依赖和错误映射
+│  ├─ application/             组合根、能力服务、按能力 commands/results、窄端口与确定性报告
 │  ├─ chat/                    ChatAgent、intent 路由和 Chat 专用窄接口
 │  ├─ context/                 Chat 上下文 packet 接口和最小构建器
-│  ├─ domain/fmri/             纯 fMRI 领域模型、结果合同与科学校验规则
-│  ├─ execution/               Mock 与受控 MATLAB 执行适配
+│  ├─ domain/                  生命周期、数据集分类、纯 fMRI 领域模型、结果合同和科研规则
+│  ├─ execution/               执行端口、冻结输入协议、Mock 与受控 MATLAB 执行适配
 │  ├─ infrastructure/          SQLite、文件系统检查和环境探测
+│  │  └─ persistence/          各持久化能力及 Worker host 的 SQLite adapters、row mapper、独立 stores 与共享 Unit of Work
 │  ├─ literature/              PDF 解析、section 识别和科研 chunking
 │  ├─ memory/                  Memory snapshot/service 扩展接口
 │  ├─ observability/           审计事件与追踪上下文
@@ -54,7 +55,9 @@ rs_fMRI_Agent/
 │  └─ science/                 DPABI 映射、顺序、统计和执行边界测试
 ├─ web/
 │  ├─ e2e/                     Playwright Mock 端到端场景
-│  ├─ src/                     React 非技术中文工作台
+│  ├─ src/features/agent/      Agent 页面、会话模型/历史、统计操作、草稿模型与样式
+│  ├─ src/features/settings/   Provider 与环境设置页面及测试
+│  ├─ src/api/                 OpenAPI 类型、按能力客户端和统一 transport；client.ts 保留兼容 facade
 │  └─ openapi.json             后端导出的版本化 API 契约
 ├─ AGENTS.md                   Codex 项目级开发规则
 ├─ pyproject.toml / uv.lock    Python 配置与锁定依赖

@@ -17,10 +17,12 @@ import uvicorn
 
 from neuroagent.agent.providers import MockProvider
 from neuroagent.api import create_app
-from neuroagent.application.contracts import (
-    ConversationCreate,
+from neuroagent.application.contracts.agent import (
     ModelProfileCreate,
     ModelProfileInput,
+)
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
 )
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
@@ -104,7 +106,7 @@ def main() -> None:
     thread = None
     try:
         profile_id = "internal-browser-mock"
-        service.create_model_profile(
+        service.models.create_model_profile(
             ModelProfileCreate(
                 profile=ModelProfileInput(
                     id=profile_id,
@@ -118,9 +120,9 @@ def main() -> None:
             ),
             "internal-browser-profile",
         )
-        pre = service.get_run(proof["preprocessing_run_id"])
+        pre = service.runs.get_run(proof["preprocessing_run_id"])
         assert pre.state.value == "succeeded"
-        conversation = service.create_conversation(
+        conversation = service.conversations.create_conversation(
             ConversationCreate(
                 mode="work",
                 project_id=proof["project_id"],

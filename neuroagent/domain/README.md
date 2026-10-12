@@ -3,16 +3,18 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：fmri_methodologist
-- 更新日期：2026-09-23
+- 更新日期：2026-10-11
 - 关联：[项目结构](../../docs/architecture/project-structure.md)
 
 ## 模块职责
 
-`domain` 保存具体科研领域的模型、约束和内置能力。通用 Agent、Skill、Workflow、Tool 与 Execution 机制保留在各自顶层模块，领域包通过明确接口贡献 Artifact 类型、校验规则、SkillSpec、工作流模板和工具适配。
+`domain` 保存具体科研领域的模型、约束和内置能力，以及应用和运行层共用的稳定值对象。通用 Agent、Skill、Workflow、Tool 与 Execution 机制保留在各自顶层模块，领域包通过明确接口贡献 Artifact 类型、校验规则、SkillSpec、工作流模板和工具适配。
 
 ## 当前领域
 
 - [fmri](fmri/README.md)：静息态 fMRI 数据、预处理、指标、QC 和统计分析。
+- `lifecycle.py`：Plan 与 Workflow 的稳定状态值；HTTP 契约通过兼容导入复用这些枚举。
+- `lifecycle.py`：Plan 与 Workflow 的稳定状态值；HTTP 契约通过兼容导入复用这些枚举，Workflow 状态机不再从 Application DTO 反向取类型。
 
 ## 边界
 

@@ -12,25 +12,33 @@ from uuid import uuid4
 import nibabel as nib
 import numpy as np
 
-from neuroagent.application.contracts import (
-    ApprovalCreate,
+from neuroagent.application.contracts.conversations import (
     ConversationCreate,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    SkillPlanIntent,
+    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
     DemographicsImportRequest,
     ManifestScanRequest,
     ProjectCreate,
     ProjectView,
+)
+from neuroagent.application.contracts.runs import (
     QcReviewApprove,
     RunCreate,
     RunView,
-    SkillPlanIntent,
-    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalWorkContext,
     StatisticsRunCreate,
 )
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.application.statistics_draft import StatisticsDraft, statistics_draft_hash
 from neuroagent.application.work_handoffs import require_same_handoff
@@ -108,7 +116,7 @@ def _settings(root: Path) -> Settings:
 
 
 def _analyze(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     root: Path,
     source_hashes: dict[str, str],
     project: ProjectView,
@@ -119,7 +127,7 @@ def _analyze(
     worker = build_worker(service, worker_id="internal-real-acceptance")
     review = service.repository.get_latest_qc_review_for_run(pre.run_id)
     assert review is not None and review.state.value == "approved"
-    proof = service.prepare_work_analysis_handoff(pre.run_id, project.project_id)
+    proof = service.statistics.prepare_work_analysis_handoff(pre.run_id, project.project_id)
     assert proof.status == "ready", proof.model_dump_json()
     assert len(proof.data_references["metrics"]) == 6
     assert len(proof.data_references["masks"]) == 7
@@ -133,13 +141,13 @@ def _analyze(
         correction_method="fdr",
         correction_parameters={"q_threshold": 0.05},
     )
-    proposal, issues = service.prepare_work_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         project_id=project.project_id,
         run_id=pre.run_id,
         draft=draft,
     )
     assert proposal is not None and not issues, issues
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(
             mode="work",
             project_id=project.project_id,
@@ -153,7 +161,7 @@ def _analyze(
         assistant_content="Deterministic server proposal; no model quality claim.",
         assistant_payload={
             "agent_role": "preprocessing",
-            "run": service.get_run(pre.run_id).model_dump(mode="json"),
+            "run": service.runs.get_run(pre.run_id).model_dump(mode="json"),
         },
         tool=None,
         workspace_path=str(source),
@@ -180,7 +188,7 @@ def _analyze(
         project_id=project.project_id,
         active_run_id=None,
     )
-    created = service.create_statistical_design(
+    created = service.statistics.create_statistical_design(
         StatisticalDesignCreate(
             project_id=project.project_id,
             expected_project_version=proposal.project_version,
@@ -194,13 +202,13 @@ def _analyze(
         ),
         f"internal-statistical-design-{key}",
     )
-    validated = service.validate_statistical_design(
+    validated = service.statistics.validate_statistical_design(
         created.plan_revision.plan_revision_id,
         StatisticalDesignValidationRequest(expected_version=created.plan_revision.version),
         f"internal-statistical-validation-{key}",
     )
     plan = validated.plan_revision
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -211,7 +219,7 @@ def _analyze(
         ),
         f"internal-statistical-approval-{key}",
     )
-    run = service.create_statistics_run(
+    run = service.runs.create_statistics_run(
         StatisticsRunCreate(
             project_id=project.project_id,
             statistical_design_revision_id=plan.plan_revision_id,
@@ -223,13 +231,13 @@ def _analyze(
     )
     print(f"STATISTICS_QUEUED {run.run_id}", flush=True)
     assert worker.run_once()
-    run = service.get_run(run.run_id)
+    run = service.runs.get_run(run.run_id)
     assert run.state.value == "succeeded", run.model_dump_json()
     result = service.repository.list_statistical_results(
         project_id=project.project_id, run_id=run.run_id
     )[0]
     detail = service.repository.get_statistical_result(result.result_id)
-    metrics = {item.artifact_id: item for item in service.list_artifacts(pre.run_id)}
+    metrics = {item.artifact_id: item for item in service.runs.list_artifacts(pre.run_id)}
     base_path = Path(project.work_root) / pre.run_id
     images = [
         nib.as_closest_canonical(nib.load(str(base_path / metrics[row.artifact_id].relative_path)))
@@ -243,7 +251,7 @@ def _analyze(
     first, second = values[:3], values[3:]
     variance = (first.var(axis=0, ddof=1) + second.var(axis=0, ddof=1)) / 2
     expected = (first.mean(axis=0) - second.mean(axis=0))[mask] / np.sqrt(variance[mask] * 2 / 3)
-    maps = service.list_artifacts(run.run_id)
+    maps = service.runs.list_artifacts(run.run_id)
     statistic = next(
         item for item in maps if item.artifact_type == "statistics.uncorrected_statistical_map"
     )
@@ -294,10 +302,10 @@ def _resume_source(root: Path) -> None:
         raise ValueError("Resume requires this script's existing acceptance directory")
     service = build_service(_settings(root))
     try:
-        pre = service.get_run(json.loads(descriptor.read_text(encoding="utf-8"))["run_id"])
-        project = service.get_project(pre.project_id)
+        pre = service.runs.get_run(json.loads(descriptor.read_text(encoding="utf-8"))["run_id"])
+        project = service.projects.get_project(pre.project_id)
         assert pre.state.value == "succeeded", "The source run must have approved QC"
-        for run in service.list_runs(project_id=project.project_id):
+        for run in service.runs.list_runs(project_id=project.project_id):
             assert run.state.value in {"succeeded", "failed_terminal", "cancelled", "timed_out"}, (
                 "A run is still active"
             )
@@ -368,7 +376,7 @@ def main() -> None:
     settings = _settings(root)
     service = build_service(settings)
     try:
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="Synthetic internal handoff acceptance",
                 source_roots=[str(source)],
@@ -376,7 +384,7 @@ def main() -> None:
             ),
             "internal-project",
         )
-        dataset = service.create_dataset(
+        dataset = service.projects.create_dataset(
             project.project_id,
             DatasetCreate(
                 name="Six synthetic functional series",
@@ -385,7 +393,7 @@ def main() -> None:
             ),
             "internal-dataset",
         )
-        manifest = service.inspect_dataset(
+        manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(
                 expected_dataset_version=dataset.version,
@@ -393,7 +401,7 @@ def main() -> None:
             ),
             "internal-scan",
         )
-        service.import_demographics(
+        service.projects.import_demographics(
             dataset.dataset_id,
             DemographicsImportRequest(
                 source_path=str(table),
@@ -429,7 +437,7 @@ def main() -> None:
                 )
             ],
         }
-        resolved = service.resolve_skill_plan(
+        resolved = service.skills.resolve_skill_plan(
             SkillPlanResolveRequest(
                 request=SkillPlanIntent(
                     project_id=project.project_id,
@@ -441,12 +449,12 @@ def main() -> None:
                     preprocessing=_parameters(),
                     alff_falff=alff,
                 ),
-                expected_project_version=service.get_project(project.project_id).version,
+                expected_project_version=service.projects.get_project(project.project_id).version,
             ),
             "internal-resolve",
         )
         plan = resolved.plan_revision
-        service.approve_plan(
+        service.plans.approve_plan(
             plan.plan_revision_id,
             ApprovalCreate(
                 expected_version=plan.version,
@@ -457,7 +465,7 @@ def main() -> None:
             ),
             "internal-preprocessing-approval",
         )
-        pre = service.create_run(
+        pre = service.runs.create_run(
             RunCreate(
                 project_id=project.project_id,
                 plan_revision_id=plan.plan_revision_id,
@@ -473,7 +481,7 @@ def main() -> None:
         print(f"PREPROCESSING_QUEUED {pre.run_id}", flush=True)
         worker = build_worker(service, worker_id="internal-real-acceptance")
         assert worker.run_once()
-        pre = service.get_run(pre.run_id)
+        pre = service.runs.get_run(pre.run_id)
         assert pre.state.value == "qc_review", pre.model_dump_json()
         review = service.repository.get_latest_qc_review_for_run(pre.run_id)
         assert review is not None and review.review.review_scope.value == "pre_statistics"
@@ -481,7 +489,7 @@ def main() -> None:
         assert len(review.review.metric_artifact_ids) == 6
         # Only this script's controlled synthetic fixture is approved here.
         # Existing research runs and their human QC decisions are never touched.
-        service.approve_qc_review(
+        service.runs.approve_qc_review(
             review.review.review_revision_id,
             QcReviewApprove(
                 expected_review_version=review.version,

@@ -9,13 +9,13 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportSummaryView,
     ExternalAnalysisImportView,
     ExternalAnalysisSelectionImageView,
     ExternalAnalysisSelectionView,
-    ExternalDemographicsRevisionView,
 )
+from neuroagent.application.contracts.projects import ExternalDemographicsRevisionView
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json, content_hash
 from neuroagent.domain.fmri.external_import import (

@@ -10,15 +10,17 @@ from neuroagent.agent.gateway import ModelGatewayError, ToolTurnResult
 from neuroagent.agent.models import ModelCapability, ProviderResponse, ToolCall
 from neuroagent.agent.providers import ProviderError, ProviderTimeoutError
 from neuroagent.api import create_app
-from neuroagent.application.contracts import (
-    ConversationCreate,
-    ConversationMode,
+from neuroagent.application.contracts.agent import (
     ModelProfileCreate,
     ModelProfileInput,
+)
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationMode,
     WorkspaceContentConsentCreate,
 )
 from neuroagent.application.errors import InputValidationError, NotFoundError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 
 
 class ProbeGateway:
@@ -38,7 +40,7 @@ class ProbeGateway:
 
 
 def add_profile(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     *,
     tool_use: bool = True,
     base_url: str = "https://provider.example/v1",
@@ -54,13 +56,13 @@ def add_profile(
         api_key_env="TEST_PROVIDER_API_KEY",
         capabilities=frozenset(capabilities),
     )
-    return service.create_model_profile(
+    return service.models.create_model_profile(
         ModelProfileCreate(profile=profile), f"profile-write-{base_url}-{tool_use}"
     )
 
 
-def add_conversation(service: NeuroAgentService, workspace: Path) -> str:
-    return service.create_conversation(
+def add_conversation(service: ApplicationServices, workspace: Path) -> str:
+    return service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.WORK, workspace_path=str(workspace)),
         "workspace-consent-conversation",
     ).conversation_id
@@ -76,13 +78,13 @@ def successful_probe() -> ProviderResponse:
 
 def install_gateway(
     monkeypatch: pytest.MonkeyPatch,
-    service: NeuroAgentService,
+    service: ApplicationServices,
     gateway: ProbeGateway,
 ) -> None:
-    monkeypatch.setattr(service, "_model_gateway", lambda: gateway)
+    monkeypatch.setattr(service.models, "_model_gateway", lambda: gateway)
 
 
-def enable_workspace_assistant(service: NeuroAgentService) -> None:
+def enable_workspace_assistant(service: ApplicationServices) -> None:
     service.settings = service.settings.model_copy(
         update={"redaction_salt": "synthetic-test-redaction-salt"}
     )
@@ -90,7 +92,7 @@ def enable_workspace_assistant(service: NeuroAgentService) -> None:
 
 @pytest.mark.asyncio
 async def test_workspace_consent_requires_declared_tool_use_without_calling_provider(
-    service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, source_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable_workspace_assistant(service)
     add_profile(service, tool_use=False)
@@ -99,7 +101,7 @@ async def test_workspace_consent_requires_declared_tool_use_without_calling_prov
     install_gateway(monkeypatch, service, gateway)
 
     with pytest.raises(InputValidationError) as caught:
-        await service.create_workspace_content_consent(
+        await service.workspaces.create_workspace_content_consent(
             conversation_id,
             WorkspaceContentConsentCreate(
                 profile_id="test-provider",
@@ -110,12 +112,12 @@ async def test_workspace_consent_requires_declared_tool_use_without_calling_prov
 
     assert caught.value.code == "workspace_tool_use_required"
     assert gateway.calls == []
-    assert service.list_workspace_content_consents(conversation_id) == []
+    assert service.workspaces.list_workspace_content_consents(conversation_id) == []
 
 
 @pytest.mark.asyncio
 async def test_workspace_consent_probes_exact_model_without_workspace_content(
-    service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, source_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable_workspace_assistant(service)
     add_profile(service)
@@ -147,7 +149,7 @@ async def test_workspace_consent_probes_exact_model_without_workspace_content(
     assert str(source_root) not in serialized_messages
     assert "private-workspace-body" not in serialized_messages
     assert [tool.name for tool in call["tools"]] == ["workspace_tool_probe"]
-    assert service.workspace_content_consent_granted(
+    assert service.workspaces.workspace_content_consent_granted(
         conversation_id, str(source_root), "test-provider", "chosen-concrete-model"
     )
     grant_event = next(
@@ -186,7 +188,7 @@ async def test_workspace_consent_probes_exact_model_without_workspace_content(
     ],
 )
 async def test_workspace_consent_rejects_invalid_probe_results(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     response: ProviderResponse,
@@ -197,7 +199,7 @@ async def test_workspace_consent_rejects_invalid_probe_results(
     install_gateway(monkeypatch, service, ProbeGateway(response))
 
     with pytest.raises(InputValidationError) as caught:
-        await service.create_workspace_content_consent(
+        await service.workspaces.create_workspace_content_consent(
             conversation_id,
             WorkspaceContentConsentCreate(
                 profile_id="test-provider",
@@ -207,13 +209,13 @@ async def test_workspace_consent_rejects_invalid_probe_results(
         )
 
     assert caught.value.code == "workspace_tool_probe_failed"
-    assert service.list_workspace_content_consents(conversation_id) == []
+    assert service.workspaces.list_workspace_content_consents(conversation_id) == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [ModelGatewayError("unavailable"), ProviderError("rejected")])
 async def test_workspace_consent_reports_provider_probe_failures(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure: Exception,
@@ -224,7 +226,7 @@ async def test_workspace_consent_reports_provider_probe_failures(
     install_gateway(monkeypatch, service, ProbeGateway(failure))
 
     with pytest.raises(InputValidationError) as caught:
-        await service.create_workspace_content_consent(
+        await service.workspaces.create_workspace_content_consent(
             conversation_id,
             WorkspaceContentConsentCreate(
                 profile_id="test-provider",
@@ -234,7 +236,7 @@ async def test_workspace_consent_reports_provider_probe_failures(
         )
 
     assert caught.value.code == "workspace_tool_probe_failed"
-    assert service.list_workspace_content_consents(conversation_id) == []
+    assert service.workspaces.list_workspace_content_consents(conversation_id) == []
 
 
 @pytest.mark.asyncio
@@ -261,7 +263,7 @@ async def test_probe_failure_diagnosis_does_not_claim_unsupported_tools(
     conversation_id = add_conversation(service, source_root)
     install_gateway(monkeypatch, service, ProbeGateway(response))
     with pytest.raises(InputValidationError) as caught:
-        await service.create_workspace_content_consent(
+        await service.workspaces.create_workspace_content_consent(
             conversation_id,
             WorkspaceContentConsentCreate(
                 profile_id="test-provider",
@@ -270,19 +272,19 @@ async def test_probe_failure_diagnosis_does_not_claim_unsupported_tools(
             ),
         )
     assert caught.value.details["reason"] == reason
-    assert service.list_workspace_content_consents(conversation_id) == []
+    assert service.workspaces.list_workspace_content_consents(conversation_id) == []
 
 
 @pytest.mark.asyncio
 async def test_workspace_consent_is_invalidated_by_profile_revision_and_revocation(
-    service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, source_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable_workspace_assistant(service)
     add_profile(service)
     conversation_id = add_conversation(service, source_root)
     gateway = ProbeGateway(successful_probe())
     install_gateway(monkeypatch, service, gateway)
-    consent = await service.create_workspace_content_consent(
+    consent = await service.workspaces.create_workspace_content_consent(
         conversation_id,
         WorkspaceContentConsentCreate(
             profile_id="test-provider",
@@ -293,26 +295,30 @@ async def test_workspace_consent_is_invalidated_by_profile_revision_and_revocati
     assert consent.valid_for_current_context is True
 
     add_profile(service, base_url="https://another-provider.example/v1")
-    assert not service.workspace_content_consent_granted(
+    assert not service.workspaces.workspace_content_consent_granted(
         conversation_id, str(source_root), "test-provider", "chosen-concrete-model"
     )
     assert (
-        service.list_workspace_content_consents(conversation_id)[0].valid_for_current_context
+        service.workspaces.list_workspace_content_consents(conversation_id)[
+            0
+        ].valid_for_current_context
         is False
     )
 
-    revoked = service.revoke_workspace_content_consent(conversation_id, consent.consent_id)
+    revoked = service.workspaces.revoke_workspace_content_consent(
+        conversation_id, consent.consent_id
+    )
     assert revoked.revoked_at is not None
-    assert not service.workspace_content_consent_granted(
+    assert not service.workspaces.workspace_content_consent_granted(
         conversation_id, str(source_root), "test-provider", "chosen-concrete-model"
     )
 
 
 def test_profile_revision_is_independent_of_capability_serialization_order(
-    service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     view = add_profile(service)
-    expected = service._profile_revision(view)
+    expected = service.workspaces._profile_revision(view)
     model_type = type(view.profile)
     original = model_type.model_dump
 
@@ -322,12 +328,12 @@ def test_profile_revision_is_independent_of_capability_serialization_order(
         return value
 
     monkeypatch.setattr(model_type, "model_dump", reverse_capabilities)
-    assert service._profile_revision(view) == expected
+    assert service.workspaces._profile_revision(view) == expected
 
 
 @pytest.mark.asyncio
 async def test_regrant_refreshes_revoked_workspace_consent_in_place(
-    service: NeuroAgentService, source_root: Path, monkeypatch: pytest.MonkeyPatch
+    service: ApplicationServices, source_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable_workspace_assistant(service)
     add_profile(service)
@@ -339,23 +345,23 @@ async def test_regrant_refreshes_revoked_workspace_consent_in_place(
         acknowledge_remote_processing=True,
     )
 
-    first = await service.create_workspace_content_consent(conversation_id, request)
-    revoked = service.revoke_workspace_content_consent(conversation_id, first.consent_id)
-    renewed = await service.create_workspace_content_consent(conversation_id, request)
+    first = await service.workspaces.create_workspace_content_consent(conversation_id, request)
+    revoked = service.workspaces.revoke_workspace_content_consent(conversation_id, first.consent_id)
+    renewed = await service.workspaces.create_workspace_content_consent(conversation_id, request)
 
     assert revoked.revoked_at is not None
     assert renewed.consent_id == first.consent_id
     assert renewed.revoked_at is None
     assert renewed.granted_at > first.granted_at
     assert renewed.valid_for_current_context is True
-    assert len(service.list_workspace_content_consents(conversation_id)) == 1
+    assert len(service.workspaces.list_workspace_content_consents(conversation_id)) == 1
 
 
 def test_workspace_consent_persistence_enforces_conversation_scope(
-    service: NeuroAgentService, source_root: Path
+    service: ApplicationServices, source_root: Path
 ) -> None:
     conversation_id = add_conversation(service, source_root)
-    other_conversation_id = service.create_conversation(
+    other_conversation_id = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.WORK, workspace_path=str(source_root)),
         "other-workspace-consent-conversation",
     ).conversation_id

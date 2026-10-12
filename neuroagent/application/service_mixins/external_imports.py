@@ -4,28 +4,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from neuroagent.analysis.external_metric_import import (
     inspect_external_mask,
     inspect_external_metric_directory,
 )
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.external_imports import (
     ExternalAnalysisImportIncludeRequest,
     ExternalAnalysisImportInspectRequest,
     ExternalAnalysisImportSummaryView,
     ExternalAnalysisImportView,
+)
+from neuroagent.application.contracts.projects import (
     ExternalDemographicsImportRequest,
     ExternalDemographicsRevisionView,
+    ProjectView,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
+from neuroagent.application.repository_ports import ExternalAnalysisRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.domain.fmri.external_import import ExternalMetricInclusion
 
 
 class ExternalAnalysisImportMixin(BaseServiceMixin):
     """Persist an independent scan and require a version-bound human decision."""
+
+    repository: ExternalAnalysisRepositoryPort
+    get_project: Callable[[str], ProjectView]
 
     def import_external_demographics(
         self, import_id: str, request: ExternalDemographicsImportRequest, idempotency_key: str
@@ -36,7 +44,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 raise ConflictError("external_import_not_included", "请先确认外部影像纳入决定。")
             if imported.version != request.expected_import_version:
                 raise ConflictError("external_import_version_mismatch", "请重新载入外部数据记录。")
-            project = self.repository.get_project(imported.project_id)
+            project = self.get_project(imported.project_id)
             path = self.path_policy.validate_read_path(
                 request.source_path, project_roots=project.source_roots, expect_directory=False
             )
@@ -62,7 +70,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 import_id, expected_version=request.expected_import_version, content=content
             )
             imported = self.repository.get_external_analysis_import(import_id)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=imported.project_id,
                 run_id=None,
                 event_type="ExternalDemographicsAligned",
@@ -93,7 +101,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
         self, request: ExternalAnalysisImportInspectRequest, idempotency_key: str
     ) -> ExternalAnalysisImportView:
         def prepare() -> tuple[str, dict[str, Any]]:
-            project = self.repository.get_project(request.project_id)
+            project = self.get_project(request.project_id)
             source = self.path_policy.validate_read_path(
                 request.source_path,
                 project_roots=project.source_roots,
@@ -116,7 +124,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 source_path=source_path,
                 inspection=inspection,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=request.project_id,
                 run_id=None,
                 event_type="ExternalAnalysisImportInspected",
@@ -175,7 +183,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                     expected=request.expected_version,
                     actual=existing.version,
                 )
-            project = self.repository.get_project(existing.project_id)
+            project = self.get_project(existing.project_id)
             source = self.path_policy.validate_read_path(
                 existing.source_path,
                 project_roots=project.source_roots,
@@ -291,7 +299,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 inclusion_hash=inclusion_hash,
             )
             assert result.inclusion is not None
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=None,
                 event_type="ExternalAnalysisImportIncluded",

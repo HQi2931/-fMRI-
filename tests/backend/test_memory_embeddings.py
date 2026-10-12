@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from neuroagent.api.app import create_app
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationMode,
     MemoryAction,
@@ -16,7 +16,7 @@ from tests.backend.conftest import make_project
 async def test_expired_pinned_memory_is_excluded_and_expiry_can_be_cleared(service):
     from datetime import UTC, datetime, timedelta
 
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "expiry"
     )
     cid = conversation.conversation_id
@@ -56,7 +56,7 @@ async def test_expired_pinned_memory_is_excluded_and_expiry_can_be_cleared(servi
 
 
 def test_embedding_write_is_version_bound_and_forgetting_purges_vector(service):
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT),
         "vector-conversation",
     )
@@ -108,14 +108,16 @@ async def test_semantic_recall_reaches_chat_context_across_project_sessions(
     source_root,
     work_root,
 ):
-    from neuroagent.application.contracts import MemoryScope
+    from neuroagent.application.contracts.conversations import (
+        MemoryScope,
+    )
 
     project = make_project(service, source_root, work_root)
-    first = service.create_conversation(
+    first = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT, project_id=project.project_id),
         "first",
     )
-    second = service.create_conversation(
+    second = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT, project_id=project.project_id),
         "second",
     )
@@ -167,7 +169,9 @@ async def test_semantic_recall_reaches_chat_context_across_project_sessions(
     assert prepared.memory_ids == (memory.memory_id,)
     assert prepared.pinned_context[0].value == "Use concise answers"
     assert prepared.memory_recall["matches"][0]["reason"] == "semantic"
-    unrelated = service.create_conversation(ConversationCreate(mode=ConversationMode.CHAT), "other")
+    unrelated = service.conversations.create_conversation(
+        ConversationCreate(mode=ConversationMode.CHAT), "other"
+    )
     assert not (await service.semantic_memory.recall(unrelated.conversation_id, "brief")).matches
     cid = first.conversation_id
     service.repository.update_memory(
@@ -189,7 +193,7 @@ async def test_semantic_recall_reaches_chat_context_across_project_sessions(
 
 
 def test_memory_index_api_reports_fallback_and_safe_provider_failure(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "index-api"
     ).conversation_id
     with TestClient(create_app(service=service)) as client:

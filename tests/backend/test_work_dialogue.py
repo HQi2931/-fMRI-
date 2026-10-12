@@ -14,10 +14,13 @@ from fastapi.testclient import TestClient
 from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.models import ModelProfile, ProviderResponse
 from neuroagent.api import create_app
-from neuroagent.application.contracts import ConversationCreate, ConversationTurnCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationTurnCreate,
+)
 from neuroagent.application.conversation_work import WorkActionResult
 from neuroagent.application.errors import ApplicationError, ConflictError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.work_draft import draft_hash
 from tests.backend.test_work_draft import complete_draft
 
@@ -36,7 +39,7 @@ def generated(action: str, patch: dict | None = None, answer: str = "请继续�
     )
 
 
-def configure(service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch, responses: list):
+def configure(service: ApplicationServices, monkeypatch: pytest.MonkeyPatch, responses: list):
     service.repository.create_model_profile(
         ModelProfile(
             id="dialogue-model",
@@ -345,7 +348,7 @@ def test_partial_parameters_persist_merge_and_old_confirmation_is_rejected(servi
     assert "planning_decisions" in third["assistant_message"]["payload"]
     assert "已变化" in stale["assistant_message"]["content"]
     assert model.await_count == 3
-    assert service.list_projects() == []
+    assert service.projects.list_projects() == []
 
 
 @pytest.mark.parametrize("bad", ["invalid json", '{"answer":"ok","action":"run_shell"}'])
@@ -397,7 +400,7 @@ def test_run_confirmation_options_are_server_bound(service, source_root, work_ro
     configure(service, monkeypatch, [generated("propose_run_confirmation")])
     project = make_project(service, source_root, work_root, key="options-project")
     plan = make_approved_plan(service, project.project_id, manifest_hash="d" * 64)
-    session = service.create_conversation(
+    session = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "options-conversation"
     )
     service.repository.append_conversation_exchange(
@@ -428,12 +431,15 @@ def test_run_confirmation_options_are_server_bound(service, source_root, work_ro
 
 
 def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work_root):
-    from neuroagent.application.contracts import QcExecutionMode, RunCreate
+    from neuroagent.application.contracts.runs import (
+        QcExecutionMode,
+        RunCreate,
+    )
     from tests.backend.conftest import make_approved_plan, make_project
 
     project = make_project(service, source_root, work_root, key="challenge-project")
     plan = make_approved_plan(service, project.project_id, manifest_hash="d" * 64)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id),
         "challenge-conversation",
     )
@@ -444,7 +450,7 @@ def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work
         plan_hash=plan.plan_hash,
         qc_mode=QcExecutionMode.SKIP,
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -479,7 +485,9 @@ async def test_exact_server_command_defers_and_binds_execution(service, monkeypa
     from neuroagent.application.work_dialogue import WorkDialogue
     from neuroagent.context.interfaces import ContextPacket
 
-    session = service.create_conversation(ConversationCreate(mode="work"), "exact-create")
+    session = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "exact-create"
+    )
     service.repository.append_conversation_exchange(
         session.conversation_id,
         user_content="prepare",
@@ -496,7 +504,7 @@ async def test_exact_server_command_defers_and_binds_execution(service, monkeypa
         project_id=None,
         active_run_id=None,
     )
-    session = service.get_conversation(session.conversation_id)
+    session = service.conversations.get_conversation(session.conversation_id)
     execute = Mock(return_value=WorkActionResult("queued"))
     monkeypatch.setattr(service.conversation_work, "execute", execute)
     model = AsyncMock(side_effect=AssertionError("confirmation does not use model"))
@@ -670,7 +678,7 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
     with TestClient(create_app(service=service)) as client:
         session = create(client, source_root)
         preview = turn(client, session, "按我提供的完整参数准备方案", "review")
-        assert service.list_projects() == []
+        assert service.projects.list_projects() == []
         compile_plan.assert_not_called()
         confirmed = turn(client, session, f"确认方案参数 {draft_hash(draft)[:12]}", "confirm")
         repeated = turn(client, session, f"确认方案参数 {draft_hash(draft)[:12]}", "confirm")
@@ -678,7 +686,7 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
     assert "方案已通过科学校验" in confirmed["assistant_message"]["content"], confirmed
     compile_plan.assert_called_once()
     intent = compile_plan.call_args.args[0].skill_plan_intent
-    assert intent.project_id == service.list_projects()[0].project_id
+    assert intent.project_id == service.projects.list_projects()[0].project_id
     assert len(intent.input_manifest_hash) == 64
     assert all(p.source == "user" for p in intent.preprocessing.provenance)
     assert "确认方案参数" not in preview["assistant_message"]["content"]
@@ -697,7 +705,9 @@ def test_complete_review_binds_server_manifest_only_after_confirmation(
 async def test_concurrent_change_rejects_deferred_side_effects(service, monkeypatch):
     from neuroagent.application.work_dialogue import WorkDialogue
 
-    session = service.create_conversation(ConversationCreate(mode="work"), "concurrent-create")
+    session = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "concurrent-create"
+    )
     entered, release = asyncio.Event(), asyncio.Event()
     mutation = Mock(return_value=WorkActionResult("must not commit"))
 
@@ -708,7 +718,7 @@ async def test_concurrent_change_rejects_deferred_side_effects(service, monkeypa
 
     monkeypatch.setattr(WorkDialogue, "respond", delayed)
     task = asyncio.create_task(
-        service.send_conversation_turn(
+        service.conversations.send_conversation_turn(
             session.conversation_id,
             ConversationTurnCreate(content="confirm"),
             "concurrent-turn",
@@ -737,7 +747,9 @@ async def test_required_schema_is_counted_and_small_context_blocks_provider(serv
     from neuroagent.application.work_dialogue import WorkDialogue
     from neuroagent.context.interfaces import ContextPacket
 
-    session = service.create_conversation(ConversationCreate(mode="work"), "budget-create")
+    session = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "budget-create"
+    )
     model = AsyncMock(side_effect=AssertionError("must not exceed context budget"))
     result = await WorkDialogue(service.conversation_work, model).respond(
         session,
@@ -853,7 +865,7 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
                 "facts": {"preprocessing.tr_seconds": 2.0},
                 "sources": {**payload["work_draft"]["sources"], "preprocessing.tr_seconds": "data"},
             }
-            current = service.get_conversation(session)
+            current = service.conversations.get_conversation(session)
             service.repository.append_conversation_exchange(
                 session,
                 user_content="read",
@@ -946,10 +958,12 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
         service.close()
 
 
-def _authorized_conversation(service: NeuroAgentService, *, work_draft: dict, key: str):
+def _authorized_conversation(service: ApplicationServices, *, work_draft: dict, key: str):
     """Seed a Work conversation that already holds a reviewed plan."""
 
-    session = service.create_conversation(ConversationCreate(mode="work"), f"{key}-create")
+    session = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), f"{key}-create"
+    )
     service.repository.append_conversation_exchange(
         session.conversation_id,
         user_content="prepare",
@@ -977,10 +991,10 @@ def _authorized_conversation(service: NeuroAgentService, *, work_draft: dict, ke
         project_id=None,
         active_run_id=None,
     )
-    return service.get_conversation(session.conversation_id)
+    return service.conversations.get_conversation(session.conversation_id)
 
 
-async def _send_confirmation(service: NeuroAgentService, session, key: str):
+async def _send_confirmation(service: ApplicationServices, session, key: str):
     from neuroagent.application.work_dialogue import WorkDialogue
     from neuroagent.context.interfaces import ContextPacket
 
@@ -1097,12 +1111,14 @@ def test_prepare_plan_from_draft_binds_registered_dataset_and_fails_closed(
     """The dataset-bound branch must validate the workspace, then refuse a
     dataset that has no frozen manifest rather than compiling against nothing."""
 
-    from neuroagent.application.contracts import DatasetCreate
+    from neuroagent.application.contracts.projects import (
+        DatasetCreate,
+    )
     from tests.backend.conftest import make_bids_dataset, make_project
 
     dataset_root = make_bids_dataset(source_root)
     project = make_project(service, source_root, work_root, key="ppfd-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="unfrozen",
@@ -1129,7 +1145,9 @@ def test_prepare_plan_from_draft_binds_registered_dataset_and_fails_closed(
 
 
 def test_file_citations_keep_evidence_from_multiple_reads_of_the_same_path():
-    from neuroagent.application.contracts import WorkspaceCitation
+    from neuroagent.application.contracts.conversations import (
+        WorkspaceCitation,
+    )
     from neuroagent.application.work_dialogue import _valid_workspace_citation_paths
 
     path = "FunImg/subject-0123456789ab/scan.json"

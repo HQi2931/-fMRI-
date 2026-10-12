@@ -18,26 +18,33 @@ from neuroagent.agent.models import (
 )
 from neuroagent.agent.providers import MockProvider, RetryableProviderError
 from neuroagent.api import create_app
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.agent import (
     AgentTaskCreate,
-    DatasetCreate,
-    DatasetKind,
-    DatasetProfile,
-    ManifestRevisionView,
-    ManifestScanRequest,
     ModelProfileCreate,
     ModelProfileInput,
     ProviderTestRequest,
+)
+from neuroagent.application.contracts.plans import (
+    SkillPlanIntent,
+    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    DatasetProfile,
+    ManifestRevisionView,
+    ManifestScanRequest,
+    SubjectManifestEntry,
+)
+from neuroagent.application.contracts.runs import (
     QcReviewApprove,
     QcReviewCreate,
     RunCreate,
-    SkillPlanIntent,
-    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
-    SubjectManifestEntry,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
 from neuroagent.domain.fmri import (
@@ -60,6 +67,9 @@ from neuroagent.domain.fmri import (
     StatisticalTest,
     Tail,
     TemporalFilterTiming,
+)
+from neuroagent.domain.fmri.dataset import (
+    DatasetKind,
 )
 
 from .conftest import make_approved_plan, make_bids_dataset, make_project
@@ -329,14 +339,14 @@ def _minimal_preprocessing_payload() -> dict[str, object]:
 
 
 def test_skill_registry_resolution_and_blockers_are_api_enforced(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = make_project(service, source_root, work_root)
     dataset_path = make_bids_dataset(source_root)
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Synthetic BIDS",
@@ -345,7 +355,7 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
         ),
         "skill-source-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "skill-source-manifest",
@@ -355,7 +365,7 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
         project.project_id,
         manifest_hash=manifest.content_hash,
     )
-    source_run = service.create_run(
+    source_run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=source_plan.plan_revision_id,
@@ -387,14 +397,14 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
             )
         ),
     )
-    registered = service.list_artifacts(source_run.run_id)
+    registered = service.runs.list_artifacts(source_run.run_id)
     unsmoothed = next(
         item for item in registered if item.artifact_type == "timeseries.synthetic.unsmoothed"
     )
     smoothed = next(
         item for item in registered if item.artifact_type == "timeseries.synthetic.smoothed"
     )
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
     request = SkillPlanResolveRequest(
         request=_skill_request(
             project.project_id,
@@ -542,7 +552,7 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
         with service.database.session_factory() as session:
             runs_before_race = session.scalar(text("SELECT COUNT(*) FROM workflow_runs"))
             jobs_before_race = session.scalar(text("SELECT COUNT(*) FROM jobs"))
-        original_require_current = service._require_plan_current
+        original_require_current = service.statistics._require_plan_current
         checked_once = False
 
         def advance_manifest_after_first_check(
@@ -556,15 +566,17 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
             if checked_once:
                 return
             checked_once = True
-            current_dataset = service.get_dataset(dataset.dataset_id)
-            service.inspect_dataset(
+            current_dataset = service.projects.get_dataset(dataset.dataset_id)
+            service.projects.inspect_dataset(
                 dataset.dataset_id,
                 ManifestScanRequest(expected_dataset_version=current_dataset.version),
                 "manifest-race-after-run-prepare",
             )
 
         with monkeypatch.context() as race_patch:
-            race_patch.setattr(service, "_require_plan_current", advance_manifest_after_first_check)
+            race_patch.setattr(
+                service.runs, "_require_plan_current", advance_manifest_after_first_check
+            )
             raced_run = client.post(
                 "/api/v1/runs",
                 json={
@@ -625,8 +637,8 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
             reason["code"] for reason in source_changed.json()["error"]["details"]["reasons"]
         } >= {"source_manifest_content_changed"}
 
-        current_dataset = service.get_dataset(dataset.dataset_id)
-        service.inspect_dataset(
+        current_dataset = service.projects.get_dataset(dataset.dataset_id)
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=current_dataset.version),
             "skill-source-new-manifest",
@@ -648,13 +660,13 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
 
 
 def test_skill_resolution_binds_required_manifest_inputs(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root)
     dataset_path = make_bids_dataset(source_root)
     missing_functional_path = dataset_path / "sub-02" / "func" / "sub-02_task-rest_bold.nii.gz"
     missing_functional_path.unlink()
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Input contract BIDS",
@@ -663,12 +675,12 @@ def test_skill_resolution_binds_required_manifest_inputs(
         ),
         "input-contract-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "input-contract-missing-functional",
     )
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
 
     def resolve_payload(
         manifest_hash: str,
@@ -699,8 +711,8 @@ def test_skill_resolution_binds_required_manifest_inputs(
         missing_functional_path.write_bytes(b"synthetic-sub-02-bold")
         missing_anatomical_path = dataset_path / "sub-02" / "anat" / "sub-02_T1w.nii.gz"
         missing_anatomical_path.unlink()
-        current_dataset = service.get_dataset(dataset.dataset_id)
-        anatomical_manifest = service.inspect_dataset(
+        current_dataset = service.projects.get_dataset(dataset.dataset_id)
+        anatomical_manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=current_dataset.version),
             "input-contract-missing-anatomical",
@@ -737,8 +749,8 @@ def test_skill_resolution_binds_required_manifest_inputs(
             dataset_path / "sub-01" / "anat" / "sub-01_acq-repeat_T1w.nii.gz"
         )
         duplicate_anatomical_path.write_bytes(b"synthetic-sub-01-repeat-t1")
-        current_dataset = service.get_dataset(dataset.dataset_id)
-        ambiguous_manifest = service.inspect_dataset(
+        current_dataset = service.projects.get_dataset(dataset.dataset_id)
+        ambiguous_manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=current_dataset.version),
             "input-contract-ambiguous-anatomical",
@@ -770,8 +782,8 @@ def test_skill_resolution_binds_required_manifest_inputs(
         ]
 
         duplicate_anatomical_path.unlink()
-        current_dataset = service.get_dataset(dataset.dataset_id)
-        complete_manifest = service.inspect_dataset(
+        current_dataset = service.projects.get_dataset(dataset.dataset_id)
+        complete_manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=current_dataset.version),
             "input-contract-complete",
@@ -795,13 +807,13 @@ def test_skill_resolution_binds_required_manifest_inputs(
 
 
 def test_skill_resolution_rejects_ambiguous_bids_bold_runs(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="multi-run-project")
     dataset_path = make_bids_dataset(source_root)
     second_run = dataset_path / "sub-01" / "func" / "sub-01_task-rest_run-02_bold.nii.gz"
     second_run.write_bytes(b"synthetic-sub-01-run-02")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Multi-run BIDS",
@@ -810,13 +822,13 @@ def test_skill_resolution_rejects_ambiguous_bids_bold_runs(
         ),
         "multi-run-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "multi-run-manifest",
     )
     assert any("多个 BOLD run" in warning for warning in manifest.profile.warnings)
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
 
     with TestClient(create_app(service=service)) as client:
         response = client.post(
@@ -851,7 +863,7 @@ def test_skill_resolution_rejects_ambiguous_bids_bold_runs(
 
 
 def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="derivative-only-project")
     dataset_path = source_root / "derivative-only-bids"
@@ -870,7 +882,7 @@ def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
     )
     derivative.parent.mkdir(parents=True)
     derivative.write_bytes(b"derived-bold")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Derivative-only BIDS",
@@ -879,7 +891,7 @@ def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
         ),
         "derivative-only-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "derivative-only-manifest",
@@ -887,7 +899,7 @@ def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
     assert manifest.profile.kind is DatasetKind.BIDS
     assert manifest.profile.nifti_count == 1
     assert manifest.subjects == []
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
 
     with TestClient(create_app(service=service)) as client:
         response = client.post(
@@ -912,7 +924,7 @@ def test_derivative_only_bids_cannot_fall_back_to_plain_functional_input(
 
 
 def test_plain_nifti_multiple_functional_candidates_require_explicit_selection(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="plain-multi-project")
     dataset_path = source_root / "plain-multi-run"
@@ -920,7 +932,7 @@ def test_plain_nifti_multiple_functional_candidates_require_explicit_selection(
         path = dataset_path / "S001" / "func" / f"{run}.nii"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(run.encode())
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Plain multi-run NIfTI",
@@ -929,13 +941,13 @@ def test_plain_nifti_multiple_functional_candidates_require_explicit_selection(
         ),
         "plain-multi-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "plain-multi-manifest",
     )
     assert any("多个普通 NIfTI" in warning for warning in manifest.profile.warnings)
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
 
     with TestClient(create_app(service=service)) as client:
         response = client.post(
@@ -960,14 +972,14 @@ def test_plain_nifti_multiple_functional_candidates_require_explicit_selection(
 
 
 def test_dicom_manifest_is_inventory_only_for_skill_planning(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="dicom-plan-project")
     dataset_path = source_root / "t1-only-dicom"
     t1_dicom = dataset_path / "sub-01" / "anat" / "IM000001.dcm"
     t1_dicom.parent.mkdir(parents=True)
     t1_dicom.write_bytes(b"synthetic-t1-dicom")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="T1-only DICOM inventory",
@@ -976,15 +988,15 @@ def test_dicom_manifest_is_inventory_only_for_skill_planning(
         ),
         "dicom-plan-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "dicom-plan-manifest",
     )
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
 
     with pytest.raises(InputValidationError) as raised:
-        service.resolve_skill_plan(
+        service.skills.resolve_skill_plan(
             SkillPlanResolveRequest.model_validate(
                 {
                     "request": {
@@ -1048,7 +1060,7 @@ def test_dpabi_manifest_plan_validation_rejects_checkpoint_mixing() -> None:
         }
     )
     with pytest.raises(InputValidationError) as functional_error:
-        NeuroAgentService._validate_manifest_for_skill_intent(intent, mixed_functional)
+        ApplicationServices._validate_manifest_for_skill_intent(intent, mixed_functional)
     assert functional_error.value.code == "manifest_dpabi_input_stage_invalid"
 
     mixed_anatomical = ManifestRevisionView.model_validate(
@@ -1069,12 +1081,12 @@ def test_dpabi_manifest_plan_validation_rejects_checkpoint_mixing() -> None:
         }
     )
     with pytest.raises(InputValidationError) as anatomical_error:
-        NeuroAgentService._validate_manifest_for_skill_intent(intent, mixed_anatomical)
+        ApplicationServices._validate_manifest_for_skill_intent(intent, mixed_anatomical)
     assert anatomical_error.value.code == "manifest_dpabi_anatomical_stage_mixed"
 
 
 def test_statistical_design_approval_hash_and_run_filters(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1085,7 +1097,7 @@ def test_statistical_design_approval_hash_and_run_filters(
         target = dataset_path / "sub-03" / data_kind
         target.mkdir(parents=True, exist_ok=True)
         (target / f"sub-03_{suffix}").write_bytes(f"synthetic-sub-03-{data_kind}".encode())
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Statistics BIDS",
@@ -1094,18 +1106,18 @@ def test_statistical_design_approval_hash_and_run_filters(
         ),
         "statistics-source-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "statistics-source-manifest",
     )
-    project = service.get_project(project.project_id)
+    project = service.projects.get_project(project.project_id)
     preprocessing_plan = make_approved_plan(
         service,
         project.project_id,
         manifest_hash=manifest.content_hash,
     )
-    preprocessing_run = service.create_run(
+    preprocessing_run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=preprocessing_plan.plan_revision_id,
@@ -1114,7 +1126,7 @@ def test_statistical_design_approval_hash_and_run_filters(
         "statistics-qc-input-run",
     )
     assert build_worker(service, worker_id="statistics-qc-worker").run_once() is True
-    preprocessing_run = service.get_run(preprocessing_run.run_id)
+    preprocessing_run = service.runs.get_run(preprocessing_run.run_id)
     service.repository.register_artifacts(
         project.project_id,
         preprocessing_run.run_id,
@@ -1132,7 +1144,7 @@ def test_statistical_design_approval_hash_and_run_filters(
     )
     mask_artifact = next(
         item
-        for item in service.list_artifacts(preprocessing_run.run_id)
+        for item in service.runs.list_artifacts(preprocessing_run.run_id)
         if item.artifact_type == "mask.synthetic"
     )
     service.repository.register_artifacts(
@@ -1157,12 +1169,12 @@ def test_statistical_design_approval_hash_and_run_filters(
     )
     image_artifacts = tuple(
         item
-        for item in service.list_artifacts(preprocessing_run.run_id)
+        for item in service.runs.list_artifacts(preprocessing_run.run_id)
         if item.artifact_type == "metric.synthetic.alff"
     )
     untyped_artifact = next(
         item
-        for item in service.list_artifacts(preprocessing_run.run_id)
+        for item in service.runs.list_artifacts(preprocessing_run.run_id)
         if item.artifact_type == "mock.result"
     )
     assert len(image_artifacts) == 3
@@ -1291,7 +1303,7 @@ def test_statistical_design_approval_hash_and_run_filters(
         assert qc_approved_response.status_code == 200
         qc_approved = qc_approved_response.json()
         assert qc_approved["state"] == "approved"
-        assert service.get_run(preprocessing_run.run_id).state.value == "succeeded"
+        assert service.runs.get_run(preprocessing_run.run_id).state.value == "succeeded"
 
         design = _one_sample_design(
             qc_approved["review"]["review_revision_id"],
@@ -1441,7 +1453,7 @@ def test_statistical_design_approval_hash_and_run_filters(
         with service.database.session_factory() as session:
             runs_before_qc_race = session.scalar(text("SELECT COUNT(*) FROM workflow_runs"))
             jobs_before_qc_race = session.scalar(text("SELECT COUNT(*) FROM jobs"))
-        original_require_current = service._require_plan_current
+        original_require_current = service.statistics._require_plan_current
         qc_invalidated = False
 
         def invalidate_qc_after_first_check(
@@ -1463,7 +1475,9 @@ def test_statistical_design_approval_hash_and_run_filters(
                 )
 
         with monkeypatch.context() as race_patch:
-            race_patch.setattr(service, "_require_plan_current", invalidate_qc_after_first_check)
+            race_patch.setattr(
+                service.runs, "_require_plan_current", invalidate_qc_after_first_check
+            )
             raced_statistics_run = client.post(
                 "/api/v1/statistics/runs",
                 json={
@@ -1509,7 +1523,7 @@ def test_statistical_design_approval_hash_and_run_filters(
 
 
 def test_agent_api_redacts_falls_back_and_never_returns_secrets(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1681,7 +1695,7 @@ def test_agent_api_redacts_falls_back_and_never_returns_secrets(
 
 @pytest.mark.asyncio
 async def test_agent_task_rechecks_project_revision_after_provider_wait(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1757,7 +1771,7 @@ async def test_agent_task_rechecks_project_revision_after_provider_wait(
 
 @pytest.mark.asyncio
 async def test_slow_provider_request_renews_idempotency_lease(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class BlockingProvider:
@@ -1851,7 +1865,7 @@ def test_settings_load_explicit_dotenv_and_have_no_machine_path_defaults(
 
 
 def test_multisession_manifest_reaches_qc_and_paired_design(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root, key="multisession-project")
     dataset_path = source_root / "multisession-bids"
@@ -1875,7 +1889,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
                 f"synthetic-{subject_id}-{session_id}-t1".encode()
             )
 
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Multi-session BIDS",
@@ -1884,7 +1898,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
         ),
         "multisession-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "multisession-manifest",
@@ -1898,7 +1912,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
         project.project_id,
         manifest_hash=manifest.content_hash,
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -1907,7 +1921,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
         "multisession-run",
     )
     assert build_worker(service, worker_id="multisession-worker").run_once() is True
-    run = service.get_run(run.run_id)
+    run = service.runs.get_run(run.run_id)
 
     service.repository.register_artifacts(
         project.project_id,
@@ -1926,7 +1940,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
     )
     mask = next(
         artifact
-        for artifact in service.list_artifacts(run.run_id)
+        for artifact in service.runs.list_artifacts(run.run_id)
         if artifact.artifact_type == "mask.synthetic"
     )
     metric_specs = [
@@ -1958,10 +1972,10 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
     )
     metrics = tuple(
         artifact
-        for artifact in service.list_artifacts(run.run_id)
+        for artifact in service.runs.list_artifacts(run.run_id)
         if artifact.artifact_type == "metric.synthetic.alff"
     )
-    review = service.create_qc_review(
+    review = service.runs.create_qc_review(
         QcReviewCreate(
             run_id=run.run_id,
             expected_run_version=run.version,
@@ -1981,7 +1995,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
         ),
         "multisession-qc-create",
     )
-    approved = service.approve_qc_review(
+    approved = service.runs.approve_qc_review(
         review.review.review_revision_id,
         QcReviewApprove(
             expected_review_version=review.version,
@@ -2026,10 +2040,10 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
         qc_review_revision_id=approved.review.review_revision_id,
         qc_review_hash=approved.review.content_hash,
     )
-    result = service.create_statistical_design(
+    result = service.statistics.create_statistical_design(
         StatisticalDesignCreate(
             project_id=project.project_id,
-            expected_project_version=service.get_project(project.project_id).version,
+            expected_project_version=service.projects.get_project(project.project_id).version,
             input_manifest_hash=manifest.content_hash,
             design=design,
             correction=FdrCorrection(
@@ -2050,7 +2064,7 @@ def test_multisession_manifest_reaches_qc_and_paired_design(
 
 
 def test_production_static_app_preserves_api_namespace(
-    service: NeuroAgentService, tmp_path: Path
+    service: ApplicationServices, tmp_path: Path
 ) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -2071,7 +2085,7 @@ def test_production_static_app_preserves_api_namespace(
 
 
 def test_delete_model_profile(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DELETABLE_PROVIDER_API_KEY", "delete-secret-value")

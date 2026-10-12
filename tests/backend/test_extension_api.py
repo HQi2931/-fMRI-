@@ -5,8 +5,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.contracts import RunCreate
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
+from neuroagent.application.services import ApplicationServices
 
 from .conftest import make_approved_plan, make_project
 
@@ -16,13 +18,13 @@ def _headers() -> dict[str, str]:
 
 
 def test_extension_analysis_endpoints_are_local_and_typed(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project = make_project(service, source_root, work_root)
     table = source_root / "features.csv"
     table.write_text("subject_id,group,roi_1\nsub-01,a,0.1\nsub-02,b,0.2\n", encoding="utf-8")
     plan = make_approved_plan(service, project.project_id)
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,

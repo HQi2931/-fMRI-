@@ -21,7 +21,9 @@ from fastapi.testclient import TestClient
 from neuroagent.agent.models import ModelCapability, ModelProfile, ProviderResponse, ToolCall
 from neuroagent.agent.providers import MockProvider
 from neuroagent.api.app import create_app
-from neuroagent.application.contracts import ConversationCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+)
 from neuroagent.application.settings import Settings
 from neuroagent.application.statistical_result_facts import aggregate_roi, render_result_readout
 from neuroagent.bootstrap import build_service
@@ -87,12 +89,14 @@ def main() -> None:
     provider = MockProvider([])
     service = build_service(settings, providers={"openai-compatible": provider})
     try:
-        run = service.get_run(args.run_id)
+        run = service.runs.get_run(args.run_id)
         assert run.state.value == "succeeded"
-        results = service.list_statistical_results(project_id=run.project_id, run_id=run.run_id)
+        results = service.runs.list_statistical_results(
+            project_id=run.project_id, run_id=run.run_id
+        )
         assert len(results) == 1 and results[0].mode == "real" and not results[0].non_scientific
         result_id = results[0].result_id
-        detail = service.get_statistical_result(result_id)
+        detail = service.runs.get_statistical_result(result_id)
         assert detail.method_summary is not None
         assert detail.method_summary.correction_evidence_status == "verified"
         facts = service._statistical_result_facts(result_id)
@@ -100,7 +104,7 @@ def main() -> None:
         cluster_id = facts["clusters"][0]["cluster_id"] if facts["clusters"] else None
         final_answer = render_result_readout(facts)
         if facts["localization_status"] == "pending_atlas_verification":
-            localization = service.localize_statistical_result(
+            localization = service.runs.localize_statistical_result(
                 result_id, facts["frozen_atlas"]["atlas_id"]
             )
             peak = localization.clusters[0]
@@ -108,7 +112,7 @@ def main() -> None:
                 f"{region.label} {region.proportion:.1%}" for region in peak.coverage
             )
             final_answer += f"\n峰值标签：{peak.label}；整簇覆盖：{coverage}。"
-        roi_facts = aggregate_roi(service.statistical_cluster_roi(result_id, cluster_id))
+        roi_facts = aggregate_roi(service.runs.statistical_cluster_roi(result_id, cluster_id))
         if roi_facts["groups"]:
             final_answer += (
                 "\nROI 描述："
@@ -165,7 +169,7 @@ def main() -> None:
             ),
         )
         service.repository.create_model_profile(profile)
-        conversation = service.create_conversation(
+        conversation = service.conversations.create_conversation(
             ConversationCreate(
                 mode="work", project_id=run.project_id, preferred_profile_id=profile.id
             ),
@@ -221,9 +225,10 @@ def main() -> None:
             and "sub-01" not in tool_text
         )
         assert (
-            len(service.list_statistical_results(project_id=run.project_id, run_id=run.run_id)) == 1
+            len(service.runs.list_statistical_results(project_id=run.project_id, run_id=run.run_id))
+            == 1
         )
-        assert service.get_run(run.run_id).state.value == "succeeded"
+        assert service.runs.get_run(run.run_id).state.value == "succeeded"
         assert all(_hash(path) == digest for path, digest in source_hashes.items())
         with sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True) as original:
             assert (

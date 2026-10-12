@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.runs import (
     ExecutionBackend,
     ExecutionWorkspaceMode,
     RunCreate,
@@ -45,7 +45,7 @@ def test_real_run_is_blocked_by_default_even_after_confirmation(
     project = make_project(service, source_root, work_root)
     plan = make_approved_plan(service, project.project_id)
     with pytest.raises(ConflictError, match="未启用"):
-        service.create_run(
+        service.runs.create_run(
             RunCreate(
                 project_id=project.project_id,
                 plan_revision_id=plan.plan_revision_id,

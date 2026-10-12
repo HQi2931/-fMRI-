@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
-import {
-  api,
-  describeError,
-  type ExternalAnalysisImport,
-  type ExternalAnalysisImportSummary,
-  type ExternalDemographicsRevision,
-} from "../api/client";
+import { statisticsApi } from "../api/statistics";
+import { describeError } from "../api/transport";
+import type { ExternalAnalysisImport, ExternalAnalysisImportSummary, ExternalDemographicsRevision } from "../api/types";
 
 type Props = {
   projectId: string;
@@ -45,7 +41,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
   useEffect(() => {
     if (!inspection || inspection.status !== "included") return;
     const controller = new AbortController();
-    void api.externalDemographics(inspection.import_id, controller.signal)
+    void statisticsApi.externalDemographics(inspection.import_id, controller.signal)
       .then((value) => { if (!controller.signal.aborted) setDemographics(value); })
       .catch((caught) => { if (!controller.signal.aborted) setError(describeError(caught)); });
     return () => controller.abort();
@@ -59,7 +55,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
     const controller = new AbortController();
     setInspection(null);
     setImports([]);
-    api.externalAnalysisImports(projectId, controller.signal)
+    statisticsApi.externalAnalysisImports(projectId, controller.signal)
       .then((items) => { if (!controller.signal.aborted) setImports(items); })
       .catch((caught) => { if (!controller.signal.aborted) setError(describeError(caught)); });
     return () => controller.abort();
@@ -88,7 +84,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
   );
 
   async function refreshList(): Promise<void> {
-    setImports(await api.externalAnalysisImports(projectId));
+    setImports(await statisticsApi.externalAnalysisImports(projectId));
   }
 
   async function inspect(): Promise<void> {
@@ -96,7 +92,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
     setBusy(true);
     setError("");
     try {
-      const item = await api.inspectExternalAnalysisImport({
+      const item = await statisticsApi.inspectExternalAnalysisImport({
         project_id: projectId,
         source_path: sourcePath.trim(),
         layout,
@@ -121,7 +117,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
     setBusy(true);
     setError("");
     try {
-      const item = await api.includeExternalAnalysisImport(inspection.import_id, {
+      const item = await statisticsApi.includeExternalAnalysisImport(inspection.import_id, {
         expected_version: inspection.version,
         included_subject_ids: includedSubjectIds,
         group_order: groupOrder,
@@ -232,13 +228,13 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
                     if (parts.length !== 2 || !parts[0] || !parts[1] || parts[0] in mapping) throw new Error("每行需填写一对不同的列名，如 age=Age。");
                     mapping[parts[0]] = parts[1];
                   }
-                  const revision = await api.importExternalDemographics(inspection.import_id, {
+                  const revision = await statisticsApi.importExternalDemographics(inspection.import_id, {
                     source_path: demographicsPath.trim(), subject_id_column: subjectIdColumn.trim(),
                     column_mapping: mapping, encoding: "utf-8-sig",
                     expected_import_version: inspection.version,
                   });
                   setDemographics(revision);
-                  setInspection(await api.externalAnalysisImport(inspection.import_id));
+                  setInspection(await statisticsApi.externalAnalysisImport(inspection.import_id));
                 } catch (caught) { setError(describeError(caught)); }
                 finally { setBusy(false); }
               })();
@@ -254,7 +250,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
         {item.metric_kind ?? "未识别指标"} · {Object.entries(item.group_counts).map(([group, count]) => `${group} ${count}`).join(" / ") || "无有效组别"} · {item.status === "included" ? "已纳入" : "待确认"}
         <button className="button button-secondary" type="button" disabled={busy} onClick={() => {
           setBusy(true); setError("");
-          void api.externalAnalysisImport(item.import_id)
+          void statisticsApi.externalAnalysisImport(item.import_id)
             .then((detail) => { setInspection(detail); setSourcePath(detail.source_path); setGroupOrder([...(detail.inclusion?.group_order ?? detail.inspection.group_order)]); setExcludedIds(detail.inclusion?.excluded_subject_ids.join("\n") ?? ""); setSpace(detail.inclusion?.coordinate_space ?? "unknown"); setMaskRelativePath(detail.inclusion?.mask_relative_path ?? ""); setAcknowledged(detail.status === "included"); setReason(detail.inclusion?.reason ?? ""); setActor(detail.inclusion?.actor ?? "researcher"); })
             .catch((caught) => setError(describeError(caught)))
             .finally(() => setBusy(false));

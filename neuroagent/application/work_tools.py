@@ -30,7 +30,10 @@ from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.tool_result import ToolCallOutcome
 from neuroagent.agent.tool_spec import LlmTool, ToolTier
 from neuroagent.application.agent_tools import AuditSink, ToolBinding, ToolDispatcher
-from neuroagent.application.contracts import StatisticalClusterRoiView, StatisticalResultDetailView
+from neuroagent.application.contracts.statistics import (
+    StatisticalClusterRoiView,
+    StatisticalResultDetailView,
+)
 from neuroagent.application.errors import NotFoundError
 from neuroagent.application.ports import WorkspaceFilePolicyPort
 from neuroagent.application.statistical_capabilities import model_visible_capabilities
@@ -890,6 +893,7 @@ class WorkToolRunner:
         context_window_tokens: int = 16_384,
         max_output_tokens: int = 2_048,
         request_budget: AgentLoopBudget | None = None,
+        system_prompt: str | None = None,
     ) -> WorkToolLoopResult:
         rendered = self._build_messages(
             question=question,
@@ -900,6 +904,7 @@ class WorkToolRunner:
             work_context=dict(work_context),
             allow_web_search=False,
             work_mode=True,
+            system_prompt=system_prompt,
         )
         dispatcher = self._dispatcher_factory(execution_context or AgentExecutionContext())
         tools: tuple[LlmTool, ...] = dispatcher.catalog

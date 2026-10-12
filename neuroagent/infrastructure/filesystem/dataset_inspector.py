@@ -12,12 +12,12 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from neuroagent.application.contracts import (
-    DatasetKind,
+from neuroagent.application.contracts.projects import (
     DatasetProfile,
     SubjectManifestEntry,
 )
 from neuroagent.application.errors import InputValidationError
+from neuroagent.domain.fmri.dataset import DatasetKind
 from neuroagent.domain.fmri.dpabi_stages import (
     DPABI_STAGE_RULE_VERSION,
     canonical_stage_name,

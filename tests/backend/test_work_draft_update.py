@@ -6,13 +6,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.contracts import ConversationCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+)
 from neuroagent.application.work_draft import draft_hash
 from tests.backend.test_work_draft import complete_draft
 
 
 def seed(service, source_root, *, mode="work", revision=None):
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode=mode, workspace_path=str(source_root)), "seed"
     )
     draft = complete_draft()
@@ -67,7 +69,7 @@ def test_changed_inputs_reject_edit_and_start_but_review_persists_recovery(servi
                     headers={"Idempotency-Key": "changed-" + suffix},
                 )
                 assert replay.json() == response.json()
-                stored = service.get_conversation(session)
+                stored = service.conversations.get_conversation(session)
                 assert stored.messages[-1].payload["work_draft"] == payload["work_draft"]
                 assert service.repository.list_runs() == []
             else:

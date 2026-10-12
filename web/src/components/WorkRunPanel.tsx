@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, describeError, type Artifact, type PlanRevision, type QcReview, type Run, type RunDiagnosis, type RuntimeEvent, type StatisticalAtlas, type StatisticalAtlasSelection, type StatisticalResultDetail, type StatisticalResultLocalization, type StatisticalResultSliceInfo } from "../api/client";
+import { plansApi } from "../api/plans";
+import { runsApi } from "../api/runs";
+import { statisticsApi } from "../api/statistics";
+import { describeError } from "../api/transport";
+import type { Artifact, PlanRevision, QcReview, Run, RunDiagnosis, RuntimeEvent, StatisticalAtlas, StatisticalAtlasSelection, StatisticalResultDetail, StatisticalResultLocalization, StatisticalResultSliceInfo } from "../api/types";
 import "./WorkRunPanel.css";
 import { StatisticalClusterRoiPanel } from "./StatisticalClusterRoiPanel";
 import { StatisticalMethodPanel } from "./StatisticalMethodPanel";
@@ -61,7 +65,7 @@ function ResultAtlasLocalization({ result }: { result: StatisticalResultDetail }
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    void api.statisticalAtlases(controller.signal).then((items) => {
+    void statisticsApi.statisticalAtlases(controller.signal).then((items) => {
       setAtlases(items);
       if (!frozenAtlas && !items.some((item) => item.atlas_id === "aal" && item.available)) {
         const first = items.find((item) => item.available);
@@ -84,7 +88,7 @@ function ResultAtlasLocalization({ result }: { result: StatisticalResultDetail }
     if (busy || !atlasId) return;
     setBusy(true); setError("");
     try {
-      const value = await api.localizeStatisticalResult(result.result_id, atlasId);
+      const value = await statisticsApi.localizeStatisticalResult(result.result_id, atlasId);
       setLocalization(value);
     } catch (caught) { setError(`脑区定位未完成：${describeError(caught)}`); }
     finally { setBusy(false); }
@@ -126,7 +130,7 @@ function StatisticalResultClusters({ result, clusters }: { result: StatisticalRe
   useEffect(() => {
     const controller = new AbortController();
     setSliceInfo(null); setSliceError(""); setImageFailed(false); setSelectedCluster(null);
-    void api.statisticalResultSliceInfo(result.result_id, controller.signal).then((info) => {
+    void statisticsApi.statisticalResultSliceInfo(result.result_id, controller.signal).then((info) => {
       setSliceInfo(info); setSliceIndex(info.initial_slice_index);
     }).catch((caught) => {
       if (!controller.signal.aborted) setSliceError(`统计图切片信息不可用：${describeError(caught)}`);
@@ -170,11 +174,11 @@ function StatisticalResultClusters({ result, clusters }: { result: StatisticalRe
         {selectedCluster && <p>已联动到簇 {selectedCluster} 的峰值切片；拖动滑块可浏览相邻层。</p>}
         {imageFailed ? <p>此统计图切片无法预览，请下载 NIfTI 文件检查。</p> : <figure>
           <img loading="lazy" alt={`统计图第 ${sliceIndex + 1} 层轴向切片`}
-            src={api.statisticalResultSliceUrl(result.result_id, sliceIndex)}
+            src={statisticsApi.statisticalResultSliceUrl(result.result_id, sliceIndex)}
             onError={() => setImageFailed(true)} />
           <figcaption>基于统计图原始网格显示，不做空间重采样或方向推断。</figcaption>
         </figure>}
-        <a download={`statistics-${result.result_id}-slice-${sliceIndex + 1}.png`} href={api.statisticalResultSliceUrl(result.result_id, sliceIndex)}>下载当前切片 PNG</a>
+        <a download={`statistics-${result.result_id}-slice-${sliceIndex + 1}.png`} href={statisticsApi.statisticalResultSliceUrl(result.result_id, sliceIndex)}>下载当前切片 PNG</a>
       </>}
     </div>
     {selectedCluster && <StatisticalClusterRoiPanel key={`${result.result_id}-${selectedCluster}`} resultId={result.result_id} bundleHash={result.bundle_hash} clusterId={selectedCluster} />}
@@ -205,7 +209,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     const rawError = run.error;
     void (async () => {
       try {
-        const result = await api.diagnoseRun(run.run_id, { log_text: rawError.slice(-200_000) }, controller.signal);
+        const result = await runsApi.diagnoseRun(run.run_id, { log_text: rawError.slice(-200_000) }, controller.signal);
         if (!controller.signal.aborted) setDiagnosis({ runId: run.run_id, attempt: run.attempt, error: rawError, value: result.diagnosis });
       } catch { /* Keep the neutral explanation and original technical details available. */ }
     })();
@@ -218,21 +222,21 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     async function load() {
       try {
         const [artifactResult, eventResult, planResult, statisticsResult] = await Promise.allSettled([
-          api.artifacts(run.run_id, controller.signal),
-          api.runEvents(run.run_id, 0, controller.signal),
-          api.plan(run.plan_revision_id, controller.signal),
-          run.state === "succeeded" ? api.statisticalResults(run.project_id, controller.signal) : Promise.resolve([]),
+          runsApi.artifacts(run.run_id, controller.signal),
+          runsApi.runEvents(run.run_id, 0, controller.signal),
+          plansApi.plan(run.plan_revision_id, controller.signal),
+          run.state === "succeeded" ? statisticsApi.statisticalResults(run.project_id, controller.signal) : Promise.resolve([]),
         ]);
         const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value : [];
         const events = eventResult.status === "fulfilled" ? eventResult.value : [];
         const plan = planResult.status === "fulfilled" ? planResult.value : null;
         const resultSummaries = statisticsResult.status === "fulfilled" ? statisticsResult.value.filter((item) => item.run_id === run.run_id) : [];
-        const statisticsDetailResponses = await Promise.allSettled(resultSummaries.map((item) => api.statisticalResult(item.result_id, controller.signal)));
+        const statisticsDetailResponses = await Promise.allSettled(resultSummaries.map((item) => statisticsApi.statisticalResult(item.result_id, controller.signal)));
         const statisticalResults = statisticsDetailResponses.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
         const detailErrors = [artifactResult.status === "rejected" ? "产物列表暂时不可用。" : "", eventResult.status === "rejected" ? "阶段记录暂时不可用。" : "", planResult.status === "rejected" ? "对应方案暂时不可用。" : "", statisticsResult.status === "rejected" ? "统计结果登记表暂时不可用。" : ""];
         let review: QcReview | null = null;
         let reviewError = "";
-        try { review = await api.runQcReview(run.run_id, controller.signal); }
+        try { review = await runsApi.runQcReview(run.run_id, controller.signal); }
         catch { reviewError = "QC 审查记录暂时无法读取。计算产物仍可查看和下载，请重新加载详情。"; }
         const report = artifacts.find((artifact) => artifact.artifact_type === "qc.head_motion_report" && artifact.size_bytes <= 5 * 1024 * 1024);
         let qcSubjects: Array<Record<string, unknown>> = [];
@@ -287,13 +291,13 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     setBusy(true); setActionError(null);
     try {
       if (kind === "cancel" || kind === "retry") {
-        const updated = await (kind === "cancel" ? api.cancelRun : api.retryRun)(run.run_id, { expected_version: run.version, reason: kind === "cancel" ? "用户在运行卡片明确取消计算" : "用户在运行卡片明确重试计算" });
+        const updated = await (kind === "cancel" ? runsApi.cancelRun : runsApi.retryRun)(run.run_id, { expected_version: run.version, reason: kind === "cancel" ? "用户在运行卡片明确取消计算" : "用户在运行卡片明确重试计算" });
         onRunChange?.(updated);
       } else if (kind === "qc") {
-        await api.createHeadMotionQc(run.run_id, { expected_run_version: run.version, criteria: { max_translation_mm: 2, max_rotation_deg: 2, mean_fd_power: 0.2, fd_power_gt_0_5_fraction: 0.2 } });
+        await runsApi.createHeadMotionQc(run.run_id, { expected_run_version: run.version, criteria: { max_translation_mm: 2, max_rotation_deg: 2, mean_fd_power: 0.2, fd_power_gt_0_5_fraction: 0.2 } });
       } else if (review) {
-        await api.approveQcReview(review.review.review_revision_id, { expected_review_version: review.version, expected_run_version: run.version, review_hash: review.review.content_hash, actor: "web-user", approved: true, reason: "用户检查 QC 结论后在运行卡片明确批准" });
-        onRunChange?.(await api.run(run.run_id));
+        await runsApi.approveQcReview(review.review.review_revision_id, { expected_review_version: review.version, expected_run_version: run.version, review_hash: review.review.content_hash, actor: "web-user", approved: true, reason: "用户检查 QC 结论后在运行卡片明确批准" });
+        onRunChange?.(await runsApi.run(run.run_id));
       }
       setReload((value) => value + 1);
     } catch (caught) { setActionError({ runId: run.run_id, message: describeError(caught) }); }

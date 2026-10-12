@@ -10,17 +10,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from neuroagent.agent.gateway import ChatGatewayResult
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.agent import ModelProfileView
+from neuroagent.application.contracts.conversations import (
     ContextSummaryView,
     ConversationContextView,
     ConversationView,
     MemoryKind,
     MemoryScope,
     MemoryStatus,
-    ModelProfileView,
 )
+from neuroagent.application.contracts.plans import PlanRevisionView
+from neuroagent.application.contracts.runs import ArtifactView, QcReviewView, RunView
 from neuroagent.application.errors import ApplicationError
-from neuroagent.application.ports import RepositoryPort
+from neuroagent.application.repository_ports import (
+    ConversationRepositoryPort,
+    EventRepositoryPort,
+)
 from neuroagent.context.engine import ContextBudgetError, ContextEngine
 from neuroagent.context.interfaces import ContextMessage, ContextPacket, PinnedContext
 from neuroagent.memory.models import MemoryCandidateBatch, MemoryCandidateDraft
@@ -58,18 +63,31 @@ class ConversationContextCoordinator:
 
     def __init__(
         self,
-        repository: RepositoryPort,
+        repository: ConversationRepositoryPort,
+        event_store: EventRepositoryPort,
         engine: ContextEngine,
         summary_generator: Callable[..., Awaitable[ChatGatewayResult]],
         semantic_memory: SemanticMemoryService | None = None,
+        *,
+        list_model_profiles: Callable[[], list[ModelProfileView]],
+        get_run: Callable[[str], RunView],
+        list_artifacts: Callable[[str], list[ArtifactView]],
+        get_latest_qc_review_for_run: Callable[[str], QcReviewView | None],
+        get_plan: Callable[[str], PlanRevisionView],
     ) -> None:
         self._repository = repository
+        self._event_store = event_store
         self._engine = engine
         self._summary_generator = summary_generator
         self._semantic_memory = semantic_memory or SemanticMemoryService(repository)
+        self._list_model_profiles = list_model_profiles
+        self._get_run = get_run
+        self._list_artifacts = list_artifacts
+        self._get_latest_qc_review_for_run = get_latest_qc_review_for_run
+        self._get_plan = get_plan
 
     def context_limits(self, preferred_profile_id: str | None) -> tuple[int, int]:
-        profiles = self._repository.list_model_profiles()
+        profiles = self._list_model_profiles()
         profile = self._select_profile(profiles, preferred_profile_id)
         if profile is None:
             return 16_384, 2_048
@@ -197,10 +215,10 @@ class ConversationContextCoordinator:
                 context["workspace_data_profile"] = data_profile
         selected_plan_id = plan_revision_id
         if active_run_id is not None:
-            run = self._repository.get_run(active_run_id)
+            run = self._get_run(active_run_id)
             selected_plan_id = run.plan_revision_id
-            artifacts = self._repository.list_artifacts(run.run_id)
-            qc_review = self._repository.get_latest_qc_review_for_run(run.run_id)
+            artifacts = self._list_artifacts(run.run_id)
+            qc_review = self._get_latest_qc_review_for_run(run.run_id)
             context["run"] = {
                 "run_id": run.run_id,
                 "state": run.state.value,
@@ -221,7 +239,7 @@ class ConversationContextCoordinator:
                     "excluded_subject_count": len(qc_review.review.excluded_subject_ids),
                 }
         if selected_plan_id is not None:
-            plan = self._repository.get_plan(selected_plan_id)
+            plan = self._get_plan(selected_plan_id)
             context["plan"] = {
                 "plan_revision_id": plan.plan_revision_id,
                 "state": plan.state.value,
@@ -356,7 +374,7 @@ class ConversationContextCoordinator:
             content,
             re.IGNORECASE,
         )
-        if marker is None or not (preferred_profile_id or self._repository.list_model_profiles()):
+        if marker is None or not (preferred_profile_id or self._list_model_profiles()):
             return rules, {"model_used": False, "candidate_count": len(rules)}
         try:
             result = await self._summary_generator(
@@ -552,7 +570,7 @@ class ConversationContextCoordinator:
             source_hash=source_hash,
             method=method,
         )
-        self._repository.append_event(
+        self._event_store.append_event(
             project_id=None,
             run_id=None,
             event_type="ContextCompressed",

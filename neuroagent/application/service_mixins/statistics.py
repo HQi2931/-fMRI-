@@ -15,18 +15,25 @@ from neuroagent.analysis.external_metric_import import (
     inspect_external_mask,
     inspect_external_metric_directory,
 )
-from neuroagent.application.contracts import (
-    ArtifactView,
+from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
+from neuroagent.application.contracts.plans import PlanRevisionView
+from neuroagent.application.contracts.runs import ArtifactView
+from neuroagent.application.contracts.statistics import (
     CorrectionCapabilityView,
-    ExternalAnalysisImportView,
-    PlanRevisionView,
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalDesignView,
-    WorkflowState,
 )
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
+from neuroagent.application.repository_ports import (
+    ArtifactCatalogRepositoryPort,
+    ConversationRepositoryPort,
+    ExternalAnalysisRepositoryPort,
+    PlanRepositoryPort,
+    QcRepositoryPort,
+    RunRepositoryPort,
+)
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.statistical_capabilities import STATISTICAL_CAPABILITIES
 from neuroagent.application.statistics_draft import (
@@ -67,6 +74,7 @@ from neuroagent.domain.fmri.statistics import (
     design_matrix,
     validate_correction_for_design,
 )
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.skills.models import SkillPlan
 from neuroagent.skills.registry import SkillRegistryError
 from neuroagent.tools.registry import ToolRegistryError
@@ -162,6 +170,13 @@ def _validate_statistical_locks(
 
 
 class StatisticsMixin(BaseServiceMixin):
+    artifact_repository: ArtifactCatalogRepositoryPort
+    conversation_repository: ConversationRepositoryPort
+    external_import_repository: ExternalAnalysisRepositoryPort
+    plan_repository: PlanRepositoryPort
+    qc_repository: QcRepositoryPort
+    run_repository: RunRepositoryPort
+
     def _freeze_statistical_atlas(self, atlas_id: str) -> StatisticalAtlasSelection:
         configuration = self.environment_provider.configuration()
         availability = next(
@@ -318,7 +333,7 @@ class StatisticsMixin(BaseServiceMixin):
             ArtifactKind.FALFF_MAP,
             ArtifactKind.REHO_MAP,
         }
-        mask_artifact = self.repository.get_artifact(design.mask_artifact_id)
+        mask_artifact = self.artifact_repository.get_artifact(design.mask_artifact_id)
         if mask_artifact.run_id != source_run_id:
             raise ConflictError(
                 "statistics_mask_run_mismatch",
@@ -338,7 +353,7 @@ class StatisticsMixin(BaseServiceMixin):
 
         reference_signature: tuple[object, ...] | None = None
         for image in design.images:
-            artifact = self.repository.get_artifact(image.artifact_id)
+            artifact = self.artifact_repository.get_artifact(image.artifact_id)
             if artifact.run_id != source_run_id:
                 raise ConflictError(
                     "statistics_artifact_run_mismatch",
@@ -427,7 +442,9 @@ class StatisticsMixin(BaseServiceMixin):
         design = request.design
         assert design.external_import_id is not None
         assert design.external_import_hash is not None
-        imported = self.repository.get_external_analysis_import(design.external_import_id)
+        imported = self.external_import_repository.get_external_analysis_import(
+            design.external_import_id
+        )
         inclusion = imported.inclusion
         selection = imported.selection
         if imported.project_id != request.project_id:
@@ -510,10 +527,12 @@ class StatisticsMixin(BaseServiceMixin):
                 "external_demographics_required", "外部协变量必须绑定登记的人口学修订。"
             )
         if design.external_demographics_revision_id:
-            revision, content = self.repository.get_external_demographics_content(
+            revision, content = self.external_import_repository.get_external_demographics_content(
                 design.external_demographics_revision_id
             )
-            latest = self.repository.get_latest_external_demographics(imported.import_id)
+            latest = self.external_import_repository.get_latest_external_demographics(
+                imported.import_id
+            )
             if (
                 revision.external_import_id != imported.import_id
                 or revision.inclusion_hash != imported.inclusion_hash
@@ -540,7 +559,7 @@ class StatisticsMixin(BaseServiceMixin):
                             "协变量取值必须来自冻结的人口学修订。",
                         )
         if verify_source_files:
-            project = self.repository.get_project(imported.project_id)
+            project = self.project_repository.get_project(imported.project_id)
             source_root = self.path_policy.validate_read_path(
                 imported.source_path,
                 project_roots=project.source_roots,
@@ -588,7 +607,10 @@ class StatisticsMixin(BaseServiceMixin):
         self, run_id: str, project_id: str, *, verify_files: bool = True
     ) -> WorkAnalysisHandoff:
         proof = prepare_analysis_handoff(
-            self.repository,
+            self.run_repository,
+            self.plan_repository,
+            self.project_repository,
+            self.artifact_repository,
             self._statistics_source_binding,
             run_id=run_id,
             project_id=project_id,
@@ -596,9 +618,11 @@ class StatisticsMixin(BaseServiceMixin):
         )
         if proof.status == "ready" and verify_files:
             try:
-                dataset = self.repository.get_dataset(str(proof.data_references["dataset_id"]))
-                project = self.repository.get_project(project_id)
-                manifest = self.repository.get_manifest(
+                dataset = self.project_repository.get_dataset(
+                    str(proof.data_references["dataset_id"])
+                )
+                project = self.project_repository.get_project(project_id)
+                manifest = self.project_repository.get_manifest(
                     str(proof.data_references["dataset_manifest_id"])
                 )
                 source = self.path_policy.validate_read_path(
@@ -650,14 +674,14 @@ class StatisticsMixin(BaseServiceMixin):
         run_id: str | None = None,
         external_import_id: str | None = None,
     ) -> WorkPreprocessingHandoff:
-        conversation = self.repository.get_conversation(conversation_id)
+        conversation = self.conversation_repository.get_conversation(conversation_id)
         if conversation.project_id != project_id:
             raise ConflictError("work_handoff_project_mismatch", "Handoff project changed.")
         if run_id and external_import_id:
             raise ConflictError("work_handoff_source_ambiguous", "Select one source.")
         outputs = preprocessing_output_requirements(required_outputs)
         blockers: list[str] = []
-        project = self.repository.get_project(project_id)
+        project = self.project_repository.get_project(project_id)
         references: dict[str, Any] = {
             "project_id": project_id,
             "project_source_scope_hash": content_hash(project.source_roots),
@@ -674,7 +698,9 @@ class StatisticsMixin(BaseServiceMixin):
                 proof.data_references.get("dataset_id")
             )
         elif external_import_id:
-            imported = self.repository.get_external_analysis_import(external_import_id)
+            imported = self.external_import_repository.get_external_analysis_import(
+                external_import_id
+            )
             if imported.project_id != project_id:
                 raise ConflictError(
                     "work_handoff_project_mismatch", "External source project changed."
@@ -752,7 +778,9 @@ class StatisticsMixin(BaseServiceMixin):
             return None
         from neuroagent.application.work_tasks import require_analysis_task
 
-        conversation = self.repository.get_conversation(request.work_context.conversation_id)
+        conversation = self.conversation_repository.get_conversation(
+            request.work_context.conversation_id
+        )
         task = require_analysis_task(
             conversation,
             project_id=request.project_id,
@@ -801,7 +829,7 @@ class StatisticsMixin(BaseServiceMixin):
             from neuroagent.application.work_tasks import require_analysis_task
 
             task = require_analysis_task(
-                self.repository.get_conversation(request.work_context.conversation_id),
+                self.conversation_repository.get_conversation(request.work_context.conversation_id),
                 project_id=request.project_id,
                 proposal_hash=request.work_context.proposal_hash,
             )
@@ -822,7 +850,7 @@ class StatisticsMixin(BaseServiceMixin):
                 self._validate_external_statistical_source(request, verify_source_files=True)
             else:
                 source_run_id = self._validate_statistics_qc_source(request, image_artifact_ids)
-                self.repository.assert_artifacts_belong_to_run(
+                self.artifact_repository.assert_artifacts_belong_to_run(
                     (*image_artifact_ids, request.design.mask_artifact_id),
                     source_run_id,
                 )
@@ -884,7 +912,7 @@ class StatisticsMixin(BaseServiceMixin):
                 "manifest_hash": request.input_manifest_hash,
                 "environment_hash": environment_hash,
             }
-            plan = self.repository.create_plan(
+            plan = self.plan_repository.create_plan(
                 project_id=request.project_id,
                 expected_project_version=request.expected_project_version,
                 plan=plan_payload,
@@ -894,13 +922,13 @@ class StatisticsMixin(BaseServiceMixin):
                 supersedes_id=request.supersedes_plan_revision_id,
             )
             if request.work_context is not None:
-                self.repository.bind_statistics_task(
+                self.conversation_repository.bind_statistics_task(
                     conversation_id=request.work_context.conversation_id,
                     project_id=request.project_id,
                     proposal_hash=request.work_context.proposal_hash,
                     plan_revision_id=plan.plan_revision_id,
                 )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=request.project_id,
                 run_id=None,
                 event_type="StatisticalDesignCreated",
@@ -952,7 +980,7 @@ class StatisticsMixin(BaseServiceMixin):
         used as a group code.
         """
 
-        run = self.repository.get_run(run_id)
+        run = self.run_repository.get_run(run_id)
         if run.state.value != "succeeded":
             return None, (
                 _design_issue(
@@ -968,7 +996,7 @@ class StatisticsMixin(BaseServiceMixin):
             return None, (issue,)
 
         artifacts_by_id = {
-            item.artifact_id: item for item in self.repository.list_artifacts(run_id)
+            item.artifact_id: item for item in self.artifact_repository.list_artifacts(run_id)
         }
         refs: list[ArtifactRef] = []
         for artifact_id, artifact in artifacts_by_id.items():
@@ -1015,7 +1043,7 @@ class StatisticsMixin(BaseServiceMixin):
         except ValueError as exc:
             return None, (_design_issue("correction_rejected_by_domain", str(exc)),)
 
-        project = self.repository.get_project(run.project_id)
+        project = self.project_repository.get_project(run.project_id)
         return (
             StatisticalDesignProposal(
                 design=design,
@@ -1067,8 +1095,8 @@ class StatisticsMixin(BaseServiceMixin):
             )
         if run_id is None:
             return None, (_design_issue("statistics_source_missing", "请先选择统计来源。"),)
-        run = self.repository.get_run(run_id)
-        source_plan = self.repository.get_plan(run.plan_revision_id)
+        run = self.run_repository.get_run(run_id)
+        source_plan = self.plan_repository.get_plan(run.plan_revision_id)
         manifest_id = source_plan.plan.get("dataset_manifest_id")
         if not isinstance(manifest_id, str) or not manifest_id:
             return None, (
@@ -1077,11 +1105,11 @@ class StatisticsMixin(BaseServiceMixin):
                     "来源运行没有已登记的数据集 manifest，不能建立统计设计。",
                 ),
             )
-        manifest = self.repository.get_manifest(manifest_id)
+        manifest = self.project_repository.get_manifest(manifest_id)
 
         needs_demographics = bool(draft.grouping_column or draft.covariates)
         demographics = (
-            self.repository.get_latest_demographics_for_dataset(manifest.dataset_id)
+            self.project_repository.get_latest_demographics_for_dataset(manifest.dataset_id)
             if needs_demographics
             else None
         )
@@ -1100,7 +1128,7 @@ class StatisticsMixin(BaseServiceMixin):
         if demographics is not None:
             demographics_id = demographics.demographics_id
             demographics_hash = demographics.content_hash
-            demographics_dataset_id, content = self.repository.get_demographics_content(
+            demographics_dataset_id, content = self.project_repository.get_demographics_content(
                 demographics.demographics_id
             )
             if demographics_dataset_id != manifest.dataset_id:
@@ -1181,7 +1209,7 @@ class StatisticsMixin(BaseServiceMixin):
                     "statistics_capability_not_validated", "该统计适配尚未通过本机 DPABI 验证。"
                 ),
             )
-        imported = self.repository.get_external_analysis_import(external_import_id)
+        imported = self.external_import_repository.get_external_analysis_import(external_import_id)
         if imported.project_id != project_id:
             return None, (
                 _design_issue("cross_project_external_import", "外部分析输入不属于当前项目。"),
@@ -1243,7 +1271,7 @@ class StatisticsMixin(BaseServiceMixin):
                 ),
             )
         demographics = (
-            self.repository.get_latest_external_demographics(imported.import_id)
+            self.external_import_repository.get_latest_external_demographics(imported.import_id)
             if draft.covariates
             else None
         )
@@ -1253,7 +1281,7 @@ class StatisticsMixin(BaseServiceMixin):
                 return None, (
                     _design_issue("external_demographics_required", "请先登记并对齐外部人口学表。"),
                 )
-            _, content = self.repository.get_external_demographics_content(
+            _, content = self.external_import_repository.get_external_demographics_content(
                 demographics.demographics_id
             )
             for choice in draft.covariates:
@@ -1302,7 +1330,7 @@ class StatisticsMixin(BaseServiceMixin):
         correction, issues = build_correction(draft, design)
         if issues:
             return None, issues
-        project = self.repository.get_project(project_id)
+        project = self.project_repository.get_project(project_id)
         try:
             validate_correction_for_design(design, correction)
             self._validate_external_statistical_source(
@@ -1350,7 +1378,7 @@ class StatisticsMixin(BaseServiceMixin):
         registered metric artifact of the run is eligible.
         """
 
-        review = self.repository.get_latest_qc_review_for_run(run_id)
+        review = self.qc_repository.get_latest_qc_review_for_run(run_id)
         if review is not None and review.state.value == "approved":
             return (
                 QcBinding(
@@ -1364,12 +1392,12 @@ class StatisticsMixin(BaseServiceMixin):
                 None,
             )
 
-        skip = self.repository.get_qc_skip_for_run(run_id)
+        skip = self.qc_repository.get_qc_skip_for_run(run_id)
         if skip is not None:
-            run = self.repository.get_run(run_id)
-            plan = self.repository.get_plan(run.plan_revision_id)
+            run = self.run_repository.get_run(run_id)
+            plan = self.plan_repository.get_plan(run.plan_revision_id)
             approved = (
-                self.repository.get_approved_qc_review(skip.qc_review_revision_id)
+                self.qc_repository.get_approved_qc_review(skip.qc_review_revision_id)
                 if skip.qc_review_revision_id
                 else None
             )
@@ -1418,7 +1446,7 @@ class StatisticsMixin(BaseServiceMixin):
         design = request.design
         if design.qc_source is StatisticalQcSource.APPROVED_REVIEW:
             assert design.qc_review_revision_id is not None and design.qc_review_hash is not None
-            qc_review = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+            qc_review = self.qc_repository.get_approved_qc_review(design.qc_review_revision_id)
             if qc_review.project_id != request.project_id:
                 raise ConflictError("cross_project_qc_review", "QC review 不属于当前项目。")
             if qc_review.review.content_hash != design.qc_review_hash:
@@ -1447,7 +1475,7 @@ class StatisticsMixin(BaseServiceMixin):
             and design.qc_skip_id is not None
             and design.qc_skip_hash is not None
         )
-        skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+        skip = self.qc_repository.get_qc_skip_for_run(design.qc_source_run_id)
         if (
             skip is None
             or skip.qc_skip_id != design.qc_skip_id
@@ -1456,12 +1484,12 @@ class StatisticsMixin(BaseServiceMixin):
             raise ConflictError(
                 "qc_skip_binding_mismatch", "统计设计引用的 QC 跳过记录无效或已失配。"
             )
-        source_run = self.repository.get_run(design.qc_source_run_id)
+        source_run = self.run_repository.get_run(design.qc_source_run_id)
         if source_run.project_id != request.project_id or source_run.state.value != "succeeded":
             raise ConflictError(
                 "qc_skip_source_run_invalid", "QC 跳过来源运行不属于当前项目或尚未成功完成。"
             )
-        source_plan = self.repository.get_plan(source_run.plan_revision_id)
+        source_plan = self.plan_repository.get_plan(source_run.plan_revision_id)
         if source_plan.manifest_hash != request.input_manifest_hash:
             raise ConflictError(
                 "qc_skip_manifest_hash_mismatch", "QC 跳过来源运行的输入清单不匹配。"
@@ -1469,7 +1497,7 @@ class StatisticsMixin(BaseServiceMixin):
         return source_run.run_id
 
     def get_statistical_design(self, plan_revision_id: str) -> StatisticalDesignView:
-        return self._statistics_view(self.repository.get_plan(plan_revision_id))
+        return self._statistics_view(self.plan_repository.get_plan(plan_revision_id))
 
     def validate_statistical_design(
         self,
@@ -1478,24 +1506,24 @@ class StatisticsMixin(BaseServiceMixin):
         idempotency_key: str,
     ) -> StatisticalDesignView:
         def prepare() -> None:
-            plan = self.repository.get_plan(plan_revision_id)
+            plan = self.plan_repository.get_plan(plan_revision_id)
             self._validate_work_plan_handoff(plan)
             self._validate_statistical_atlas(plan)
 
         def finalize(_prepared: None) -> StatisticalDesignView:
-            current = self.repository.get_plan(plan_revision_id)
+            current = self.plan_repository.get_plan(plan_revision_id)
             self._validate_statistical_atlas(current)
             self._validate_work_plan_handoff(current, verify_files=False)
             self._statistics_view(current)
             from neuroagent.application.work_tasks import require_statistical_work_plan
 
-            require_statistical_work_plan(self.repository.get_conversation, current)
-            validated = self.repository.validate_plan(
+            require_statistical_work_plan(self.conversation_repository.get_conversation, current)
+            validated = self.plan_repository.validate_plan(
                 plan_revision_id,
                 expected_version=request.expected_version,
                 issues=[],
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=validated.project_id,
                 run_id=None,
                 event_type="StatisticalDesignValidated",
@@ -1613,7 +1641,7 @@ class StatisticsMixin(BaseServiceMixin):
     ) -> list[dict[str, str]]:
         reasons: list[dict[str, str]] = []
         try:
-            dataset = self.repository.get_dataset(skill_plan.dataset_ref)
+            dataset = self.project_repository.get_dataset(skill_plan.dataset_ref)
             manifest_id = plan.plan.get("dataset_manifest_id")
             if dataset.project_id != plan.project_id:
                 reasons.append(
@@ -1631,7 +1659,7 @@ class StatisticsMixin(BaseServiceMixin):
                 )
             current_manifest = None
             if isinstance(manifest_id, str) and dataset.current_manifest_id == manifest_id:
-                current_manifest = self.repository.get_manifest(manifest_id)
+                current_manifest = self.project_repository.get_manifest(manifest_id)
             if current_manifest is not None and current_manifest.content_hash != plan.manifest_hash:
                 reasons.append(
                     {
@@ -1640,7 +1668,7 @@ class StatisticsMixin(BaseServiceMixin):
                     }
                 )
             if verify_source_files:
-                project = self.repository.get_project(dataset.project_id)
+                project = self.project_repository.get_project(dataset.project_id)
                 source = self.path_policy.validate_read_path(
                     dataset.source_path,
                     project_roots=project.source_roots,
@@ -1763,7 +1791,7 @@ class StatisticsMixin(BaseServiceMixin):
                 assert (
                     design.qc_review_revision_id is not None and design.qc_review_hash is not None
                 )
-                qc_review = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+                qc_review = self.qc_repository.get_approved_qc_review(design.qc_review_revision_id)
                 if (
                     qc_review.project_id != plan.project_id
                     or qc_review.review.content_hash != design.qc_review_hash
@@ -1776,10 +1804,10 @@ class StatisticsMixin(BaseServiceMixin):
                         }
                     )
                 assert_statistics_ready(qc_review.review, design.subject_order)
-                source_run = self.repository.get_run(qc_review.run_id)
+                source_run = self.run_repository.get_run(qc_review.run_id)
             else:
                 assert design.qc_source_run_id and design.qc_skip_id and design.qc_skip_hash
-                skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+                skip = self.qc_repository.get_qc_skip_for_run(design.qc_source_run_id)
                 if (
                     skip is None
                     or skip.qc_skip_id != design.qc_skip_id
@@ -1791,8 +1819,8 @@ class StatisticsMixin(BaseServiceMixin):
                             "message": "QC skip record no longer matches the statistical design",
                         }
                     )
-                source_run = self.repository.get_run(design.qc_source_run_id)
-            source_plan = self.repository.get_plan(source_run.plan_revision_id)
+                source_run = self.run_repository.get_run(design.qc_source_run_id)
+            source_plan = self.plan_repository.get_plan(source_run.plan_revision_id)
             if source_plan.manifest_hash != plan.manifest_hash:
                 reasons.append(
                     {

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.environment import (
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
     EnvironmentProbeView,

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.agent.gateway import _WORK_ACTIONS
 from neuroagent.agent.tool_spec import MODEL_VISIBLE_TIERS, ToolTier
-from neuroagent.application.contracts import ConversationAction
+from neuroagent.application.contracts.conversations import (
+    ConversationAction,
+)
 from neuroagent.application.work_actions import (
     MODEL_SELECTABLE_WORK_ACTIONS,
     SERVER_ONLY_ACTIONS,
@@ -23,6 +24,7 @@ from neuroagent.application.work_actions import (
     is_model_selectable,
 )
 from neuroagent.application.work_dialogue import WorkInterpretation
+from neuroagent.application.work_prompts import _WORK_ACTIONS, _WORK_SYSTEM_PROMPT
 
 
 def test_no_server_only_action_is_model_selectable() -> None:
@@ -68,8 +70,8 @@ def test_unknown_action_is_rejected() -> None:
 def test_work_prompt_advertises_exactly_the_selectable_actions() -> None:
     """The prompt is the model's contract, so it must not drift from the set.
 
-    ``_WORK_ACTIONS`` is duplicated in the gateway on purpose (the gateway must
-    not import the application layer), which is exactly why this test exists.
+    The application prompt reads its actions from the same policy registry used
+    by server-side validation.
     """
 
     assert set(_WORK_ACTIONS) == MODEL_SELECTABLE_WORK_ACTIONS
@@ -77,15 +79,11 @@ def test_work_prompt_advertises_exactly_the_selectable_actions() -> None:
 
 
 def test_work_prompt_does_not_advertise_server_only_actions() -> None:
-    from neuroagent.agent.gateway import _WORK_SYSTEM_PROMPT
-
     for action in SERVER_ONLY_ACTIONS:
         assert action not in _WORK_SYSTEM_PROMPT
 
 
 def test_work_prompt_does_not_request_a_removed_protocol_reference() -> None:
-    from neuroagent.agent.gateway import _WORK_SYSTEM_PROMPT
-
     assert "study_protocol_ref" not in _WORK_SYSTEM_PROMPT
     assert "研究方案引用" not in _WORK_SYSTEM_PROMPT
 

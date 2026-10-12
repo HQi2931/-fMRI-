@@ -4,13 +4,16 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from neuroagent.application.contracts import ConversationCreate, ConversationMode
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationMode,
+)
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.infrastructure.persistence.models import WorkspacePatchRow
 
 
 def _conversation(service) -> str:
-    return service.create_conversation(
+    return service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.WORK, workspace_path="D:/workspace"),
         "workspace-patch-conversation",
     ).conversation_id
@@ -86,7 +89,7 @@ def test_workspace_patch_persistence_tracks_review_apply_and_undo(service) -> No
 
 def test_workspace_patch_persistence_invalidates_older_undo_and_checks_scope(service) -> None:
     conversation_id = _conversation(service)
-    other_conversation_id = service.create_conversation(
+    other_conversation_id = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.WORK, workspace_path="D:/workspace"),
         "other-workspace-patch-conversation",
     ).conversation_id

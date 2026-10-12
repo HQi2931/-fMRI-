@@ -7,29 +7,29 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from neuroagent.agent.streaming import AnswerStream, observe_answers
-from neuroagent.application.contracts import ConversationTurnCreate
-from neuroagent.application.errors import ApplicationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.shared.errors import ApplicationError
 
 logger = logging.getLogger(__name__)
 _running: set[asyncio.Task[None]] = set()
 
 
 def conversation_stream_response(
-    service: NeuroAgentService,
+    *,
+    mode: str,
+    send_turn: Callable[..., Awaitable[BaseModel]],
+    map_response: Callable[[BaseModel], BaseModel],
     conversation_id: str,
-    body: ConversationTurnCreate,
+    body: BaseModel,
     key: str,
     request: Request,
 ) -> StreamingResponse:
-    # Resolve missing sessions before committing SSE headers, preserving HTTP 404.
-    mode = service.get_conversation(conversation_id).mode.value
     trace_id = getattr(request.state, "trace_id", None)
 
     async def events() -> AsyncIterator[str]:
@@ -43,7 +43,8 @@ def conversation_stream_response(
         async def run() -> None:
             try:
                 with observe_answers(AnswerStream(mode, emit)):
-                    result = await service.send_conversation_turn(conversation_id, body, key)
+                    result = await send_turn(conversation_id, body, key)
+                    result = map_response(result)
                 await emit("final", result.model_dump(mode="json"))
             except ApplicationError as exc:
                 await emit(

@@ -2,7 +2,7 @@ import pytest
 
 from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.models import ProviderResponse
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationMode,
     MemoryAction,
@@ -15,7 +15,7 @@ from neuroagent.application.errors import ApplicationError, ConflictError, Input
 
 
 def test_duplicate_manual_memory_is_idempotent_and_conflict_is_explicit(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "duplicate"
     ).conversation_id
     request = MemoryCreate(kind=MemoryKind.INSTRUCTION, key="style", content="Brief answers")
@@ -31,7 +31,7 @@ def test_duplicate_manual_memory_is_idempotent_and_conflict_is_explicit(service)
 
 
 def test_invalid_source_is_rejected(service):
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "source"
     )
     # The welcome assistant message cannot serve as evidence of a user preference.
@@ -49,7 +49,7 @@ def test_invalid_source_is_rejected(service):
 
 @pytest.mark.parametrize("action", [MemoryAction.FORGET, MemoryAction.REJECT])
 def test_automatic_extraction_cannot_resurrect_user_removed_memory(service, action):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "removed"
     ).conversation_id
     _stored, source, _assistant, _tool = service.repository.append_conversation_exchange(
@@ -88,7 +88,7 @@ def test_automatic_extraction_cannot_resurrect_user_removed_memory(service, acti
 
 
 async def test_model_candidates_are_source_bound_pending_and_invalid_json_falls_back(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "extract"
     ).conversation_id
     _stored, source, _assistant, _tool = service.repository.append_conversation_exchange(
@@ -160,7 +160,7 @@ async def test_model_candidates_are_source_bound_pending_and_invalid_json_falls_
 
 
 def test_conflicting_candidate_requires_explicit_resolution(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "proposal"
     ).conversation_id
     _stored, source, _assistant, _tool = service.repository.append_conversation_exchange(
@@ -228,7 +228,7 @@ def test_conflicting_candidate_requires_explicit_resolution(service):
 
 
 def test_forget_removes_summary_effect_but_retains_raw_history(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "forget-summary"
     ).conversation_id
     _stored, source, _assistant, _tool = service.repository.append_conversation_exchange(
@@ -284,7 +284,7 @@ def test_forget_removes_summary_effect_but_retains_raw_history(service):
     ],
 )
 def test_conflict_can_be_explicitly_accepted_or_merged(service, action, merged_content, expected):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), f"resolve-{action.value}"
     ).conversation_id
     sources = []
@@ -336,7 +336,7 @@ def test_conflict_can_be_explicitly_accepted_or_merged(service, action, merged_c
 
 
 def test_metadata_only_updates_keep_embedding_and_missing_proposals_are_rejected(service):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), "metadata"
     ).conversation_id
     memory = service.repository.create_memory(
@@ -380,7 +380,7 @@ def test_metadata_only_updates_keep_embedding_and_missing_proposals_are_rejected
 
 @pytest.mark.parametrize("model_succeeds", [True, False])
 async def test_long_conversation_summary_uses_model_or_safe_fallback(service, model_succeeds):
-    cid = service.create_conversation(
+    cid = service.conversations.create_conversation(
         ConversationCreate(mode=ConversationMode.CHAT), f"summary-{model_succeeds}"
     ).conversation_id
     for index in range(12):

@@ -8,7 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.contracts import WorkDraftUpdate
+from neuroagent.application.contracts.conversations import (
+    WorkDraftUpdate,
+)
 from neuroagent.bootstrap import build_service
 from tests.backend.test_environment import _fake_stack
 from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
@@ -73,7 +75,7 @@ def reviewed_work(tmp_path, monkeypatch):
             assert payload["plan_revision"]["state"] == "awaiting_approval"
             plan = service.repository.get_plan(payload["plan_revision"]["plan_revision_id"])
             frozen = service.repository.get_manifest_content(plan.plan["dataset_manifest_id"])
-            inspected = service._inspect_source(
+            inspected = service.projects._inspect_source(
                 source, report_only=False, selected_input_stage="FunRaw"
             )
             assert frozen == inspected, {
@@ -81,7 +83,7 @@ def reviewed_work(tmp_path, monkeypatch):
                 for k in frozen.keys() | inspected.keys()
                 if frozen.get(k) != inspected.get(k)
             }
-            assert not service._plan_staleness_reasons(
+            assert not service.statistics._plan_staleness_reasons(
                 plan,
                 current_environment_hash=service.environment_provider.current().snapshot.environment_hash,
             )
@@ -116,7 +118,7 @@ def test_direct_confirmation_queues_once_and_recovers_response_after_later_edit(
         == "approved"
     )
     saved = first.json()["assistant_message"]["payload"]["work_draft"]
-    service.update_work_draft(
+    service.conversations.update_work_draft(
         session,
         WorkDraftUpdate(base_hash=saved["hash"], patch={"qc_mode": "head_motion"}),
         "edit-after-start",

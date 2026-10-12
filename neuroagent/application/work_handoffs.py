@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from neuroagent.application.artifact_content import artifact_content_path
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
-from neuroagent.application.ports import RepositoryPort
+from neuroagent.application.repository_ports import (
+    ArtifactCatalogRepositoryPort,
+    PlanRepositoryPort,
+    ProjectRepositoryPort,
+    RunRepositoryPort,
+)
 from neuroagent.application.statistics_draft import DesignIssue, QcBinding
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 
@@ -105,7 +110,10 @@ SourceBinding = Callable[
 
 
 def prepare_analysis_handoff(
-    repository: RepositoryPort,
+    run_repository: RunRepositoryPort,
+    plan_repository: PlanRepositoryPort,
+    project_repository: ProjectRepositoryPort,
+    artifact_repository: ArtifactCatalogRepositoryPort,
     source_binding: SourceBinding,
     *,
     run_id: str,
@@ -114,12 +122,12 @@ def prepare_analysis_handoff(
 ) -> WorkAnalysisHandoff:
     """Read authoritative evidence; never manufacture trusted model metadata."""
 
-    run = repository.get_run(run_id)
+    run = run_repository.get_run(run_id)
     if run.project_id != project_id:
         raise ConflictError(
             "work_handoff_project_mismatch", "Source run belongs to another project."
         )
-    plan = repository.get_plan(run.plan_revision_id)
+    plan = plan_repository.get_plan(run.plan_revision_id)
     references: dict[str, Any] = {
         "project_id": project_id,
         "source_run_id": run_id,
@@ -138,8 +146,8 @@ def prepare_analysis_handoff(
         manifest_id = plan.plan.get("dataset_manifest_id")
         if not isinstance(manifest_id, str) or not manifest_id:
             raise ConflictError("source_manifest_unavailable", "Source manifest is missing.")
-        manifest = repository.get_manifest(manifest_id)
-        dataset = repository.get_dataset(manifest.dataset_id)
+        manifest = project_repository.get_manifest(manifest_id)
+        dataset = project_repository.get_dataset(manifest.dataset_id)
         references.update(
             dataset_id=dataset.dataset_id,
             dataset_manifest_id=manifest_id,
@@ -159,10 +167,10 @@ def prepare_analysis_handoff(
             blockers.append(issue.code)
         elif qc_manifest_hash != plan.manifest_hash:
             blockers.append("qc_manifest_hash_mismatch")
-        artifacts = repository.list_artifacts(run_id)
+        artifacts = artifact_repository.list_artifacts(run_id)
         metrics: list[HandoffArtifact] = []
         masks: dict[str, HandoffArtifact] = {}
-        project = repository.get_project(project_id)
+        project = project_repository.get_project(project_id)
         for artifact in artifacts:
             raw = artifact.provenance.get("lineage")
             if not isinstance(raw, dict):
@@ -285,7 +293,9 @@ def prepare_analysis_handoff(
             blockers.append("handoff_metric_versions_mixed")
         if verify_files and not blockers:
             for item in (*metrics, *used_masks.values()):
-                artifact_content_path(repository.get_artifact(item.artifact_id), run, project)
+                artifact_content_path(
+                    artifact_repository.get_artifact(item.artifact_id), run, project
+                )
     except ApplicationError as exc:
         blockers.append(exc.code)
     except ValueError:

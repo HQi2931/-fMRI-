@@ -37,7 +37,7 @@ def test_frozen_atlas_localization_round_trips_through_public_api(
     service, localization_fixture, atlas_id
 ):
     detail, _ = localization_fixture
-    selection = service._freeze_statistical_atlas(atlas_id)
+    selection = service.statistics._freeze_statistical_atlas(atlas_id)
     detail.report_json = json.dumps({"localization_plan": selection.model_dump(mode="json")})
     with TestClient(create_app(service=service)) as client:
         response = client.get(
@@ -54,7 +54,7 @@ def test_frozen_atlas_localization_round_trips_through_public_api(
     assert cluster["coverage"] == [
         {"label_value": 1, "label": "Region one", "voxel_count": 1, "proportion": 1}
     ]
-    assert service.list_statistical_atlases()[0].available
+    assert service.runs.list_statistical_atlases()[0].available
 
 
 @pytest.mark.parametrize("space,expected_text", [("native", "已确认空间"), ("unknown", "尚未确认")])
@@ -64,7 +64,7 @@ def test_known_different_space_and_unconfirmed_space_have_distinct_messages(
     detail, _ = localization_fixture
     detail.manifest["clusters"][0]["coordinate_space"] = space
     with pytest.raises(ConflictError) as failure:
-        service.localize_statistical_result("atlas-result", "aal")
+        service.runs.localize_statistical_result("atlas-result", "aal")
     assert failure.value.code == "statistics_coordinate_space_mismatch"
     assert expected_text in str(failure.value)
     assert failure.value.details["result_spaces"] == [space]
@@ -93,7 +93,7 @@ def test_localization_service_converts_invalid_spatial_evidence_to_blocking_erro
             {**cluster, "cluster_id": "other", "source_map_artifact_id": "second-map"}
         )
     with pytest.raises(InputValidationError) as failure:
-        service.localize_statistical_result("atlas-result", "aal")
+        service.runs.localize_statistical_result("atlas-result", "aal")
     assert failure.value.code == "statistical_atlas_localization_failed"
 
 
@@ -108,7 +108,7 @@ def test_changed_atlas_during_localization_withholds_all_regions(
 
     monkeypatch.setattr(runs, "get_atlas", changed)
     with pytest.raises(ConflictError) as failure:
-        service.localize_statistical_result("atlas-result", "aal")
+        service.runs.localize_statistical_result("atlas-result", "aal")
     assert failure.value.code == "atlas_changed_during_localization"
 
 
@@ -122,5 +122,5 @@ def test_unavailable_atlas_request_fails_before_mapping(
         root = service.environment_provider.configuration().dpabi_dir
         (root / "Templates" / "aal.nii").unlink()
     with pytest.raises(InputValidationError) as failure:
-        service.localize_statistical_result("atlas-result", atlas_id)
+        service.runs.localize_statistical_result("atlas-result", atlas_id)
     assert failure.value.code == code

@@ -10,7 +10,12 @@ from dataclasses import replace
 from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.agent import (
+    ModelProfileView,
+    RsFmriAnswerView,
+    RsFmriQuestionRequest,
+)
+from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationContextView,
     ConversationCreate,
@@ -24,15 +29,16 @@ from neuroagent.application.contracts import (
     MemoryCreate,
     MemoryUpdate,
     MemoryView,
-    QcExecutionMode,
-    RsFmriAnswerView,
-    RsFmriQuestionRequest,
-    RunCreate,
-    RunView,
     WorkAgentSelection,
     WorkConfirmationCreate,
     WorkDraftUpdate,
     WorkReviewCreate,
+)
+from neuroagent.application.contracts.plans import PlanRevisionView
+from neuroagent.application.contracts.runs import (
+    QcExecutionMode,
+    RunCreate,
+    RunView,
 )
 from neuroagent.application.conversation_context import (
     ContextBudgetError,
@@ -43,6 +49,7 @@ from neuroagent.application.conversation_work import (
     WorkActionResult,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.work_agents import work_agent_role_for_turn
 from neuroagent.application.work_dialogue import (
@@ -73,6 +80,16 @@ from neuroagent.observability.work_timings import capture_work_timings
 
 
 class ConversationMixin(BaseServiceMixin):
+    repository: ConversationRepositoryPort
+    conversation_context: ConversationContextCoordinator
+    conversation_work: ConversationWorkCoordinator
+    work_dialogue: WorkDialogue
+    chat_agent: ChatAgent
+    workspace_content_consent_granted: Callable[..., bool]
+    get_plan: Callable[[str], PlanRevisionView]
+    get_run: Callable[[str], RunView]
+    list_model_profiles: Callable[[], list[ModelProfileView]]
+
     def select_work_agent(
         self,
         conversation_id: str,
@@ -81,7 +98,7 @@ class ConversationMixin(BaseServiceMixin):
     ) -> ConversationView:
         def action() -> ConversationView:
             selected = self.repository.select_work_agent(conversation_id, request)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=selected.project_id,
                 run_id=selected.active_run_id,
                 event_type="WorkAgentSelected",
@@ -101,8 +118,6 @@ class ConversationMixin(BaseServiceMixin):
             action=action,
         )
 
-    work_dialogue: WorkDialogue
-
     def _check_work_input_revision(
         self, conversation: ConversationView, saved: dict[str, Any] | None
     ) -> None:
@@ -118,11 +133,7 @@ class ConversationMixin(BaseServiceMixin):
             raise ConflictError("work_input_changed", "输入文件已变化，请通过对话重新读取并核实。")
 
     answer_rsfmri_question: Callable[[RsFmriQuestionRequest], RsFmriAnswerView]
-    get_run: Callable[[str], RunView]
     create_run: Callable[[RunCreate, str], RunView]
-    chat_agent: ChatAgent
-    conversation_context: ConversationContextCoordinator
-    conversation_work: ConversationWorkCoordinator
 
     def create_conversation(
         self, request: ConversationCreate, idempotency_key: str
@@ -350,7 +361,7 @@ class ConversationMixin(BaseServiceMixin):
             if recovery is not None:
                 result = recovery
             elif saved.get("compiled") and plan_data and conversation.project_id:
-                plan = self.repository.get_plan(str(plan_data["plan_revision_id"]))
+                plan = self.get_plan(str(plan_data["plan_revision_id"]))
                 qc = (
                     QcExecutionMode.REQUIRE
                     if draft.qc_mode == "head_motion"
@@ -419,7 +430,7 @@ class ConversationMixin(BaseServiceMixin):
     ) -> MemoryView:
         def act() -> MemoryView:
             memory = self.repository.create_memory(conversation_id, request)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=memory.project_id,
                 run_id=None,
                 event_type="MemoryUpdated",
@@ -445,7 +456,7 @@ class ConversationMixin(BaseServiceMixin):
     ) -> MemoryView:
         def act() -> MemoryView:
             memory = self.repository.update_memory(conversation_id, memory_id, request)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=memory.project_id,
                 run_id=None,
                 event_type="MemoryUpdated",
@@ -511,7 +522,7 @@ class ConversationMixin(BaseServiceMixin):
             # This turn's context must use the selected role's run, while the
             # persisted conversation retains both roles' independent references.
             if active_run_id is not None:
-                target_run = self.repository.get_run(active_run_id)
+                target_run = self.get_run(active_run_id)
                 if project_id is None or target_run.project_id != project_id:
                     if request.target_run_id is not None:
                         raise InputValidationError(
@@ -568,7 +579,7 @@ class ConversationMixin(BaseServiceMixin):
                         else False
                     ),
                     idempotency_key=idempotency_key,
-                    has_profiles=bool(self.repository.list_model_profiles()),
+                    has_profiles=bool(self.list_model_profiles()),
                 )
             else:
                 action_result = self.conversation_work.execute(
@@ -682,7 +693,7 @@ class ConversationMixin(BaseServiceMixin):
                 user_message.message_id,
             )
             if candidate_ids:
-                self.repository.append_event(
+                self.event_store.append_event(
                     project_id=project_id,
                     run_id=active_run_id,
                     event_type="MemoryCandidatesUpdated",
@@ -865,7 +876,7 @@ class ConversationMixin(BaseServiceMixin):
             conversation_id, candidates, user_message.message_id
         )
         if candidate_ids:
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=conversation.project_id,
                 run_id=conversation.active_run_id,
                 event_type="MemoryCandidatesUpdated",
@@ -883,7 +894,7 @@ class ConversationMixin(BaseServiceMixin):
             profile_id=preferred_profile_id,
             model_metadata=model_metadata if isinstance(model_metadata, dict) else None,
         )
-        self.repository.append_event(
+        self.event_store.append_event(
             project_id=conversation.project_id,
             run_id=conversation.active_run_id,
             event_type="ContextBuilt",

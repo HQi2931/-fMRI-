@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, describeError, type EnvironmentConfig, type EnvironmentProbe, type ModelProfile } from "../api/client";
-import { EmptyState, Feedback, PageHeader } from "../components/Ui";
-import { StatusPill } from "../components/StatusPill";
+import { agentApi } from "../../api/agent";
+import { environmentApi } from "../../api/environment";
+import { describeError } from "../../api/transport";
+import type { EnvironmentConfig, EnvironmentProbe, ModelProfile } from "../../api/types";
+import { EmptyState, Feedback, PageHeader } from "../../components/Ui";
+import { StatusPill } from "../../components/StatusPill";
 
 const CAPABILITIES = ["json_object", "streaming", "reasoning", "web_search"] as const;
 type Capability = ModelProfile["profile"]["capabilities"][number];
@@ -68,9 +71,9 @@ export function SettingsPage() {
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const [probe, localConfig, configured] = await Promise.all([
-      api.environment(signal),
-      api.environmentConfig(signal),
-      api.profiles(signal),
+      environmentApi.environment(signal),
+      environmentApi.environmentConfig(signal),
+      agentApi.profiles(signal),
     ]);
     setEnvironment(probe);
     setEnvironmentConfig(localConfig);
@@ -106,7 +109,7 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const saved = await api.updateEnvironmentConfig({
+      const saved = await environmentApi.updateEnvironmentConfig({
         matlab_executable: matlabExecutable.trim() || null,
         spm_dir: spmDir.trim() || null,
         dpabi_dir: dpabiDir.trim() || null,
@@ -161,7 +164,7 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      await api.createProfile({
+      await agentApi.createProfile({
         profile: { ...item.profile, capabilities: nextCapabilities, ...profileLimits[item.profile.id] },
         api_key: null,
       });
@@ -186,7 +189,7 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const models = await api.listProviderModels({
+      const models = await agentApi.listProviderModels({
         base_url: baseUrl.trim(),
         api_key: apiKey.trim() || null,
         api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
@@ -204,7 +207,7 @@ export function SettingsPage() {
         connectionId = `${baseId.slice(0, 60)}-${suffix}`;
         suffix += 1;
       }
-      await api.createProfile({
+      await agentApi.createProfile({
         profile: {
           id: connectionId,
           provider: provider.trim(),
@@ -235,7 +238,7 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const result = await api.listProviderModels({
+      const result = await agentApi.listProviderModels({
         base_url: item.profile.base_url,
         api_key: null,
         api_key_env: item.profile.api_key_env,
@@ -254,7 +257,7 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      await api.deleteProfile(item.profile.id);
+      await agentApi.deleteProfile(item.profile.id);
       await refresh();
       setMessage("已解除服务商 API 绑定。");
     } catch (caught) {

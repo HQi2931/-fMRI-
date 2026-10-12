@@ -14,26 +14,32 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
-    DatasetCreate,
-    ManifestScanRequest,
     PlanRevisionCreate,
     PlanValidationRequest,
+    SkillPlanIntent,
+    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    ManifestScanRequest,
     ProjectCreate,
+)
+from neuroagent.application.contracts.runs import (
     QcReviewApprove,
     QcReviewCreate,
     RunCreate,
-    SkillPlanIntent,
-    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticsRunCreate,
 )
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.reporting import build_statistical_reproducibility_report
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
 from neuroagent.domain.fmri import (
@@ -222,7 +228,7 @@ def _metric_lineage(
     )
 
 
-def _test_repository(service: NeuroAgentService) -> SqliteRepository:
+def _test_repository(service: ApplicationServices) -> SqliteRepository:
     """Return the explicit internal test seam; no public Artifact write API is added."""
 
     if not isinstance(service.repository, SqliteRepository):
@@ -231,7 +237,7 @@ def _test_repository(service: NeuroAgentService) -> SqliteRepository:
 
 
 def _inject_verified_input_artifacts(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     *,
     project_id: str,
     run_id: str,
@@ -262,7 +268,7 @@ def _inject_verified_input_artifacts(
     )
     mask = next(
         artifact
-        for artifact in service.list_artifacts(run_id)
+        for artifact in service.runs.list_artifacts(run_id)
         if artifact.artifact_type == "synthetic.non_scientific.mask.verified"
     )
     repository.register_artifacts(
@@ -287,14 +293,14 @@ def _inject_verified_input_artifacts(
     )
     functional = next(
         artifact
-        for artifact in service.list_artifacts(run_id)
+        for artifact in service.runs.list_artifacts(run_id)
         if artifact.artifact_type == "synthetic.non_scientific.timeseries.verified"
     )
     return functional.artifact_id, mask.artifact_id
 
 
 def _inject_synthetic_alff_artifacts(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     *,
     project_id: str,
     run_id: str,
@@ -325,7 +331,7 @@ def _inject_synthetic_alff_artifacts(
     )
     mask = next(
         artifact
-        for artifact in service.list_artifacts(run_id)
+        for artifact in service.runs.list_artifacts(run_id)
         if artifact.artifact_type == "synthetic.non_scientific.analysis_mask.verified"
     )
     repository.register_artifacts(
@@ -355,21 +361,21 @@ def _inject_synthetic_alff_artifacts(
     )
     metrics = tuple(
         artifact.artifact_id
-        for artifact in service.list_artifacts(run_id)
+        for artifact in service.runs.list_artifacts(run_id)
         if artifact.artifact_type == "synthetic.non_scientific.alff"
     )
     return mask.artifact_id, metrics
 
 
 def _approve_plan(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     plan_revision_id: str,
     *,
     idempotency_key: str,
     reason: str,
 ) -> None:
-    plan = service.get_plan(plan_revision_id)
-    service.approve_plan(
+    plan = service.plans.get_plan(plan_revision_id)
+    service.plans.approve_plan(
         plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -445,7 +451,7 @@ def run_demo(root: Path) -> dict[str, Any]:
     )
     try:
         worker = build_worker(service, worker_id="synthetic-demo-mock-worker")
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="SYNTHETIC NON-SCIENTIFIC demo",
                 source_roots=[str(source)],
@@ -453,7 +459,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-project",
         )
-        dataset = service.create_dataset(
+        dataset = service.projects.create_dataset(
             project.project_id,
             DatasetCreate(
                 name="SYNTHETIC BIDS placeholders",
@@ -462,15 +468,15 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-dataset",
         )
-        manifest = service.inspect_dataset(
+        manifest = service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             "synthetic-demo-manifest",
         )
 
-        project = service.get_project(project.project_id)
+        project = service.projects.get_project(project.project_id)
         environment_hash = service.environment_provider.current().snapshot.environment_hash
-        input_plan = service.create_plan(
+        input_plan = service.plans.create_plan(
             PlanRevisionCreate(
                 project_id=project.project_id,
                 expected_project_version=project.version,
@@ -484,7 +490,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-input-plan",
         )
-        input_plan = service.validate_plan(
+        input_plan = service.plans.validate_plan(
             input_plan.plan_revision_id,
             PlanValidationRequest(expected_version=input_plan.version),
             "synthetic-demo-input-plan-validate",
@@ -495,8 +501,8 @@ def run_demo(root: Path) -> dict[str, Any]:
             idempotency_key="synthetic-demo-input-plan-approve",
             reason="Approve synthetic Mock input fixture; no scientific processing.",
         )
-        input_plan = service.get_plan(input_plan.plan_revision_id)
-        input_run = service.create_run(
+        input_plan = service.plans.get_plan(input_plan.plan_revision_id)
+        input_run = service.runs.create_run(
             RunCreate(
                 project_id=project.project_id,
                 plan_revision_id=input_plan.plan_revision_id,
@@ -506,7 +512,7 @@ def run_demo(root: Path) -> dict[str, Any]:
         )
         if not worker.run_once():
             raise RuntimeError("synthetic input Mock run was not claimed")
-        input_run = service.get_run(input_run.run_id)
+        input_run = service.runs.get_run(input_run.run_id)
         functional_artifact_id, input_mask_artifact_id = _inject_verified_input_artifacts(
             service,
             project_id=project.project_id,
@@ -514,8 +520,8 @@ def run_demo(root: Path) -> dict[str, Any]:
             manifest_hash=manifest.content_hash,
         )
 
-        project = service.get_project(project.project_id)
-        alff_resolution = service.resolve_skill_plan(
+        project = service.projects.get_project(project.project_id)
+        alff_resolution = service.skills.resolve_skill_plan(
             SkillPlanResolveRequest(
                 request=_alff_intent(
                     project_id=project.project_id,
@@ -534,8 +540,8 @@ def run_demo(root: Path) -> dict[str, Any]:
             idempotency_key="synthetic-demo-alff-approve",
             reason="Approve synthetic ALFF Skill plan for Mock execution only.",
         )
-        alff_plan = service.get_plan(alff_resolution.plan_revision.plan_revision_id)
-        alff_run = service.create_run(
+        alff_plan = service.plans.get_plan(alff_resolution.plan_revision.plan_revision_id)
+        alff_run = service.runs.create_run(
             RunCreate(
                 project_id=project.project_id,
                 plan_revision_id=alff_plan.plan_revision_id,
@@ -545,7 +551,7 @@ def run_demo(root: Path) -> dict[str, Any]:
         )
         if not worker.run_once():
             raise RuntimeError("synthetic ALFF Mock run was not claimed")
-        alff_run = service.get_run(alff_run.run_id)
+        alff_run = service.runs.get_run(alff_run.run_id)
         analysis_mask_id, metric_artifact_ids = _inject_synthetic_alff_artifacts(
             service,
             project_id=project.project_id,
@@ -553,7 +559,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             manifest_hash=manifest.content_hash,
         )
 
-        qc_review = service.create_qc_review(
+        qc_review = service.runs.create_qc_review(
             QcReviewCreate(
                 run_id=alff_run.run_id,
                 expected_run_version=alff_run.version,
@@ -576,7 +582,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-qc-create",
         )
-        qc_review = service.approve_qc_review(
+        qc_review = service.runs.approve_qc_review(
             qc_review.review.review_revision_id,
             QcReviewApprove(
                 expected_review_version=qc_review.version,
@@ -588,7 +594,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-qc-approve",
         )
-        alff_run = service.get_run(alff_run.run_id)
+        alff_run = service.runs.get_run(alff_run.run_id)
 
         images = tuple(
             AnalysisImage(
@@ -619,7 +625,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             qc_review_revision_id=qc_review.review.review_revision_id,
             qc_review_hash=qc_review.review.content_hash,
         )
-        project = service.get_project(project.project_id)
+        project = service.projects.get_project(project.project_id)
         correction = FdrCorrection(
             method="fdr",
             q_threshold=0.05,
@@ -628,7 +634,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             df1=2.0,
             df2=None,
         )
-        statistical_design = service.create_statistical_design(
+        statistical_design = service.statistics.create_statistical_design(
             StatisticalDesignCreate(
                 project_id=project.project_id,
                 expected_project_version=project.version,
@@ -638,7 +644,7 @@ def run_demo(root: Path) -> dict[str, Any]:
             ),
             "synthetic-demo-statistics-create",
         )
-        statistical_design = service.validate_statistical_design(
+        statistical_design = service.statistics.validate_statistical_design(
             statistical_design.plan_revision.plan_revision_id,
             StatisticalDesignValidationRequest(
                 expected_version=statistical_design.plan_revision.version
@@ -654,8 +660,8 @@ def run_demo(root: Path) -> dict[str, Any]:
                 "no numerical inference."
             ),
         )
-        statistical_plan = service.get_plan(statistical_design.plan_revision.plan_revision_id)
-        statistics_run = service.create_statistics_run(
+        statistical_plan = service.plans.get_plan(statistical_design.plan_revision.plan_revision_id)
+        statistics_run = service.runs.create_statistics_run(
             StatisticsRunCreate(
                 project_id=project.project_id,
                 statistical_design_revision_id=statistical_plan.plan_revision_id,
@@ -665,7 +671,7 @@ def run_demo(root: Path) -> dict[str, Any]:
         )
         if not worker.run_once():
             raise RuntimeError("synthetic statistics Mock run was not claimed")
-        statistics_run = service.get_run(statistics_run.run_id)
+        statistics_run = service.runs.get_run(statistics_run.run_id)
 
         result_roles = tuple(StatisticalArtifactRole)
         result_manifest = StatisticalResultManifest(
@@ -731,7 +737,7 @@ def run_demo(root: Path) -> dict[str, Any]:
                 for format_name, report_path, payload in report_payloads
             ),
         )
-        registered_result = service.register_statistical_result(
+        registered_result = service.runs.register_statistical_result(
             run_id=statistics_run.run_id,
             manifest=result_manifest,
             design=design,
@@ -743,9 +749,9 @@ def run_demo(root: Path) -> dict[str, Any]:
         )
 
         source_after = _source_snapshot(source_files)
-        input_artifacts = service.list_artifacts(input_run.run_id)
-        alff_artifacts = service.list_artifacts(alff_run.run_id)
-        statistics_artifacts = service.list_artifacts(statistics_run.run_id)
+        input_artifacts = service.runs.list_artifacts(input_run.run_id)
+        alff_artifacts = service.runs.list_artifacts(alff_run.run_id)
+        statistics_artifacts = service.runs.list_artifacts(statistics_run.run_id)
         return {
             "synthetic": True,
             "scientific_use": "prohibited",

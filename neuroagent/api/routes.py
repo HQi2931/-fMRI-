@@ -1,1127 +1,234 @@
-"""REST and SSE routes; no scientific rules or process execution."""
+from fastapi import APIRouter
 
-from __future__ import annotations
-
-import asyncio
-from collections.abc import AsyncIterator
-from typing import Annotated, cast
-
-from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
-
-from neuroagent.api.conversation_stream import conversation_stream_response
-from neuroagent.application.contracts import (
-    AgentTaskCreate,
-    AgentTaskView,
-    ApprovalCreate,
-    ApprovalView,
-    ArtifactView,
-    ClusterLocalizationRequest,
-    ClusterLocalizationView,
-    ConversationContextView,
-    ConversationCreate,
-    ConversationMode,
-    ConversationTurnCreate,
-    ConversationTurnView,
-    ConversationView,
-    CorrectionCapabilityView,
-    DatasetCreate,
-    DatasetSplitCreate,
-    DatasetSplitView,
-    DatasetView,
-    DemographicsImportRequest,
-    DemographicsRevisionView,
-    EnvironmentConfigUpdate,
-    EnvironmentConfigView,
-    EnvironmentProbeView,
-    ExternalAnalysisImportIncludeRequest,
-    ExternalAnalysisImportInspectRequest,
-    ExternalAnalysisImportSummaryView,
-    ExternalAnalysisImportView,
-    ExternalDemographicsImportRequest,
-    ExternalDemographicsRevisionView,
-    HeadMotionQcCreate,
-    HealthView,
-    ManifestRevisionView,
-    ManifestScanRequest,
-    MemoryCreate,
-    MemoryUpdate,
-    MemoryView,
-    MlTableInspectRequest,
-    MlTableInspectView,
-    MlTemplateCreateRequest,
-    MlTemplateView,
-    ModelListRequest,
-    ModelListView,
-    ModelProfileCreate,
-    ModelProfileView,
-    OrganizationPreviewRequest,
-    OrganizationPreviewView,
-    PlanRevisionView,
-    ProjectCreate,
-    ProjectView,
-    ProviderTestRequest,
-    ProviderTestView,
-    QcReviewApprove,
-    QcReviewCreate,
-    QcReviewView,
-    QcSkipCreate,
-    QcSkipView,
-    RoiTableCreateRequest,
-    RoiTableView,
-    RsFmriAnswerView,
-    RsFmriQuestionRequest,
-    RunAction,
-    RunCreate,
-    RunDiagnosisRequest,
-    RunDiagnosisView,
-    RuntimeEventView,
-    RunView,
-    SkillPlanResolveRequest,
-    SkillPlanResolveView,
-    StatisticalAtlasView,
-    StatisticalClusterRoiView,
-    StatisticalDesignCreate,
-    StatisticalDesignValidationRequest,
-    StatisticalDesignView,
-    StatisticalResultDetailView,
-    StatisticalResultLocalizationView,
-    StatisticalResultSliceInfoView,
-    StatisticalResultView,
-    StatisticsRunCreate,
-    WorkAgentSelection,
-    WorkConfirmationCreate,
-    WorkDraftUpdate,
-    WorkflowState,
-    WorkReviewCreate,
-    WorkspaceChangeProposal,
-    WorkspaceCheckRequest,
-    WorkspaceCheckView,
-    WorkspaceContentConsent,
-    WorkspaceContentConsentCreate,
-    WorkspacePatchApplyRequest,
-    WorkspacePatchApplyView,
-    WorkspacePatchUndoView,
-    WorkspacePickView,
+from neuroagent.api.routers.agent import (
+    answer_rsfmri_question,
+    confirm_work_action,
+    create_agent_task,
+    create_conversation,
+    create_conversation_memory,
+    create_model_profile,
+    delete_model_profile,
+    get_agent_task,
+    get_conversation,
+    get_conversation_context,
+    get_model_profile,
+    index_conversation_memories,
+    list_conversations,
+    list_model_profiles,
+    list_provider_models,
+    prepare_work_review,
+    select_work_agent,
+    send_conversation_turn,
+    test_provider,
+    update_conversation_memory,
+    update_work_draft,
 )
-from neuroagent.application.services import NeuroAgentService
-from neuroagent.literature.models import PaperIngestResult
-from neuroagent.skills.models import SkillSpec
-from neuroagent.workflow.state import TERMINAL_WORKFLOW_STATES
+from neuroagent.api.routers.agent import router as agent_router
+from neuroagent.api.routers.artifacts import download_artifact, get_artifact, preview_artifact
+from neuroagent.api.routers.artifacts import router as artifacts_router
+from neuroagent.api.routers.environment import (
+    environment_config,
+    environment_probe,
+    health,
+    update_environment_config,
+)
+from neuroagent.api.routers.environment import router as environment_router
+from neuroagent.api.routers.external_imports import (
+    get_external_analysis_import,
+    get_external_demographics,
+    import_external_demographics,
+    include_external_analysis_import,
+    inspect_external_analysis_import,
+    list_external_analysis_imports,
+)
+from neuroagent.api.routers.external_imports import router as external_imports_router
+from neuroagent.api.routers.literature import (
+    get_literature_paper,
+    get_literature_source,
+    index_literature_paper,
+    ingest_literature_paper,
+    list_literature_papers,
+)
+from neuroagent.api.routers.literature import router as literature_router
+from neuroagent.api.routers.plans import approve_plan, get_plan
+from neuroagent.api.routers.plans import router as plans_router
+from neuroagent.api.routers.projects import (
+    create_dataset,
+    create_project,
+    create_split,
+    get_dataset,
+    get_demographics,
+    get_manifest,
+    get_project,
+    get_split,
+    import_demographics,
+    inspect_dataset,
+    list_projects,
+    organization_preview,
+    project_audit_events,
+)
+from neuroagent.api.routers.projects import router as projects_router
+from neuroagent.api.routers.runs import (
+    approve_qc_review,
+    cancel_run,
+    create_head_motion_qc_review,
+    create_ml_template,
+    create_qc_review,
+    create_run,
+    diagnose_run,
+    get_qc_review,
+    get_run,
+    get_run_qc_review,
+    inspect_ml_table,
+    list_artifacts,
+    list_runs,
+    localize_clusters,
+    retry_run,
+    skip_qc,
+    stream_run_events,
+    validate_roi_table,
+)
+from neuroagent.api.routers.runs import router as runs_router
+from neuroagent.api.routers.skills import list_skills, resolve_skill_plan
+from neuroagent.api.routers.skills import router as skills_router
+from neuroagent.api.routers.statistics import (
+    approve_statistical_design,
+    create_statistical_design,
+    create_statistics_run,
+    get_statistical_design,
+    get_statistical_result,
+    list_correction_capabilities,
+    list_statistical_atlases,
+    list_statistical_results,
+    localize_statistical_result,
+    statistical_cluster_roi,
+    statistical_result_slice_info,
+    statistical_result_slice_preview,
+    validate_statistical_design,
+)
+from neuroagent.api.routers.statistics import router as statistics_router
+from neuroagent.api.routers.workspaces import (
+    apply_workspace_proposal,
+    check_workspace,
+    create_workspace_consent,
+    get_workspace_proposal,
+    list_workspace_consents,
+    list_workspace_files,
+    pick_workspace,
+    revoke_workspace_consent,
+    undo_workspace_proposal,
+)
+from neuroagent.api.routers.workspaces import router as workspaces_router
 
 router = APIRouter()
-IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)]
 
-
-def service_from(request: Request) -> NeuroAgentService:
-    return cast(NeuroAgentService, request.app.state.service)
-
-
-@router.get("/health", response_model=HealthView, tags=["system"])
-def health(request: Request) -> HealthView:
-    return service_from(request).health()
-
-
-@router.get("/environment/probe", response_model=EnvironmentProbeView, tags=["system"])
-def environment_probe(request: Request) -> EnvironmentProbeView:
-    return service_from(request).environment_probe()
-
-
-@router.get("/environment/config", response_model=EnvironmentConfigView, tags=["system"])
-def environment_config(request: Request) -> EnvironmentConfigView:
-    return service_from(request).environment_config()
-
-
-@router.put("/environment/config", response_model=EnvironmentConfigView, tags=["system"])
-def update_environment_config(
-    body: EnvironmentConfigUpdate, request: Request
-) -> EnvironmentConfigView:
-    return service_from(request).update_environment_config(body)
-
-
-@router.post("/workspaces/check", response_model=WorkspaceCheckView, tags=["workspaces"])
-def check_workspace(body: WorkspaceCheckRequest, request: Request) -> WorkspaceCheckView:
-    """Read-only workspace check used by the conversational workbench."""
-
-    return service_from(request).check_workspace(body)
-
-
-@router.post("/workspaces/pick", response_model=WorkspacePickView, tags=["workspaces"])
-def pick_workspace(request: Request) -> WorkspacePickView:
-    return service_from(request).pick_workspace()
-
-
-@router.get(
-    "/conversations/{conversation_id}/workspace/consents",
-    response_model=list[WorkspaceContentConsent],
-    tags=["workspaces"],
-)
-def list_workspace_consents(
-    conversation_id: str, request: Request
-) -> list[WorkspaceContentConsent]:
-    return service_from(request).list_workspace_content_consents(conversation_id)
-
-
-@router.post(
-    "/conversations/{conversation_id}/workspace/consents",
-    response_model=WorkspaceContentConsent,
-    status_code=status.HTTP_201_CREATED,
-    tags=["workspaces"],
-)
-async def create_workspace_consent(
-    conversation_id: str, body: WorkspaceContentConsentCreate, request: Request
-) -> WorkspaceContentConsent:
-    return await service_from(request).create_workspace_content_consent(conversation_id, body)
-
-
-@router.delete(
-    "/conversations/{conversation_id}/workspace/consents/{consent_id}",
-    response_model=WorkspaceContentConsent,
-    tags=["workspaces"],
-)
-def revoke_workspace_consent(
-    conversation_id: str, consent_id: str, request: Request
-) -> WorkspaceContentConsent:
-    return service_from(request).revoke_workspace_content_consent(conversation_id, consent_id)
-
-
-@router.get("/conversations/{conversation_id}/workspace/files", tags=["workspaces"])
-def list_workspace_files(
-    conversation_id: str, request: Request, directory: str = ""
-) -> dict[str, object]:
-    return service_from(request).list_workspace_files(conversation_id, directory)
-
-
-@router.get(
-    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}",
-    response_model=WorkspaceChangeProposal,
-    tags=["workspaces"],
-)
-def get_workspace_proposal(
-    conversation_id: str, proposal_id: str, request: Request
-) -> WorkspaceChangeProposal:
-    return service_from(request).get_workspace_proposal(conversation_id, proposal_id)
-
-
-@router.post(
-    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}/apply",
-    response_model=WorkspacePatchApplyView,
-    tags=["workspaces"],
-)
-def apply_workspace_proposal(
-    conversation_id: str, proposal_id: str, body: WorkspacePatchApplyRequest, request: Request
-) -> WorkspacePatchApplyView:
-    return service_from(request).apply_workspace_proposal(conversation_id, proposal_id, body)
-
-
-@router.post(
-    "/conversations/{conversation_id}/workspace/proposals/{proposal_id}/undo",
-    response_model=WorkspacePatchUndoView,
-    tags=["workspaces"],
-)
-def undo_workspace_proposal(
-    conversation_id: str, proposal_id: str, request: Request
-) -> WorkspacePatchUndoView:
-    return service_from(request).undo_workspace_proposal(conversation_id, proposal_id)
-
-
-@router.post(
-    "/conversations",
-    response_model=ConversationView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["agent"],
-)
-def create_conversation(
-    body: ConversationCreate, request: Request, idempotency_key: IdempotencyKey
-) -> ConversationView:
-    return service_from(request).create_conversation(body, idempotency_key)
-
-
-@router.get("/conversations", response_model=list[ConversationView], tags=["agent"])
-def list_conversations(
-    request: Request, mode: ConversationMode | None = None
-) -> list[ConversationView]:
-    return service_from(request).list_conversations(mode)
-
-
-@router.post("/conversations/{conversation_id}/context/index", tags=["agent"])
-async def index_conversation_memories(conversation_id: str, request: Request) -> dict[str, str]:
-    from neuroagent.application.errors import ApplicationError
-    from neuroagent.memory.embeddings import MemoryEmbeddingError
-
-    try:
-        return await service_from(request).semantic_memory.index(conversation_id)
-    except MemoryEmbeddingError as exc:
-        raise ApplicationError(
-            str(exc), "记忆索引失败,请检查服务配置后重试。", status_code=503
-        ) from exc
-
-
-@router.get("/conversations/{conversation_id}", response_model=ConversationView, tags=["agent"])
-def get_conversation(conversation_id: str, request: Request) -> ConversationView:
-    return service_from(request).get_conversation(conversation_id)
-
-
-@router.patch(
-    "/conversations/{conversation_id}/work-agent", response_model=ConversationView, tags=["agent"]
-)
-def select_work_agent(
-    conversation_id: str,
-    body: WorkAgentSelection,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ConversationView:
-    return service_from(request).select_work_agent(conversation_id, body, idempotency_key)
-
-
-@router.get(
-    "/conversations/{conversation_id}/context",
-    response_model=ConversationContextView,
-    tags=["agent"],
-)
-def get_conversation_context(conversation_id: str, request: Request) -> ConversationContextView:
-    return service_from(request).get_conversation_context(conversation_id)
-
-
-@router.post(
-    "/conversations/{conversation_id}/context/memories",
-    response_model=MemoryView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["agent"],
-)
-def create_conversation_memory(
-    conversation_id: str,
-    body: MemoryCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> MemoryView:
-    return service_from(request).create_conversation_memory(conversation_id, body, idempotency_key)
-
-
-@router.patch(
-    "/conversations/{conversation_id}/context/memories/{memory_id}",
-    response_model=MemoryView,
-    tags=["agent"],
-)
-def update_conversation_memory(
-    conversation_id: str,
-    memory_id: str,
-    body: MemoryUpdate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> MemoryView:
-    return service_from(request).update_conversation_memory(
-        conversation_id, memory_id, body, idempotency_key
-    )
-
-
-@router.post(
-    "/literature/papers",
-    response_model=PaperIngestResult,
-    status_code=status.HTTP_201_CREATED,
-    tags=["literature"],
-)
-async def ingest_literature_paper(
-    request: Request,
-    file: Annotated[UploadFile, File(description="Scientific paper PDF")],
-) -> PaperIngestResult:
-    service = service_from(request)
-    content = await file.read(service.literature.max_pdf_bytes + 1)
-    await file.close()
-    return await asyncio.to_thread(
-        service.literature.ingest, filename=file.filename or "", content=content
-    )
-
-
-@router.post(
-    "/literature/papers/{paper_id}/index", response_model=PaperIngestResult, tags=["literature"]
-)
-def index_literature_paper(paper_id: str, request: Request) -> PaperIngestResult:
-    return service_from(request).literature.index(paper_id)
-
-
-@router.get(
-    "/literature/papers/{paper_id}/source", response_class=FileResponse, tags=["literature"]
-)
-def get_literature_source(paper_id: str, request: Request) -> FileResponse:
-    return FileResponse(
-        service_from(request).literature.source(paper_id), media_type="application/pdf"
-    )
-
-
-@router.get(
-    "/literature/papers/{paper_id}",
-    response_model=PaperIngestResult,
-    tags=["literature"],
-)
-def get_literature_paper(paper_id: str, request: Request) -> PaperIngestResult:
-    return service_from(request).literature.get(paper_id)
-
-
-@router.get(
-    "/literature/papers",
-    response_model=list[PaperIngestResult],
-    tags=["literature"],
-)
-def list_literature_papers(request: Request) -> list[PaperIngestResult]:
-    return service_from(request).literature.list()
-
-
-@router.patch(
-    "/conversations/{conversation_id}/work-draft",
-    response_model=ConversationTurnView,
-    tags=["agent"],
-)
-def update_work_draft(
-    conversation_id: str, body: WorkDraftUpdate, request: Request, idempotency_key: IdempotencyKey
-) -> ConversationTurnView:
-    return service_from(request).update_work_draft(conversation_id, body, idempotency_key)
-
-
-@router.post(
-    "/conversations/{conversation_id}/work-confirmation",
-    response_model=ConversationTurnView,
-    tags=["agent"],
-)
-async def confirm_work_action(
-    conversation_id: str,
-    body: WorkConfirmationCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ConversationTurnView:
-    return await service_from(request).confirm_work_action(conversation_id, body, idempotency_key)
-
-
-@router.post(
-    "/conversations/{conversation_id}/work-review",
-    response_model=ConversationTurnView,
-    tags=["agent"],
-)
-def prepare_work_review(
-    conversation_id: str,
-    body: WorkReviewCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ConversationTurnView:
-    return service_from(request).prepare_work_review(conversation_id, body, idempotency_key)
-
-
-@router.post(
-    "/conversations/{conversation_id}/turns",
-    response_model=ConversationTurnView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["agent"],
-    responses={201: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}},
-)
-async def send_conversation_turn(
-    conversation_id: str,
-    body: ConversationTurnCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ConversationTurnView | StreamingResponse:
-    if body.stream:
-        return conversation_stream_response(
-            service_from(request), conversation_id, body, idempotency_key, request
-        )
-    return await service_from(request).send_conversation_turn(
-        conversation_id, body, idempotency_key
-    )
-
-
-@router.post(
-    "/projects",
-    response_model=ProjectView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["projects"],
-)
-def create_project(
-    body: ProjectCreate, request: Request, idempotency_key: IdempotencyKey
-) -> ProjectView:
-    return service_from(request).create_project(body, idempotency_key)
-
-
-@router.get("/projects", response_model=list[ProjectView], tags=["projects"])
-def list_projects(request: Request) -> list[ProjectView]:
-    return service_from(request).list_projects()
-
-
-@router.get("/projects/{project_id}", response_model=ProjectView, tags=["projects"])
-def get_project(project_id: str, request: Request) -> ProjectView:
-    return service_from(request).get_project(project_id)
-
-
-@router.get(
-    "/projects/{project_id}/audit-events",
-    response_model=list[RuntimeEventView],
-    tags=["projects"],
-)
-def project_audit_events(
-    project_id: str, request: Request, after_event_id: int = Query(default=0, ge=0)
-) -> list[RuntimeEventView]:
-    return service_from(request).list_project_events(project_id, after_event_id)
-
-
-@router.post(
-    "/projects/{project_id}/datasets",
-    response_model=DatasetView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["datasets"],
-)
-def create_dataset(
-    project_id: str,
-    body: DatasetCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> DatasetView:
-    return service_from(request).create_dataset(project_id, body, idempotency_key)
-
-
-@router.get("/datasets/{dataset_id}", response_model=DatasetView, tags=["datasets"])
-def get_dataset(dataset_id: str, request: Request) -> DatasetView:
-    return service_from(request).get_dataset(dataset_id)
-
-
-@router.post(
-    "/datasets/{dataset_id}/inspect",
-    response_model=ManifestRevisionView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["datasets"],
-)
-def inspect_dataset(
-    dataset_id: str,
-    body: ManifestScanRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ManifestRevisionView:
-    return service_from(request).inspect_dataset(dataset_id, body, idempotency_key)
-
-
-@router.get("/manifests/{manifest_id}", response_model=ManifestRevisionView, tags=["datasets"])
-def get_manifest(manifest_id: str, request: Request) -> ManifestRevisionView:
-    return service_from(request).get_manifest(manifest_id)
-
-
-@router.post(
-    "/datasets/{dataset_id}/demographics/import",
-    response_model=DemographicsRevisionView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["datasets"],
-)
-def import_demographics(
-    dataset_id: str,
-    body: DemographicsImportRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> DemographicsRevisionView:
-    return service_from(request).import_demographics(dataset_id, body, idempotency_key)
-
-
-@router.get(
-    "/demographics/{demographics_id}",
-    response_model=DemographicsRevisionView,
-    tags=["datasets"],
-)
-def get_demographics(demographics_id: str, request: Request) -> DemographicsRevisionView:
-    return service_from(request).get_demographics(demographics_id)
-
-
-@router.post(
-    "/datasets/{dataset_id}/splits",
-    response_model=DatasetSplitView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["datasets"],
-)
-def create_split(
-    dataset_id: str,
-    body: DatasetSplitCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> DatasetSplitView:
-    return service_from(request).create_split(dataset_id, body, idempotency_key)
-
-
-@router.get("/splits/{split_id}", response_model=DatasetSplitView, tags=["datasets"])
-def get_split(split_id: str, request: Request) -> DatasetSplitView:
-    return service_from(request).get_split(split_id)
-
-
-@router.get(
-    "/plan-revisions/{plan_revision_id}",
-    response_model=PlanRevisionView,
-    tags=["plans"],
-)
-def get_plan(plan_revision_id: str, request: Request) -> PlanRevisionView:
-    return service_from(request).get_plan(plan_revision_id)
-
-
-@router.post(
-    "/plan-revisions/{plan_revision_id}/approve",
-    response_model=ApprovalView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["plans"],
-)
-def approve_plan(
-    plan_revision_id: str,
-    body: ApprovalCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ApprovalView:
-    return service_from(request).approve_plan(plan_revision_id, body, idempotency_key)
-
-
-@router.get("/skills", response_model=list[SkillSpec], tags=["skills"])
-def list_skills(request: Request) -> list[SkillSpec]:
-    return service_from(request).list_skills()
-
-
-@router.post(
-    "/skill-plans/resolve",
-    response_model=SkillPlanResolveView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["skills"],
-)
-def resolve_skill_plan(
-    body: SkillPlanResolveRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> SkillPlanResolveView:
-    return service_from(request).resolve_skill_plan(body, idempotency_key)
-
-
-@router.post(
-    "/statistical-designs",
-    response_model=StatisticalDesignView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["statistics"],
-)
-def create_statistical_design(
-    body: StatisticalDesignCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> StatisticalDesignView:
-    return service_from(request).create_statistical_design(body, idempotency_key)
-
-
-@router.get(
-    "/statistical-designs/{plan_revision_id}",
-    response_model=StatisticalDesignView,
-    tags=["statistics"],
-)
-def get_statistical_design(plan_revision_id: str, request: Request) -> StatisticalDesignView:
-    return service_from(request).get_statistical_design(plan_revision_id)
-
-
-@router.post(
-    "/statistical-designs/{plan_revision_id}/validate",
-    response_model=StatisticalDesignView,
-    tags=["statistics"],
-)
-def validate_statistical_design(
-    plan_revision_id: str,
-    body: StatisticalDesignValidationRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> StatisticalDesignView:
-    return service_from(request).validate_statistical_design(
-        plan_revision_id, body, idempotency_key
-    )
-
-
-@router.post(
-    "/statistical-designs/{plan_revision_id}/approve",
-    response_model=ApprovalView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["statistics"],
-)
-def approve_statistical_design(
-    plan_revision_id: str,
-    body: ApprovalCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ApprovalView:
-    return service_from(request).approve_plan(plan_revision_id, body, idempotency_key)
-
-
-@router.get(
-    "/corrections",
-    response_model=list[CorrectionCapabilityView],
-    tags=["statistics"],
-)
-def list_correction_capabilities() -> list[CorrectionCapabilityView]:
-    return NeuroAgentService.correction_capabilities()
-
-
-@router.post(
-    "/statistics/runs",
-    response_model=RunView,
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["statistics"],
-)
-def create_statistics_run(
-    body: StatisticsRunCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> RunView:
-    return service_from(request).create_statistics_run(body, idempotency_key)
-
-
-@router.post(
-    "/statistics/external-imports/inspect",
-    response_model=ExternalAnalysisImportView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["statistics", "external-data"],
-)
-def inspect_external_analysis_import(
-    body: ExternalAnalysisImportInspectRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ExternalAnalysisImportView:
-    return service_from(request).inspect_external_analysis_import(body, idempotency_key)
-
-
-@router.get(
-    "/statistics/external-imports",
-    response_model=list[ExternalAnalysisImportSummaryView],
-    tags=["statistics", "external-data"],
-)
-def list_external_analysis_imports(
-    request: Request,
-    project_id: str = Query(...),
-) -> list[ExternalAnalysisImportSummaryView]:
-    return service_from(request).list_external_analysis_imports(project_id=project_id)
-
-
-@router.get(
-    "/statistics/external-imports/{import_id}",
-    response_model=ExternalAnalysisImportView,
-    tags=["statistics", "external-data"],
-)
-def get_external_analysis_import(import_id: str, request: Request) -> ExternalAnalysisImportView:
-    return service_from(request).get_external_analysis_import(import_id)
-
-
-@router.post(
-    "/statistics/external-imports/{import_id}/include",
-    response_model=ExternalAnalysisImportView,
-    tags=["statistics", "external-data"],
-)
-def include_external_analysis_import(
-    import_id: str,
-    body: ExternalAnalysisImportIncludeRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ExternalAnalysisImportView:
-    return service_from(request).include_external_analysis_import(import_id, body, idempotency_key)
-
-
-@router.post(
-    "/statistics/external-imports/{import_id}/demographics",
-    response_model=ExternalDemographicsRevisionView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["statistics", "external-data"],
-)
-def import_external_demographics(
-    import_id: str,
-    body: ExternalDemographicsImportRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ExternalDemographicsRevisionView:
-    return service_from(request).import_external_demographics(import_id, body, idempotency_key)
-
-
-@router.get(
-    "/statistics/external-imports/{import_id}/demographics",
-    response_model=ExternalDemographicsRevisionView | None,
-    tags=["statistics", "external-data"],
-)
-def get_external_demographics(
-    import_id: str, request: Request
-) -> ExternalDemographicsRevisionView | None:
-    return service_from(request).get_external_demographics(import_id)
-
-
-@router.get(
-    "/statistics/results",
-    response_model=list[StatisticalResultView],
-    tags=["statistics"],
-)
-def list_statistical_results(
-    request: Request,
-    project_id: str = Query(...),
-    run_id: str | None = Query(default=None),
-) -> list[StatisticalResultView]:
-    return service_from(request).list_statistical_results(project_id=project_id, run_id=run_id)
-
-
-@router.get(
-    "/statistics/results/{result_id}",
-    response_model=StatisticalResultDetailView,
-    tags=["statistics"],
-)
-def get_statistical_result(result_id: str, request: Request) -> StatisticalResultDetailView:
-    return service_from(request).get_statistical_result(result_id)
-
-
-@router.get(
-    "/statistics/atlases",
-    response_model=tuple[StatisticalAtlasView, ...],
-    tags=["statistics", "localization"],
-)
-def list_statistical_atlases(request: Request) -> tuple[StatisticalAtlasView, ...]:
-    return service_from(request).list_statistical_atlases()
-
-
-@router.get(
-    "/statistics/results/{result_id}/localization",
-    response_model=StatisticalResultLocalizationView,
-    tags=["statistics", "localization"],
-)
-def localize_statistical_result(
-    result_id: str,
-    request: Request,
-    atlas_id: str = Query(..., min_length=1, max_length=40),
-) -> StatisticalResultLocalizationView:
-    return service_from(request).localize_statistical_result(result_id, atlas_id)
-
-
-@router.get(
-    "/statistics/results/{result_id}/slice-info",
-    response_model=StatisticalResultSliceInfoView,
-    tags=["statistics", "preview"],
-)
-def statistical_result_slice_info(
-    result_id: str, request: Request
-) -> StatisticalResultSliceInfoView:
-    return service_from(request).statistical_result_slice_info(result_id)
-
-
-@router.get(
-    "/statistics/results/{result_id}/roi",
-    response_model=StatisticalClusterRoiView,
-    tags=["statistics", "roi"],
-)
-def statistical_cluster_roi(
-    result_id: str, request: Request, cluster_id: str | None = Query(default=None, max_length=100)
-) -> StatisticalClusterRoiView:
-    return service_from(request).statistical_cluster_roi(result_id, cluster_id)
-
-
-@router.get(
-    "/statistics/results/{result_id}/slice.png",
-    response_class=Response,
-    tags=["statistics", "preview"],
-)
-def statistical_result_slice_preview(
-    result_id: str,
-    request: Request,
-    slice_index: int = Query(..., ge=0, le=511),
-) -> Response:
-    return Response(
-        service_from(request).statistical_result_slice_png(result_id, slice_index),
-        media_type="image/png",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@router.post(
-    "/runs",
-    response_model=RunView,
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["runs"],
-)
-def create_run(body: RunCreate, request: Request, idempotency_key: IdempotencyKey) -> RunView:
-    return service_from(request).create_run(body, idempotency_key)
-
-
-@router.get("/runs", response_model=list[RunView], tags=["runs"])
-def list_runs(
-    request: Request,
-    project_id: str | None = None,
-    state: WorkflowState | None = None,
-) -> list[RunView]:
-    return service_from(request).list_runs(project_id=project_id, state=state)
-
-
-@router.get("/runs/{run_id}", response_model=RunView, tags=["runs"])
-def get_run(run_id: str, request: Request) -> RunView:
-    return service_from(request).get_run(run_id)
-
-
-@router.post(
-    "/runs/{run_id}/qc-skip",
-    response_model=QcSkipView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["runs", "qc"],
-)
-def skip_qc(
-    run_id: str,
-    body: QcSkipCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> QcSkipView:
-    return service_from(request).skip_qc(run_id, body, idempotency_key)
-
-
-@router.post("/runs/{run_id}/diagnosis", response_model=RunDiagnosisView, tags=["runs"])
-def diagnose_run(
-    run_id: str, body: RunDiagnosisRequest, request: Request, idempotency_key: IdempotencyKey
-) -> RunDiagnosisView:
-    del idempotency_key
-    return service_from(request).diagnose_run(run_id, body)
-
-
-@router.post("/ml/datasets/inspect", response_model=MlTableInspectView, tags=["machine-learning"])
-def inspect_ml_table(
-    body: MlTableInspectRequest, request: Request, idempotency_key: IdempotencyKey
-) -> MlTableInspectView:
-    del idempotency_key
-    return service_from(request).inspect_ml_table(body)
-
-
-@router.post("/ml/templates", response_model=MlTemplateView, tags=["machine-learning"])
-def create_ml_template(
-    body: MlTemplateCreateRequest, request: Request, idempotency_key: IdempotencyKey
-) -> MlTemplateView:
-    del idempotency_key
-    return service_from(request).create_ml_template(body)
-
-
-@router.post("/roi/extractions/validate", response_model=RoiTableView, tags=["roi"])
-def validate_roi_table(
-    body: RoiTableCreateRequest, request: Request, idempotency_key: IdempotencyKey
-) -> RoiTableView:
-    del idempotency_key
-    return service_from(request).validate_roi_table(body)
-
-
-@router.post(
-    "/cluster-localizations", response_model=ClusterLocalizationView, tags=["localization"]
-)
-def localize_clusters(
-    body: ClusterLocalizationRequest, request: Request, idempotency_key: IdempotencyKey
-) -> ClusterLocalizationView:
-    del idempotency_key
-    return service_from(request).localize_clusters(body)
-
-
-@router.post("/agent/rsfmri/questions", response_model=RsFmriAnswerView, tags=["agent"])
-def answer_rsfmri_question(
-    body: RsFmriQuestionRequest, request: Request, idempotency_key: IdempotencyKey
-) -> RsFmriAnswerView:
-    del idempotency_key
-    return service_from(request).answer_rsfmri_question(body)
-
-
-@router.post("/organization/previews", response_model=OrganizationPreviewView, tags=["datasets"])
-def organization_preview(
-    body: OrganizationPreviewRequest, request: Request, idempotency_key: IdempotencyKey
-) -> OrganizationPreviewView:
-    del idempotency_key
-    return service_from(request).organization_preview(body)
-
-
-@router.post("/runs/{run_id}/cancel", response_model=RunView, tags=["runs"])
-def cancel_run(
-    run_id: str,
-    body: RunAction,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> RunView:
-    return service_from(request).cancel_run(run_id, body, idempotency_key)
-
-
-@router.post("/runs/{run_id}/retry", response_model=RunView, tags=["runs"])
-def retry_run(
-    run_id: str,
-    body: RunAction,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> RunView:
-    return service_from(request).retry_run(run_id, body, idempotency_key)
-
-
-@router.post(
-    "/qc-reviews",
-    response_model=QcReviewView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["qc"],
-)
-def create_qc_review(
-    body: QcReviewCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> QcReviewView:
-    return service_from(request).create_qc_review(body, idempotency_key)
-
-
-@router.post(
-    "/runs/{run_id}/head-motion-qc",
-    response_model=QcReviewView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["qc"],
-)
-def create_head_motion_qc_review(
-    run_id: str,
-    body: HeadMotionQcCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> QcReviewView:
-    return service_from(request).create_head_motion_qc_review(run_id, body, idempotency_key)
-
-
-@router.get("/qc-reviews/{review_revision_id}", response_model=QcReviewView, tags=["qc"])
-def get_qc_review(review_revision_id: str, request: Request) -> QcReviewView:
-    return service_from(request).get_qc_review(review_revision_id)
-
-
-@router.get("/runs/{run_id}/qc-review", response_model=QcReviewView | None, tags=["qc"])
-def get_run_qc_review(run_id: str, request: Request) -> QcReviewView | None:
-    return service_from(request).get_run_qc_review(run_id)
-
-
-@router.post(
-    "/qc-reviews/{review_revision_id}/approve",
-    response_model=QcReviewView,
-    tags=["qc"],
-)
-def approve_qc_review(
-    review_revision_id: str,
-    body: QcReviewApprove,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> QcReviewView:
-    return service_from(request).approve_qc_review(review_revision_id, body, idempotency_key)
-
-
-@router.get("/runs/{run_id}/artifacts", response_model=list[ArtifactView], tags=["runs"])
-def list_artifacts(run_id: str, request: Request) -> list[ArtifactView]:
-    return service_from(request).list_artifacts(run_id)
-
-
-@router.get("/artifacts/{artifact_id}", response_model=ArtifactView, tags=["artifacts"])
-def get_artifact(artifact_id: str, request: Request) -> ArtifactView:
-    return service_from(request).get_artifact(artifact_id)
-
-
-@router.get("/artifacts/{artifact_id}/content", response_class=FileResponse, tags=["artifacts"])
-def download_artifact(artifact_id: str, request: Request) -> FileResponse:
-    path = service_from(request).artifact_content_path(artifact_id)
-    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
-
-
-@router.get("/artifacts/{artifact_id}/preview.png", response_class=Response, tags=["artifacts"])
-def preview_artifact(artifact_id: str, request: Request) -> Response:
-    return Response(
-        service_from(request).artifact_preview_png(artifact_id),
-        media_type="image/png",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@router.get("/runs/{run_id}/events", tags=["runs"])
-async def stream_run_events(
-    run_id: str,
-    request: Request,
-    after_event_id: int = Query(default=0, ge=0),
-    once: bool = Query(default=False),
-    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
-) -> StreamingResponse:
-    service = service_from(request)
-    if last_event_id and last_event_id.isdigit():
-        after_event_id = max(after_event_id, int(last_event_id))
-    service.get_run(run_id)
-
-    async def generate() -> AsyncIterator[str]:
-        cursor = after_event_id
-        while True:
-            events = service.list_run_events(run_id, cursor)
-            for event in events:
-                cursor = event.event_id
-                yield (
-                    f"id: {event.event_id}\n"
-                    f"event: {event.event_type}\n"
-                    f"data: {event.model_dump_json()}\n\n"
-                )
-            current = service.get_run(run_id)
-            if once or (current.state in TERMINAL_WORKFLOW_STATES and not events):
-                break
-            if await request.is_disconnected():
-                break
-            if not events:
-                yield ": heartbeat\n\n"
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.post(
-    "/model-profiles",
-    response_model=ModelProfileView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["agent"],
-)
-def create_model_profile(
-    body: ModelProfileCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ModelProfileView:
-    return service_from(request).create_model_profile(body, idempotency_key)
-
-
-@router.get("/model-profiles", response_model=list[ModelProfileView], tags=["agent"])
-def list_model_profiles(request: Request) -> list[ModelProfileView]:
-    return service_from(request).list_model_profiles()
-
-
-@router.get("/model-profiles/{profile_id}", response_model=ModelProfileView, tags=["agent"])
-def get_model_profile(profile_id: str, request: Request) -> ModelProfileView:
-    return service_from(request).get_model_profile(profile_id)
-
-
-@router.delete(
-    "/model-profiles/{profile_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["agent"],
-)
-def delete_model_profile(profile_id: str, request: Request) -> None:
-    service_from(request).delete_model_profile(profile_id)
-
-
-@router.post("/providers/models", response_model=ModelListView, tags=["agent"])
-async def list_provider_models(
-    body: ModelListRequest,
-    request: Request,
-) -> ModelListView:
-    return await service_from(request).list_provider_models(body)
-
-
-@router.post("/providers/test", response_model=ProviderTestView, tags=["agent"])
-async def test_provider(
-    body: ProviderTestRequest,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> ProviderTestView:
-    return await service_from(request).test_provider(body, idempotency_key)
-
-
-@router.post(
-    "/agent/tasks",
-    response_model=AgentTaskView,
-    status_code=status.HTTP_201_CREATED,
-    tags=["agent"],
-)
-async def create_agent_task(
-    body: AgentTaskCreate,
-    request: Request,
-    idempotency_key: IdempotencyKey,
-) -> AgentTaskView:
-    return await service_from(request).create_agent_task(body, idempotency_key)
-
-
-@router.get("/agent/tasks/{task_id}", response_model=AgentTaskView, tags=["agent"])
-def get_agent_task(task_id: str, request: Request) -> AgentTaskView:
-    return service_from(request).get_agent_task(task_id)
+__all__ = [
+    "answer_rsfmri_question",
+    "apply_workspace_proposal",
+    "approve_plan",
+    "approve_qc_review",
+    "approve_statistical_design",
+    "cancel_run",
+    "check_workspace",
+    "confirm_work_action",
+    "create_agent_task",
+    "create_conversation",
+    "create_conversation_memory",
+    "create_dataset",
+    "create_head_motion_qc_review",
+    "create_ml_template",
+    "create_model_profile",
+    "create_project",
+    "create_qc_review",
+    "create_run",
+    "create_split",
+    "create_statistical_design",
+    "create_statistics_run",
+    "create_workspace_consent",
+    "delete_model_profile",
+    "diagnose_run",
+    "download_artifact",
+    "environment_config",
+    "environment_probe",
+    "get_agent_task",
+    "get_artifact",
+    "get_conversation",
+    "get_conversation_context",
+    "get_dataset",
+    "get_demographics",
+    "get_external_analysis_import",
+    "get_external_demographics",
+    "get_literature_paper",
+    "get_literature_source",
+    "get_manifest",
+    "get_model_profile",
+    "get_plan",
+    "get_project",
+    "get_qc_review",
+    "get_run",
+    "get_run_qc_review",
+    "get_split",
+    "get_statistical_design",
+    "get_statistical_result",
+    "get_workspace_proposal",
+    "health",
+    "import_demographics",
+    "import_external_demographics",
+    "include_external_analysis_import",
+    "index_conversation_memories",
+    "index_literature_paper",
+    "ingest_literature_paper",
+    "inspect_dataset",
+    "inspect_external_analysis_import",
+    "inspect_ml_table",
+    "list_artifacts",
+    "list_conversations",
+    "list_correction_capabilities",
+    "list_external_analysis_imports",
+    "list_literature_papers",
+    "list_model_profiles",
+    "list_projects",
+    "list_provider_models",
+    "list_runs",
+    "list_skills",
+    "list_statistical_atlases",
+    "list_statistical_results",
+    "list_workspace_consents",
+    "list_workspace_files",
+    "localize_clusters",
+    "localize_statistical_result",
+    "organization_preview",
+    "pick_workspace",
+    "prepare_work_review",
+    "preview_artifact",
+    "project_audit_events",
+    "resolve_skill_plan",
+    "retry_run",
+    "revoke_workspace_consent",
+    "router",
+    "select_work_agent",
+    "send_conversation_turn",
+    "skip_qc",
+    "statistical_cluster_roi",
+    "statistical_result_slice_info",
+    "statistical_result_slice_preview",
+    "stream_run_events",
+    "test_provider",
+    "undo_workspace_proposal",
+    "update_conversation_memory",
+    "update_environment_config",
+    "update_work_draft",
+    "validate_roi_table",
+    "validate_statistical_design",
+]
+router.include_router(environment_router)
+router.include_router(workspaces_router)
+router.include_router(agent_router)
+router.include_router(literature_router)
+router.include_router(projects_router)
+router.include_router(plans_router)
+router.include_router(skills_router)
+router.include_router(statistics_router)
+router.include_router(external_imports_router)
+router.include_router(runs_router)
+router.include_router(artifacts_router)

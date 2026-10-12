@@ -5,14 +5,14 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from neuroagent.api.app import create_app
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
 from tests.literature.pdf_factory import make_blank_pdf, make_text_pdf
 
 
 def test_pdf_upload_persists_paper_sections_chunks_and_source(
-    service: NeuroAgentService, work_root: Path
+    service: ApplicationServices, work_root: Path
 ) -> None:
     pdf = make_text_pdf(
         (
@@ -48,7 +48,7 @@ def test_pdf_upload_persists_paper_sections_chunks_and_source(
 
 
 def test_pdf_upload_rejects_unsupported_corrupt_and_textless_files(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         wrong_extension = client.post(
@@ -98,7 +98,7 @@ def test_pdf_upload_enforces_configured_size_limit(tmp_path: Path) -> None:
     assert response.json()["error"]["details"]["max_bytes"] == 100
 
 
-def test_missing_paper_uses_standard_error_envelope(service: NeuroAgentService) -> None:
+def test_missing_paper_uses_standard_error_envelope(service: ApplicationServices) -> None:
     with TestClient(create_app(service=service)) as client:
         response = client.get("/api/v1/literature/papers/missing-paper")
     assert response.status_code == 404
@@ -106,7 +106,7 @@ def test_missing_paper_uses_standard_error_envelope(service: NeuroAgentService) 
 
 
 def test_manual_index_retry_filter_and_pdf_source(
-    service: NeuroAgentService, work_root: Path
+    service: ApplicationServices, work_root: Path
 ) -> None:
     from typing import Any
 

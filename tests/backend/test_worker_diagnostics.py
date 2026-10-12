@@ -14,10 +14,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from neuroagent.application.contracts import RunCreate, WorkflowState
+from neuroagent.application.contracts.runs import (
+    RunCreate,
+)
 from neuroagent.application.ports import ExecutionResult
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_worker
+from neuroagent.domain.lifecycle import (
+    WorkflowState,
+)
 from neuroagent.execution.matlab import MatlabExecutionError
 
 from .conftest import make_approved_plan, make_project
@@ -54,7 +59,7 @@ class SucceedingExecutor:
 
 
 def _queued_run(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     *,
@@ -63,7 +68,7 @@ def _queued_run(
 ):
     project = make_project(service, source_root, work_root)
     plan = make_approved_plan(service, project.project_id)
-    return service.create_run(
+    return service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -76,7 +81,7 @@ def _queued_run(
 
 
 def test_executor_exception_keeps_retry_budget_and_persists_actionable_reason(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -99,7 +104,7 @@ def test_executor_exception_keeps_retry_budget_and_persists_actionable_reason(
     finally:
         worker_logger.removeHandler(handler)
 
-    final = service.get_run(run.run_id)
+    final = service.runs.get_run(run.run_id)
     # The failure taxonomy is unchanged: a raised executor error stays retryable.
     assert final.state is WorkflowState.FAILED_RETRYABLE
 
@@ -118,7 +123,7 @@ def test_executor_exception_keeps_retry_budget_and_persists_actionable_reason(
 
 
 def test_executor_exception_persisted_reason_is_bounded(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -136,13 +141,13 @@ def test_executor_exception_persisted_reason_is_bounded(
     worker = build_worker(service, worker_id="worker-verbose", executor=VerboseExecutor())
     assert worker.run_once() is True
 
-    error = service.get_run(run.run_id).error
+    error = service.runs.get_run(run.run_id).error
     assert error is not None
     assert len(error) <= 500 + len("executor_error:MatlabExecutionError: ")
 
 
 def test_worker_binds_one_trace_id_per_attempt(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
 ) -> None:
@@ -154,12 +159,12 @@ def test_worker_binds_one_trace_id_per_attempt(
     """
 
     run = _queued_run(service, source_root, work_root, key="trace-run", max_attempts=1)
-    request_events = len(service.list_run_events(run.run_id))
+    request_events = len(service.runs.list_run_events(run.run_id))
 
     worker = build_worker(service, worker_id="worker-trace", executor=SucceedingExecutor())
     assert worker.run_once() is True
 
-    worker_events = service.list_run_events(run.run_id)[request_events:]
+    worker_events = service.runs.list_run_events(run.run_id)[request_events:]
     assert len(worker_events) >= 2, "expected at least a start and a finish event"
     trace_ids = {event.trace_id for event in worker_events}
     assert len(trace_ids) == 1, f"expected one correlated trace id, got {sorted(trace_ids)}"

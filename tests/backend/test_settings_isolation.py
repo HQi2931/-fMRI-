@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 
 
@@ -41,7 +41,9 @@ def test_dotenv_is_ignored_when_env_file_is_disabled(tmp_path: Path) -> None:
     assert isolated.serve_frontend is False
 
 
-def test_service_fixture_settings_are_hermetic(service: NeuroAgentService, tmp_path: Path) -> None:
+def test_service_fixture_settings_are_hermetic(
+    service: ApplicationServices, tmp_path: Path
+) -> None:
     settings = service.settings
 
     # Real MATLAB execution stays off no matter what the developer exported.

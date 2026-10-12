@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import ValidationError
 
-from neuroagent.application.contracts import (
-    DatasetKind,
-    ManifestRevisionView,
+from neuroagent.application.contracts.plans import (
     SkillPlanIntent,
     SkillPlanResolveRequest,
     SkillPlanResolveView,
     ValidationIssue,
 )
+from neuroagent.application.contracts.projects import DatasetView, ManifestRevisionView
+from neuroagent.application.contracts.runs import ArtifactView, RunView
 from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
+from neuroagent.application.repository_ports import PlanRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
+from neuroagent.domain.fmri.dataset import DatasetKind
 from neuroagent.domain.fmri.dpabi_stages import (
     expected_anatomical_stage as expected_dpabi_anatomical_stage,
 )
@@ -47,6 +51,12 @@ _REPORT_ONLY_MANIFEST_CODES = frozenset(
 
 
 class SkillPlanMixin(BaseServiceMixin):
+    repository: PlanRepositoryPort
+    get_artifact: Callable[[str], ArtifactView]
+    get_dataset: Callable[[str], DatasetView]
+    get_manifest: Callable[[str], ManifestRevisionView]
+    get_run: Callable[[str], RunView]
+
     def list_skills(self) -> list[SkillSpec]:
         return list(self.skill_registry.list())
 
@@ -246,7 +256,7 @@ class SkillPlanMixin(BaseServiceMixin):
             base_cfg_artifact_id = f"builtin:dpabi-v82-base-cfg:{self.settings.adapter_version}"
         else:
             assert intent.input_artifact_id is not None
-            artifact = self.repository.get_artifact(intent.input_artifact_id)
+            artifact = self.get_artifact(intent.input_artifact_id)
             if artifact.project_id != intent.project_id:
                 raise ConflictError(
                     "cross_project_artifact",
@@ -277,7 +287,7 @@ class SkillPlanMixin(BaseServiceMixin):
                     "artifact_manifest_mismatch",
                     "输入 Artifact lineage 不属于当前冻结 manifest。",
                 )
-            source_run = self.repository.get_run(artifact.run_id)
+            source_run = self.get_run(artifact.run_id)
             source_plan = self.repository.get_plan(source_run.plan_revision_id)
             if source_plan.manifest_hash != manifest.content_hash:
                 raise ConflictError(
@@ -307,7 +317,7 @@ class SkillPlanMixin(BaseServiceMixin):
             self._require_project_version(
                 request.request.project_id, request.expected_project_version
             )
-            dataset = self.repository.get_dataset(request.request.dataset_ref)
+            dataset = self.get_dataset(request.request.dataset_ref)
             if dataset.project_id != request.request.project_id:
                 raise ConflictError(
                     "cross_project_dataset",
@@ -318,7 +328,7 @@ class SkillPlanMixin(BaseServiceMixin):
                     "dataset_manifest_missing",
                     "Skill 请求引用的数据集尚未生成冻结 manifest。",
                 )
-            manifest = self.repository.get_manifest(dataset.current_manifest_id)
+            manifest = self.get_manifest(dataset.current_manifest_id)
             if manifest.content_hash != request.request.input_manifest_hash:
                 raise ConflictError(
                     "manifest_hash_mismatch",
@@ -402,13 +412,13 @@ class SkillPlanMixin(BaseServiceMixin):
             prepared: tuple[str, SkillPlan, list[ValidationIssue]],
         ) -> SkillPlanResolveView:
             manifest_id, skill_plan, warnings = prepared
-            dataset = self.repository.get_dataset(request.request.dataset_ref)
+            dataset = self.get_dataset(request.request.dataset_ref)
             if dataset.current_manifest_id != manifest_id:
                 raise ConflictError(
                     "dataset_manifest_changed_during_prepare",
                     "Skill 方案准备期间数据集 manifest 已变化, 请重新生成方案。",
                 )
-            manifest = self.repository.get_manifest(manifest_id)
+            manifest = self.get_manifest(manifest_id)
             if manifest.content_hash != skill_plan.input_manifest_hash:
                 raise ConflictError(
                     "manifest_hash_changed_during_prepare",
@@ -432,7 +442,7 @@ class SkillPlanMixin(BaseServiceMixin):
                 expected_version=stored.version,
                 issues=warnings,
             )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=stored.project_id,
                 run_id=None,
                 event_type="SkillPlanCompiled",

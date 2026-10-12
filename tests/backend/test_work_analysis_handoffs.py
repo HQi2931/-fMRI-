@@ -8,17 +8,25 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from neuroagent.application.contracts import (
-    ApprovalCreate,
+from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationTurnCreate,
-    DatasetCreate,
-    ManifestScanRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
     PlanRevisionCreate,
     PlanValidationRequest,
+)
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    ManifestScanRequest,
+)
+from neuroagent.application.contracts.runs import (
     QcReviewApprove,
     QcReviewCreate,
     RunCreate,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
     StatisticalDesignValidationRequest,
     StatisticalWorkContext,
@@ -42,7 +50,7 @@ def _source(
     service, source_root, work_root, *, approve=True, mixed_version=False, shared_masks=False
 ):
     project = make_project(service, source_root, work_root)
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Handoff source",
@@ -51,15 +59,15 @@ def _source(
         ),
         "handoff-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "handoff-manifest",
     )
-    plan = service.create_plan(
+    plan = service.plans.create_plan(
         PlanRevisionCreate(
             project_id=project.project_id,
-            expected_project_version=service.get_project(project.project_id).version,
+            expected_project_version=service.projects.get_project(project.project_id).version,
             plan={
                 "skill_id": "test.mock",
                 "steps": [{"capability": "mock.execute"}],
@@ -70,12 +78,12 @@ def _source(
         ),
         "handoff-source-plan",
     )
-    plan = service.validate_plan(
+    plan = service.plans.validate_plan(
         plan.plan_revision_id,
         PlanValidationRequest(expected_version=plan.version, issues=[]),
         "handoff-source-validation",
     )
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -86,7 +94,7 @@ def _source(
         ),
         "handoff-source-approval",
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -121,7 +129,7 @@ def _source(
             ),
         )
         return next(
-            item for item in service.list_artifacts(run.run_id) if item.relative_path == path
+            item for item in service.runs.list_artifacts(run.run_id) if item.relative_path == path
         )
 
     subjects = tuple(entry.subject_id for entry in manifest.subjects)
@@ -167,8 +175,8 @@ def _source(
         if mixed_version and subject == subjects[0]:
             lineage = lineage.model_copy(update={"producer_step_hash": "e" * 64})
         metrics.append(register(f"output/{subject}.nii", "metric.synthetic.alff", lineage))
-    run = service.get_run(run.run_id)
-    review = service.create_qc_review(
+    run = service.runs.get_run(run.run_id)
+    review = service.runs.create_qc_review(
         QcReviewCreate(
             run_id=run.run_id,
             expected_run_version=run.version,
@@ -189,7 +197,7 @@ def _source(
         "handoff-qc-review",
     )
     if approve:
-        service.approve_qc_review(
+        service.runs.approve_qc_review(
             review.review.review_revision_id,
             QcReviewApprove(
                 expected_review_version=review.version,
@@ -214,12 +222,14 @@ def _work_plan(service, project, run, subjects):
         correction_parameters={"q_threshold": 0.05},
         one_sample_baseline=0,
     )
-    proposal, issues = service.prepare_statistical_design_proposal(run_id=run.run_id, draft=draft)
+    proposal, issues = service.statistics.prepare_statistical_design_proposal(
+        run_id=run.run_id, draft=draft
+    )
     assert proposal is not None and not issues, issues
     assert proposal.design.subject_order == subjects
-    proof = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    proof = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     assert proof.status == "ready"
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id),
         "handoff-conversation",
     )
@@ -242,7 +252,7 @@ def _work_plan(service, project, run, subjects):
         project_id=project.project_id,
         active_run_id=None,
     )
-    created = service.create_statistical_design(
+    created = service.statistics.create_statistical_design(
         StatisticalDesignCreate(
             project_id=project.project_id,
             expected_project_version=proposal.project_version,
@@ -260,8 +270,8 @@ def _work_plan(service, project, run, subjects):
 
 def test_full_handoff_is_deterministic_and_preserves_qc_order(service, source_root, work_root):
     project, run, manifest, subjects, metrics, _ = _source(service, source_root, work_root)
-    proof = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
-    again = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    proof = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    again = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     assert proof == again and proof.status == "ready"
     refs = proof.data_references
     assert refs["dataset_id"] == manifest.dataset_id
@@ -281,7 +291,7 @@ def test_full_handoff_is_deterministic_and_preserves_qc_order(service, source_ro
     assert summary["subject_count"] == len(subjects)
     assert "metrics" not in summary and "lineage" not in json.dumps(summary)
     with pytest.raises(ConflictError) as mismatch:
-        service.prepare_work_analysis_handoff(run.run_id, "another-project")
+        service.statistics.prepare_work_analysis_handoff(run.run_id, "another-project")
     assert mismatch.value.code == "work_handoff_project_mismatch"
 
 
@@ -289,7 +299,7 @@ def test_shared_effective_mask_preserves_and_rechecks_each_subject_source(
     service, source_root, work_root
 ):
     project, run, _, subjects, _, root = _source(service, source_root, work_root, shared_masks=True)
-    proof = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    proof = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     assert proof.status == "ready"
     masks = proof.data_references["masks"]
     assert len(masks) == len(subjects) + 1
@@ -299,12 +309,12 @@ def test_shared_effective_mask_preserves_and_rechecks_each_subject_source(
     source = next(item for item in masks if item["lineage"]["subject_id"] == subjects[0])
     path = root / source["relative_path"]
     path.write_bytes(b"x" * path.stat().st_size)
-    current = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    current = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     assert current.status == "blocked"
     with pytest.raises(ConflictError, match="changed or is not ready"):
         require_same_handoff(proof, current)
     with pytest.raises(ConflictError):
-        service.validate_statistical_design(
+        service.statistics.validate_statistical_design(
             plan.plan_revision_id,
             StatisticalDesignValidationRequest(expected_version=plan.version),
             "shared-mask-stale-validation",
@@ -322,13 +332,13 @@ def test_receiver_blocks_unready_or_changed_inputs(service, source_root, work_ro
         approve=case != "qc_pending",
         mixed_version=case == "mixed_version",
     )
-    frozen = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    frozen = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     if case == "file_change":
         target = root / metrics[0].relative_path
         target.write_bytes(b"x" * target.stat().st_size)  # Same size, different SHA.
     elif case == "manifest_change":
         dataset = service.repository.get_dataset(manifest.dataset_id)
-        service.inspect_dataset(
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             "handoff-manifest-new",
@@ -337,7 +347,7 @@ def test_receiver_blocks_unready_or_changed_inputs(service, source_root, work_ro
         dataset = service.repository.get_dataset(manifest.dataset_id)
         target = next(Path(dataset.source_path).rglob("*bold.nii.gz"))
         target.write_bytes(b"x" * target.stat().st_size)
-    current = service.prepare_work_analysis_handoff(run.run_id, project.project_id)
+    current = service.statistics.prepare_work_analysis_handoff(run.run_id, project.project_id)
     assert current.status == "blocked"
     expected = {
         "qc_pending": "source_run_not_succeeded",
@@ -358,13 +368,13 @@ def test_frozen_work_plan_cannot_confirm_after_file_change(service, source_root,
     plan, proof = _work_plan(service, project, run, subjects)
     assert plan.plan["work_context"]["analysis_handoff"]["evidence_hash"] == proof.evidence_hash
     if stage in {"approval", "start"}:
-        plan = service.validate_statistical_design(
+        plan = service.statistics.validate_statistical_design(
             plan.plan_revision_id,
             StatisticalDesignValidationRequest(expected_version=plan.version),
             "handoff-plan-valid",
         ).plan_revision
     if stage == "start":
-        service.approve_plan(
+        service.plans.approve_plan(
             plan.plan_revision_id,
             ApprovalCreate(
                 expected_version=plan.version,
@@ -379,13 +389,13 @@ def test_frozen_work_plan_cannot_confirm_after_file_change(service, source_root,
     target.write_bytes(b"x" * target.stat().st_size)
     with pytest.raises(ConflictError) as changed:
         if stage == "validation":
-            service.validate_statistical_design(
+            service.statistics.validate_statistical_design(
                 plan.plan_revision_id,
                 StatisticalDesignValidationRequest(expected_version=plan.version),
                 "stale-validate",
             )
         elif stage == "approval":
-            service.approve_plan(
+            service.plans.approve_plan(
                 plan.plan_revision_id,
                 ApprovalCreate(
                     expected_version=plan.version,
@@ -397,7 +407,7 @@ def test_frozen_work_plan_cannot_confirm_after_file_change(service, source_root,
                 "stale-approval",
             )
         else:
-            service.create_statistics_run(
+            service.runs.create_statistics_run(
                 StatisticsRunCreate(
                     project_id=project.project_id,
                     statistical_design_revision_id=plan.plan_revision_id,
@@ -417,7 +427,7 @@ def test_two_stage_dialogue_persists_complete_proof_without_leaking_lineage(
     monkeypatch,
 ):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "two-stage-conversation"
     )
     packet = ContextPacket(
@@ -451,7 +461,7 @@ def test_two_stage_dialogue_persists_complete_proof_without_leaking_lineage(
         project_id=project.project_id,
         active_run_id=run.run_id,
     )
-    restored = service.get_conversation(conversation.conversation_id)
+    restored = service.conversations.get_conversation(conversation.conversation_id)
     assert restored.messages[-1].payload["agent_handoff"] == response.payload["agent_handoff"]
     interpretation = AsyncMock(
         return_value=(

@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- 将 `NeuroAgentService` 从多重继承门面改为显式能力组合；新增环境与工作区服务、能力注册端口及按能力仓储协议。API 96 个端点迁入 11 个路由模块，处理器按归属解析能力服务；应用 DTO 按能力拆分且 Python 调用点直接导入所属模块，不再经 `contracts` 聚合重导出；Execution 使用自己的冻结 manifest 协议和领域数据集类型，REST 路径、方法与业务语义保持兼容。
+
+- 将 API 请求和响应 DTO 与应用 commands/query results 分开，路由在边界显式转换；OpenAPI 与 TypeScript 生成快照同步更新。前端 Agent 与 Settings 页面迁入各自 `features/`，拆出会话模型、历史视图、统计操作和草稿模型；生产代码直接使用按能力拆分的 API client，兼容 facade 只留给迁移期调用点，workspace 本地持久化只保留路径和项目选择，运行状态由服务端会话恢复。
+
+- 将 SQLite row-to-contract mapper 与事务 Unit of Work 从 repository façade 分出；会话上下文、Work 命令、语义记忆与 Agent 交接改用实际需要的仓储端口组合。
+
+- 增加共享 Unit of Work 的 Projects、Plans、External Imports、Models、Conversations、Workspace、Runs、QC 与 Artifact Catalog SQLite adapters；应用幂等存储与事件存储改为独立注入，项目/计划/导入/模型/会话/工作区/运行用例不再依赖聚合仓储提供事务、幂等或审计事件。Skills 只使用 Plan 写端口，Statistics 通过显式能力端口协作。Worker 通过独立 host adapter 与窄端口运行，并在同一 Unit of Work 内原子登记 Artifact/QC；旧 `SqliteRepository` 仅保留迁移兼容用途。
+
+- 应用能力对象改为无组合根回退的显式协作：跨服务方法、会话上下文、工作流对话和能力服务由组合根绑定注入。Worker 新任务写入经过校验的 `JobEnvelope v1`，队列按 `JobKind` 路由；旧 SQLite `executor_type` 负载仍可读，未知任务合同失败关闭。MATLAB 与 Mock 执行器改依赖执行层定义的窄 Catalog 协议，不再导入聚合 `RepositoryPort`。
+
 - Work 路由支持中英文统计与预处理需求，预处理日志/失败诊断归预处理 Agent，统计检验或校正故障归数据分析 Agent。没有明确当前任务的“继续”先询问，不创建科研方案或擅自切换角色。
 - 修复分析结果查询丢失会话工作区、导致重新打开后结果面板消失的问题；模型与无模型查询均保留原统计草稿、正式方案及运行。
 - 真实统计运行登记实际执行的 MATLAB 脚本、环境脚本、运行配置和带暂存输入哈希的清单，可通过现有产物面板下载；冻结报告记录对应产物。历史结果保持可读。

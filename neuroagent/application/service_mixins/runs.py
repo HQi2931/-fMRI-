@@ -26,35 +26,40 @@ from neuroagent.application.artifact_content import (
     nifti_preview_png,
     nifti_preview_slice_count,
 )
-from neuroagent.application.contracts import (
-    ArtifactView,
+from neuroagent.application.contracts.agent import (
     ClusterLocalizationRequest,
     ClusterLocalizationView,
-    ExecutionBackend,
-    HeadMotionQcCreate,
     MlTableInspectRequest,
     MlTableInspectView,
     MlTemplateCreateRequest,
     MlTemplateView,
+    RoiTableCreateRequest,
+    RoiTableView,
+    RsFmriAnswerView,
+    RsFmriQuestionRequest,
+    RunDiagnosisRequest,
+    RunDiagnosisView,
+)
+from neuroagent.application.contracts.plans import PlanRevisionView
+from neuroagent.application.contracts.projects import (
     OrganizationPreviewRequest,
     OrganizationPreviewView,
-    PlanRevisionView,
-    PlanState,
+)
+from neuroagent.application.contracts.runs import (
+    ArtifactView,
+    ExecutionBackend,
+    HeadMotionQcCreate,
     QcReviewApprove,
     QcReviewCreate,
     QcReviewView,
     QcSkipCreate,
     QcSkipView,
-    RoiTableCreateRequest,
-    RoiTableView,
-    RsFmriAnswerView,
-    RsFmriQuestionRequest,
     RunAction,
     RunCreate,
-    RunDiagnosisRequest,
-    RunDiagnosisView,
     RuntimeEventView,
     RunView,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalAtlasPeakLocalization,
     StatisticalAtlasRegionCoverage,
     StatisticalAtlasView,
@@ -67,11 +72,18 @@ from neuroagent.application.contracts import (
     StatisticalResultSliceInfoView,
     StatisticalResultView,
     StatisticsRunCreate,
-    WorkflowState,
 )
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.reporting import build_statistical_reproducibility_report
+from neuroagent.application.repository_ports import (
+    ArtifactCatalogRepositoryPort,
+    ConversationRepositoryPort,
+    ExternalAnalysisRepositoryPort,
+    PlanRepositoryPort,
+    QcRepositoryPort,
+    RunRepositoryPort,
+)
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.statistical_capabilities import STATISTICAL_CAPABILITIES
 from neuroagent.application.statistical_result_facts import (
@@ -93,11 +105,21 @@ from neuroagent.domain.fmri.statistics import (
     StatisticalDesignRevision,
     StatisticalQcSource,
 )
+from neuroagent.domain.lifecycle import (
+    PlanState,
+    WorkflowState,
+)
 from neuroagent.observability.work_timings import measure_work_stage
 
 
 class RunMixin(BaseServiceMixin):
-    # The assembled NeuroAgentService provides these helpers through
+    repository: RunRepositoryPort
+    artifact_repository: ArtifactCatalogRepositoryPort
+    qc_repository: QcRepositoryPort
+    conversation_repository: ConversationRepositoryPort
+    external_import_repository: ExternalAnalysisRepositoryPort
+    plan_repository: PlanRepositoryPort
+    # The assembled ApplicationServices provides these helpers through
     # StatisticsMixin; declared here so RunMixin alone type-checks.
     _require_plan_current: Callable[..., None]
     _statistics_view: Callable[..., StatisticalDesignView]
@@ -109,7 +131,7 @@ class RunMixin(BaseServiceMixin):
         )
 
         def prepare() -> None:
-            plan = self.repository.get_plan(request.plan_revision_id)
+            plan = self.plan_repository.get_plan(request.plan_revision_id)
             if plan.plan_hash != request.expected_plan_hash:
                 raise ConflictError(
                     "run_plan_hash_mismatch",
@@ -126,7 +148,7 @@ class RunMixin(BaseServiceMixin):
             # and environment fingerprint so a metadata revision in the
             # preparation window cannot enqueue a stale plan. Raw files cannot
             # be locked by SQLite and must be verified again before staging.
-            plan = self.repository.get_plan(request.plan_revision_id)
+            plan = self.plan_repository.get_plan(request.plan_revision_id)
             if plan.plan_hash != request.expected_plan_hash:
                 raise ConflictError(
                     "run_plan_hash_mismatch",
@@ -154,7 +176,7 @@ class RunMixin(BaseServiceMixin):
             if plan.plan.get("skill_plan"):
                 payload["workflow_plan"] = plan.plan["skill_plan"]
             if plan.state is PlanState.APPROVED:
-                payload["approval_record_id"] = self.repository.get_approved_plan_approval(
+                payload["approval_record_id"] = self.plan_repository.get_approved_plan_approval(
                     plan.plan_revision_id
                 ).approval_id
             with measure_work_stage("queueing"):
@@ -165,7 +187,7 @@ class RunMixin(BaseServiceMixin):
                     max_attempts=request.max_attempts,
                     payload=payload,
                 )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=result.run_id,
                 event_type="RunQueued",
@@ -203,8 +225,8 @@ class RunMixin(BaseServiceMixin):
 
     def skip_qc(self, run_id: str, request: QcSkipCreate, idempotency_key: str) -> QcSkipView:
         def action() -> QcSkipView:
-            skip, run = self.repository.skip_qc(run_id, request)
-            self.repository.append_event(
+            skip, run = self.qc_repository.skip_qc(run_id, request)
+            self.event_store.append_event(
                 project_id=run.project_id,
                 run_id=run.run_id,
                 event_type="QcSkipRecorded",
@@ -270,7 +292,7 @@ class RunMixin(BaseServiceMixin):
         return diagnosis.model_dump(mode="json")
 
     def inspect_ml_table(self, request: MlTableInspectRequest) -> MlTableInspectView:
-        project = self.repository.get_project(request.project_id)
+        project = self.project_repository.get_project(request.project_id)
         source = self.path_policy.validate_read_path(
             request.source_path,
             project_roots=project.source_roots,
@@ -333,7 +355,7 @@ class RunMixin(BaseServiceMixin):
         return RsFmriAnswerView(answer=answer, remote_search_used=False)
 
     def organization_preview(self, request: OrganizationPreviewRequest) -> OrganizationPreviewView:
-        project = self.repository.get_project(request.project_id)
+        project = self.project_repository.get_project(request.project_id)
         source = self.path_policy.validate_read_path(
             request.source_path,
             project_roots=project.source_roots,
@@ -379,7 +401,9 @@ class RunMixin(BaseServiceMixin):
         )
 
         def require_unstarted_work_task(plan: PlanRevisionView) -> None:
-            task = require_statistical_work_plan(self.repository.get_conversation, plan)
+            task = require_statistical_work_plan(
+                self.conversation_repository.get_conversation, plan
+            )
             if task is not None and task.run_id is not None:
                 existing = self.repository.get_run(task.run_id)
                 if existing.plan_revision_id == plan.plan_revision_id:
@@ -390,7 +414,7 @@ class RunMixin(BaseServiceMixin):
                     )
 
         def prepare() -> None:
-            plan = self.repository.get_plan(request.statistical_design_revision_id)
+            plan = self.plan_repository.get_plan(request.statistical_design_revision_id)
             require_unstarted_work_task(plan)
             design_view = self._statistics_view(plan)
             capability = next(
@@ -426,7 +450,7 @@ class RunMixin(BaseServiceMixin):
             # while BEGIN IMMEDIATE prevents a concurrent metadata revision
             # from slipping between validation and run creation. The recursive
             # source-file scan just completed outside this writer transaction.
-            plan = self.repository.get_plan(request.statistical_design_revision_id)
+            plan = self.plan_repository.get_plan(request.statistical_design_revision_id)
             require_unstarted_work_task(plan)
             design_view = self._statistics_view(plan)
             self._validate_statistics_qc_binding(design_view.design)
@@ -464,7 +488,7 @@ class RunMixin(BaseServiceMixin):
                 ),
             }
             if plan.state is PlanState.APPROVED:
-                payload["approval_record_id"] = self.repository.get_approved_plan_approval(
+                payload["approval_record_id"] = self.plan_repository.get_approved_plan_approval(
                     plan.plan_revision_id
                 ).approval_id
             result = self.repository.create_run(
@@ -476,14 +500,14 @@ class RunMixin(BaseServiceMixin):
             )
             work_context = plan.plan.get("work_context")
             if work_context is not None:
-                self.repository.bind_statistics_task(
+                self.conversation_repository.bind_statistics_task(
                     conversation_id=work_context["conversation_id"],
                     project_id=result.project_id,
                     proposal_hash=work_context["proposal_hash"],
                     plan_revision_id=plan.plan_revision_id,
                     run_id=result.run_id,
                 )
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=result.run_id,
                 event_type="StatisticsRunQueued",
@@ -516,7 +540,9 @@ class RunMixin(BaseServiceMixin):
     def _validate_statistics_qc_binding(self, design: StatisticalDesignRevision) -> None:
         if design.qc_source is StatisticalQcSource.EXTERNAL_IMPORT:
             assert design.external_import_id is not None
-            imported = self.repository.get_external_analysis_import(design.external_import_id)
+            imported = self.external_import_repository.get_external_analysis_import(
+                design.external_import_id
+            )
             if (
                 imported.status != "included"
                 or imported.selection is None
@@ -528,7 +554,7 @@ class RunMixin(BaseServiceMixin):
             return
         if design.qc_source is StatisticalQcSource.APPROVED_REVIEW:
             assert design.qc_review_revision_id is not None and design.qc_review_hash is not None
-            approved_qc = self.repository.get_approved_qc_review(design.qc_review_revision_id)
+            approved_qc = self.qc_repository.get_approved_qc_review(design.qc_review_revision_id)
             if approved_qc.review.content_hash != design.qc_review_hash:
                 raise ConflictError("qc_review_hash_mismatch", "统计运行引用的 QC review 已失配。")
             return
@@ -537,7 +563,7 @@ class RunMixin(BaseServiceMixin):
             and design.qc_skip_id is not None
             and design.qc_skip_hash is not None
         )
-        skip = self.repository.get_qc_skip_for_run(design.qc_source_run_id)
+        skip = self.qc_repository.get_qc_skip_for_run(design.qc_source_run_id)
         if (
             skip is None
             or skip.qc_skip_id != design.qc_skip_id
@@ -587,7 +613,7 @@ class RunMixin(BaseServiceMixin):
         """
 
         run = self.repository.get_run(run_id)
-        plan = self.repository.get_plan(run.plan_revision_id)
+        plan = self.plan_repository.get_plan(run.plan_revision_id)
         if plan.plan_hash != plan_hash:
             raise ConflictError(
                 "statistical_result_plan_hash_mismatch",
@@ -619,7 +645,7 @@ class RunMixin(BaseServiceMixin):
             environment_hash=environment_hash,
             plan_hash=plan_hash,
         )
-        return self.repository.create_statistical_result(
+        return self.artifact_repository.create_statistical_result(
             project_id=run.project_id,
             run_id=run_id,
             design_revision_id=manifest.design_revision_id,
@@ -636,10 +662,12 @@ class RunMixin(BaseServiceMixin):
     def list_statistical_results(
         self, *, project_id: str, run_id: str | None = None
     ) -> list[StatisticalResultView]:
-        return self.repository.list_statistical_results(project_id=project_id, run_id=run_id)
+        return self.artifact_repository.list_statistical_results(
+            project_id=project_id, run_id=run_id
+        )
 
     def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView:
-        detail = self.repository.get_statistical_result(result_id)
+        detail = self.artifact_repository.get_statistical_result(result_id)
         try:
             manifest, _, _ = verified_result_design(detail)
             evidence: dict[str, dict[str, object]] = {}
@@ -652,7 +680,7 @@ class RunMixin(BaseServiceMixin):
                 if meta is None or meta.placeholder:
                     continue
                 try:
-                    artifact = self.repository.get_artifact(meta.artifact_id)
+                    artifact = self.artifact_repository.get_artifact(meta.artifact_id)
                     if (
                         artifact.checksum != meta.checksum_sha256
                         or artifact.size_bytes != meta.size_bytes
@@ -661,7 +689,7 @@ class RunMixin(BaseServiceMixin):
                     path = artifact_content_path(
                         artifact,
                         self.repository.get_run(detail.run_id),
-                        self.repository.get_project(detail.project_id),
+                        self.project_repository.get_project(detail.project_id),
                     )
                     if path.stat().st_size > 256_000:
                         raise ValueError("statistical evidence exceeds summary size limit")
@@ -693,7 +721,7 @@ class RunMixin(BaseServiceMixin):
     def _statistical_result_preview_source(
         self, result_id: str
     ) -> tuple[StatisticalResultManifest, RegisteredArtifactMetadata, Path]:
-        detail = self.repository.get_statistical_result(result_id)
+        detail = self.artifact_repository.get_statistical_result(result_id)
         manifest = StatisticalResultManifest.model_validate(detail.manifest)
         if manifest.mode is not StatisticalResultMode.REAL or manifest.non_scientific:
             raise ConflictError(
@@ -741,9 +769,9 @@ class RunMixin(BaseServiceMixin):
                 "statistics_preview_map_invalid",
                 "统计簇未绑定已登记的统计图。",
             )
-        artifact = self.repository.get_artifact(map_artifact_id)
+        artifact = self.artifact_repository.get_artifact(map_artifact_id)
         run = self.repository.get_run(detail.run_id)
-        project = self.repository.get_project(detail.project_id)
+        project = self.project_repository.get_project(detail.project_id)
         path = artifact_content_path(artifact, run, project)
         return manifest, map_meta, path
 
@@ -775,7 +803,7 @@ class RunMixin(BaseServiceMixin):
     def statistical_cluster_roi(
         self, result_id: str, cluster_id: str | None
     ) -> StatisticalClusterRoiView:
-        detail = self.repository.get_statistical_result(result_id)
+        detail = self.artifact_repository.get_statistical_result(result_id)
         manifest = StatisticalResultManifest.model_validate(detail.manifest)
         if manifest.mode is not StatisticalResultMode.REAL or manifest.non_scientific:
             raise ConflictError("synthetic_result_roi_blocked", "非科学占位结果不能用于 ROI 提取。")
@@ -803,7 +831,7 @@ class RunMixin(BaseServiceMixin):
         if design.revision_id != manifest.design_revision_id:
             raise ConflictError("statistical_roi_design_changed", "结果和统计设计引用不一致。")
         run = self.repository.get_run(detail.run_id)
-        project = self.repository.get_project(detail.project_id)
+        project = self.project_repository.get_project(detail.project_id)
         source_meta = next(
             (
                 item
@@ -818,11 +846,11 @@ class RunMixin(BaseServiceMixin):
         }:
             raise ConflictError("statistical_roi_map_unbound", "ROI 未引用已登记的统计图。")
         map_path = artifact_content_path(
-            self.repository.get_artifact(source_meta.artifact_id), run, project
+            self.artifact_repository.get_artifact(source_meta.artifact_id), run, project
         )
         image_paths: list[Path] = []
         imported = (
-            self.repository.get_external_analysis_import(design.external_import_id)
+            self.external_import_repository.get_external_analysis_import(design.external_import_id)
             if design.external_import_id
             else None
         )
@@ -864,7 +892,7 @@ class RunMixin(BaseServiceMixin):
                 if digest.hexdigest() != evidence.sha256:
                     raise ConflictError("statistical_roi_input_changed", "ROI 输入内容已变化。")
             else:
-                artifact = self.repository.get_artifact(image.artifact_id)
+                artifact = self.artifact_repository.get_artifact(image.artifact_id)
                 if artifact.project_id != project.project_id:
                     raise ConflictError("statistical_roi_cross_project", "ROI 指标不属于结果项目。")
                 source_run = self.repository.get_run(artifact.run_id)
@@ -924,7 +952,7 @@ class RunMixin(BaseServiceMixin):
     def localize_statistical_result(
         self, result_id: str, atlas_id: str
     ) -> StatisticalResultLocalizationView:
-        detail = self.repository.get_statistical_result(result_id)
+        detail = self.artifact_repository.get_statistical_result(result_id)
         manifest = StatisticalResultManifest.model_validate(detail.manifest)
         if manifest.mode is not StatisticalResultMode.REAL or manifest.non_scientific:
             raise ConflictError(
@@ -988,7 +1016,7 @@ class RunMixin(BaseServiceMixin):
             )
 
         run = self.repository.get_run(detail.run_id)
-        project = self.repository.get_project(detail.project_id)
+        project = self.project_repository.get_project(detail.project_id)
         localized: list[StatisticalAtlasPeakLocalization] = []
         try:
             source_map_ids = {cluster.source_map_artifact_id for cluster in clusters}
@@ -1005,7 +1033,7 @@ class RunMixin(BaseServiceMixin):
                     StatisticalArtifactRole.CORRECTED_STATISTICAL_MAP,
                 }:
                     raise ValueError("簇峰值未引用已登记的统计来源图。")
-                artifact = self.repository.get_artifact(source_map_id)
+                artifact = self.artifact_repository.get_artifact(source_map_id)
                 map_path = artifact_content_path(artifact, run, project)
                 mapped_clusters = localize_cluster_map(
                     dpabi_dir=configuration.dpabi_dir,
@@ -1067,7 +1095,7 @@ class RunMixin(BaseServiceMixin):
         def action() -> RunView:
             before = self.repository.get_run(run_id)
             result = self.repository.request_cancel(run_id, request.expected_version)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=run_id,
                 event_type="RunCancellationRequested",
@@ -1095,7 +1123,7 @@ class RunMixin(BaseServiceMixin):
                 self._require_skill_parameter_schema(
                     "review-rsfmri-qc",
                     {
-                        "input_manifest_hash": self.repository.get_plan(
+                        "input_manifest_hash": self.plan_repository.get_plan(
                             self.repository.get_run(request.run_id).plan_revision_id
                         ).manifest_hash,
                         "subject_order": [
@@ -1106,8 +1134,8 @@ class RunMixin(BaseServiceMixin):
                         "checks": [check.model_dump(mode="json") for check in request.checks],
                     },
                 )
-            review = self.repository.create_qc_review(request)
-            self.repository.append_event(
+            review = self.qc_repository.create_qc_review(request)
+            self.event_store.append_event(
                 project_id=review.project_id,
                 run_id=review.run_id,
                 event_type="QcReviewRevisionCreated",
@@ -1135,8 +1163,8 @@ class RunMixin(BaseServiceMixin):
     ) -> QcReviewView:
         def action() -> QcReviewView:
             self._ensure_head_motion_qc_report(run_id, request)
-            review = self.repository.create_head_motion_qc_review(run_id, request)
-            self.repository.append_event(
+            review = self.qc_repository.create_head_motion_qc_review(run_id, request)
+            self.event_store.append_event(
                 project_id=review.project_id,
                 run_id=review.run_id,
                 event_type="QcReviewRevisionCreated",
@@ -1164,7 +1192,7 @@ class RunMixin(BaseServiceMixin):
     def _ensure_head_motion_qc_report(self, run_id: str, request: HeadMotionQcCreate) -> None:
         if any(
             artifact.artifact_type == "qc.head_motion_report"
-            for artifact in self.repository.list_artifacts(run_id)
+            for artifact in self.artifact_repository.list_artifacts(run_id)
         ):
             return
         run = self.repository.get_run(run_id)
@@ -1177,7 +1205,7 @@ class RunMixin(BaseServiceMixin):
             )
         if run.state is not WorkflowState.QC_REVIEW:
             return
-        plan = self.repository.get_plan(run.plan_revision_id)
+        plan = self.plan_repository.get_plan(run.plan_revision_id)
         skill_plan = plan.plan.get("skill_plan")
         if not isinstance(skill_plan, dict):
             raise ConflictError("head_motion_qc_plan_missing", "运行计划缺少 SkillPlan。")
@@ -1200,7 +1228,7 @@ class RunMixin(BaseServiceMixin):
                 "head_motion_qc_manifest_missing",
                 "运行计划缺少冻结 manifest 引用。",
             )
-        manifest = self.repository.get_manifest(manifest_id)
+        manifest = self.project_repository.get_manifest(manifest_id)
         if manifest.content_hash != plan.manifest_hash:
             raise ConflictError(
                 "head_motion_qc_manifest_mismatch",
@@ -1232,7 +1260,7 @@ class RunMixin(BaseServiceMixin):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(report_json, encoding="utf-8")
         digest = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
-        self.repository.register_artifacts(
+        self.artifact_repository.register_artifacts(
             run.project_id,
             run.run_id,
             (
@@ -1249,7 +1277,7 @@ class RunMixin(BaseServiceMixin):
                 },
             ),
         )
-        self.repository.append_event(
+        self.event_store.append_event(
             project_id=run.project_id,
             run_id=run.run_id,
             event_type="HeadMotionQcReportRegistered",
@@ -1263,7 +1291,7 @@ class RunMixin(BaseServiceMixin):
         )
 
     def _latest_attempt_root(self, run: RunView) -> Path:
-        project = self.repository.get_project(run.project_id)
+        project = self.project_repository.get_project(run.project_id)
         work_root = Path(project.work_root).resolve()
         attempts_root = (work_root / run.run_id / "attempts").resolve()
         try:
@@ -1295,8 +1323,8 @@ class RunMixin(BaseServiceMixin):
         ]
         dataset_ref = skill_plan.get("dataset_ref")
         if isinstance(dataset_ref, str) and dataset_ref:
-            dataset = self.repository.get_dataset(dataset_ref)
-            project = self.repository.get_project(dataset.project_id)
+            dataset = self.project_repository.get_dataset(dataset_ref)
+            project = self.project_repository.get_project(dataset.project_id)
             dataset_root = self.path_policy.validate_read_path(
                 dataset.source_path,
                 project_roots=project.source_roots,
@@ -1332,11 +1360,11 @@ class RunMixin(BaseServiceMixin):
         return counts
 
     def get_qc_review(self, review_revision_id: str) -> QcReviewView:
-        return self.repository.get_qc_review(review_revision_id)
+        return self.qc_repository.get_qc_review(review_revision_id)
 
     def get_run_qc_review(self, run_id: str) -> QcReviewView | None:
         self.repository.get_run(run_id)
-        return self.repository.get_latest_qc_review_for_run(run_id)
+        return self.qc_repository.get_latest_qc_review_for_run(run_id)
 
     def approve_qc_review(
         self,
@@ -1345,8 +1373,8 @@ class RunMixin(BaseServiceMixin):
         idempotency_key: str,
     ) -> QcReviewView:
         def action() -> QcReviewView:
-            review, run = self.repository.approve_qc_review(review_revision_id, request)
-            self.repository.append_event(
+            review, run = self.qc_repository.approve_qc_review(review_revision_id, request)
+            self.event_store.append_event(
                 project_id=review.project_id,
                 run_id=review.run_id,
                 event_type="QcReviewApproved" if request.approved else "QcReviewRejected",
@@ -1373,7 +1401,7 @@ class RunMixin(BaseServiceMixin):
         def action() -> RunView:
             before = self.repository.get_run(run_id)
             result = self.repository.retry_run(run_id, expected_version=request.expected_version)
-            self.repository.append_event(
+            self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=run_id,
                 event_type="RunRetryRequested",
@@ -1397,17 +1425,17 @@ class RunMixin(BaseServiceMixin):
 
     def list_artifacts(self, run_id: str) -> list[ArtifactView]:
         self.repository.get_run(run_id)
-        return self.repository.list_artifacts(run_id)
+        return self.artifact_repository.list_artifacts(run_id)
 
     def get_artifact(self, artifact_id: str) -> ArtifactView:
-        return self.repository.get_artifact(artifact_id)
+        return self.artifact_repository.get_artifact(artifact_id)
 
     def artifact_content_path(self, artifact_id: str) -> Path:
         from neuroagent.application.artifact_content import artifact_content_path
 
-        artifact = self.repository.get_artifact(artifact_id)
+        artifact = self.artifact_repository.get_artifact(artifact_id)
         run = self.repository.get_run(artifact.run_id)
-        project = self.repository.get_project(run.project_id)
+        project = self.project_repository.get_project(run.project_id)
         return artifact_content_path(artifact, run, project)
 
     def artifact_preview_png(self, artifact_id: str) -> bytes:
@@ -1417,10 +1445,10 @@ class RunMixin(BaseServiceMixin):
 
     def list_run_events(self, run_id: str, after_event_id: int = 0) -> list[RuntimeEventView]:
         self.repository.get_run(run_id)
-        return self.repository.list_events(run_id, after_event_id)
+        return self.event_store.list_events(run_id, after_event_id)
 
     def list_project_events(
         self, project_id: str, after_event_id: int = 0
     ) -> list[RuntimeEventView]:
-        self.repository.get_project(project_id)
-        return self.repository.list_events(after_event_id=after_event_id, project_id=project_id)
+        self.project_repository.get_project(project_id)
+        return self.event_store.list_events(after_event_id=after_event_id, project_id=project_id)

@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from neuroagent.application.contracts import StatisticalClusterRoiView
+from neuroagent.application.contracts.statistics import (
+    StatisticalClusterRoiView,
+)
 from neuroagent.application.errors import ConflictError
 from neuroagent.application.statistical_result_facts import build_method_summary
 from neuroagent.domain.fmri.results import StatisticalAtlasSelection, StatisticalResultManifest
@@ -42,15 +44,15 @@ def test_initial_model_facts_withhold_individual_values_and_distinguish_localiza
     )
     detail = _detail(manifest=manifest, atlas=atlas)
     detail = detail.model_copy(update={"method_summary": build_method_summary(detail)})
-    monkeypatch.setattr(service, "get_run", lambda _: SimpleNamespace(project_id="project-a"))
+    monkeypatch.setattr(service.runs, "get_run", lambda _: SimpleNamespace(project_id="project-a"))
     reads = []
 
     def result_list(*, project_id, run_id):
         assert (project_id, run_id) == ("project-a", "run-1")
         return [detail]
 
-    monkeypatch.setattr(service, "list_statistical_results", result_list)
-    monkeypatch.setattr(service, "get_statistical_result", lambda _: detail)
+    monkeypatch.setattr(service.runs, "list_statistical_results", result_list)
+    monkeypatch.setattr(service.runs, "get_statistical_result", lambda _: detail)
 
     def localize(result_id, atlas_id):
         reads.append(("localization", result_id, atlas_id))
@@ -80,8 +82,8 @@ def test_initial_model_facts_withhold_individual_values_and_distinguish_localiza
             else ({"subject_id": "private-participant", "group": "HC", "mean_value": 3},),
         )
 
-    monkeypatch.setattr(service, "localize_statistical_result", localize)
-    monkeypatch.setattr(service, "statistical_cluster_roi", roi)
+    monkeypatch.setattr(service.runs, "localize_statistical_result", localize)
+    monkeypatch.setattr(service.runs, "statistical_cluster_roi", roi)
     basic = service._analysis_result_facts("run-1")
     assert "roi_summary" not in basic[0] and reads == []
     facts = service._analysis_result_facts("run-1", True)[0]
@@ -115,8 +117,8 @@ def test_non_scientific_or_unverified_method_facts_do_not_extract_brain_or_roi(
     def forbidden(*args):
         raise AssertionError("scientific query must not run")
 
-    monkeypatch.setattr(service, "localize_statistical_result", forbidden)
-    monkeypatch.setattr(service, "statistical_cluster_roi", forbidden)
+    monkeypatch.setattr(service.runs, "localize_statistical_result", forbidden)
+    monkeypatch.setattr(service.runs, "statistical_cluster_roi", forbidden)
     for facts in (
         {"status": "method_summary_unavailable"},
         {"status": "succeeded", "non_scientific": True},

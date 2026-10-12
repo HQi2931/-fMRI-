@@ -17,10 +17,14 @@ import uvicorn
 
 from neuroagent.agent.providers import MockProvider, OpenAICompatibleProvider
 from neuroagent.api import create_app
-from neuroagent.application.contracts import (
-    ConversationCreate,
+from neuroagent.application.contracts.agent import (
     ModelProfileCreate,
     ModelProfileInput,
+)
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+)
+from neuroagent.application.contracts.projects import (
     ProjectCreate,
 )
 from neuroagent.application.settings import Settings
@@ -110,7 +114,7 @@ def main() -> None:
                 stop.wait(0.2)
 
     try:
-        project = service.create_project(
+        project = service.projects.create_project(
             ProjectCreate(
                 name="Browser synthetic statistics acceptance",
                 source_roots=[str(source)],
@@ -118,7 +122,7 @@ def main() -> None:
             ),
             "browser-project",
         )
-        service.create_model_profile(
+        service.models.create_model_profile(
             ModelProfileCreate(
                 profile=ModelProfileInput(
                     id="browser-mock",
@@ -132,7 +136,7 @@ def main() -> None:
             ),
             "browser-mock-profile",
         )
-        conversation = service.create_conversation(
+        conversation = service.conversations.create_conversation(
             ConversationCreate(
                 mode="work",
                 project_id=project.project_id,

@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from neuroagent.application.contracts import ConversationCreate, ConversationTurnCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationTurnCreate,
+)
 from neuroagent.application.errors import InputValidationError
 from neuroagent.application.work_agents import latest_handoff_for_agent, work_agent_role_for_turn
 from neuroagent.application.work_handoffs import require_same_preprocessing_handoff
@@ -32,12 +35,12 @@ def _append(service, conversation, proof):
         project_id=conversation.project_id,
         active_run_id=None,
     )
-    return service.get_conversation(conversation.conversation_id)
+    return service.conversations.get_conversation(conversation.conversation_id)
 
 
 def test_reverse_request_has_server_evidence_and_stable_identity(service, source_root, work_root):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-conversation"
     )
     args = dict(
@@ -46,8 +49,10 @@ def test_reverse_request_has_server_evidence_and_stable_identity(service, source
         run_id=run.run_id,
         required_outputs=("zReHo", "fALFF", "zReHo"),
     )
-    proof = service.prepare_work_preprocessing_handoff(**args, reason="Need both outputs")
-    again = service.prepare_work_preprocessing_handoff(
+    proof = service.statistics.prepare_work_preprocessing_handoff(
+        **args, reason="Need both outputs"
+    )
+    again = service.statistics.prepare_work_preprocessing_handoff(
         **{**args, "required_outputs": ("falff", "zreho")}, reason="Different model wording"
     )
     assert proof.handoff_id == again.handoff_id
@@ -57,7 +62,7 @@ def test_reverse_request_has_server_evidence_and_stable_identity(service, source
     assert require_same_preprocessing_handoff(proof, again).status == "received"
     assert len(service.repository.list_runs(project_id=project.project_id)) == 1
     with pytest.raises(InputValidationError) as invalid:
-        service.prepare_work_preprocessing_handoff(
+        service.statistics.prepare_work_preprocessing_handoff(
             **{**args, "required_outputs": ("system('run')",)}, reason="Forged requirement"
         )
     assert invalid.value.code == "work_handoff_outputs_invalid"
@@ -70,10 +75,10 @@ def test_reverse_receiver_rejects_file_change_before_model_or_plan_mutation(
     monkeypatch,
 ):
     project, run, _, _, metrics, root = _source(service, source_root, work_root)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-conversation"
     )
-    proof = service.prepare_work_preprocessing_handoff(
+    proof = service.statistics.prepare_work_preprocessing_handoff(
         conversation_id=conversation.conversation_id,
         project_id=project.project_id,
         run_id=run.run_id,
@@ -110,7 +115,7 @@ def test_reverse_handoff_limit_counts_unique_requests_and_cannot_be_replayed_aro
 ):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
     service.settings = service.settings.model_copy(update={"work_max_handoffs": 1})
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-conversation"
     )
     args = dict(
@@ -119,21 +124,29 @@ def test_reverse_handoff_limit_counts_unique_requests_and_cannot_be_replayed_aro
         run_id=run.run_id,
         reason="Need metrics",
     )
-    first = service.prepare_work_preprocessing_handoff(**args, required_outputs=("ReHo",))
+    first = service.statistics.prepare_work_preprocessing_handoff(
+        **args, required_outputs=("ReHo",)
+    )
     conversation = _append(service, conversation, first)
     receipt = require_same_preprocessing_handoff(first, first)
     _append(service, conversation, receipt)
     assert (
-        service.prepare_work_preprocessing_handoff(**args, required_outputs=("ReHo",)).status
+        service.statistics.prepare_work_preprocessing_handoff(
+            **args, required_outputs=("ReHo",)
+        ).status
         == "pending"
     )
-    second = service.prepare_work_preprocessing_handoff(**args, required_outputs=("fALFF",))
+    second = service.statistics.prepare_work_preprocessing_handoff(
+        **args, required_outputs=("fALFF",)
+    )
     assert second.status == "blocked"
     assert second.blocking_items == ("work_handoff_limit_reached",)
-    conversation = service.get_conversation(conversation.conversation_id)
+    conversation = service.conversations.get_conversation(conversation.conversation_id)
     _append(service, conversation, second)
     assert (
-        service.prepare_work_preprocessing_handoff(**args, required_outputs=("fALFF",)).status
+        service.statistics.prepare_work_preprocessing_handoff(
+            **args, required_outputs=("fALFF",)
+        ).status
         == "blocked"
     )
 
@@ -145,10 +158,10 @@ def test_preprocessing_receives_summary_without_private_analysis_draft(
     monkeypatch,
 ):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-conversation"
     )
-    proof = service.prepare_work_preprocessing_handoff(
+    proof = service.statistics.prepare_work_preprocessing_handoff(
         conversation_id=conversation.conversation_id,
         project_id=project.project_id,
         run_id=run.run_id,
@@ -208,7 +221,7 @@ def test_external_metric_request_preserves_unknown_raw_input_and_rechecks_images
         required_outputs=("ReHo",),
         reason="Need another metric",
     )
-    proof = service.prepare_work_preprocessing_handoff(**args)
+    proof = service.statistics.prepare_work_preprocessing_handoff(**args)
     assert proof.data_references["input_selection_required"] is True
     assert proof.data_references["external_source_evidence"]["inspection"][
         "unknown_processing_fields"
@@ -216,7 +229,7 @@ def test_external_metric_request_preserves_unknown_raw_input_and_rechecks_images
     imported = service.repository.get_external_analysis_import(request.design.external_import_id)
     path = source_root / "metrics" / imported.inspection.images[0].relative_path
     path.write_bytes(b"x" * path.stat().st_size)
-    blocked = service.prepare_work_preprocessing_handoff(**args)
+    blocked = service.statistics.prepare_work_preprocessing_handoff(**args)
     assert blocked.status == "blocked"
     assert blocked.required_outputs == proof.required_outputs
     assert blocked.data_references == proof.data_references
@@ -230,7 +243,7 @@ def test_analysis_proposes_verified_requirements_without_changing_preprocessing_
     monkeypatch,
 ):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
-    conversation = service.create_conversation(
+    conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-proposal"
     )
     initial = {"hash": "b" * 64, "draft": {"target_outputs": ["zALFF"]}}
@@ -245,7 +258,7 @@ def test_analysis_proposes_verified_requirements_without_changing_preprocessing_
         project_id=project.project_id,
         active_run_id=run.run_id,
     )
-    conversation = service.get_conversation(conversation.conversation_id)
+    conversation = service.conversations.get_conversation(conversation.conversation_id)
     model = AsyncMock(
         return_value=(
             json.dumps(
@@ -280,7 +293,9 @@ def test_analysis_proposes_verified_requirements_without_changing_preprocessing_
         and "statistical_design_proposal" not in response.payload
     )
     assert (
-        service.get_conversation(conversation.conversation_id).messages[-1].payload["work_draft"]
+        service.conversations.get_conversation(conversation.conversation_id)
+        .messages[-1]
+        .payload["work_draft"]
         == initial
     )
     assert len(service.repository.list_runs(project_id=project.project_id)) == 1

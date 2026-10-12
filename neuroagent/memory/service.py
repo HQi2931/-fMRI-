@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from neuroagent.application.contracts import MemoryStatus
-from neuroagent.application.ports import RepositoryPort
+from neuroagent.application.contracts.conversations import MemoryStatus
+from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.memory.embeddings import MemoryEmbeddingError, MemoryEmbeddings
 from neuroagent.memory.semantic import MemoryCandidate, MemoryMatch, SemanticMemoryRanker
 
@@ -21,7 +21,7 @@ class RecallResult:
 class SemanticMemoryService:
     def __init__(
         self,
-        repository: RepositoryPort,
+        repository: ConversationRepositoryPort,
         embeddings: MemoryEmbeddings | None = None,
         *,
         limit: int = 12,

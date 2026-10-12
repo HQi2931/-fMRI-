@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.runs import (
     HeadMotionQcCreate,
     QcExecutionMode,
     QcReviewApprove,
@@ -18,7 +18,6 @@ from neuroagent.application.contracts import (
     QcSkipCreate,
     QcSkipView,
     RunView,
-    WorkflowState,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json, content_hash
@@ -30,10 +29,10 @@ from neuroagent.domain.fmri.qc import (
     QcReviewScope,
     QcSeverity,
 )
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.infrastructure.persistence.models import (
     ArtifactRow,
     DatasetRow,
-    JobRow,
     ManifestRevisionRow,
     PlanRevisionRow,
     QcApprovalRow,
@@ -898,37 +897,3 @@ class QcReviewMixin(RepositoryBaseMixin):
                 state=view.state.value,
             )
         return view
-
-    def retry_run(self, run_id: str, *, expected_version: int) -> RunView:
-        with self._write_session() as session:
-            run = session.get(WorkflowRunRow, run_id)
-            if run is None:
-                raise NotFoundError("run", run_id)
-            self._check_version("run", run.version, expected_version)
-            state = WorkflowState(run.state)
-            if state not in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
-                raise ConflictError(
-                    "run_not_retryable", "当前运行状态不允许重试。", state=state.value
-                )
-            job = session.scalar(select(JobRow).where(JobRow.run_id == run_id))
-            if job is None:
-                raise NotFoundError("job_for_run", run_id)
-            if job.attempt >= job.max_attempts:
-                raise ConflictError(
-                    "retry_budget_exhausted",
-                    "运行已耗尽已批准计划的重试预算。",
-                    attempt=job.attempt,
-                    max_attempts=job.max_attempts,
-                )
-            validate_workflow_transition(state, WorkflowState.QUEUED)
-            run.state = WorkflowState.QUEUED.value
-            run.version += 1
-            run.error = None
-            run.cancel_requested = False
-            run.updated_at = datetime.now(UTC)
-            job.state = "queued"
-            job.lease_owner = None
-            job.lease_expires_at = None
-            job.updated_at = datetime.now(UTC)
-            session.flush()
-            return self._run(run)

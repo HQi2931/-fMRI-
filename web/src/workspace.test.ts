@@ -18,7 +18,7 @@ describe("workspace pointer", () => {
     resetWorkspace();
   });
 
-  it("merges patches, persists them and re-renders subscribers", () => {
+  it("keeps runtime pointers in memory and persists only selected context", () => {
     const { result } = renderHook(() => useWorkspace());
     expect(result.current).toEqual({});
 
@@ -36,22 +36,29 @@ describe("workspace pointer", () => {
       planHash: "a".repeat(64),
       runId: "run-1",
     });
-    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({
-      runId: "run-1",
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({});
+    act(() => {
+      updateWorkspace({ workspacePath: "D:/study", projectId: "project-1" });
+    });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      workspacePath: "D:/study",
+      projectId: "project-1",
     });
   });
 
-  it("migrates a legacy tab-scoped pointer without losing the review", () => {
+  it("migrates only selected context from a legacy tab-scoped snapshot", () => {
     window.sessionStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ planRevisionId: "legacy-plan", planHash: "b".repeat(64) }),
+      JSON.stringify({ workspacePath: "D:/study", projectId: "legacy-project", planRevisionId: "legacy-plan" }),
     );
 
     const { result } = renderHook(() => useWorkspace());
 
-    expect(result.current).toMatchObject({ planRevisionId: "legacy-plan" });
-    // The legacy value is promoted so a reload keeps the same pointer.
-    expect(window.localStorage.getItem(STORAGE_KEY)).toContain("legacy-plan");
+    expect(result.current).toEqual({ workspacePath: "D:/study", projectId: "legacy-project" });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      workspacePath: "D:/study",
+      projectId: "legacy-project",
+    });
   });
 
   it("falls back to the in-memory pointer when storage is corrupt", () => {

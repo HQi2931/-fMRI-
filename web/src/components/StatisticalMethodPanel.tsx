@@ -1,4 +1,4 @@
-import type { StatisticalMethodSummary } from "../api/client";
+import type { StatisticalMethodSummary } from "../api/types";
 
 const centeringLabels: Record<string, string> = { none: "不中心化", grand_mean: "总体均值中心化", within_group: "组内均值中心化" };
 const numeric = (value: number | null | undefined) => value == null ? "未记录" : String(Number(value.toPrecision(5)));

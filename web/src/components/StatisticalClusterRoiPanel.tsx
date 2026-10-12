@@ -1,6 +1,8 @@
 import { useState } from "react";
 
-import { api, describeError, type StatisticalClusterRoi } from "../api/client";
+import { statisticsApi } from "../api/statistics";
+import { describeError } from "../api/transport";
+import type { StatisticalClusterRoi } from "../api/types";
 
 export function StatisticalClusterRoiPanel({ resultId, bundleHash, clusterId }: {
   resultId: string; bundleHash: string; clusterId: string;
@@ -12,7 +14,7 @@ export function StatisticalClusterRoiPanel({ resultId, bundleHash, clusterId }: 
   async function load() {
     setBusy(true); setError(""); setRoi(null);
     try {
-      const value = await api.statisticalClusterRoi(resultId, clusterId);
+      const value = await statisticsApi.statisticalClusterRoi(resultId, clusterId);
       if (value.result_id !== resultId || value.result_bundle_hash !== bundleHash || value.cluster_id !== clusterId) {
         setError("ROI 来源与当前结果不一致，请重新加载结果后再读取。");
       } else setRoi(value);

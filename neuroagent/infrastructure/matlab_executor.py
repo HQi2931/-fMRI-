@@ -15,7 +15,6 @@ from neuroagent.application.environment_lock import (
     EnvironmentConfiguration,
     EnvironmentLockProvider,
 )
-from neuroagent.application.ports import ExecutionResult, RepositoryPort
 from neuroagent.application.settings import Settings
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage, MetricScaling
 from neuroagent.domain.fmri.dpabi_stages import stage_rule, verified_source_version
@@ -32,6 +31,7 @@ from neuroagent.execution.models import (
     MatlabJobStatus,
     PreprocessingJobPayload,
 )
+from neuroagent.execution.ports import ExecutionResult, MatlabExecutionCatalog
 from neuroagent.execution.preprocessing import (
     PreprocessingCompilation,
     compile_preprocessing,
@@ -84,7 +84,7 @@ class MatlabJobExecutor:
 
     def __init__(
         self,
-        repository: RepositoryPort,
+        repository: MatlabExecutionCatalog,
         settings: Settings,
         *,
         environment_provider: EnvironmentLockProvider | None = None,

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.application.contracts import ConversationAction, ConversationTurnCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationAction,
+    ConversationTurnCreate,
+)
 
 
 @pytest.mark.parametrize(

@@ -27,14 +27,13 @@
 
 | 现象 | 当前证据 | 影响 |
 | --- | --- | --- |
-| 应用门面依赖多重继承 mixin | `NeuroAgentService` 聚合 7 个 mixin；当前工作树已出现同名方法类型冲突 | 新能力容易产生隐式方法依赖、MRO 冲突和难定位的耦合 |
-| 公共契约集中 | `application/contracts.py` 约 900 行，包含项目、运行、统计、Agent、对话和分析 DTO | 任一能力变化都会扩大导入和 OpenAPI 变更面 |
-| 仓储端口过宽 | `RepositoryPort` 同时声明项目、计划、运行、QC、结果、Agent、对话和任务领取 | 测试替身、事务边界和模块所有权不清晰 |
-| API 路由集中 | `api/routes.py` 约 680 行，约 50 个端点共享一个 router | 审查、权限边界、版本演进和局部测试成本上升 |
-| 控制面类型位置倒置 | Workflow/Execution 从 Application DTO 导入状态和 Artifact 视图 | 内部领域规则被传输模型牵引，依赖方向不够稳定 |
-| Worker 路由使用字符串协议 | `executor_type` 在组合根中以字符串表分派 | 新执行类型容易缺少版本、能力和负载 schema 校验 |
-| 前端页面承担过多状态 | `PlanPage` 约 530 行并维护大量独立字段；多个页面自行请求、缓存和恢复 | 表单联动、错误恢复、测试和跨页一致性越来越脆弱 |
-| 浏览器缓存了过多业务快照 | `workspace.ts` 保存计划、运行、QC、统计版本等状态 | SQLite 与浏览器可能形成两个事实来源 |
+| 应用能力协作仍共享组合根依赖 | `ApplicationServices` 显式持有能力对象；能力对象不再持有组合根，动态兼容转发已删除；Conversation、Skill、Run 与 Statistics 通过能力端口和显式查询协作者工作；Worker host 通过独立窄端口装配 | 继续消除少量组合级查询回调，并让项目级前端状态由 feature 查询 hooks 管理 |
+| 仓储仍保留迁移兼容聚合 | 所有持久化能力及 Worker host 都有共享 Unit of Work 的独立 SQLite adapter；应用幂等存储和事件存储独立注入；默认应用用例和 Worker 不依赖 `SqliteRepository`，其仅保留给迁移期调用方。Worker adapter 在单一完成事务中组合 Artifact/QC 持久化 mixin | 收窄兼容聚合的剩余调用方，并为各 JobKind 补齐独立版本化的 command/执行合同 |
+| API 路由集中 | 96 个端点已按能力迁入 `api/routers/`，`api/routes.py` 仅聚合并兼容导出；少数共享子服务仍经组合根读取 | 需继续让所有 handler 仅依赖能力接口，并为各子路由建立局部边界验证 |
+| 控制面类型位置倒置 | Plan/Workflow 状态已迁入 `domain.lifecycle`，Workflow engine/worker 已去掉 Application DTO 依赖；Execution 编译器/预处理通过执行层 manifest 协议和领域数据集分类协作 | 已消除 Execution 对 Application DTO 的直接反向依赖；后续继续审计 Domain/Execution 中的兼容导入 |
+| Worker 路由使用字符串协议 | 新队列记录使用 `JobEnvelope v1` 和受限 `JobKind`；旧 `executor_type` 通过持久化边界适配器读取，组合根按类型注册执行器 | 仍需把每个 kind 的 command、能力、超时、取消和产物合同独立版本化 |
+| 前端页面承担过多状态 | Agent 与 Settings 已归入 `features/`，生产页面通过能力 API 模块和独立类型模块依赖后端；Agent 页面仍包含发送流程、恢复、授权与轮询，项目级 feature 目录和服务端查询 hooks 尚未统一 | 表单联动、错误恢复、测试和跨页一致性仍需按能力提取 |
+| 浏览器缓存仍持有运行态指针 | `workspace.ts` 只持久化工作区路径和项目选择；计划、运行、QC 与统计指针只在内存中保留，并由服务端会话重新水合 | 运行期仍存在一份方便页面联动的内存投影，需要逐步让 feature hooks 直接读取服务端数据 |
 | 测试集中且接近门槛 | Python 总覆盖率约 85.62%；前端分支覆盖率 78.95% | 大规模移动容易制造回归，新增边界需先补契约测试 |
 
 以上行数和门禁数据仅用于确定重构优先级，不作为机械拆文件指标。模块是否合理以职责、依赖和事务边界为准。
@@ -128,7 +127,7 @@ neuroagent/
 
 ### 显式应用服务
 
-用组合替代 `NeuroAgentService` 的多重继承：
+`ApplicationServices` 已移除多重继承和旧方法动态转发，并显式组合能力对象。当前形态为：
 
 ```text
 ApplicationServices
@@ -141,24 +140,24 @@ ApplicationServices
 └─ environment: EnvironmentService
 ```
 
-每个 router 只依赖自己的 service。跨能力调用使用构造函数注入的 Query/Command 端口。`ApplicationServices` 只是组合容器，不包含业务方法，也不模拟一个全能对象。
+拆出的 router 通过 `capability_from()` 获取自身能力对象；跨能力调用使用显式绑定的 Query/Command 协作者。`ApplicationServices` 只作为组合容器，不包含业务方法，也不模拟一个全能对象。剩余耦合集中在聚合仓储和少量组合级服务回调。
 
 ### 端口和事务
 
-将 `RepositoryPort` 拆为窄接口：
+仓储能力协议已落在 `application/repository_ports.py`，各用例使用对应数据端口；事务/幂等通过独立 `IdempotencyStorePort` 注入，审计事件通过独立 `EventRepositoryPort` 注入。每项持久化能力与 Worker host 都有共享 `SqliteUnitOfWork` 的独立 adapter；Conversation、Run、Statistics 使用分离的能力端口和查询协作者，Skills 只依赖 Plan 写端口。Worker 通过 `WorkerHostRepositoryPort` 与 `SqliteWorkerRepository` 独立于 HTTP 用例组合，同时在单一 Unit of Work 内完成 Artifact/QC 原子登记。旧 `RepositoryPort` 仅留给迁移兼容调用。目标仍为：
 
-- `UnitOfWork`：事务、提交和回滚。
+- `UnitOfWork`：事务、提交和回滚；应用幂等存储是独立端口并共享该 Unit of Work。
 - `ProjectRepository`、`PlanRepository`、`RunRepository`、`QcRepository`、`ResultRepository`。
 - `ConversationRepository`、`ModelProfileRepository`。
 - `JobQueue`、`EventStore`、`IdempotencyStore`、`ArtifactCatalog`。
 
-同一个 `SqliteUnitOfWork` 可以提供全部实现，因此不会增加部署组件。一个用例只拿到所需端口，事务在应用服务入口明确开启。SQLAlchemy Row 到领域/应用模型的 mapper 归属于对应 SQLite adapter，不继续堆积在总仓储类中。
+同一个 `SqliteUnitOfWork` 可以提供全部实现，因此不会增加部署组件。一个用例只拿到所需数据端口、幂等存储和事件存储，事务在应用服务入口明确开启。SQLAlchemy Row 到领域/应用模型的 mapper 归属于对应 SQLite adapter，不继续堆积在总仓储类中。
 
 ### 内部类型与公共 DTO
 
+- 应用契约已迁至 `application/contracts/` 能力模块；HTTP 请求 DTO 由 `api/schemas/` 负责、响应 DTO 由 `api/responses/` 负责，两侧均通过显式 mapper 转换。所有 Python 调用点已改为从具体能力模块导入，`contracts/__init__.py` 不再重导出 DTO。
 - `PlanState`、`WorkflowState`、Artifact 引用和执行结果属于领域/Workflow 内部类型，不放在 HTTP contracts 中。
 - API schema 负责序列化和向后兼容；应用命令与查询结果负责用例边界；两者通过显式 mapper 转换。
-- `contracts.py` 在迁移期保留重导出，迁移完成前删除内部调用对总模块的依赖。
 - 所有公共请求继续 `extra="forbid"`，OpenAPI 作为前端类型的唯一来源，不再手写重复的 Conversation/Workspace 类型。
 
 ## 控制面与运行面
@@ -208,6 +207,8 @@ web/src/
 ├─ app/                        路由、布局、错误边界
 ├─ api/                        生成类型、基础 transport、幂等与 SSE
 ├─ features/
+│  ├─ agent/                    AgentPage、会话展示模型、历史、草稿和样式
+│  ├─ settings/                 Provider 与环境设置页面及测试
 │  ├─ projects/
 │  ├─ protocol-builder/
 │  ├─ runs/
@@ -220,8 +221,8 @@ web/src/
 
 - `PlanPage` 改为以一个类型化 draft/reducer 为核心的分段表单，字段组件从 schema 和能力清单获得约束；不再为每个输入维护独立页面级状态。
 - 每个 feature 提供查询/命令 hooks、表单模型和小组件，页面只负责组合。
-- 浏览器持久化仅保存 `selected_project_id`、`conversation_id`、SSE cursor 和幂等 key；计划、运行、QC、统计详情每次从服务端恢复。
-- API client 按能力拆分，公共 transport 继续统一错误 envelope、取消和幂等重试。
+- 浏览器的 workspace 持久化只保存工作区路径和项目选择；计划、运行、QC、统计指针仅作为内存投影，并由服务端会话恢复。对话选择与幂等键按各自短期用途存储。
+- API client 已按 Agent、项目、计划、运行、统计、工作区、环境与 Literature 拆分，生产页面直接引用能力模块；`client.ts` 仅为迁移期测试和旧调用点保留兼容 facade，公共 transport 统一错误 envelope、取消、幂等重试与 SSE。
 - 先使用项目内类型化 hooks；只有当缓存失效、并发查询和重试逻辑仍重复时，再通过独立 ADR 评估 TanStack Query，避免把库迁移和架构重构绑定在同一阶段。
 
 ## 关键运行链路

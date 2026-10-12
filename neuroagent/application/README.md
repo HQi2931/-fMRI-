@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-10
+- 更新日期：2026-10-11
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
@@ -18,14 +18,17 @@
 - T1 重定向、裁剪与后续分割/DARTEL 合并为一次预处理运行；不再提供独立准备或中途审查 API；
 - Work 参数面板通过幂等 PATCH 编辑草稿，保存不调用模型；版本冲突拒绝，草稿修改使旧确认失效；
 
-- `services.py` 与 `service_mixins/` 组成应用门面，管理 `PlanRevision` 生命周期与追加式审批记录；
-- `contracts.py` 定义传输无关的公共契约；`ports.py` 声明执行器、仓储和环境等窄端口；
+- `services.py` 作为应用组合根显式装配环境、工作区、对话、项目、计划、运行、统计、技能、模型与外部导入等能力对象，不再通过多重继承组合用例，也不提供动态兼容转发。公共用例端口通过 `BaseServiceMixin.bind_shared_dependencies()` 显式绑定；跨能力服务及查询协作者单独注入。应用服务管理 `PlanRevision` 生命周期与追加式审批记录；
+- `contracts/` 按项目、计划、运行、统计、Agent、对话等能力拆分应用 DTO；所有生产、测试和脚本导入均指向 DTO 所属模块，`contracts/__init__.py` 不再聚合重导出。HTTP 请求 schemas 位于 `api/schemas/` 并通过显式 mapper 转成应用命令；响应模型独立位于 `api/responses/`，由 HTTP 边界 mapper 转换。`ports.py` 声明执行器和环境端口，`repository_ports.py` 按能力拆分数据仓储协议，并把 `IdempotencyStorePort` 与 `EventRepositoryPort` 独立注入。Projects、Plans、External Imports、Models、Literature、Conversations、Workspace、Runs、QC 与 Artifact Catalog 使用共享 Unit of Work 的 SQLite adapter；Skills 只使用 Plan 写端口，Statistics 通过 Project、Plan、Run、Conversation、External Import、QC 与 Artifact 端口组合。Worker host 使用窄 `WorkerHostRepositoryPort` 和独立 `SqliteWorkerRepository`，在共享 Unit of Work 内原子完成 Artifact/QC 登记；旧 `RepositoryPort` 只留给迁移兼容调用；
 - `conversation_work.py`、`work_dialogue.py`、`work_draft.py` 把 Work 自然语言收敛为受限动作与未批准草稿；
 - `statistics_draft.py` 只负责统计设计的取值来源与顺序，科学校验仍由领域层负责；
 - Work 可显式选择外部纳入记录；模型仅引用登记指标及 group 列，服务端复查输入后生成设计预览，来源 ID/hash 不接受模型修改。
 - 外部人口学表复用只读解析器，要求编号恰好覆盖纳入名单；统计设计绑定独立修订及内容哈希，服务端读取协变量取值，模型仅接收可用列名。
 - 显式外部配对布局按 subject_id 与 condition 绑定两张图；方案装配保留用户条件顺序，编号/条件缺失和源文件变化阻止旧设计执行。
 - `work_actions.py` 是 Work 可选动作的唯一事实来源；
+- `work_prompts.py` 按 Work 角色提供系统提示词；模型网关只接收显式注入的提示词，不再从 `work_context.agent_role` 推断业务角色。提示词中的动作清单直接读取 `work_actions.py`，避免模型契约在应用与 Gateway 之间重复维护；
+- `work_model_runtime.py` 负责角色提示词注入、工具循环、单轮回退和本轮 token/时间预算；`work_dialogue.py` 保留草稿、证据、交接和业务动作编排。
+- `work_models.py` 独立定义模型输出合同，动作字段只接受 `READ`/`PROPOSE` 白名单；`work_dialogue.py` 继续重导出类型以兼容现有调用点。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。

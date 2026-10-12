@@ -2,30 +2,28 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import ValidationError
 
 from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.providers import ProviderTimeoutError
 from neuroagent.agent.streaming import current_answer_stream
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationTurnCreate,
     ConversationView,
-    ExternalAnalysisImportView,
-    ExternalDemographicsRevisionView,
-    QcExecutionMode,
     WorkspaceCitation,
 )
+from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
+from neuroagent.application.contracts.projects import ExternalDemographicsRevisionView
+from neuroagent.application.contracts.runs import QcExecutionMode
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError
 from neuroagent.application.statistical_capabilities import model_visible_capabilities
@@ -41,7 +39,6 @@ from neuroagent.application.statistics_draft import (
 from neuroagent.application.work_actions import (
     SERVER_ONLY_ACTIONS,
     dispatch_target,
-    is_model_selectable,
 )
 from neuroagent.application.work_agents import (
     analysis_dependency_for_request,
@@ -73,6 +70,8 @@ from neuroagent.application.work_handoffs import (
     require_same_handoff,
     require_same_preprocessing_handoff,
 )
+from neuroagent.application.work_model_runtime import WorkModelRuntime
+from neuroagent.application.work_models import WorkInterpretation, WorkQuestion
 from neuroagent.application.work_presentation import (
     constrained_patch,
     leaf_values,
@@ -93,44 +92,6 @@ from neuroagent.multi_agent.registry import (
 from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
-
-
-class WorkQuestion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1, max_length=400)
-    parameter_paths: tuple[str, ...] = Field(default=(), max_length=8)
-
-
-class WorkInterpretation(BaseModel):
-    """The model's interpretation of one Work turn.
-
-    ``action`` is validated against the model-selectable tier set rather than a
-    hand-written literal, so a server-only action (starting a run, approving or
-    skipping QC) can never be selected by a model even if the prompt drifts.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    answer: str = Field(min_length=1, max_length=12000)
-    action: str = Field(default="conversation", max_length=64)
-    draft_patch: dict[str, Any] = Field(default_factory=dict)
-    analysis_patch: dict[str, Any] = Field(default_factory=dict)
-    handoff_reason: str | None = Field(default=None, max_length=1000)
-    required_preprocessing_outputs: tuple[str, ...] = Field(default=(), max_length=12)
-    workspace_citations: tuple[WorkspaceCitation, ...] = ()
-    workspace_edits: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
-    recommended_input_stage: str | None = Field(default=None, max_length=64)
-    stage_intent: str | None = Field(default=None, max_length=1000)
-    stage_reasoning: str | None = Field(default=None, max_length=4000)
-    stage_questions: tuple[str, ...] = ()
-    questions: tuple[WorkQuestion | str, ...] = Field(default=(), max_length=5)
-    recommendation_reason: str | None = Field(default=None, max_length=1000)
-
-    @field_validator("action")
-    @classmethod
-    def action_must_be_model_selectable(cls, value: str) -> str:
-        if not is_model_selectable(value):
-            raise ValueError(f"action {value!r} is not available to a model")
-        return value
 
 
 def latest_payload(conversation: ConversationView, key: str) -> dict[str, Any] | None:
@@ -183,44 +144,6 @@ def _draft_sources(saved: dict[str, Any] | None, patch: dict[str, Any]) -> dict[
 def execution_command(plan_hash: str, qc: str, confirmation_id: str | None = None) -> str:
     suffix = f" {confirmation_id}" if confirmation_id else ""
     return f"批准并启动 {plan_hash[:12]} {qc}{suffix}"
-
-
-def _work_loop_metadata(looped: Any) -> dict[str, Any]:
-    """Persist loop outcomes even when the final answer requires fallback."""
-
-    workspace_redactions = 0
-    workspace_omitted_sensitive = 0
-    for outcome in looped.outcomes:
-        if outcome.name not in {"read_workspace_content", "search_workspace_content"}:
-            continue
-        result = outcome.result or {}
-        workspace_redactions += int(result.get("redactions", 0) or 0)
-        workspace_omitted_sensitive += int(result.get("omitted_sensitive", 0) or 0)
-    return {
-        "enabled": True,
-        "stop_reason": looped.stop_reason,
-        "steps": looped.steps,
-        "tool_names": list(looped.tool_names),
-        "usage": looped.usage,
-        "fallback_candidate": not bool(looped.final_text.strip()),
-        "fallback_used": False,
-        "workspace_redactions": workspace_redactions,
-        "workspace_omitted_sensitive": workspace_omitted_sensitive,
-        "calls": [
-            {
-                "tool_name": outcome.name,
-                "status": outcome.status.value,
-                "risk_tier": outcome.tier.value if outcome.tier is not None else None,
-                "step_index": index,
-                "provider_call_id": outcome.call_id,
-                "duration_ms": outcome.duration_ms,
-                "input": outcome.arguments,
-                "output": outcome.result,
-                "error": outcome.error_code or outcome.message,
-            }
-            for index, outcome in enumerate(looped.outcomes, start=1)
-        ],
-    }
 
 
 def _valid_workspace_citation_paths(
@@ -387,6 +310,12 @@ class WorkDialogue:
         self.prepare_preprocessing_handoff = prepare_preprocessing_handoff
         self.get_result_facts = get_result_facts
         self.model_budget = model_budget or AgentLoopBudget()
+        self.model_runtime = WorkModelRuntime(
+            generate=self.generate,
+            tool_runner=self.tool_runner,
+            model_budget=self.model_budget,
+            is_valid_response=self._parses,
+        )
 
     def input_recovery_confirmation(
         self, workspace_path: str | None, candidates: list[dict[str, Any]]
@@ -990,7 +919,7 @@ class WorkDialogue:
             # The loop's final text is the same JSON contract as the single-shot
             # call, so parsing and authorization below are unchanged.
             failure_stage = "model_request"
-            raw_content, metadata, loop_metadata = await self._interpret(
+            raw_content, metadata, loop_metadata = await self.model_runtime.interpret(
                 model_context,
                 preferred_profile_id=preferred_profile_id,
                 model=request.model,
@@ -1458,183 +1387,6 @@ class WorkDialogue:
                 },
             )
 
-    async def _interpret(
-        self,
-        model_context: dict[str, Any],
-        *,
-        preferred_profile_id: str | None,
-        model: str | None,
-        execution_context: AgentExecutionContext | None = None,
-    ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
-        """Produce the Work JSON contract, preferring the bounded tool loop.
-
-        The loop is an enrichment, not a replacement: a tool-capable model may
-        read extra state first, but if the loop produces nothing usable (budget,
-        provider error, or a non-JSON answer) this falls back to the single-shot
-        call, which is the path that guarantees JSON mode today.
-        """
-
-        started = time.monotonic()
-        spent_steps = 0
-        spent_tokens = 0
-        loop_metadata: dict[str, Any] | None = None
-        tools_available = False
-        if self.tool_runner is not None:
-            try:
-                tools_available = await asyncio.wait_for(
-                    self.tool_runner.available(preferred_profile_id),
-                    timeout=self.model_budget.max_seconds,
-                )
-            except TimeoutError:
-                return "", {"stop_reason": "budget_time"}, None
-        if self.tool_runner is not None and tools_available:
-            remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
-            if remaining_seconds <= 0:
-                return "", {"stop_reason": "budget_time"}, None
-            looped = await self.tool_runner.run(
-                question=str(model_context["question"]),
-                recent_messages=model_context["recent_messages"],
-                pinned_context=model_context["pinned_context"],
-                conversation_summary=model_context["conversation_summary"],
-                work_context=model_context["work_context"],
-                preferred_profile_id=preferred_profile_id,
-                model=model,
-                execution_context=execution_context,
-                context_window_tokens=int(model_context.get("context_window_tokens", 16_384)),
-                max_output_tokens=int(model_context.get("max_output_tokens", 2_048)),
-                request_budget=replace(self.model_budget, max_seconds=remaining_seconds),
-            )
-            loop_metadata = _work_loop_metadata(looped)
-            spent_steps = looped.steps
-            spent_tokens = (
-                looped.usage.get("total_tokens", 0)
-                or (looped.usage.get("prompt_tokens", 0) + looped.usage.get("completion_tokens", 0))
-                or max(1, looped.steps)
-                * (looped.estimated_tokens + RegexTokenCounter().count(looped.final_text))
-            )
-            if spent_tokens > self.model_budget.max_total_tokens:
-                return "", {"stop_reason": "budget_tokens", "usage": looped.usage}, loop_metadata
-            if looped.stop_reason in {
-                "provider_timeout",
-                "budget_time",
-                "provider_error",
-                "cancelled",
-                "budget_steps",
-                "budget_tokens",
-            }:
-                return "", {"stop_reason": looped.stop_reason, "usage": looped.usage}, loop_metadata
-            if looped.finish_reason == "length":
-                # Never spend another complete request repeating a known
-                # completion-budget failure. Response validation records it.
-                return (
-                    looped.final_text,
-                    {
-                        "profile_id": looped.profile_id,
-                        "model": looped.model,
-                        "finish_reason": looped.finish_reason,
-                        "usage": looped.usage,
-                    },
-                    loop_metadata,
-                )
-            if looped.final_text.strip():
-                metadata = {
-                    "profile_id": looped.profile_id,
-                    "model": looped.model,
-                    "context_hash": looped.context_hash,
-                    "redaction_count": looped.redaction_count,
-                    "finish_reason": looped.finish_reason,
-                    "usage": looped.usage,
-                }
-                if self._parses(looped.final_text):
-                    return looped.final_text, metadata, loop_metadata
-                # The model answered but not in the required structure; keep the
-                # tool evidence recorded and let the single-shot path retry.
-                logger.warning("Work tool loop answer failed the JSON contract; retrying once")
-
-        fallback_context = {
-            key: value
-            for key, value in model_context.items()
-            if key not in {"context_window_tokens", "max_output_tokens"}
-        }
-        if loop_metadata is not None:
-            fallback_context["work_context"] = {
-                **fallback_context.get("work_context", {}),
-                "successful_read_evidence": [
-                    call.get("output")
-                    for call in loop_metadata.get("calls", [])
-                    if call.get("tool_name") == "read_workspace_content"
-                    and call.get("status") == "succeeded"
-                ][-5:],
-            }
-            fallback_context["question"] = str(fallback_context["question"]) + (
-                "\n本轮只重试一次结构化回复：返回简洁的 answer、action 和增量 draft_patch，"
-                "省略没有内容的可选字段。prepare_preprocessing_plan 只能作为最终 JSON 的 action 字段值，"
-                "prepare_statistical_analysis 也只能作为最终 JSON 的 action 字段值，不是工具；"
-                "只引用 successful_read_evidence 中逐字提供的 path 和 locator。"
-            )
-        remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
-        reason = None
-        if remaining_seconds <= 0:
-            reason = "budget_time"
-        elif spent_steps >= self.model_budget.max_steps:
-            reason = "budget_steps"
-        elif (
-            spent_tokens
-            + RegexTokenCounter().count(fallback_context)
-            + int(model_context.get("max_output_tokens", 2048))
-            > self.model_budget.max_total_tokens
-        ):
-            reason = "budget_tokens"
-        if reason:
-            return "", {"stop_reason": reason}, loop_metadata
-        try:
-            generated = await asyncio.wait_for(
-                self.generate(
-                    **fallback_context,
-                    evidence=[],
-                    preferred_profile_id=preferred_profile_id,
-                    model=model,
-                    allow_web_search=False,
-                    work_mode=True,
-                ),
-                timeout=remaining_seconds,
-            )
-        except TimeoutError:
-            return "", {"stop_reason": "provider_timeout"}, loop_metadata
-        metadata = {
-            "profile_id": generated.selected_profile_id,
-            "model": generated.response.model,
-            "context_hash": generated.context_hash,
-            "redaction_count": generated.redaction_count,
-            "finish_reason": generated.response.finish_reason,
-            "usage": generated.response.usage,
-        }
-        fallback_tokens = (
-            generated.response.usage.get("total_tokens", 0)
-            or generated.response.usage.get("prompt_tokens", 0)
-            + generated.response.usage.get("completion_tokens", 0)
-            or RegexTokenCounter().count(fallback_context)
-            + RegexTokenCounter().count(generated.response.content)
-        )
-        metadata["request_budget"] = {
-            "model_steps": spent_steps + 1,
-            "total_tokens": spent_tokens + fallback_tokens,
-            "max_steps": self.model_budget.max_steps,
-            "max_total_tokens": self.model_budget.max_total_tokens,
-        }
-        if loop_metadata is not None:
-            loop_metadata = {
-                **loop_metadata,
-                "fallback_used": True,
-                "fallback_reason": "tool_loop_unusable_or_incomplete",
-                "request_model_steps": spent_steps + 1,
-                "request_total_tokens": spent_tokens + fallback_tokens,
-            }
-        if spent_tokens + fallback_tokens > self.model_budget.max_total_tokens:
-            metadata["stop_reason"] = "budget_tokens"
-            return "", metadata, loop_metadata
-        return generated.response.content, metadata, loop_metadata
-
     async def _respond_analysis(
         self,
         conversation: ConversationView,
@@ -1853,7 +1605,7 @@ class WorkDialogue:
 
         loop_metadata: dict[str, Any] | None = None
         try:
-            raw, metadata, loop_metadata = await self._interpret(
+            raw, metadata, loop_metadata = await self.model_runtime.interpret(
                 model_context,
                 preferred_profile_id=preferred_profile_id,
                 model=request.model,

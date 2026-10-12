@@ -17,14 +17,17 @@ from neuroagent.agent.models import ModelCapability, ModelProfile, ProviderRespo
 from neuroagent.agent.providers import MockProvider
 from neuroagent.api.app import create_app
 from neuroagent.api.conversation_stream import conversation_stream_response
-from neuroagent.application.contracts import ConversationCreate, ConversationTurnCreate
+from neuroagent.application.contracts.conversations import (
+    ConversationCreate,
+    ConversationTurnCreate,
+)
 from neuroagent.application.errors import InputValidationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_service
 
 
 @pytest.fixture
-def streaming_service(service: NeuroAgentService) -> Iterator[NeuroAgentService]:
+def streaming_service(service: ApplicationServices) -> Iterator[ApplicationServices]:
     configured = build_service(
         service.settings.model_copy(update={"redaction_salt": "synthetic-streaming-redaction-salt"})
     )
@@ -35,7 +38,7 @@ def streaming_service(service: NeuroAgentService) -> Iterator[NeuroAgentService]
 
 
 def configure(
-    service: NeuroAgentService, monkeypatch: pytest.MonkeyPatch, answer: str
+    service: ApplicationServices, monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> MockProvider:
     service.settings = service.settings.model_copy(
         update={"redaction_salt": "synthetic-streaming-redaction-salt"}
@@ -83,7 +86,7 @@ def decode_frames(text: str) -> list[tuple[str, dict[str, Any]]]:
 
 @pytest.mark.parametrize("mode", ["chat", "work"])
 def test_stream_final_is_durable_and_same_key_replays_without_provider(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
@@ -133,7 +136,7 @@ def test_stream_final_is_durable_and_same_key_replays_without_provider(
 
 
 def test_stream_tool_loop_keeps_durable_steps_and_only_previews_answer(
-    streaming_service: NeuroAgentService,
+    streaming_service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = streaming_service
@@ -187,7 +190,7 @@ def test_stream_tool_loop_keeps_durable_steps_and_only_previews_answer(
 
 
 def test_stream_does_not_authorize_a_model_selected_execution_action(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import Mock
@@ -215,14 +218,16 @@ def test_stream_does_not_authorize_a_model_selected_execution_action(
 
 
 def test_stream_error_has_stable_envelope_and_no_final(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fail(*args: object) -> None:
         raise InputValidationError("synthetic_error", "合成输入错误。")
 
-    conversation = service.create_conversation(ConversationCreate(mode="chat"), "create-error")
-    monkeypatch.setattr(service, "send_conversation_turn", fail)
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="chat"), "create-error"
+    )
+    monkeypatch.setattr(service.conversations, "send_conversation_turn", fail)
     with TestClient(create_app(service=service)) as client:
         response = client.post(
             f"/api/v1/conversations/{conversation.conversation_id}/turns",
@@ -234,12 +239,12 @@ def test_stream_error_has_stable_envelope_and_no_final(
     assert error["status"] == 422
     assert error["error"]["code"] == "synthetic_error"
     assert error["error"]["trace_id"] == "synthetic-trace"
-    assert len(service.get_conversation(conversation.conversation_id).messages) == 1
+    assert len(service.conversations.get_conversation(conversation.conversation_id).messages) == 1
 
 
 @pytest.mark.asyncio
 async def test_disconnected_stream_finishes_and_replays_without_duplicate_request(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = configure(service, monkeypatch, "最终回答。")
@@ -253,7 +258,9 @@ async def test_disconnected_stream_finishes_and_replays_without_duplicate_reques
         return await original(*args, on_text=on_text, **kwargs)
 
     monkeypatch.setattr(provider, "generate_stream", gated)
-    conversation = service.create_conversation(ConversationCreate(mode="chat"), "disconnect-create")
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="chat"), "disconnect-create"
+    )
     body = ConversationTurnCreate(content="你好", stream=True, preferred_profile_id="stream-test")
     response = conversation_stream_response(
         service, conversation.conversation_id, body, "disconnect-key", Request({"type": "http"})
@@ -266,10 +273,10 @@ async def test_disconnected_stream_finishes_and_replays_without_duplicate_reques
     await reader.aclose()
     release.set()
     for _ in range(100):
-        if len(service.get_conversation(conversation.conversation_id).messages) == 3:
+        if len(service.conversations.get_conversation(conversation.conversation_id).messages) == 3:
             break
         await asyncio.sleep(0.01)
-    result = await service.send_conversation_turn(
+    result = await service.conversations.send_conversation_turn(
         conversation.conversation_id, body, "disconnect-key"
     )
     assert result.assistant_message.content == "最终回答。"

@@ -7,9 +7,14 @@ from typing import Any, cast
 
 from sqlalchemy import CursorResult, func, select, update
 
-from neuroagent.application.contracts import ApprovalDecision, PlanState, RunView, WorkflowState
+from neuroagent.application.contracts.plans import ApprovalDecision
+from neuroagent.application.contracts.runs import RunView
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json, content_hash
+from neuroagent.domain.lifecycle import (
+    PlanState,
+    WorkflowState,
+)
 from neuroagent.infrastructure.persistence.models import (
     ApprovalRow,
     JobRow,
@@ -22,12 +27,13 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
     _id,
 )
+from neuroagent.workflow.models import JobEnvelope, JobKind
 from neuroagent.workflow.state import validate_workflow_transition
 
-_EXECUTOR_TYPES = {
-    "workflow_mock",
-    "matlab_preprocessing",
-    "matlab_statistics",
+_EXECUTOR_KINDS = {
+    "workflow_mock": JobKind.WORKFLOW_MOCK,
+    "matlab_preprocessing": JobKind.MATLAB_PREPROCESSING,
+    "matlab_statistics": JobKind.MATLAB_STATISTICS,
 }
 
 
@@ -70,14 +76,15 @@ class RunMixin(RepositoryBaseMixin):
             if not valid:
                 raise ConflictError("approval_missing", "未找到与计划哈希匹配的有效审批记录。")
             executor_type = str(payload.get("executor_type", "workflow_mock"))
-            if executor_type not in _EXECUTOR_TYPES:
+            if executor_type not in _EXECUTOR_KINDS:
                 raise ConflictError(
                     "unsupported_executor_type",
                     "运行只能使用已注册的执行器类型。",
                     executor_type=executor_type,
                 )
+            run_id = _id()
             run = WorkflowRunRow(
-                run_id=_id(),
+                run_id=run_id,
                 project_id=project_id,
                 plan_revision_id=plan_revision_id,
                 state=WorkflowState.QUEUED.value,
@@ -107,13 +114,42 @@ class RunMixin(RepositoryBaseMixin):
                         reason="用户在启动前明确选择跳过 QC。",
                     )
                 )
+            job_id = _id()
+            approval_keys = {
+                "plan_hash",
+                "input_manifest_hash",
+                "environment_hash",
+                "approval_record_id",
+            }
+            policy_keys = {
+                "execution_backend",
+                "workspace_mode",
+                "real_execution_confirmed",
+                "qc_mode",
+            }
+            envelope = JobEnvelope(
+                job_id=job_id,
+                run_id=run_id,
+                attempt=1,
+                kind=_EXECUTOR_KINDS[executor_type],
+                command={
+                    key: value
+                    for key, value in payload.items()
+                    if key != "executor_type"
+                    and key not in approval_keys
+                    and key not in policy_keys
+                },
+                approval_binding={key: payload[key] for key in approval_keys if key in payload},
+                execution_policy={key: payload[key] for key in policy_keys if key in payload},
+                trace_id=_id(),
+            )
             session.add(
                 JobRow(
-                    job_id=_id(),
-                    run_id=run.run_id,
+                    job_id=job_id,
+                    run_id=run_id,
                     executor_type=executor_type,
                     state="queued",
-                    payload_json=canonical_json(payload),
+                    payload_json=canonical_json(envelope.model_dump(mode="json")),
                     max_attempts=max_attempts,
                 )
             )
@@ -221,5 +257,39 @@ class RunMixin(RepositoryBaseMixin):
             run.cancel_requested = True
             run.version += 1
             run.updated_at = datetime.now(UTC)
+            session.flush()
+            return self._run(run)
+
+    def retry_run(self, run_id: str, *, expected_version: int) -> RunView:
+        with self._write_session() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run", run_id)
+            self._check_version("run", run.version, expected_version)
+            state = WorkflowState(run.state)
+            if state not in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
+                raise ConflictError(
+                    "run_not_retryable", "当前运行状态不允许重试。", state=state.value
+                )
+            job = session.scalar(select(JobRow).where(JobRow.run_id == run_id))
+            if job is None:
+                raise NotFoundError("job_for_run", run_id)
+            if job.attempt >= job.max_attempts:
+                raise ConflictError(
+                    "retry_budget_exhausted",
+                    "运行已耗尽已批准计划的重试预算。",
+                    attempt=job.attempt,
+                    max_attempts=job.max_attempts,
+                )
+            validate_workflow_transition(state, WorkflowState.QUEUED)
+            run.state = WorkflowState.QUEUED.value
+            run.version += 1
+            run.error = None
+            run.cancel_requested = False
+            run.updated_at = datetime.now(UTC)
+            job.state = "queued"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.updated_at = datetime.now(UTC)
             session.flush()
             return self._run(run)

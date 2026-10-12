@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from neuroagent.api.app import create_app
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 
 
 def create_chat(client: TestClient, key: str = "phase-one-chat-create") -> str:
@@ -19,7 +19,7 @@ def create_chat(client: TestClient, key: str = "phase-one-chat-create") -> str:
 
 
 def test_chat_api_returns_stable_agent_metadata_and_persists_session(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client)
@@ -40,7 +40,7 @@ def test_chat_api_returns_stable_agent_metadata_and_persists_session(
 
 
 def test_chat_streaming_returns_sse_and_a_persisted_final_turn(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "stream-chat-create")
@@ -56,7 +56,7 @@ def test_chat_streaming_returns_sse_and_a_persisted_final_turn(
 
 
 def test_chat_work_request_is_only_drafted_and_never_dispatched(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "work-draft-chat-create")
@@ -77,7 +77,7 @@ def test_chat_work_request_is_only_drafted_and_never_dispatched(
 
 
 def test_method_question_about_preprocessing_is_knowledge_query(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "method-question-chat-create")
@@ -91,7 +91,7 @@ def test_method_question_about_preprocessing_is_knowledge_query(
     assert response.json()["assistant_message"]["payload"]["chat"]["intent"] == "knowledge_query"
 
 
-def test_chat_unknown_session_returns_not_found(service: NeuroAgentService) -> None:
+def test_chat_unknown_session_returns_not_found(service: ApplicationServices) -> None:
     with TestClient(create_app(service=service)) as client:
         response = client.post(
             "/api/v1/conversations/missing-session/turns",
@@ -103,7 +103,7 @@ def test_chat_unknown_session_returns_not_found(service: NeuroAgentService) -> N
 
 
 def test_conversation_memory_can_be_confirmed_and_forgotten(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "memory-chat-create")
@@ -196,7 +196,7 @@ async def test_context_reaches_gateway_once_and_is_redacted() -> None:
     assert call.args[2][1]["content"].count("那它有什么区别？") == 1
 
 
-def test_followup_retrieval_and_per_message_citations_persist(service: NeuroAgentService) -> None:
+def test_followup_retrieval_and_per_message_citations_persist(service: ApplicationServices) -> None:
     from unittest.mock import AsyncMock, Mock
 
     from neuroagent.chat.interfaces import LlmResult

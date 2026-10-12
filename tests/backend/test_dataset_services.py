@@ -7,9 +7,8 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
-    DatasetKind,
     DatasetSplitCreate,
     DemographicsImportRequest,
     ManifestScanRequest,
@@ -17,16 +16,19 @@ from neuroagent.application.contracts import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, PathPolicyError
 from neuroagent.application.hashing import content_hash
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
+from neuroagent.domain.fmri.dataset import (
+    DatasetKind,
+)
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 
 from .conftest import make_bids_dataset, make_project
 
 
-def register_and_scan(service: NeuroAgentService, source_root: Path, work_root: Path):
+def register_and_scan(service: ApplicationServices, source_root: Path, work_root: Path):
     project = make_project(service, source_root, work_root)
     bids = make_bids_dataset(source_root)
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="BIDS",
@@ -40,7 +42,7 @@ def register_and_scan(service: NeuroAgentService, source_root: Path, work_root: 
         for path in bids.rglob("*")
         if path.is_file()
     }
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "inspect-key",
@@ -51,11 +53,11 @@ def register_and_scan(service: NeuroAgentService, source_root: Path, work_root: 
         if path.is_file()
     }
     assert before == after
-    return project, service.get_dataset(dataset.dataset_id), manifest
+    return project, service.projects.get_dataset(dataset.dataset_id), manifest
 
 
 def test_read_only_bids_scan_and_subject_alignment(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     _, _, manifest = register_and_scan(service, source_root, work_root)
     assert manifest.profile.kind is DatasetKind.BIDS
@@ -66,7 +68,7 @@ def test_read_only_bids_scan_and_subject_alignment(
 
 
 def test_bids_scan_does_not_classify_fmap_dwi_masks_or_derivatives_as_functional(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "role-safe-bids"
     (dataset_root / "dataset_description.json").parent.mkdir(parents=True)
@@ -91,7 +93,7 @@ def test_bids_scan_does_not_classify_fmap_dwi_masks_or_derivatives_as_functional
         path.write_bytes(content)
 
     project = make_project(service, source_root, work_root, key="role-safe-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Role-safe BIDS",
@@ -100,7 +102,7 @@ def test_bids_scan_does_not_classify_fmap_dwi_masks_or_derivatives_as_functional
         ),
         "role-safe-dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "role-safe-scan",
@@ -114,7 +116,7 @@ def test_bids_scan_does_not_classify_fmap_dwi_masks_or_derivatives_as_functional
 
 
 def test_plain_nifti_subject_id_sanitization_collision_fails_closed(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "colliding-subjects"
     for subject in ("Subject A", "Subject_A"):
@@ -122,7 +124,7 @@ def test_plain_nifti_subject_id_sanitization_collision_fails_closed(
         functional.parent.mkdir(parents=True)
         functional.write_bytes(f"synthetic-{subject}".encode())
     project = make_project(service, source_root, work_root, key="collision-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Colliding subject IDs",
@@ -133,7 +135,7 @@ def test_plain_nifti_subject_id_sanitization_collision_fails_closed(
     )
 
     with pytest.raises(InputValidationError) as raised:
-        service.inspect_dataset(
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             "collision-scan",
@@ -145,7 +147,7 @@ def test_plain_nifti_subject_id_sanitization_collision_fails_closed(
 
 
 def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_only(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "dpabi-working-directory"
     files = {
@@ -164,7 +166,7 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
         if path.is_file()
     }
     project = make_project(service, source_root, work_root, key="dpabi-stage-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="DPABI stage-safe dataset",
@@ -174,7 +176,7 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
         "dpabi-stage-dataset",
     )
 
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(
             expected_dataset_version=dataset.version,
@@ -199,8 +201,8 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
 
     result_path = dataset_root / "Results" / "ALFF" / "ALFFMap_S001.nii"
     result_path.write_bytes(b"changed-derived-result")
-    current_dataset = service.get_dataset(dataset.dataset_id)
-    changed = service.inspect_dataset(
+    current_dataset = service.projects.get_dataset(dataset.dataset_id)
+    changed = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(
             expected_dataset_version=current_dataset.version,
@@ -234,7 +236,7 @@ def test_dpabi_ready_scan_locks_one_input_stage_and_keeps_checkpoints_inventory_
     ],
 )
 def test_dpabi_ready_ambiguous_or_unsupported_input_stages_fail_closed(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     relative_paths: tuple[str, ...],
@@ -251,7 +253,7 @@ def test_dpabi_ready_ambiguous_or_unsupported_input_stages_fail_closed(
         work_root,
         key=f"{expected_code}-project",
     )
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Unsafe DPABI stages",
@@ -262,7 +264,7 @@ def test_dpabi_ready_ambiguous_or_unsupported_input_stages_fail_closed(
     )
 
     with pytest.raises(InputValidationError) as raised:
-        service.inspect_dataset(
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             f"{expected_code}-scan",
@@ -272,15 +274,15 @@ def test_dpabi_ready_ambiguous_or_unsupported_input_stages_fail_closed(
 
 
 def test_manifest_hash_covers_bids_sidecars_and_extensionless_dicom(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     project, dataset, first = register_and_scan(service, source_root, work_root)
     del project
     bids = Path(dataset.source_path)
     description = bids / "dataset_description.json"
     description.write_text('{"Name":"synthetic-updated","BIDSVersion":"1.9.0"}', encoding="utf-8")
-    current = service.get_dataset(dataset.dataset_id)
-    second = service.inspect_dataset(
+    current = service.projects.get_dataset(dataset.dataset_id)
+    second = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=current.version),
         "inspect-sidecar-change",
@@ -297,7 +299,7 @@ def test_manifest_hash_covers_bids_sidecars_and_extensionless_dicom(
         work_root,
         key="extensionless-dicom-project",
     )
-    dicom_dataset = service.create_dataset(
+    dicom_dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Extensionless DICOM",
@@ -306,7 +308,7 @@ def test_manifest_hash_covers_bids_sidecars_and_extensionless_dicom(
         ),
         "extensionless-dicom-dataset",
     )
-    dicom_manifest = service.inspect_dataset(
+    dicom_manifest = service.projects.inspect_dataset(
         dicom_dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dicom_dataset.version),
         "extensionless-dicom-scan",
@@ -316,7 +318,7 @@ def test_manifest_hash_covers_bids_sidecars_and_extensionless_dicom(
 
 
 def test_subject_first_plain_nifti_tree_does_not_collapse_on_modality_directory(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "plain-nifti"
     for subject in ("S001", "S002"):
@@ -324,7 +326,7 @@ def test_subject_first_plain_nifti_tree_does_not_collapse_on_modality_directory(
         functional.parent.mkdir(parents=True)
         functional.write_bytes(f"synthetic-{subject}".encode())
     project = make_project(service, source_root, work_root, key="plain-nifti-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Plain NIfTI",
@@ -334,7 +336,7 @@ def test_subject_first_plain_nifti_tree_does_not_collapse_on_modality_directory(
         "plain-nifti-dataset",
     )
 
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "plain-nifti-scan",
@@ -345,7 +347,7 @@ def test_subject_first_plain_nifti_tree_does_not_collapse_on_modality_directory(
 
 
 def test_plain_nifti_only_promotes_explicit_modalities_and_excludes_masks_and_results(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "plain-role-safe"
     files = {
@@ -360,7 +362,7 @@ def test_plain_nifti_only_promotes_explicit_modalities_and_excludes_masks_and_re
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     project = make_project(service, source_root, work_root, key="plain-role-safe-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Plain role-safe NIfTI",
@@ -370,7 +372,7 @@ def test_plain_nifti_only_promotes_explicit_modalities_and_excludes_masks_and_re
         "plain-role-safe-dataset",
     )
 
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "plain-role-safe-scan",
@@ -385,7 +387,7 @@ def test_plain_nifti_only_promotes_explicit_modalities_and_excludes_masks_and_re
 
 
 def test_modality_first_plain_nifti_tree_uses_explicit_subject_layer(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "modality-first"
     for subject in ("S001", "S002"):
@@ -393,7 +395,7 @@ def test_modality_first_plain_nifti_tree_uses_explicit_subject_layer(
         functional.parent.mkdir(parents=True)
         functional.write_bytes(f"synthetic-{subject}".encode())
     project = make_project(service, source_root, work_root, key="modality-first-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Modality-first NIfTI",
@@ -403,7 +405,7 @@ def test_modality_first_plain_nifti_tree_uses_explicit_subject_layer(
         "modality-first-dataset",
     )
 
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "modality-first-scan",
@@ -413,14 +415,14 @@ def test_modality_first_plain_nifti_tree_uses_explicit_subject_layer(
 
 
 def test_plain_nifti_without_subject_layer_fails_closed(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "ambiguous-nifti"
     functional = dataset_root / "func" / "rest.nii"
     functional.parent.mkdir(parents=True)
     functional.write_bytes(b"synthetic")
     project = make_project(service, source_root, work_root, key="ambiguous-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Ambiguous NIfTI",
@@ -431,7 +433,7 @@ def test_plain_nifti_without_subject_layer_fails_closed(
     )
 
     with pytest.raises(InputValidationError, match="缺少可确定的受试者层级"):
-        service.inspect_dataset(
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             "ambiguous-scan",
@@ -439,7 +441,7 @@ def test_plain_nifti_without_subject_layer_fails_closed(
 
 
 def test_bids_subject_level_anatomy_is_inherited_by_session_functional_scan(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "session-bids"
     (dataset_root / "dataset_description.json").parent.mkdir(parents=True)
@@ -453,7 +455,7 @@ def test_bids_subject_level_anatomy_is_inherited_by_session_functional_scan(
     anatomy.write_bytes(b"synthetic-t1")
     functional.write_bytes(b"synthetic-bold")
     project = make_project(service, source_root, work_root, key="session-bids-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Session BIDS",
@@ -463,7 +465,7 @@ def test_bids_subject_level_anatomy_is_inherited_by_session_functional_scan(
         "session-bids-dataset",
     )
 
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "session-bids-scan",
@@ -477,7 +479,7 @@ def test_bids_subject_level_anatomy_is_inherited_by_session_functional_scan(
 
 
 def test_bids_multiple_subject_level_t1_candidates_do_not_implicitly_pair(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     dataset_root = source_root / "ambiguous-session-bids"
     (dataset_root / "dataset_description.json").parent.mkdir(parents=True)
@@ -492,7 +494,7 @@ def test_bids_multiple_subject_level_t1_candidates_do_not_implicitly_pair(
     functional.parent.mkdir(parents=True)
     functional.write_bytes(b"synthetic-bold")
     project = make_project(service, source_root, work_root, key="ambiguous-bids-project")
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="Ambiguous session BIDS",
@@ -503,7 +505,7 @@ def test_bids_multiple_subject_level_t1_candidates_do_not_implicitly_pair(
     )
 
     with pytest.raises(InputValidationError, match="唯一的 subject-level T1"):
-        service.inspect_dataset(
+        service.projects.inspect_dataset(
             dataset.dataset_id,
             ManifestScanRequest(expected_dataset_version=dataset.version),
             "ambiguous-bids-scan",
@@ -511,12 +513,12 @@ def test_bids_multiple_subject_level_t1_candidates_do_not_implicitly_pair(
 
 
 def test_path_policy_rejects_root_outside_allowlist(
-    service: NeuroAgentService, tmp_path: Path, work_root: Path
+    service: ApplicationServices, tmp_path: Path, work_root: Path
 ) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     with pytest.raises(PathPolicyError):
-        service.create_project(
+        service.projects.create_project(
             ProjectCreate(
                 name="unsafe",
                 source_roots=[str(outside)],
@@ -547,12 +549,12 @@ def test_path_policy_rejects_read_only_source_inside_work_root(tmp_path: Path) -
 
 
 def test_demographics_alignment_and_deterministic_subject_split(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     _, dataset, _ = register_and_scan(service, source_root, work_root)
     table = source_root / "demographics.csv"
     table.write_text("participant,group,age\nsub-02,B,30\nsub-01,A,20\n", encoding="utf-8")
-    demographics = service.import_demographics(
+    demographics = service.projects.import_demographics(
         dataset.dataset_id,
         DemographicsImportRequest(
             source_path=str(table),
@@ -564,8 +566,8 @@ def test_demographics_alignment_and_deterministic_subject_split(
     )
     assert demographics.missing_subject_ids == []
     assert demographics.extra_subject_ids == []
-    assert service.get_demographics(demographics.demographics_id) == demographics
-    dataset = service.get_dataset(dataset.dataset_id)
+    assert service.projects.get_demographics(demographics.demographics_id) == demographics
+    dataset = service.projects.get_dataset(dataset.dataset_id)
     split_request = DatasetSplitCreate(
         expected_dataset_version=dataset.version,
         seed=42,
@@ -575,23 +577,23 @@ def test_demographics_alignment_and_deterministic_subject_split(
         stratify_by="group",
         demographics_revision_id=demographics.demographics_id,
     )
-    split = service.create_split(dataset.dataset_id, split_request, "split-key")
-    repeated = service.create_split(dataset.dataset_id, split_request, "split-key")
+    split = service.projects.create_split(dataset.dataset_id, split_request, "split-key")
+    repeated = service.projects.create_split(dataset.dataset_id, split_request, "split-key")
     assert repeated.split_id == split.split_id
-    assert service.get_split(split.split_id) == split
+    assert service.projects.get_split(split.split_id) == split
     assigned = split.train_subject_ids + split.validation_subject_ids + split.test_subject_ids
     assert sorted(assigned) == ["sub-01", "sub-02"]
     assert len(assigned) == len(set(assigned))
 
 
 def test_demographics_duplicate_subject_is_blocked(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     _, dataset, _ = register_and_scan(service, source_root, work_root)
     table = source_root / "demographics.csv"
     table.write_text("participant,group\nsub-01,A\nsub-01,B\n", encoding="utf-8")
     with pytest.raises(InputValidationError, match="重复"):
-        service.import_demographics(
+        service.projects.import_demographics(
             dataset.dataset_id,
             DemographicsImportRequest(
                 source_path=str(table),
@@ -604,11 +606,11 @@ def test_demographics_duplicate_subject_is_blocked(
 
 
 def test_idempotency_key_reuse_with_changed_payload_is_conflict(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     make_project(service, source_root, work_root, key="same-key")
     with pytest.raises(ConflictError, match="Idempotency-Key"):
-        service.create_project(
+        service.projects.create_project(
             ProjectCreate(
                 name="different",
                 source_roots=[str(source_root)],
@@ -619,7 +621,7 @@ def test_idempotency_key_reuse_with_changed_payload_is_conflict(
 
 
 def test_idempotent_mutation_rolls_back_if_response_persistence_crashes(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     source_root: Path,
     work_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -647,17 +649,17 @@ def test_idempotent_mutation_rolls_back_if_response_persistence_crashes(
 
     monkeypatch.setattr(service.repository, "complete_idempotent_request", crash_once)
     with pytest.raises(RuntimeError, match="response persistence crash"):
-        service.create_project(request, "atomic-idempotency-key")
-    assert service.list_projects() == []
+        service.projects.create_project(request, "atomic-idempotency-key")
+    assert service.projects.list_projects() == []
 
-    created = service.create_project(request, "atomic-idempotency-key")
-    repeated = service.create_project(request, "atomic-idempotency-key")
+    created = service.projects.create_project(request, "atomic-idempotency-key")
+    repeated = service.projects.create_project(request, "atomic-idempotency-key")
     assert repeated == created
-    assert service.list_projects() == [created]
+    assert service.projects.list_projects() == [created]
 
 
 def test_expired_orphaned_idempotency_reservation_is_reclaimed(
-    service: NeuroAgentService, source_root: Path, work_root: Path
+    service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
     request = ProjectCreate(
         name="recovered-idempotency",
@@ -692,8 +694,8 @@ def test_expired_orphaned_idempotency_reservation_is_reclaimed(
             {"expired_at": expired_at, "key": "orphaned-key"},
         )
 
-    created = service.create_project(request, "orphaned-key")
-    repeated = service.create_project(request, "orphaned-key")
+    created = service.projects.create_project(request, "orphaned-key")
+    repeated = service.projects.create_project(request, "orphaned-key")
     with pytest.raises(ConflictError) as stale_owner:
         service.repository.complete_idempotent_request(
             "projects:create",
@@ -704,11 +706,11 @@ def test_expired_orphaned_idempotency_reservation_is_reclaimed(
         )
     assert stale_owner.value.code == "idempotency_completion_conflict"
     assert repeated == created
-    assert service.list_projects() == [created]
+    assert service.projects.list_projects() == [created]
 
 
 def test_idempotency_lease_renewal_requires_current_pending_owner(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     scope = "test:renew"
     key = "renew-owner-key"

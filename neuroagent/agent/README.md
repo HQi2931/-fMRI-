@@ -3,10 +3,10 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-10
+- 更新日期：2026-10-11
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[ADR 0014](../../docs/adr/0014-bounded-tool-loop.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
-`neuroagent.agent` 是 Provider 中立的模型边界：它只做路由、脱敏、结构化输出和受控工具循环，不决定科研参数，也不执行任何工作。
+`neuroagent.agent` 是 Provider 中立的模型边界：它只做路由、脱敏、结构化输出和受控工具循环，不决定科研参数，也不执行任何工作。业务角色提示词由应用层显式注入；Gateway 不根据 Work 上下文自行判断预处理或分析角色。
 
 当前能力：
 

@@ -7,11 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from neuroagent.application.contracts import (
-    DatasetKind,
-    ManifestRevisionView,
-    SubjectManifestEntry,
-)
+from neuroagent.domain.fmri.dataset import DatasetKind
 from neuroagent.domain.fmri.dpabi_stages import stage_rule
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
@@ -25,6 +21,7 @@ from neuroagent.domain.fmri.preprocessing import (
     PreprocessingParameters,
     ScrubbingMethod,
 )
+from neuroagent.execution.manifest import FrozenManifest, ManifestSubject
 from neuroagent.execution.models import (
     ArtifactPathBinding,
     ExpectedArtifact,
@@ -54,13 +51,13 @@ class PreprocessingCompilation:
     parameters: PreprocessingParameters | None
     alff: AlffFalffParameters | None
     reho: RehoParameters | None
-    subjects: tuple[SubjectManifestEntry, ...]
+    subjects: tuple[ManifestSubject, ...]
     producer_step_hashes: tuple[tuple[str, str], ...]
 
 
 def compile_preprocessing(
     plan: SkillPlan,
-    manifest: ManifestRevisionView,
+    manifest: FrozenManifest,
     manifest_content: dict[str, Any],
     *,
     job_id: str,
@@ -368,7 +365,7 @@ def compile_preprocessing(
 
 
 def _validate_frozen_inputs(
-    plan: SkillPlan, manifest: ManifestRevisionView, content: dict[str, Any]
+    plan: SkillPlan, manifest: FrozenManifest, content: dict[str, Any]
 ) -> None:
     body = plan.model_dump(mode="json", exclude={"plan_id", "plan_hash", "warnings"})
     if stable_hash(body) != plan.plan_hash:
@@ -403,7 +400,7 @@ def _validate_frozen_inputs(
         raise ValueError("real preprocessing requires a frozen NIfTI input manifest")
 
 
-def _validate_subjects(subjects: tuple[SubjectManifestEntry, ...]) -> None:
+def _validate_subjects(subjects: tuple[ManifestSubject, ...]) -> None:
     ids = [subject.subject_id for subject in subjects]
     if not ids or len(ids) != len(set(ids)):
         raise ValueError("preprocessing requires unique subjects in a single session")
@@ -426,7 +423,7 @@ def _nifti_name(relative: str) -> str:
 
 def _staging_plan(
     plan: SkillPlan,
-    manifest: ManifestRevisionView,
+    manifest: FrozenManifest,
     content: dict[str, Any],
     parameters: PreprocessingParameters,
 ) -> StagingCopyPlan:

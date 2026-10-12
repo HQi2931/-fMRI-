@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from sqlalchemy import func, select
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.projects import (
     DatasetSplitView,
     DatasetView,
     DemographicsRevisionView,

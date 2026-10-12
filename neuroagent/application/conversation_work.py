@@ -12,24 +12,33 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from neuroagent.application.contracts import (
-    ApprovalCreate,
-    ApprovalDecision,
-    ApprovalView,
+from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationToolStatus,
     ConversationTurnCreate,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
+    ApprovalView,
+    PlanRevisionView,
+    SkillPlanIntent,
+    SkillPlanResolveRequest,
+    SkillPlanResolveView,
+)
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
     DatasetView,
+    ManifestRevisionView,
+    ManifestScanRequest,
+    ProjectCreate,
+    ProjectView,
+    WorkspaceSetupIntent,
+)
+from neuroagent.application.contracts.runs import (
     ExecutionBackend,
     ExecutionWorkspaceMode,
     HeadMotionQcCreate,
-    ManifestRevisionView,
-    ManifestScanRequest,
-    PlanRevisionView,
-    PlanState,
-    ProjectCreate,
-    ProjectView,
     QcExecutionMode,
     QcReviewApprove,
     QcReviewView,
@@ -37,16 +46,19 @@ from neuroagent.application.contracts import (
     QcSkipView,
     RunCreate,
     RunView,
-    SkillPlanIntent,
-    SkillPlanResolveRequest,
-    SkillPlanResolveView,
-    StatisticalResultView,
-    WorkspaceSetupIntent,
 )
+from neuroagent.application.contracts.statistics import StatisticalResultView
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
-from neuroagent.application.ports import PathPolicyPort, RepositoryPort
+from neuroagent.application.ports import PathPolicyPort
+from neuroagent.application.repository_ports import (
+    ConversationRepositoryPort,
+    EventRepositoryPort,
+    PlanRepositoryPort,
+    ProjectRepositoryPort,
+)
 from neuroagent.application.work_draft import WorkDraft, confirmed_skill_intent, draft_hash
 from neuroagent.domain.fmri.dpabi_stages import canonical_stage_name
+from neuroagent.domain.lifecycle import PlanState
 
 _RUN_STATE_LABELS = {
     "queued": "排队中",
@@ -99,7 +111,10 @@ class ConversationWorkCoordinator:
     def __init__(
         self,
         *,
-        repository: RepositoryPort,
+        conversation_repository: ConversationRepositoryPort,
+        project_repository: ProjectRepositoryPort,
+        plan_repository: PlanRepositoryPort,
+        event_store: EventRepositoryPort,
         path_policy: PathPolicyPort,
         create_project: Callable[[ProjectCreate, str], ProjectView],
         create_dataset: Callable[[str, DatasetCreate, str], DatasetView],
@@ -120,7 +135,10 @@ class ConversationWorkCoordinator:
         work_root: Path,
         get_result_facts: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
-        self._repository = repository
+        self._conversation_repository = conversation_repository
+        self._project_repository = project_repository
+        self._plan_repository = plan_repository
+        self._event_store = event_store
         self._path_policy = path_policy
         self._create_project = create_project
         self._create_dataset = create_dataset
@@ -211,8 +229,8 @@ class ConversationWorkCoordinator:
         token: str,
         idempotency_key: str,
     ) -> ManifestRevisionView:
-        dataset = self._repository.get_dataset(dataset_id)
-        project = self._repository.get_project(dataset.project_id)
+        dataset = self._project_repository.get_dataset(dataset_id)
+        project = self._project_repository.get_project(dataset.project_id)
         source = self._path_policy.validate_read_path(
             dataset.source_path,
             project_roots=project.source_roots,
@@ -255,12 +273,12 @@ class ConversationWorkCoordinator:
         content = self._inspect_source_callback(
             source, report_only=False, selected_input_stage=selected_input_stage
         )
-        result = self._repository.create_manifest(
+        result = self._project_repository.create_manifest(
             dataset_id,
             expected_version=dataset.version,
             content=content,
         )
-        self._repository.append_event(
+        self._event_store.append_event(
             project_id=project.project_id,
             run_id=None,
             event_type="WorkspaceStageConfirmed",
@@ -287,7 +305,7 @@ class ConversationWorkCoordinator:
     ) -> None:
         """Keep the model suggestion auditable without granting it authority."""
 
-        self._repository.append_event(
+        self._event_store.append_event(
             project_id=project_id,
             run_id=None,
             event_type="WorkspaceStageRecommended",
@@ -424,7 +442,7 @@ class ConversationWorkCoordinator:
         plan_hash: str,
         qc_mode: QcExecutionMode,
     ) -> str:
-        challenge = self._repository.create_confirmation_challenge(
+        challenge = self._conversation_repository.create_confirmation_challenge(
             conversation_id=conversation_id,
             project_id=project_id,
             plan_revision_id=plan_revision_id,
@@ -482,8 +500,8 @@ class ConversationWorkCoordinator:
             if not workspace_path:
                 return WorkActionResult("请先选择工作区，再确认参数草稿。", project_id=project_id)
             if dataset_id is not None and project_id is not None:
-                dataset = self._repository.get_dataset(dataset_id)
-                project = self._repository.get_project(project_id)
+                dataset = self._project_repository.get_dataset(dataset_id)
+                project = self._project_repository.get_project(project_id)
                 if dataset.project_id != project_id:
                     raise ValueError("dataset project mismatch")
                 bound = self._path_policy.validate_read_path(
@@ -508,12 +526,12 @@ class ConversationWorkCoordinator:
                 )
                 payload.update(registered.payload)
                 project_id = registered.project_id
-                dataset = self._repository.get_dataset(payload["dataset"]["dataset_id"])
+                dataset = self._project_repository.get_dataset(payload["dataset"]["dataset_id"])
                 assert project_id is not None
-                project = self._repository.get_project(project_id)
+                project = self._project_repository.get_project(project_id)
             if dataset.current_manifest_id is None:
                 raise ValueError("workspace has no frozen manifest")
-            manifest = self._repository.get_manifest(dataset.current_manifest_id)
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
             intent = confirmed_skill_intent(
                 draft,
                 project_id=project.project_id,
@@ -598,17 +616,17 @@ class ConversationWorkCoordinator:
             ),
             f"{idempotency_key}:manifest",
         )
-        project = self._repository.get_project(project.project_id)
-        dataset = self._repository.get_dataset(dataset.dataset_id)
+        project = self._project_repository.get_project(project.project_id)
+        dataset = self._project_repository.get_dataset(dataset.dataset_id)
         payload = {
             "project": project.model_dump(mode="json"),
             "dataset": dataset.model_dump(mode="json"),
             "manifest": manifest.model_dump(mode="json"),
-            "stage_candidates": self._repository.get_manifest_content(manifest.manifest_id).get(
-                "stage_candidates", []
-            ),
+            "stage_candidates": self._project_repository.get_manifest_content(
+                manifest.manifest_id
+            ).get("stage_candidates", []),
             "stage_selection_required": bool(
-                self._repository.get_manifest_content(manifest.manifest_id).get(
+                self._project_repository.get_manifest_content(manifest.manifest_id).get(
                     "stage_selection_required", False
                 )
             ),
@@ -658,10 +676,10 @@ class ConversationWorkCoordinator:
         intent = request.skill_plan_intent
         if project_id is not None and intent.project_id != project_id:
             raise ConflictError("conversation_project_mismatch", "方案不属于当前对话绑定的项目。")
-        dataset = self._repository.get_dataset(intent.dataset_ref)
+        dataset = self._project_repository.get_dataset(intent.dataset_ref)
         if dataset.current_manifest_id is not None:
-            manifest = self._repository.get_manifest(dataset.current_manifest_id)
-            manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
+            manifest_content = self._project_repository.get_manifest_content(manifest.manifest_id)
             if manifest.profile.kind.value == "dpabi_ready" and not manifest_content.get(
                 "selected_input_stage"
             ):
@@ -686,8 +704,8 @@ class ConversationWorkCoordinator:
         )
         manifest_profile: dict[str, Any] = {}
         if dataset.current_manifest_id is not None:
-            manifest = self._repository.get_manifest(dataset.current_manifest_id)
-            manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
+            manifest_content = self._project_repository.get_manifest_content(manifest.manifest_id)
             manifest_profile = manifest.profile.model_dump(mode="json")
             manifest_profile.update(
                 {
@@ -994,8 +1012,8 @@ class ConversationWorkCoordinator:
         assert project_id is not None
         assert request.plan_revision_id is not None
         assert request.expected_plan_hash is not None
-        project = self._repository.get_project(project_id)
-        plan = self._repository.get_plan(request.plan_revision_id)
+        project = self._project_repository.get_project(project_id)
+        plan = self._plan_repository.get_plan(request.plan_revision_id)
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
         if plan.plan_hash != request.expected_plan_hash:
@@ -1011,7 +1029,7 @@ class ConversationWorkCoordinator:
                 "preprocessing_skill_plan_required",
                 "原位 DPABI 运行只接受已编译的预处理 SkillPlan。",
             )
-        dataset = self._repository.get_dataset(dataset_ref)
+        dataset = self._project_repository.get_dataset(dataset_ref)
         bound_workspace = self._path_policy.validate_read_path(
             dataset.source_path,
             project_roots=project.source_roots,
@@ -1107,8 +1125,8 @@ class ConversationWorkCoordinator:
         assert request.plan_revision_id is not None
         assert request.expected_plan_hash is not None
         assert qc_mode is not None
-        project = self._repository.get_project(project_id)
-        plan = self._repository.get_plan(request.plan_revision_id)
+        project = self._project_repository.get_project(project_id)
+        plan = self._plan_repository.get_plan(request.plan_revision_id)
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
         if plan.plan_hash != request.expected_plan_hash:
@@ -1119,7 +1137,7 @@ class ConversationWorkCoordinator:
                 "preprocessing_skill_plan_required",
                 "原位 DPABI 运行只接受已编译的预处理 SkillPlan。",
             )
-        dataset = self._repository.get_dataset(dataset_ref)
+        dataset = self._project_repository.get_dataset(dataset_ref)
         bound_workspace = self._path_policy.validate_read_path(
             dataset.source_path,
             project_roots=project.source_roots,
@@ -1144,7 +1162,7 @@ class ConversationWorkCoordinator:
                 ),
                 f"{idempotency_key}:approval",
             )
-            plan = self._repository.get_plan(plan.plan_revision_id)
+            plan = self._plan_repository.get_plan(plan.plan_revision_id)
         frozen_values = dict(plan.plan.get("skill_plan", {}).get("resolved_parameters", []))
         frozen_preprocessing = frozen_values.get("preprocessing", {})
         has_t1 = isinstance(frozen_preprocessing, dict) and (
@@ -1170,7 +1188,7 @@ class ConversationWorkCoordinator:
                 "confirmation_challenge_required",
                 "真实运行必须通过当前对话签发的一次性确认挑战。",
             )
-        self._repository.consume_confirmation_challenge(
+        self._conversation_repository.consume_confirmation_challenge(
             confirmation_id=request.confirmation_id,
             conversation_id=conversation_id,
             project_id=project_id,
@@ -1250,7 +1268,7 @@ class ConversationWorkCoordinator:
                 "demo_alff_workspace_invalid",
                 "DemoData ALFF 冒烟要求工作区只有一个受试者和一个明确的 4D 功能像。",
             )
-        project = self._repository.get_project(project.project_id)
+        project = self._project_repository.get_project(project.project_id)
         preprocessing_names = (
             "tr_seconds",
             "expected_time_points",
@@ -1373,7 +1391,9 @@ class ConversationWorkCoordinator:
         )
         payload = {
             "project": project.model_dump(mode="json"),
-            "dataset": self._repository.get_dataset(dataset.dataset_id).model_dump(mode="json"),
+            "dataset": self._project_repository.get_dataset(dataset.dataset_id).model_dump(
+                mode="json"
+            ),
             "manifest": manifest.model_dump(mode="json"),
             "skill_plan": resolved.skill_plan.model_dump(mode="json"),
             "plan_revision": resolved.plan_revision.model_dump(mode="json"),

@@ -4,18 +4,24 @@ import hashlib
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
-    DatasetCreate,
-    ManifestScanRequest,
-    QcExecutionMode,
-    RunCreate,
     SkillPlanIntent,
     SkillPlanResolveRequest,
-    WorkflowState,
+)
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    ManifestScanRequest,
+)
+from neuroagent.application.contracts.runs import (
+    QcExecutionMode,
+    RunCreate,
 )
 from neuroagent.bootstrap import build_worker
+from neuroagent.domain.lifecycle import (
+    WorkflowState,
+)
 
 from .conftest import make_bids_dataset, make_project
 from .test_science_agent_api import _minimal_preprocessing_payload
@@ -30,14 +36,14 @@ def approved_t1_plan(service, source_root, work_root):
         if p.is_file()
     }
     project = make_project(service, source_root, work_root)
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             expected_project_version=project.version, name="Synthetic T1", source_path=str(source)
         ),
         "dataset-create",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(expected_dataset_version=dataset.version),
         "manifest-create",
@@ -63,7 +69,7 @@ def approved_t1_plan(service, source_root, work_root):
         "structural_artifact_id": f"manifest:{manifest.manifest_id}:anatomical-source",
         "affine_regularization": "mni",
     }
-    resolved = service.resolve_skill_plan(
+    resolved = service.skills.resolve_skill_plan(
         SkillPlanResolveRequest(
             request=SkillPlanIntent(
                 project_id=project.project_id,
@@ -74,12 +80,12 @@ def approved_t1_plan(service, source_root, work_root):
                 request_preprocessing=True,
                 preprocessing=parameters,
             ),
-            expected_project_version=service.get_project(project.project_id).version,
+            expected_project_version=service.projects.get_project(project.project_id).version,
         ),
         "resolve-t1",
     )
     plan = resolved.plan_revision
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -101,10 +107,10 @@ def test_automatic_t1_mock_pipeline_requires_no_interim_review(service, approved
         expected_plan_hash=plan.plan_hash,
         qc_mode=QcExecutionMode.SKIP,
     )
-    run = service.create_run(request, "automatic-t1-run")
+    run = service.runs.create_run(request, "automatic-t1-run")
     worker = build_worker(service)
     assert worker.run_once()
-    completed = service.get_run(run.run_id)
+    completed = service.runs.get_run(run.run_id)
     assert completed.state is WorkflowState.SUCCEEDED
     artifacts = service.repository.list_artifacts(run.run_id)
     anatomy = [a for a in artifacts if a.artifact_type == "preprocessing.t1_prepared"]

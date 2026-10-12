@@ -1,8 +1,9 @@
 """Domain mixins assembled by :class:`SqliteRepository`."""
 
 from neuroagent.infrastructure.persistence.repository_mixins._base import RepositoryBaseMixin
-from neuroagent.infrastructure.persistence.repository_mixins.artifacts import ArtifactEventMixin
+from neuroagent.infrastructure.persistence.repository_mixins.artifacts import ArtifactCatalogMixin
 from neuroagent.infrastructure.persistence.repository_mixins.conversations import ConversationMixin
+from neuroagent.infrastructure.persistence.repository_mixins.events import RuntimeEventMixin
 from neuroagent.infrastructure.persistence.repository_mixins.external_imports import (
     ExternalAnalysisImportMixin,
 )
@@ -19,7 +20,7 @@ from neuroagent.infrastructure.persistence.repository_mixins.workspace_assistant
 )
 
 __all__ = [
-    "ArtifactEventMixin",
+    "ArtifactCatalogMixin",
     "ConversationMixin",
     "ExternalAnalysisImportMixin",
     "IdempotencyMixin",
@@ -31,5 +32,6 @@ __all__ = [
     "QcReviewMixin",
     "RepositoryBaseMixin",
     "RunMixin",
+    "RuntimeEventMixin",
     "WorkspaceAssistantMixin",
 ]

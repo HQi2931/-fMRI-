@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import delete, func, or_, select, update
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConfirmationChallengeView,
     ContextSummaryView,
     ConversationContextView,
@@ -121,7 +121,7 @@ class ConversationMixin(RepositoryBaseMixin):
 
     @staticmethod
     def _confirmation_challenge(row: ConfirmationChallengeRow) -> ConfirmationChallengeView:
-        from neuroagent.application.contracts import QcExecutionMode
+        from neuroagent.application.contracts.runs import QcExecutionMode
 
         return ConfirmationChallengeView(
             confirmation_id=row.confirmation_id,

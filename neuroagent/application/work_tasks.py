@@ -7,12 +7,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConversationMode,
     ConversationView,
     ConversationWorkTaskView,
-    PlanRevisionView,
 )
+from neuroagent.application.contracts.plans import PlanRevisionView
 from neuroagent.application.errors import ConflictError
 from neuroagent.multi_agent.registry import WorkAgentRole
 

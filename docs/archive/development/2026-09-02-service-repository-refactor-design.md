@@ -8,7 +8,7 @@
 
 ## 范围
 
-- 处理当前未提交的 `NeuroAgentService`、`SqliteRepository` 拆分及其 mixin。
+- 处理当前未提交的 `ApplicationServices`、`SqliteRepository` 拆分及其 mixin。
 - 修复应用层 `service_mixins/models.py` 对 `neuroagent.infrastructure.secrets` 的依赖。
 - 仅对上述直接相关的过长代码进行职责拆分、命名统一和重复逻辑收敛。
 - 增加边界和行为回归测试。
@@ -20,7 +20,7 @@
 
 ### 应用层密钥写入端口
 
-在 `application/ports.py` 增加 `SecretWriterPort`，只表达“将指定环境变量写入受控本地密钥文件”的能力。`NeuroAgentService` 通过构造函数接收该端口；默认装配在 bootstrap 或应用工厂中完成。应用层 mixin 只调用端口，不导入 `infrastructure.secrets`。
+在 `application/ports.py` 增加 `SecretWriterPort`，只表达“将指定环境变量写入受控本地密钥文件”的能力。`ApplicationServices` 通过构造函数接收该端口；默认装配在 bootstrap 或应用工厂中完成。应用层 mixin 只调用端口，不导入 `infrastructure.secrets`。
 
 为兼容既有直接构造服务的测试和调用方，默认装配逻辑集中在应用组合根；不在 mixin 中动态导入基础设施模块，也不把基础设施对象泄露到领域层。
 

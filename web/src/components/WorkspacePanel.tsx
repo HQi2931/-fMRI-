@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { WorkspaceCheck } from "../api/client";
+import type { WorkspaceCheck } from "../api/types";
 
 type Props = {
   path: string;

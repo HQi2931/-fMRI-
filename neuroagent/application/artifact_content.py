@@ -9,7 +9,11 @@ import struct
 import zlib
 from pathlib import Path, PurePosixPath
 
-from neuroagent.application.contracts import ArtifactView, ProjectView, RunView
+from neuroagent.application.contracts.projects import ProjectView
+from neuroagent.application.contracts.runs import (
+    ArtifactView,
+    RunView,
+)
 from neuroagent.application.errors import InputValidationError
 
 

@@ -12,13 +12,15 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE_COMMIT = "a1ef4ae"
 CONCRETE = {
     "neuroagent/infrastructure/persistence/repository.py": "SqliteRepository",
+    "neuroagent/infrastructure/persistence/sqlite_adapter.py": "SqliteAdapterMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/idempotency.py": "IdempotencyMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/projects.py": "ProjectDatasetMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/plans.py": "PlanApprovalMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/runs.py": "RunMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/qc.py": "QcReviewMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/jobs.py": "JobExecutionMixin",
-    "neuroagent/infrastructure/persistence/repository_mixins/artifacts.py": "ArtifactEventMixin",
+    "neuroagent/infrastructure/persistence/repository_mixins/artifacts.py": "ArtifactCatalogMixin",
+    "neuroagent/infrastructure/persistence/repository_mixins/events.py": "RuntimeEventMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/models.py": "ModelAgentMixin",
 }
 
@@ -26,6 +28,8 @@ CONCRETE = {
 # body changed needs an explicit, reviewed reason here.  Each entry below was
 # compared against the baseline before being accepted.
 INTENTIONAL_BOUNDARY_CHANGES = {
+    # Capability adapters can share one transaction boundary across their stores.
+    "__init__",
     # Inject the secret writer instead of writing the dotenv file inline.
     "create_model_profile",
     # Bind the frozen plan/manifest locks before queuing.

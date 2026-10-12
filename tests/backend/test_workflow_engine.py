@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from neuroagent.application.contracts import WorkflowState
 from neuroagent.application.errors import ConflictError
+from neuroagent.domain.lifecycle import (
+    WorkflowState,
+)
 from neuroagent.workflow.engine import WorkflowEngine
 
 

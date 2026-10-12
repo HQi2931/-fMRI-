@@ -12,21 +12,25 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
+    SkillPlanIntent,
+    SkillPlanResolveRequest,
+)
+from neuroagent.application.contracts.projects import (
     DatasetCreate,
+    ManifestScanRequest,
+    ProjectCreate,
+)
+from neuroagent.application.contracts.runs import (
     ExecutionBackend,
     ExecutionWorkspaceMode,
     HeadMotionQcCreate,
-    ManifestScanRequest,
-    ProjectCreate,
     QcExecutionMode,
     QcReviewApprove,
     QcSkipCreate,
     RunCreate,
-    SkillPlanIntent,
-    SkillPlanResolveRequest,
 )
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
@@ -96,7 +100,7 @@ def _prepare(
         }
     )
     service = build_service(settings)
-    project = service.create_project(
+    project = service.projects.create_project(
         ProjectCreate(
             name="Synthetic smoke",
             source_roots=[str(source)],
@@ -104,7 +108,7 @@ def _prepare(
         ),
         "project",
     )
-    dataset = service.create_dataset(
+    dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             expected_project_version=project.version,
@@ -113,7 +117,7 @@ def _prepare(
         ),
         "dataset",
     )
-    manifest = service.inspect_dataset(
+    manifest = service.projects.inspect_dataset(
         dataset.dataset_id,
         ManifestScanRequest(
             expected_dataset_version=dataset.version,
@@ -125,7 +129,7 @@ def _prepare(
     params.update(expected_time_points=124, dummy_scans=4, detrend=True)
     if realign:
         params["realignment"] = {"enabled": True, "options_source": "dpabi_v82_jobmat"}
-    resolved = service.resolve_skill_plan(
+    resolved = service.skills.resolve_skill_plan(
         SkillPlanResolveRequest(
             request=SkillPlanIntent(
                 project_id=project.project_id,
@@ -136,12 +140,12 @@ def _prepare(
                 request_preprocessing=True,
                 preprocessing=params,
             ),
-            expected_project_version=service.get_project(project.project_id).version,
+            expected_project_version=service.projects.get_project(project.project_id).version,
         ),
         "resolve",
     )
     plan = resolved.plan_revision
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -152,7 +156,7 @@ def _prepare(
         ),
         "approve",
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -268,9 +272,9 @@ def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, mon
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
     try:
         assert build_worker(service).run_once()
-        result = service.get_run(run.run_id)
+        result = service.runs.get_run(run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
-        outputs = service.list_artifacts(run.run_id)
+        outputs = service.runs.list_artifacts(run.run_id)
         image = next(
             item for item in outputs if item.artifact_type.endswith("functional_timeseries")
         )
@@ -284,7 +288,7 @@ def test_public_preprocessing_stages_and_registers_actual_metadata(tmp_path, mon
         assert qc is not None
         assert qc.review.review_scope.value == "head_motion"
         assert qc.review.included_subject_ids == ("sub-01",)
-        rebuilt = service.create_head_motion_qc_review(
+        rebuilt = service.runs.create_head_motion_qc_review(
             run.run_id,
             HeadMotionQcCreate(expected_run_version=result.version),
             "rebuild-head-motion-qc",
@@ -300,7 +304,7 @@ def test_preprocessing_can_skip_qc_at_start_and_reach_succeeded(tmp_path, monkey
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
     try:
         assert build_worker(service).run_once()
-        result = service.get_run(run.run_id)
+        result = service.runs.get_run(run.run_id)
         assert result.state.value == "succeeded"
         assert result.qc_mode is QcExecutionMode.SKIP
         assert result.qc_status == "skipped"
@@ -317,8 +321,8 @@ def test_waiting_qc_can_be_explicitly_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", _fake_execute)
     try:
         assert build_worker(service).run_once()
-        waiting = service.get_run(run.run_id)
-        skipped = service.skip_qc(
+        waiting = service.runs.get_run(run.run_id)
+        skipped = service.runs.skip_qc(
             run.run_id,
             QcSkipCreate(
                 expected_run_version=waiting.version,
@@ -328,8 +332,8 @@ def test_waiting_qc_can_be_explicitly_skipped(tmp_path, monkeypatch):
             "skip-after-qc",
         )
         assert skipped.run_id == run.run_id
-        assert service.get_run(run.run_id).state.value == "succeeded"
-        assert service.get_run(run.run_id).qc_status == "skipped"
+        assert service.runs.get_run(run.run_id).state.value == "succeeded"
+        assert service.runs.get_run(run.run_id).qc_status == "skipped"
     finally:
         service.close()
 
@@ -353,7 +357,7 @@ def test_public_preprocessing_can_use_selected_dpabi_workspace_in_place(tmp_path
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", fake_in_place_execute)
     try:
         assert build_worker(service).run_once()
-        result = service.get_run(run.run_id)
+        result = service.runs.get_run(run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
         qc = service.repository.get_latest_qc_review_for_run(run.run_id)
         assert qc is not None
@@ -379,20 +383,20 @@ def test_metric_only_run_reuses_approved_source_head_motion_qc(tmp_path, monkeyp
     try:
         assert build_worker(service).run_once()
         source_run = _run_combined_smoke(service, preprocessing_run, source)
-        source_result = service.get_run(source_run.run_id)
+        source_result = service.runs.get_run(source_run.run_id)
         source_qc = service.repository.get_latest_qc_review_for_run(source_run.run_id)
         assert source_qc is not None
 
-        project = service.get_project(source_run.project_id)
+        project = service.projects.get_project(source_run.project_id)
         source_plan = service.repository.get_plan(source_run.plan_revision_id)
-        manifest = service.get_manifest(source_plan.plan["dataset_manifest_id"])
-        registered = service.list_artifacts(source_run.run_id)
+        manifest = service.projects.get_manifest(source_plan.plan["dataset_manifest_id"])
+        registered = service.runs.list_artifacts(source_run.run_id)
         timeseries = next(
             item for item in registered if item.artifact_type.endswith("functional_timeseries")
         )
         mask_artifact_id = timeseries.provenance["lineage"]["mask_artifact_id"]
         assert isinstance(mask_artifact_id, str)
-        service.approve_qc_review(
+        service.runs.approve_qc_review(
             source_qc.review.review_revision_id,
             QcReviewApprove(
                 expected_review_version=source_qc.version,
@@ -410,15 +414,15 @@ def test_metric_only_run_reuses_approved_source_head_motion_qc(tmp_path, monkeyp
         ).model_dump(mode="json")
         intent["alff_falff"]["mask_artifact_id"] = mask_artifact_id
         intent["reho"]["mask_artifact_id"] = mask_artifact_id
-        resolved = service.resolve_skill_plan(
+        resolved = service.skills.resolve_skill_plan(
             SkillPlanResolveRequest(
                 request=SkillPlanIntent.model_validate(intent),
-                expected_project_version=service.get_project(project.project_id).version,
+                expected_project_version=service.projects.get_project(project.project_id).version,
             ),
             "metric-only-resolve",
         )
         plan = resolved.plan_revision
-        service.approve_plan(
+        service.plans.approve_plan(
             plan.plan_revision_id,
             ApprovalCreate(
                 expected_version=plan.version,
@@ -429,7 +433,7 @@ def test_metric_only_run_reuses_approved_source_head_motion_qc(tmp_path, monkeyp
             ),
             "metric-only-approve",
         )
-        metric_run = service.create_run(
+        metric_run = service.runs.create_run(
             RunCreate(
                 project_id=project.project_id,
                 plan_revision_id=plan.plan_revision_id,
@@ -440,7 +444,7 @@ def test_metric_only_run_reuses_approved_source_head_motion_qc(tmp_path, monkeyp
             "metric-only-run",
         )
         assert build_worker(service).run_once()
-        result = service.get_run(metric_run.run_id)
+        result = service.runs.get_run(metric_run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
         qc = service.repository.get_latest_qc_review_for_run(metric_run.run_id)
         assert qc is not None
@@ -464,15 +468,15 @@ def test_head_motion_qc_endpoint_rebuilds_missing_report_from_realign_parameter(
     )
     try:
         assert build_worker(service).run_once()
-        result = service.get_run(run.run_id)
+        result = service.runs.get_run(run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
         assert not any(
             item.artifact_type == "qc.head_motion_report"
-            for item in service.list_artifacts(run.run_id)
+            for item in service.runs.list_artifacts(run.run_id)
         )
         assert service.repository.get_latest_qc_review_for_run(run.run_id) is None
 
-        rebuilt = service.create_head_motion_qc_review(
+        rebuilt = service.runs.create_head_motion_qc_review(
             run.run_id,
             HeadMotionQcCreate(expected_run_version=result.version),
             "rebuild-missing-head-motion-qc",
@@ -480,7 +484,7 @@ def test_head_motion_qc_endpoint_rebuilds_missing_report_from_realign_parameter(
 
         report = next(
             item
-            for item in service.list_artifacts(run.run_id)
+            for item in service.runs.list_artifacts(run.run_id)
             if item.artifact_type == "qc.head_motion_report"
         )
         assert report.provenance["head_motion_qc"]["included_subject_ids"] == ["sub-01"]
@@ -501,8 +505,8 @@ def test_preprocessing_source_drift_never_starts_matlab(tmp_path, monkeypatch):
     monkeypatch.setattr(ControlledMatlabExecutor, "execute", forbidden)
     try:
         assert build_worker(service).run_once()
-        assert service.get_run(run.run_id).state.value == "failed_terminal"
-        assert not service.list_artifacts(run.run_id)
+        assert service.runs.get_run(run.run_id).state.value == "failed_terminal"
+        assert not service.runs.list_artifacts(run.run_id)
     finally:
         service.close()
 
@@ -526,9 +530,9 @@ def test_real_preprocessing_smoke(monkeypatch):
     print(f"SYNTHETIC_SMOKE_DIRECTORY={root}")
     try:
         assert build_worker(service).run_once()
-        result = service.get_run(run.run_id)
+        result = service.runs.get_run(run.run_id)
         assert result.state.value == "qc_review", result.model_dump_json()
-        artifacts = service.list_artifacts(run.run_id)
+        artifacts = service.runs.list_artifacts(run.run_id)
         image = next(
             item for item in artifacts if item.artifact_type.endswith("functional_timeseries")
         )
@@ -550,10 +554,10 @@ def test_real_preprocessing_smoke(monkeypatch):
 
 
 def _run_combined_smoke(service, source_run, source):
-    project = service.get_project(source_run.project_id)
+    project = service.projects.get_project(source_run.project_id)
     source_plan = service.repository.get_plan(source_run.plan_revision_id)
-    manifest = service.get_manifest(source_plan.plan["dataset_manifest_id"])
-    registered = service.list_artifacts(source_run.run_id)
+    manifest = service.projects.get_manifest(source_plan.plan["dataset_manifest_id"])
+    registered = service.runs.list_artifacts(source_run.run_id)
     timeseries = next(
         item for item in registered if item.artifact_type.endswith("functional_timeseries")
     )
@@ -586,7 +590,7 @@ def _run_combined_smoke(service, source_run, source):
     )
     mask = next(
         item
-        for item in service.list_artifacts(source_run.run_id)
+        for item in service.runs.list_artifacts(source_run.run_id)
         if item.artifact_type == "brain_mask"
     )
     intent = _skill_request(
@@ -603,15 +607,15 @@ def _run_combined_smoke(service, source_run, source):
     intent.update(request_preprocessing=True, preprocessing=params, input_artifact_id=None)
     intent["alff_falff"]["mask_artifact_id"] = mask.artifact_id
     intent["reho"]["mask_artifact_id"] = mask.artifact_id
-    resolved = service.resolve_skill_plan(
+    resolved = service.skills.resolve_skill_plan(
         SkillPlanResolveRequest(
             request=SkillPlanIntent.model_validate(intent),
-            expected_project_version=service.get_project(project.project_id).version,
+            expected_project_version=service.projects.get_project(project.project_id).version,
         ),
         "combined-resolve",
     )
     plan = resolved.plan_revision
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -622,7 +626,7 @@ def _run_combined_smoke(service, source_run, source):
         ),
         "combined-approve",
     )
-    run = service.create_run(
+    run = service.runs.create_run(
         RunCreate(
             project_id=project.project_id,
             plan_revision_id=plan.plan_revision_id,
@@ -633,9 +637,9 @@ def _run_combined_smoke(service, source_run, source):
         "combined-run",
     )
     assert build_worker(service).run_once()
-    result = service.get_run(run.run_id)
+    result = service.runs.get_run(run.run_id)
     assert result.state.value == "qc_review", result.model_dump_json()
-    artifacts = service.list_artifacts(run.run_id)
+    artifacts = service.runs.list_artifacts(run.run_id)
     for metric in ("alff", "falff", "reho"):
         artifact = next(
             item for item in artifacts if item.artifact_type == f"metric.{metric}.z_score"

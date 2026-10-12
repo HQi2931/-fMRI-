@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { api } from "../api/client";
+import { environmentApi } from "../api/environment";
 
 export type ConnectionState = "checking" | "online" | "offline";
 
@@ -9,7 +9,7 @@ export function useApiHealth(): ConnectionState {
 
   useEffect(() => {
     const controller = new AbortController();
-    api
+    environmentApi
       .health(controller.signal)
       .then(() => setState("online"))
       .catch((error: unknown) => {

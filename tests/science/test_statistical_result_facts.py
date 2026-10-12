@@ -4,7 +4,10 @@ import json
 
 import pytest
 
-from neuroagent.application.contracts import StatisticalClusterRoiView, StatisticalResultDetailView
+from neuroagent.application.contracts.statistics import (
+    StatisticalClusterRoiView,
+    StatisticalResultDetailView,
+)
 from neuroagent.application.reporting import build_statistical_reproducibility_report
 from neuroagent.application.statistical_result_facts import (
     aggregate_roi,

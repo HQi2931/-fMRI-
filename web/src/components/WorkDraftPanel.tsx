@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { describeError } from "../api/client";
+import { describeError } from "../api/transport";
 import type { ConfirmationRequest } from "./confirmation";
-import { inheritedFieldValue, reviewLabel, sourceLabel, type WorkDraftSnapshot } from "./workDraft";
+import { inheritedFieldValue, reviewLabel, sourceLabel, type WorkDraftSnapshot } from "../features/agent/workDraft";
 import "./work-draft.css";
 
 type ObjectValue = Record<string, unknown>;

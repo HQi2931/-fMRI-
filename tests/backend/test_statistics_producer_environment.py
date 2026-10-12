@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from neuroagent.application.contracts import StatisticalDesignCreate, WorkflowState
+from neuroagent.application.contracts.statistics import (
+    StatisticalDesignCreate,
+)
 from neuroagent.application.statistics_draft import StatisticsDraft
+from neuroagent.domain.lifecycle import (
+    WorkflowState,
+)
 
 from .test_work_analysis_handoffs import _source
 
@@ -13,7 +18,7 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
     service, source_root, work_root, monkeypatch, source_state
 ):
     project, source_run, _, _, _, _ = _source(service, source_root, work_root)
-    proposal, issues = service.prepare_statistical_design_proposal(
+    proposal, issues = service.statistics.prepare_statistical_design_proposal(
         run_id=source_run.run_id,
         draft=StatisticsDraft(
             test="one_sample_t",
@@ -24,7 +29,7 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
         ),
     )
     assert proposal is not None and not issues
-    created = service.create_statistical_design(
+    created = service.statistics.create_statistical_design(
         StatisticalDesignCreate(
             project_id=project.project_id,
             expected_project_version=proposal.project_version,
@@ -34,7 +39,7 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
         "producer-environment-statistics",
     )
     consumer = created.plan_revision
-    producer = service.get_plan(source_run.plan_revision_id)
+    producer = service.plans.get_plan(source_run.plan_revision_id)
     original_plan = service.repository.get_plan
     original_run = service.repository.get_run
     # The lightweight producer's Skill/input checks are covered separately;
@@ -59,14 +64,14 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
     monkeypatch.setattr(
         service, "_skill_plan_staleness_reasons", lambda plan, reasons, verify: reasons
     )
-    reasons = service._plan_staleness_reasons(
+    reasons = service.statistics._plan_staleness_reasons(
         consumer, current_environment_hash=consumer.environment_hash, verify_source_files=False
     )
     assert any(item["code"] == "environment_lock_changed" for item in reasons) is (
         source_state is not WorkflowState.SUCCEEDED
     )
     # A changed current environment still invalidates the consumer's approval.
-    changed = service._plan_staleness_reasons(
+    changed = service.statistics._plan_staleness_reasons(
         consumer, current_environment_hash="f" * 64, verify_source_files=False
     )
     assert any(item["code"] == "environment_lock_changed" for item in changed)

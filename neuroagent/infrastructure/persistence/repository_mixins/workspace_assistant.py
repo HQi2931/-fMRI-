@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     WorkspaceChangeProposal,
     WorkspaceCitation,
     WorkspaceContentConsent,

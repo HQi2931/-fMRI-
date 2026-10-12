@@ -6,8 +6,7 @@ from typing import Any
 
 import pytest
 
-from neuroagent.application.contracts import (
-    DatasetKind,
+from neuroagent.application.contracts.projects import (
     DatasetProfile,
     ManifestRevisionView,
     SubjectManifestEntry,
@@ -18,6 +17,9 @@ from neuroagent.domain.fmri import (
     MetricScaling,
     PreprocessingParameters,
     RehoParameters,
+)
+from neuroagent.domain.fmri.dataset import (
+    DatasetKind,
 )
 from neuroagent.execution.models import ArtifactPathBinding, PreprocessingJobPayload
 from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
