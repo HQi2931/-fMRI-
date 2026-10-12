@@ -169,6 +169,55 @@ class EventConsumptionDecision(StrEnum):
     STALE = "stale"
 
 
+class RunReadiness(StrEnum):
+    """Safe next action inferred from freshly read authoritative records."""
+
+    WAITING_RUN = "waiting_run"
+    WAITING_USER = "waiting_user"
+    WAITING_DEPENDENCY = "waiting_dependency"
+    BLOCKED = "blocked"
+    INDETERMINATE = "indeterminate"
+
+
+class EventReconciliationReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: int = Field(ge=1)
+    decision: EventConsumptionDecision
+
+
+class AuthoritativeRunSnapshot(BaseModel):
+    """Small read-only view of Workflow, QC and registered Artifact records."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str = Field(min_length=1, max_length=100)
+    run_state: str = Field(min_length=1, max_length=100)
+    run_version: int = Field(ge=1)
+    attempt: int = Field(ge=1)
+    qc_mode: str = Field(min_length=1, max_length=100)
+    qc_status: str = Field(min_length=1, max_length=100)
+    latest_qc_review_id: str | None = Field(default=None, max_length=100)
+    latest_qc_review_state: str | None = Field(default=None, max_length=100)
+    qc_skip_id: str | None = Field(default=None, max_length=100)
+    registered_artifact_ids: tuple[str, ...] = Field(default=(), max_length=1000)
+    registered_artifact_types: tuple[str, ...] = Field(default=(), max_length=1000)
+    resolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=200)
+    unresolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=200)
+
+
+class WorkflowRunReconciliation(BaseModel):
+    """Result of event dedupe followed by authoritative state re-reads."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task: WorkTask
+    readiness: RunReadiness
+    event_receipts: tuple[EventReconciliationReceipt, ...] = Field(default=(), max_length=1000)
+    authoritative: AuthoritativeRunSnapshot | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 _TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.QUEUED: frozenset(
         {
@@ -191,10 +240,22 @@ _TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
         }
     ),
     TaskStatus.WAITING_USER: frozenset(
-        {TaskStatus.RUNNING, TaskStatus.BLOCKED, TaskStatus.CANCELLED}
+        {
+            TaskStatus.RUNNING,
+            TaskStatus.WAITING_RUN,
+            TaskStatus.WAITING_DEPENDENCY,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+        }
     ),
     TaskStatus.WAITING_RUN: frozenset(
-        {TaskStatus.RUNNING, TaskStatus.BLOCKED, TaskStatus.CANCELLED}
+        {
+            TaskStatus.RUNNING,
+            TaskStatus.WAITING_USER,
+            TaskStatus.WAITING_DEPENDENCY,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+        }
     ),
     TaskStatus.WAITING_DEPENDENCY: frozenset(
         {TaskStatus.RUNNING, TaskStatus.BLOCKED, TaskStatus.CANCELLED}

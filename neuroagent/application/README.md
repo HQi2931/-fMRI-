@@ -30,7 +30,7 @@
 - `work_model_runtime.py` 负责角色提示词注入、工具循环、单轮回退和本轮 token/时间预算；`work_dialogue.py` 保留草稿、证据、交接和业务动作编排。
 - `work_models.py` 独立定义模型输出合同，动作字段只接受 `READ`/`PROPOSE` 白名单；`work_dialogue.py` 继续重导出类型以兼容现有调用点。
 - `planning_feedback.py` 与 `preflight_adapter.py` 将 Work 草稿检查映射为有来源和修复边界的确定性反馈；Work 两角色的有界提案反馈已通过集成测试。预处理仅在共享预算内修订未批准草稿；统计科研选择留给用户。该回路尚未统一覆盖 Skill 编译与统计设计装配，也不授予批准、启动或任意写入权限。
-- `automation/` 定义持久 WorkTask/TaskStep 的传输中立状态及应用服务；SQLite 仓储通过组合根接入现有 Unit of Work。事件核对任务所绑定的 Run，并以版本、游标和去重回执原子记录。后台事件订阅、领取/唤醒调度及唤醒后重读权威 Run/QC/Artifact 尚未接入，当前接口不等于自动续接。
+- `automation/` 定义持久 WorkTask/TaskStep 的传输中立状态及应用服务；SQLite 仓储通过组合根接入现有 Unit of Work。`reconcile_waiting_run(task_id)` 只用绑定 Run 的事件身份做去重/唤醒，再通过 Run `version` 前后夹读重读 Run/QC/Artifact；三次读取仍不稳定时返回 `indeterminate` 并保留任务生命周期状态。`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查尚无或为 draft，以及 `failed` 且审查为 draft，等待用户明确处理；失败状态缺少审查或证据冲突时阻断。通用 Artifact 引用按 ID 与项目归属核验，可指向上游 Run；当前 Run 输出清单独立返回，不用于推断通用引用缺失。不读取事件 payload，不创建 Run 或批准 QC。后台事件订阅、领取/唤醒调度及目标级 Artifact 完整性/下一步骤判定仍未实现，所以该用例不等于自动续接。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。

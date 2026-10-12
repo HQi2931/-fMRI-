@@ -91,7 +91,7 @@ flowchart TD
 
 ### 阶段 B：持久任务推进与事件唤醒
 
-当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。运行事件订阅、唤醒调度，以及唤醒后重新读取权威 Run/QC/Artifact 并准备下一步仍未完成，因此本阶段尚未达到自动续接验收。
+当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或审查状态与 Run 不一致时阻断。终态失败、引用 Artifact 不存在或不属于当前项目时转为 `blocked`。任务引用的 Artifact ID 按通用引用处理，允许指向上游 Run；当前 Run 的登记产物清单单独返回，不与通用引用做差集。成功且 QC 已批准/显式跳过后转为 `waiting_dependency`，等待目标级产物完整性与下一步骤检查。该切片不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。后台事件订阅、领取/唤醒调度和目标级下游准备仍未实现，因此本阶段尚未达到自动续接验收。
 
 目标是解决关闭页面、等待运行、跨角色交接后需要用户手动“继续”的问题。
 
@@ -196,12 +196,14 @@ flowchart TD
 
 本轮形成了四个可独立审查的垂直切片：
 
-- **持久目标状态**：增加 WorkTask/TaskStep 状态合同、SQLite 迁移与仓储、版本化应用服务，并在应用组合根与现有数据库/Unit of Work 共享事务。任务只保存权威对象引用。工作流事件接口核对绑定的 Run，并原子记录去重回执与游标；当前尚无后台事件订阅、任务领取租约、恢复调度或权威 Run/QC/Artifact 重读器。
+- **持久目标状态**：增加 WorkTask/TaskStep 状态合同、SQLite 迁移与仓储、版本化应用服务，并在应用组合根与现有数据库/Unit of Work 共享事务。任务只保存权威对象引用。`reconcile_waiting_run(task_id)` 从事件仓储读取绑定 Run 的新事件，在验证整个事件批次身份后逐个原子记录去重回执/游标，再从现有 Run、QC、Artifact 端口重读权威记录并返回结构化 readiness；Run `version` 在三次尝试中仍不稳定时返回 `indeterminate`，不改变任务生命周期状态。Artifact 引用按 ID 解析并校验项目归属，可来自上游 Run；本切片不以当前 Run 的产物清单推断通用引用缺失，也未实现任务目标级完整性合同。重复消费不重复推进；成功运行仍只进入 `waiting_dependency`，后续步骤解析器、后台事件订阅、任务领取租约与恢复调度仍缺。
 - **预检反馈**：将现有参数/统计校验消息映射为带证据来源、科学语义影响、允许修复边界和指纹的结构化问题。Work 两角色提案路径的有限回路已通过专门集成测试；预处理共享剩余预算修订未批准草稿，分析科研缺项保持为用户决定。该切片没有接管编译、设计装配或授权入口。
 - **单组导入**：一个外部指标组可纳入并形成单样本分析候选；配对设计仍需恰好两个条件组，不凭目录数推断条件。该切片不覆盖完整统计方法、单样本数据学假设审查或广义多 session 设计。
 - **执行单元映射**：预处理编译产物标注单次 `DPARSFA_run` 的物理边界。该合同目前仍未驱动 executor，也没有建立真实物化 checkpoint；既有一次性 DPABI 调用、Worker retry 和产物检查保持原语义。
 
 本轮定向验证：反馈/Work 集成、单组外部导入、WorkTask 持久化服务、执行单元映射及相关回归共 87 项通过；另单独执行科学测试集为 345 项通过、6 项跳过。文档规范检查、相关文件 Ruff 与 Mypy 通过。现有全量后端和前端测试尚未通过：后端出现旧 composition-root mock 接口等兼容失败；前端失败集中在 Node 测试使用相对 `/api/...` URL 的 fetch 解析等既有问题。定向通过不替代全量门禁。未执行真实 MATLAB 计算，不能据此声称 DPABI 数值路径通过。
+
+阶段 B 后续小切片（2026-10-12）：新增按 `task_id` 重核等待中 Run 的应用用例，并在组合根注入现有事件/运行/QC/Artifact 只读端口。SQLite 应用集成测试覆盖运行中、同一 Run 的 retryable 失败与终态失败、成功+QC pending/approved、QC 审查期间版本变化后重读、连续版本变化返回 `indeterminate`、`QC_REVIEW` + failed + draft 等待用户、`awaiting_review` 且尚无草稿时等待用户创建审查、失败状态缺失/冲突审查证据时阻断、上游 Run Artifact 引用、错 Run 事件拒绝及重复事件无二次推进；当前三个 automation 后端测试模块 26 项通过。测试通过不代表已有后台订阅器或续接调度器。当前 task readiness 对成功且 QC 已审定的处理是明确等待目标级依赖，而不是宣称整个 WorkTask 完成。
 
 各阶段分别提交可运行垂直切片，不绑定微服务迁移、目录大搬家或统计科学语义变化。风险最高的是任务提交/幂等/事件收口、后台角色与前台确认边界、输入版本变化、执行单元承诺与 DPABI 实际调用不一致，以及将研究者选择误处理为自动修复。
 

@@ -179,7 +179,13 @@ class ApplicationServices:
         self.statistics = StatisticsMixin()
         self.runs = RunMixin()
         self.models = ModelAgentMixin()
-        self.automation = WorkTaskApplicationService(work_task_repository)
+        self.automation = WorkTaskApplicationService(
+            work_task_repository,
+            event_repository=event_store,
+            run_repository=run_repository,
+            qc_repository=qc_repository,
+            artifact_repository=artifact_repository,
+        )
         capabilities = (
             self.environment,
             self.workspaces,

@@ -1,9 +1,12 @@
 """Persistent user-goal automation contracts and pure state rules."""
 
 from neuroagent.application.automation.models import (
+    AuthoritativeRunSnapshot,
     AuthorityReferences,
     EventConsumptionDecision,
     EventCursor,
+    EventReconciliationReceipt,
+    RunReadiness,
     TaskBudget,
     TaskStatus,
     TaskStep,
@@ -11,6 +14,7 @@ from neuroagent.application.automation.models import (
     WaitingCondition,
     WaitingKind,
     WorkEventIdentity,
+    WorkflowRunReconciliation,
     WorkGoal,
     WorkTask,
     advance_event_cursor,
@@ -22,9 +26,12 @@ from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.automation.service import WorkTaskApplicationService
 
 __all__ = [
+    "AuthoritativeRunSnapshot",
     "AuthorityReferences",
     "EventConsumptionDecision",
     "EventCursor",
+    "EventReconciliationReceipt",
+    "RunReadiness",
     "TaskBudget",
     "TaskStatus",
     "TaskStep",
@@ -36,6 +43,7 @@ __all__ = [
     "WorkTask",
     "WorkTaskApplicationService",
     "WorkTaskRepositoryPort",
+    "WorkflowRunReconciliation",
     "advance_event_cursor",
     "decide_event_consumption",
     "transition_task",

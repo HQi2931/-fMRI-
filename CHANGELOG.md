@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 持久 WorkTask 可按 `task_id` 重核等待中的 Workflow Run：事件只提供去重身份和唤醒信号，应用服务以 Run `version` 前后夹读 Run/QC/Artifact，最多重试三次；持续变化时返回 `indeterminate` 并保留任务生命周期状态。`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查尚无或为 draft，以及 `failed` 且 draft 审查，等待用户明确处理；失败状态缺少审查或证据冲突时阻断。通用 Artifact 引用按 ID/项目归属解析，可引用上游 Run；不会拿当前 Run 的输出清单推断通用引用缺失。成功且 QC 已明确处理后仍停在 `waiting_dependency`，因为目标级 Artifact 完整性和下一步骤判定未实现。不创建 Run、不调用模型、不隐含审批；后台订阅与恢复调度仍待实现。
+
 - 将 `NeuroAgentService` 从多重继承门面改为显式能力组合；新增环境与工作区服务、能力注册端口及按能力仓储协议。API 96 个端点迁入 11 个路由模块，处理器按归属解析能力服务；应用 DTO 按能力拆分且 Python 调用点直接导入所属模块，不再经 `contracts` 聚合重导出；Execution 使用自己的冻结 manifest 协议和领域数据集类型，REST 路径、方法与业务语义保持兼容。
 
 - 将 API 请求和响应 DTO 与应用 commands/query results 分开，路由在边界显式转换；OpenAPI 与 TypeScript 生成快照同步更新。前端 Agent 与 Settings 页面迁入各自 `features/`，拆出会话模型、历史视图、统计操作和草稿模型；生产代码直接使用按能力拆分的 API client，兼容 facade 只留给迁移期调用点，workspace 本地持久化只保留路径和项目选择，运行状态由服务端会话恢复。
