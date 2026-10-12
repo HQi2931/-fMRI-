@@ -177,6 +177,7 @@ class ConversationRepositoryPort(Protocol):
         project_id: str | None,
         active_run_id: str | None,
         tool_calls: Sequence[dict[str, Any]] | None = None,
+        work_task_id: str | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,

@@ -2048,6 +2048,8 @@ export interface components {
             proposal_message_id?: string | null;
             /** Run Id */
             run_id?: string | null;
+            /** Work Task Id */
+            work_task_id?: string | null;
         };
         /** CorrectionCapabilityView */
         CorrectionCapabilityView: {

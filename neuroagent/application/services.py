@@ -185,6 +185,8 @@ class ApplicationServices:
             run_repository=run_repository,
             qc_repository=qc_repository,
             artifact_repository=artifact_repository,
+            conversation_repository=conversation_repository,
+            plan_repository=plan_repository,
         )
         capabilities = (
             self.environment,
@@ -224,6 +226,7 @@ class ApplicationServices:
         self.workspaces.repository = workspace_repository
         self.workspaces.model_gateway = self.models._model_gateway
         self.conversations.repository = conversation_repository
+        self.conversations.automation = self.automation
         self.external_imports.repository = external_import_repository
         self.projects.repository = project_repository
         self.plans.repository = plan_repository

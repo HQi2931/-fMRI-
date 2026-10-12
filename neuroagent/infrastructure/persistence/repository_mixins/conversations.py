@@ -266,6 +266,7 @@ class ConversationMixin(RepositoryBaseMixin):
         project_id: str | None,
         active_run_id: str | None,
         tool_calls: Sequence[dict[str, Any]] | None = None,
+        work_task_id: str | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,
@@ -373,8 +374,36 @@ class ConversationMixin(RepositoryBaseMixin):
                             "proposal_hash": None,
                             "proposal_message_id": None,
                             "plan_revision_id": None,
+                            "work_task_id": None,
+                            "run_id": None,
                         }
                     )
+                if role is WorkAgentRole.PREPROCESSING and work_task_id is not None:
+                    task = task.model_copy(update={"work_task_id": work_task_id})
+                plan_data = assistant_payload.get("plan_revision")
+                if role is WorkAgentRole.PREPROCESSING and isinstance(plan_data, dict):
+                    plan_id = plan_data.get("plan_revision_id")
+                    plan = (
+                        session.get(PlanRevisionRow, plan_id) if isinstance(plan_id, str) else None
+                    )
+                    plan_body = _load(plan.plan_json, {}) if plan is not None else {}
+                    skill_plan = plan_body.get("skill_plan")
+                    if (
+                        plan is not None
+                        and plan.project_id == project_id
+                        and plan_body.get("kind") == "skill_plan"
+                        and isinstance(skill_plan, dict)
+                        and isinstance(skill_plan.get("preprocessing_parameters_hash"), str)
+                    ):
+                        changes: dict[str, Any] = {"plan_revision_id": plan.plan_revision_id}
+                        if task.plan_revision_id != plan.plan_revision_id:
+                            changes.update(
+                                {
+                                    "run_id": None,
+                                    "work_task_id": work_task_id,
+                                }
+                            )
+                        task = task.model_copy(update=changes)
                 proposal = assistant_payload.get("statistical_design_proposal")
                 if (
                     role is WorkAgentRole.ANALYSIS
@@ -400,9 +429,15 @@ class ConversationMixin(RepositoryBaseMixin):
                     if (
                         run is not None
                         and run.project_id == project_id
+                        and task.plan_revision_id in {None, run.plan_revision_id}
                         and (role is WorkAgentRole.ANALYSIS) == is_statistics
                     ):
-                        task = task.model_copy(update={"run_id": active_run_id})
+                        task = task.model_copy(
+                            update={
+                                "run_id": active_run_id,
+                                "plan_revision_id": run.plan_revision_id,
+                            }
+                        )
                 tasks[role.value] = task.model_dump(mode="json")
                 row.work_tasks_json = canonical_json(tasks)
                 row.active_run_id = task.run_id

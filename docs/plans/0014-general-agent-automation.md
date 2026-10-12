@@ -93,6 +93,8 @@ flowchart TD
 
 当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或审查状态与 Run 不一致时阻断。终态失败、引用 Artifact 不存在或不属于当前项目时转为 `blocked`。任务引用的 Artifact ID 按通用引用处理，允许指向上游 Run；当前 Run 的登记产物清单单独返回，不与通用引用做差集。成功且 QC 已批准/显式跳过后转为 `waiting_dependency`，等待目标级产物完整性与下一步骤检查。该切片不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。后台事件订阅、领取/唤醒调度和目标级下游准备仍未实现，因此本阶段尚未达到自动续接验收。
 
+阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。
+
 目标是解决关闭页面、等待运行、跨角色交接后需要用户手动“继续”的问题。
 
 任务：

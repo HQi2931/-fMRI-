@@ -201,6 +201,7 @@ class ConfirmationChallengeView(StrictModel):
 
 class ConversationWorkTaskView(StrictModel):
     agent_role: WorkAgentRole
+    work_task_id: str | None = None
     draft_hash: str | None = None
     proposal_hash: str | None = None
     proposal_message_id: str | None = None

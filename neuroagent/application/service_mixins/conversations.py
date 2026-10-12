@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
+from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.agent import (
     ModelProfileView,
     RsFmriAnswerView,
@@ -21,6 +22,7 @@ from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationMessageView,
     ConversationMode,
+    ConversationRole,
     ConversationToolCallView,
     ConversationToolStatus,
     ConversationTurnCreate,
@@ -71,6 +73,7 @@ from neuroagent.application.work_draft import (
     validate_draft_patch,
 )
 from neuroagent.application.work_tasks import run_for_agent_context
+from neuroagent.application.work_tasks import work_task as conversation_work_task
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
@@ -89,6 +92,7 @@ class ConversationMixin(BaseServiceMixin):
     get_plan: Callable[[str], PlanRevisionView]
     get_run: Callable[[str], RunView]
     list_model_profiles: Callable[[], list[ModelProfileView]]
+    automation: WorkTaskApplicationService
 
     def select_work_agent(
         self,
@@ -179,6 +183,10 @@ class ConversationMixin(BaseServiceMixin):
             saved = latest_payload(conversation, "work_draft")
             if saved is None:
                 raise ConflictError("work_draft_missing", "请先通过对话创建参数草稿。")
+            if saved.get("consumed"):
+                raise ConflictError(
+                    "work_draft_already_started", "此方案已启动，请创建新方案后再编辑参数。"
+                )
             if (
                 not conversation.workspace_path
                 or saved.get("workspace_path") != conversation.workspace_path
@@ -247,6 +255,12 @@ class ConversationMixin(BaseServiceMixin):
                     )
                     payload.update(result.payload)
                     review = result.assistant_content
+            work_task_id = self._commit_preprocessing_work_task_binding(
+                conversation=conversation,
+                user_content=None,
+                payload=payload,
+                project_id=conversation.project_id,
+            )
             stored, user, assistant, tool = self.repository.append_conversation_exchange(
                 conversation_id,
                 user_content="已在参数面板保存修改。",
@@ -257,6 +271,7 @@ class ConversationMixin(BaseServiceMixin):
                 preferred_profile_id=conversation.preferred_profile_id,
                 project_id=conversation.project_id,
                 active_run_id=conversation.active_run_id,
+                work_task_id=work_task_id,
             )
             return ConversationTurnView(
                 conversation=stored, user_message=user, assistant_message=assistant, tool_call=tool
@@ -399,6 +414,12 @@ class ConversationMixin(BaseServiceMixin):
                     proposal=True,
                     snapshot=saved,
                 )
+            work_task_id = self._commit_preprocessing_work_task_binding(
+                conversation=conversation,
+                user_content=None,
+                payload=result.payload,
+                project_id=result.project_id or conversation.project_id,
+            )
             stored, user, assistant, tool = self.repository.append_conversation_exchange(
                 conversation_id,
                 user_content="重新校验当前方案与启动确认。",
@@ -409,6 +430,7 @@ class ConversationMixin(BaseServiceMixin):
                 preferred_profile_id=conversation.preferred_profile_id,
                 project_id=result.project_id or conversation.project_id,
                 active_run_id=conversation.active_run_id,
+                work_task_id=work_task_id,
             )
             return ConversationTurnView(
                 conversation=stored, user_message=user, assistant_message=assistant, tool_call=tool
@@ -658,6 +680,22 @@ class ConversationMixin(BaseServiceMixin):
                 workspace_path = request.workspace_path or conversation.workspace_path
             active_run_id = action_result.active_run_id
             payload = action_result.payload
+            work_task_id: str | None = None
+            if (
+                conversation.mode is ConversationMode.WORK
+                and payload.get("agent_role", conversation.foreground_agent_role.value)
+                == WorkAgentRole.PREPROCESSING.value
+            ):
+                work_task_id = self._commit_preprocessing_work_task_binding(
+                    conversation=conversation,
+                    user_content=request.content,
+                    payload=payload,
+                    project_id=project_id,
+                    bind_run=(
+                        action_result.tool is not None
+                        and action_result.tool.get("tool_name") == "start_dpabi_preprocessing"
+                    ),
+                )
             if action_result.tool is not None:
                 action_result = replace(
                     action_result,
@@ -685,6 +723,7 @@ class ConversationMixin(BaseServiceMixin):
                     preferred_profile_id=preferred_profile_id,
                     project_id=project_id,
                     active_run_id=active_run_id,
+                    work_task_id=work_task_id,
                 )
             )
             candidate_ids = self.conversation_context.persist_memory_candidates(
@@ -728,6 +767,150 @@ class ConversationMixin(BaseServiceMixin):
                 prepare=prepare,
                 finalize=finalize,
             )
+
+    def _commit_preprocessing_work_task_binding(
+        self,
+        *,
+        conversation: ConversationView,
+        user_content: str | None,
+        payload: dict[str, Any],
+        project_id: str | None,
+        bind_run: bool = False,
+    ) -> str | None:
+        """Bind only committed preprocessing Plans and successfully created Runs."""
+
+        def plan_identity(value: Any) -> tuple[str, str] | None:
+            if not isinstance(value, dict):
+                return None
+            plan_id = value.get("plan_revision_id")
+            plan_body = value.get("plan")
+            skill_plan = plan_body.get("skill_plan") if isinstance(plan_body, dict) else None
+            project = value.get("project_id") or project_id
+            if (
+                not isinstance(plan_id, str)
+                or not isinstance(project, str)
+                or not isinstance(plan_body, dict)
+                or plan_body.get("kind") != "skill_plan"
+                or not isinstance(skill_plan, dict)
+                or not isinstance(skill_plan.get("preprocessing_parameters_hash"), str)
+            ):
+                return None
+            return plan_id, project
+
+        def goal_description(plan_revision_id: str) -> str:
+            goal_turns: list[str] = []
+            messages = conversation.messages
+
+            def is_preprocessing_turn(payload: dict[str, Any]) -> bool:
+                if payload.get("agent_role") == WorkAgentRole.PREPROCESSING.value:
+                    return True
+                if isinstance(payload.get("work_draft"), dict):
+                    return True
+                return plan_identity(payload.get("plan_revision")) is not None
+
+            def is_operation_command(content: str) -> bool:
+                normalized = content.strip()
+                if normalized in {
+                    "已在参数面板保存修改。",
+                    "重新校验当前方案与启动确认。",
+                }:
+                    return True
+                return bool(
+                    re.fullmatch(r"确认方案参数 [a-f0-9]{12}", normalized)
+                    or re.fullmatch(
+                        r"批准并启动 [a-f0-9]{12} (?:做头动QC|跳过QC) [a-f0-9-]{36}",
+                        normalized,
+                    )
+                    or re.match(r"^(?:确认启动|重新校验当前方案|查看运行进度|查看 QC)", normalized)
+                )
+
+            for index, message in enumerate(messages[:-1]):
+                if message.role is not ConversationRole.USER:
+                    continue
+                assistant = messages[index + 1]
+                if (
+                    assistant.role is ConversationRole.ASSISTANT
+                    and is_preprocessing_turn(assistant.payload)
+                    and not is_operation_command(message.content)
+                ):
+                    content = message.content.strip()
+                    if content and content not in goal_turns:
+                        goal_turns.append(content)
+            content = (user_content or "").strip()
+            if content and not is_operation_command(content) and content not in goal_turns:
+                goal_turns.append(content)
+            if not goal_turns:
+                # The fallback describes the authoritative Plan without
+                # borrowing a request from another Work role or inventing
+                # additional scientific intent.
+                goal_turns.append(f"执行并核验静息态 fMRI 预处理方案 {plan_revision_id}。")
+            return ("用户目标：\n" + "\n".join(f"- {item}" for item in goal_turns))[-4000:]
+
+        task: Any | None = None
+        plan = plan_identity(payload.get("plan_revision"))
+        if plan is not None:
+            plan_id, effective_project_id = plan
+            task = self.automation.ensure_preprocessing_plan_task(
+                conversation_id=conversation.conversation_id,
+                project_id=effective_project_id,
+                plan_revision_id=plan_id,
+                goal_description=goal_description(plan_id),
+            )
+
+        if not bind_run:
+            return task.task_id if task is not None else None
+
+        run_data = payload.get("run")
+        if not isinstance(run_data, dict):
+            return task.task_id if task is not None else None
+        run_id = run_data.get("run_id")
+        run_plan_revision_id = run_data.get("plan_revision_id")
+        run_project_id = run_data.get("project_id") or project_id
+        if (
+            not isinstance(run_id, str)
+            or not isinstance(run_plan_revision_id, str)
+            or not isinstance(run_project_id, str)
+        ):
+            raise ConflictError(
+                "work_task_run_binding_missing", "新建的预处理运行缺少可核验的项目或方案引用。"
+            )
+        run_plan = self.get_plan(run_plan_revision_id)
+        run_skill_plan = run_plan.plan.get("skill_plan")
+        if (
+            run_plan.project_id != run_project_id
+            or run_plan.plan.get("kind") != "skill_plan"
+            or not isinstance(run_skill_plan, dict)
+            or not isinstance(run_skill_plan.get("preprocessing_parameters_hash"), str)
+        ):
+            return None
+        linked = conversation_work_task(conversation, WorkAgentRole.PREPROCESSING)
+        if (
+            linked is not None
+            and linked.work_task_id is not None
+            and linked.plan_revision_id == run_plan_revision_id
+        ):
+            task_id = linked.work_task_id
+        elif task is not None and task.authority_refs.plan_revision_id == run_plan_revision_id:
+            task_id = task.task_id
+        else:
+            # A legacy conversation may have a valid, previously compiled Plan
+            # but no durable task link. Create the record only after a Run has
+            # actually been created in this same transaction.
+            task = self.automation.ensure_preprocessing_plan_task(
+                conversation_id=conversation.conversation_id,
+                project_id=run_project_id,
+                plan_revision_id=run_plan_revision_id,
+                goal_description=goal_description(run_plan_revision_id),
+            )
+            task_id = task.task_id
+        self.automation.bind_preprocessing_run(
+            task_id=task_id,
+            conversation_id=conversation.conversation_id,
+            project_id=run_project_id,
+            plan_revision_id=run_plan_revision_id,
+            run_id=run_id,
+        )
+        return task_id
 
     async def _send_chat_turn(
         self,

@@ -11,6 +11,7 @@ from neuroagent.api import create_app
 from neuroagent.application.contracts.conversations import (
     WorkDraftUpdate,
 )
+from neuroagent.application.errors import ConflictError
 from neuroagent.bootstrap import build_service
 from tests.backend.test_environment import _fake_stack
 from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
@@ -106,7 +107,7 @@ def confirm(client, session, payload, key="start", **overrides):
     )
 
 
-def test_direct_confirmation_queues_once_and_recovers_response_after_later_edit(reviewed_work):
+def test_direct_confirmation_queues_once_and_rejects_edit_after_start(reviewed_work):
     client, service, session, payload, model = reviewed_work
     first = confirm(client, session, payload)
     assert first.status_code == 200, first.json().get("error")
@@ -118,11 +119,13 @@ def test_direct_confirmation_queues_once_and_recovers_response_after_later_edit(
         == "approved"
     )
     saved = first.json()["assistant_message"]["payload"]["work_draft"]
-    service.conversations.update_work_draft(
-        session,
-        WorkDraftUpdate(base_hash=saved["hash"], patch={"qc_mode": "head_motion"}),
-        "edit-after-start",
-    )
+    with pytest.raises(ConflictError) as exc_info:
+        service.conversations.update_work_draft(
+            session,
+            WorkDraftUpdate(base_hash=saved["hash"], patch={"qc_mode": "head_motion"}),
+            "edit-after-start",
+        )
+    assert exc_info.value.code == "work_draft_already_started"
     replay = confirm(client, session, payload)
     assert replay.status_code == 200, replay.json().get("error")
     assert replay.json() == first.json()
@@ -171,9 +174,10 @@ def test_confirmation_transaction_rolls_back_queue_approval_and_consumption(
     reviewed_work, monkeypatch
 ):
     client, service, session, payload, model = reviewed_work
-    original = service.repository.append_conversation_exchange
+    conversation_repository = service.conversations.repository
+    original = conversation_repository.append_conversation_exchange
     monkeypatch.setattr(
-        service.repository,
+        conversation_repository,
         "append_conversation_exchange",
         Mock(side_effect=RuntimeError("simulated persistence failure")),
     )
@@ -184,7 +188,7 @@ def test_confirmation_transaction_rolls_back_queue_approval_and_consumption(
         service.repository.get_plan(payload["plan_revision"]["plan_revision_id"]).state
         == "awaiting_approval"
     )
-    monkeypatch.setattr(service.repository, "append_conversation_exchange", original)
+    monkeypatch.setattr(conversation_repository, "append_conversation_exchange", original)
     retry = confirm(client, session, payload)
     assert retry.status_code == 200, retry.json().get("error")
     assert len(service.repository.list_runs()) == 1

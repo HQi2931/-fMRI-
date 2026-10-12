@@ -51,7 +51,7 @@ def configure(service: ApplicationServices, monkeypatch: pytest.MonkeyPatch, res
         )
     )
     model = AsyncMock(side_effect=responses)
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", model)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", model)
     return model
 
 

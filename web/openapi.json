@@ -1560,6 +1560,17 @@
               }
             ],
             "title": "Run Id"
+          },
+          "work_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Task Id"
           }
         },
         "required": [
