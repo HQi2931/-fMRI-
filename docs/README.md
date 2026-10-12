@@ -129,6 +129,9 @@
 - [ADR 0033：分析 Agent 使用确定性结果事实](adr/0033-statistical-interpretation-facts.md)
 - [ADR 0034：登记 GRF 实际平滑度与最小簇阈值](adr/0034-grf-effective-evidence.md)
 - [ADR 0035：统计输入保留已完成预处理的历史环境](adr/0035-statistics-producer-environment.md)
+- [ADR 0036：持久 Work 任务与运行状态边界](adr/0036-persistent-work-task-boundary.md)
+- [ADR 0037：fMRI 输入身份与证据来源](adr/0037-fmri-input-identity-and-evidence.md)
+- [ADR 0038：逻辑科研方案与物理执行单元](adr/0038-logical-plan-to-execution-units.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

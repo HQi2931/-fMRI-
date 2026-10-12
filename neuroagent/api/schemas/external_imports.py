@@ -23,7 +23,9 @@ class ExternalAnalysisImportIncludeRequest(StrictHttpModel):
 
     expected_version: int = Field(ge=1)
     included_subject_ids: tuple[str, ...] = Field(min_length=2)
-    group_order: tuple[str, ...] = Field(min_length=2)
+    # Single-group imports are valid for one-sample and correlation designs;
+    # paired-condition cardinality is validated against the inspected layout.
+    group_order: tuple[str, ...] = Field(min_length=1)
     coordinate_space: ExternalCoordinateSpace
     acknowledge_unknown_processing: Literal[True]
     actor: str = Field(min_length=1, max_length=200)

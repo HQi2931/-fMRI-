@@ -30,6 +30,16 @@ from neuroagent.execution.models import (
     PreprocessingJobPayload,
     PreprocessingOutput,
 )
+from neuroagent.execution.units import (
+    ArtifactPort,
+    ExecutionGate,
+    ExecutionUnit,
+    ExecutionUnitKind,
+    GateOutcome,
+    GatePosition,
+    VerificationMaturity,
+    VerificationStage,
+)
 from neuroagent.skills.models import SkillPlan, stable_hash
 from neuroagent.tools.dpabi_v82 import (
     DpabiCfgProjection,
@@ -53,6 +63,7 @@ class PreprocessingCompilation:
     reho: RehoParameters | None
     subjects: tuple[ManifestSubject, ...]
     producer_step_hashes: tuple[tuple[str, str], ...]
+    execution_unit: ExecutionUnit | None
 
 
 def compile_preprocessing(
@@ -359,8 +370,125 @@ def compile_preprocessing(
         if step.step_id
         in {"verify_preprocessed_metadata", "calculate_alff_falff", "calculate_reho"}
     )
+    execution_unit = _dparsfa_execution_unit(plan, spec)
     return PreprocessingCompilation(
-        spec, staging_plan, parameters, alff, reho, subjects, producer_step_hashes
+        spec,
+        staging_plan,
+        parameters,
+        alff,
+        reho,
+        subjects,
+        producer_step_hashes,
+        execution_unit,
+    )
+
+
+_DPARSFA_LOGICAL_CAPABILITIES = frozenset(
+    {
+        "fmri.dpabi.preprocess",
+        "fmri.artifact.verify_metadata",
+        "fmri.dpabi.alff_falff",
+        "fmri.dpabi.prepare_reho",
+        "fmri.dpabi.reho",
+    }
+)
+
+
+def _dparsfa_execution_unit(plan: SkillPlan, spec: MatlabJobSpec) -> ExecutionUnit | None:
+    """Describe the single physical DPARSFA invocation emitted for a SkillPlan.
+
+    Empty-step plans are used by low-level legacy/compiler fixtures, so they
+    deliberately remain unclassified. Runtime-generated reviewed plans carry
+    the logical step identities needed to construct the unit.
+    """
+    logical_step_ids = tuple(
+        step.step_id for step in plan.steps if step.tool.capability in _DPARSFA_LOGICAL_CAPABILITIES
+    )
+    if not logical_step_ids:
+        return None
+
+    if not isinstance(spec.payload, PreprocessingJobPayload):
+        raise ValueError("DPARSFA execution unit requires a preprocessing JobSpec")
+    parameter_values = dict(plan.resolved_parameters)
+    base_cfg_id = spec.payload.base_cfg_artifact_id
+    input_artifact_id = plan.input_artifact_id
+    bindings = {binding.artifact_id: binding for binding in spec.artifact_bindings}
+    inputs: list[ArtifactPort] = []
+    if "preprocessing" in parameter_values:
+        inputs.append(
+            ArtifactPort(
+                artifact_ref=input_artifact_id,
+                artifact_type="functional.source",
+                verification_stage=VerificationStage.BEFORE_CALL,
+            )
+        )
+    for artifact_id, _binding in bindings.items():
+        if artifact_id == base_cfg_id:
+            artifact_type = "configuration.dparsfa_base"
+            reusable_checkpoint = False
+        elif artifact_id == input_artifact_id:
+            artifact_type = "preprocessing.functional_timeseries"
+            reusable_checkpoint = True
+        else:
+            artifact_type = "mask.brain"
+            reusable_checkpoint = False
+        inputs.append(
+            ArtifactPort(
+                artifact_ref=artifact_id,
+                artifact_type=artifact_type,
+                verification_stage=VerificationStage.BEFORE_CALL,
+                reusable_checkpoint=reusable_checkpoint,
+            )
+        )
+
+    outputs = tuple(
+        ArtifactPort(
+            artifact_ref=f"expected:{item.artifact_type}:{item.relative_pattern}",
+            artifact_type=item.artifact_type,
+            verification_stage=VerificationStage.AFTER_CALL,
+            reusable_checkpoint=(item.artifact_type == "preprocessing.functional_timeseries"),
+            required=item.required,
+        )
+        for item in spec.expected_artifacts
+        if item.artifact_type
+        not in {
+            "preprocessing.t1_prepared",
+            "preprocessing.t1_inspection_image",
+            "preprocessing.t1_preparation_evidence",
+        }
+    )
+    return ExecutionUnit(
+        unit_id=f"dparsfa-{plan.plan_hash[:16]}",
+        kind=ExecutionUnitKind.DPARSFA_SINGLE_CALL,
+        logical_step_ids=logical_step_ids,
+        inputs=tuple(inputs),
+        outputs=outputs,
+        gates=(
+            ExecutionGate(
+                gate_id="approved-inputs-bound",
+                position=GatePosition.BEFORE_CALL,
+                outcome=GateOutcome.BLOCK_DISPATCH,
+                evidence_required=(
+                    "plan_hash",
+                    "approval_record_id",
+                    "input_manifest_hash",
+                    "environment_hash",
+                    "read_only_artifact_bindings",
+                ),
+            ),
+            ExecutionGate(
+                gate_id="dpabi-outputs-verified",
+                position=GatePosition.AFTER_CALL,
+                outcome=GateOutcome.FAIL_UNIT,
+                evidence_required=(
+                    "successful_dpabi_return",
+                    "required_artifact_files",
+                    "artifact_sha256",
+                    "actual_metadata_evidence",
+                ),
+            ),
+        ),
+        verification_maturity=VerificationMaturity.CONTRACT_ONLY,
     )
 
 

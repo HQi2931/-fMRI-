@@ -66,8 +66,14 @@ def inspect_external_metric_directory(
         (entry for entry in root_entries if entry.is_dir() and not _is_link(entry)),
         key=lambda entry: entry.name.casefold(),
     )
-    if len(group_dirs) < 2:
-        issues.append("需要至少两个一级组目录；不会从目录顺序推断分组。")
+    minimum_group_dirs = 1 if layout == "grouped" else 2
+    if len(group_dirs) < minimum_group_dirs:
+        if layout == "grouped" and not group_dirs:
+            issues.append(
+                "平铺根目录没有显式组标记（两组布局需至少两个一级组目录；单组目录须显式建为一级目录）。"
+            )
+        else:
+            issues.append("需要至少两个一级组目录；不会从目录顺序推断分组。")
 
     images: list[ExternalMetricImage] = []
     subject_keys: set[str] = set()
@@ -121,6 +127,9 @@ def inspect_external_metric_directory(
             metric_pairs.add((metric_kind, scaling))
 
             subject_id = _subject_id(path.name)
+            if subject_id is None:
+                issues.append(f"无法从指标文件名提取明确受试者标识：{relative}")
+                continue
             key = subject_id.casefold() + (
                 f"\0{group_dir.name.casefold()}" if layout == "paired_conditions" else ""
             )
@@ -332,7 +341,7 @@ def _nifti_stem(name: str) -> str:
     return name[:-7] if name.lower().endswith(".nii.gz") else name[:-4]
 
 
-def _subject_id(name: str) -> str:
+def _subject_id(name: str) -> str | None:
     """Remove DPABI metric markers and preserve site-qualified subject IDs.
 
     DPABI cohort exports often reset IDs such as ``sub011`` for each acquisition
@@ -342,14 +351,16 @@ def _subject_id(name: str) -> str:
     """
 
     stem = _nifti_stem(name)
-    marker = re.search(r"(?:zf?alff|f?alff|z?reho)map", stem, flags=re.IGNORECASE)
+    marker = re.search(r"(?:(?:zf?alff|f?alff|z?reho)map|z?reho)", stem, flags=re.IGNORECASE)
     if marker is None:
         return stem
     prefix = stem[: marker.start()].rstrip("_- ")
     suffix = stem[marker.end() :].strip("_- ")
+    if not prefix and not suffix:
+        return None
     if prefix and suffix:
         return f"{prefix}-{suffix}"
-    return suffix or prefix or stem
+    return suffix or prefix
 
 
 def _infer_metric(filename: str) -> tuple[MetricKind, MetricScaling] | None:

@@ -414,6 +414,11 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
     )
     assert response.payload["analysis_draft"]["draft"]["external_import_id"] == imported.import_id
     context = interpretation.call_args.args[0]["work_context"]
+    assert context["planning_preflight"]
+    assert any(
+        any(repair["boundary"] == "draft_only" for repair in item["repairs"])
+        for item in context["planning_preflight"]
+    )
     assert context["selected_external_source"]["grouping_column"] == "group"
     assert "source_path" not in json.dumps(context["selected_external_source"])
     with pytest.raises(ValidationError, match="cannot select"):

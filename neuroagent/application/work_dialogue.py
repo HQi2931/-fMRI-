@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -26,6 +26,19 @@ from neuroagent.application.contracts.projects import ExternalDemographicsRevisi
 from neuroagent.application.contracts.runs import QcExecutionMode
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError
+from neuroagent.application.planning_feedback import (
+    FeedbackDisposition,
+    PlanningIssue,
+    PlanningIssueKind,
+    RepairAction,
+    RepairBoundary,
+    RepairCandidate,
+)
+from neuroagent.application.planning_feedback_loop import PlanningFeedbackRetrier
+from neuroagent.application.preflight_adapter import (
+    feedback_payload,
+    planning_feedback_for_messages,
+)
 from neuroagent.application.statistical_capabilities import model_visible_capabilities
 from neuroagent.application.statistics_draft import (
     DesignIssue,
@@ -92,6 +105,45 @@ from neuroagent.multi_agent.registry import (
 from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
+
+
+def _changed_fields(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a mergeable partial patch containing only changed draft fields."""
+    changed: dict[str, Any] = {}
+    for key, value in after.items():
+        previous = before.get(key)
+        if isinstance(previous, dict) and isinstance(value, dict):
+            nested = _changed_fields(previous, value)
+            if nested:
+                changed[key] = nested
+        elif key not in before or previous != value:
+            changed[key] = value
+    return changed
+
+
+def _combine_loop_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not audits:
+        return None
+    combined = dict(audits[-1])
+    combined["calls"] = [
+        {**call, "step_index": index}
+        for index, call in enumerate(
+            [call for audit in audits for call in audit.get("calls", [])], start=1
+        )
+    ]
+    combined["steps"] = sum(int(audit.get("steps", 0) or 0) for audit in audits)
+    combined["tool_names"] = list(
+        dict.fromkeys(name for audit in audits for name in audit.get("tool_names", []))
+    )
+    for key in ("workspace_redactions", "workspace_omitted_sensitive"):
+        combined[key] = sum(int(audit.get(key, 0) or 0) for audit in audits)
+    usage: dict[str, int] = {}
+    for audit in audits:
+        for key, value in (audit.get("usage") or {}).items():
+            usage[key] = usage.get(key, 0) + int(value or 0)
+    combined["usage"] = usage
+    combined["fallback_used"] = any(bool(audit.get("fallback_used")) for audit in audits)
+    return combined
 
 
 def latest_payload(conversation: ConversationView, key: str) -> dict[str, Any] | None:
@@ -315,6 +367,33 @@ class WorkDialogue:
             tool_runner=self.tool_runner,
             model_budget=self.model_budget,
             is_valid_response=self._parses,
+        )
+
+    async def _interpret(
+        self,
+        model_context: dict[str, Any],
+        *,
+        preferred_profile_id: str | None,
+        model: str | None,
+        execution_context: AgentExecutionContext | None = None,
+        budget_override: AgentLoopBudget | None = None,
+    ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+        """Interpret one turn through the bounded model/tool runtime.
+
+        Keeping this application boundary named makes the model loop replaceable
+        in tests and keeps both work roles on the same request-budget policy.
+        """
+
+        # Tests and callers may replace the injected runner, generator, or
+        # budget between turns; the runtime must observe the current policy.
+        self.model_runtime.generate = self.generate
+        self.model_runtime.tool_runner = self.tool_runner
+        self.model_runtime.model_budget = budget_override or self.model_budget
+        return await self.model_runtime.interpret(
+            model_context,
+            preferred_profile_id=preferred_profile_id,
+            model=model,
+            execution_context=execution_context,
         )
 
     def input_recovery_confirmation(
@@ -862,6 +941,28 @@ class WorkDialogue:
         loop_metadata: dict[str, Any] | None = None
         failure_stage = "context"
         try:
+            saved_facts = _snapshot_mapping(saved, "facts") or {}
+            preflight_readable_targets = (
+                {
+                    "preprocessing.tr_seconds",
+                    "preprocessing.expected_time_points",
+                    "preprocessing.slice_timing.slice_count",
+                    "preprocessing.slice_timing.slice_order",
+                }
+                if workspace_content_consent
+                and request.workspace_file_scope
+                and request.workspace_file_scope.paths
+                else set()
+            )
+            initial_preflight = planning_feedback_for_messages(
+                review_issues(draft, saved_facts),
+                namespace="preprocessing",
+                draft_revision=draft_hash(draft),
+                facts=saved_facts,
+                sources=_snapshot_sources(saved),
+                prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                readable_targets=preflight_readable_targets,
+            )
             model_context: dict[str, Any] = {
                 "question": request.content,
                 "recent_messages": recent_messages_for_agent(
@@ -879,6 +980,7 @@ class WorkDialogue:
                         "requires_fresh_reads": (saved or {}).get("pending_evidence_paths", []),
                         "requires_refreeze": bool((saved or {}).get("input_manifest_stale")),
                     },
+                    "planning_preflight": feedback_payload(initial_preflight),
                 },
                 "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
                 "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
@@ -915,42 +1017,214 @@ class WorkDialogue:
             packet.metadata["selected"]["messages"] = len(model_context["recent_messages"])
             packet.metadata["work_draft_included"] = True
 
-            # Preferred path: let the model read what it needs before answering.
-            # The loop's final text is the same JSON contract as the single-shot
-            # call, so parsing and authorization below are unchanged.
+            # A deterministic draft review may request one bounded same-turn
+            # correction. Only the candidate draft changes between calls;
+            # confirmation, compilation and execution remain below this loop.
             failure_stage = "model_request"
-            raw_content, metadata, loop_metadata = await self.model_runtime.interpret(
-                model_context,
-                preferred_profile_id=preferred_profile_id,
-                model=request.model,
-                execution_context=AgentExecutionContext(
-                    conversation_id=conversation.conversation_id,
-                    project_id=project_id,
-                    allowed_run_ids=frozenset(
-                        run_id
-                        for run_id in (request.target_run_id, conversation.active_run_id)
-                        if run_id
-                    ),
-                    selected_profile_id=preferred_profile_id,
-                    context_window_tokens=int(packet.metadata.get("context_window_tokens", 16_384)),
-                    max_output_tokens=int(packet.metadata.get("max_output_tokens", 2_048)),
-                    workspace_path=workspace_path,
-                    workspace_file_scope=(
-                        request.workspace_file_scope.paths if request.workspace_file_scope else ()
-                    ),
-                    workspace_content_consent=workspace_content_consent,
-                    workspace_stage_candidates=tuple(
-                        item
-                        for item in model_context["work_context"].get(
-                            "workspace_stage_candidates", []
-                        )
-                        if isinstance(item, dict)
-                    ),
-                    work_agent_role=str(
-                        model_context["work_context"].get("agent_role", "preprocessing")
-                    ),
+            original_draft_values = draft.model_dump(mode="json", exclude={"confirmed_hash"})
+            feedback_state: dict[str, Any] = {
+                "candidate_draft": draft,
+                "candidate_sources": _snapshot_sources(saved),
+                "facts": saved_facts,
+                "preflight": initial_preflight,
+                "latest_loop_metadata": None,
+                "loop_audits": [],
+                "blocked_patch": False,
+            }
+            execution_context = AgentExecutionContext(
+                conversation_id=conversation.conversation_id,
+                project_id=project_id,
+                allowed_run_ids=frozenset(
+                    run_id
+                    for run_id in (request.target_run_id, conversation.active_run_id)
+                    if run_id
+                ),
+                selected_profile_id=preferred_profile_id,
+                context_window_tokens=int(packet.metadata.get("context_window_tokens", 16_384)),
+                max_output_tokens=int(packet.metadata.get("max_output_tokens", 2_048)),
+                workspace_path=workspace_path,
+                workspace_file_scope=(
+                    request.workspace_file_scope.paths if request.workspace_file_scope else ()
+                ),
+                workspace_content_consent=workspace_content_consent,
+                workspace_stage_candidates=tuple(
+                    item
+                    for item in model_context["work_context"].get("workspace_stage_candidates", [])
+                    if isinstance(item, dict)
+                ),
+                work_agent_role=str(
+                    model_context["work_context"].get("agent_role", "preprocessing")
                 ),
             )
+
+            async def interpret_preprocessing(
+                context: dict[str, Any], remaining_budget: AgentLoopBudget
+            ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+                result = await self._interpret(
+                    context,
+                    preferred_profile_id=preferred_profile_id,
+                    model=request.model,
+                    execution_context=execution_context,
+                    budget_override=remaining_budget,
+                )
+                feedback_state["latest_loop_metadata"] = result[2]
+                if result[2] is not None:
+                    feedback_state["loop_audits"].append(result[2])
+                return result
+
+            def validate_preprocessing(
+                content: str, _metadata: Mapping[str, Any]
+            ) -> PlanningIssue | None:
+                parsed = WorkInterpretation.model_validate_json(content)
+                if parsed.action != "prepare_preprocessing_plan":
+                    return None
+                if (
+                    model_context["work_context"].get("workspace_stage_selection_required")
+                    or bool((saved or {}).get("input_manifest_stale"))
+                    or bool((saved or {}).get("pending_evidence_paths"))
+                    or parsed.workspace_edits
+                    or not _valid_workspace_citation_paths(
+                        parsed.workspace_citations,
+                        feedback_state["latest_loop_metadata"],
+                    )
+                ):
+                    return None
+                stage_profile = model_context["work_context"].get("workspace_data_profile")
+                selected_stage = (
+                    str(stage_profile.get("selected_input_stage"))
+                    if isinstance(stage_profile, dict) and stage_profile.get("selected_input_stage")
+                    else None
+                )
+                if parsed.recommended_input_stage and (
+                    selected_stage is None
+                    or selected_stage.casefold() != parsed.recommended_input_stage.casefold()
+                ):
+                    return None
+
+                candidate = feedback_state["candidate_draft"]
+                candidate_sources = feedback_state["candidate_sources"]
+                patch, candidate_sources, blocked = constrained_patch(
+                    candidate.model_dump(mode="json"),
+                    candidate_sources,
+                    parsed.draft_patch,
+                    request.content,
+                )
+                if blocked:
+                    feedback_state["blocked_patch"] = True
+                    return None
+                candidate = merge_work_draft(candidate, patch)
+                feedback_state["candidate_draft"] = candidate
+                feedback_state["candidate_sources"] = candidate_sources
+
+                observed = observed_facts(feedback_state["latest_loop_metadata"])
+                current_facts = merge_observed_facts(feedback_state["facts"], observed)
+                feedback_state["facts"] = current_facts
+                validation_patch: dict[str, Any] = {}
+                for path, value in current_facts.items():
+                    if candidate_sources.get(path) != "user" and not isinstance(value, dict):
+                        set_value(validation_patch, path, value)
+                reviewed = merge_work_draft(candidate, validation_patch)
+                issues = list(review_issues(reviewed, current_facts))
+                pending = sorted(
+                    set(_snapshot_string_list(saved, "pending_evidence_paths")) - set(current_facts)
+                )
+                if pending:
+                    issues.append("输入文件已变化，部分采集信息尚未重新读取，请核实后再启动。")
+                newly_available = {
+                    key for key, value in observed.items() if saved_facts.get(key) != value
+                }
+                entries = planning_feedback_for_messages(
+                    issues,
+                    namespace="preprocessing",
+                    draft_revision=draft_hash(reviewed),
+                    facts=current_facts,
+                    sources=candidate_sources,
+                    prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    newly_available_targets=newly_available,
+                    readable_targets=preflight_readable_targets,
+                )
+                # A choice that disagrees with acquired data is a user decision,
+                # never a correction target for the model.
+                normalized: list[tuple[PlanningIssue, Any]] = []
+                for issue, feedback in entries:
+                    if "当前选择" in issue.message and "读取数据" in issue.message:
+                        issue = replace(
+                            issue,
+                            kind=PlanningIssueKind.CONFLICTING_EVIDENCE,
+                            repairs=(
+                                RepairCandidate(
+                                    RepairAction.ASK_USER,
+                                    RepairBoundary.USER_DECISION,
+                                    issue.target,
+                                ),
+                            ),
+                            changes_scientific_semantics=True,
+                            requires_user_decision=True,
+                            retryable=False,
+                        )
+                    normalized.append((issue, feedback))
+                feedback_state["preflight"] = tuple(normalized)
+                stop = next(
+                    (
+                        issue
+                        for issue, feedback in normalized
+                        if feedback.disposition
+                        in {
+                            FeedbackDisposition.ASK_USER,
+                            FeedbackDisposition.EVIDENCE_CONFLICT,
+                            FeedbackDisposition.BLOCKED_CAPABILITY,
+                        }
+                        or issue.requires_user_decision
+                        or issue.changes_scientific_semantics
+                    ),
+                    None,
+                )
+                if stop is not None:
+                    return stop
+                return normalized[0][0] if normalized else None
+
+            def prepare_preprocessing_feedback(
+                context: dict[str, Any], _issue: PlanningIssue
+            ) -> dict[str, Any]:
+                work_context = dict(context.get("work_context", {}))
+                candidate = feedback_state["candidate_draft"]
+                work_context["parameter_draft"] = candidate.model_dump(
+                    mode="json", exclude={"confirmed_hash"}
+                )
+                work_context["planning_decisions"] = planning_decisions(
+                    candidate, feedback_state["candidate_sources"]
+                )
+                work_context["planning_preflight"] = feedback_payload(feedback_state["preflight"])
+                work_context["input_evidence"] = {
+                    **dict(work_context.get("input_evidence", {})),
+                    "observed_facts": feedback_state["facts"],
+                }
+                return {**context, "work_context": work_context}
+
+            feedback = await PlanningFeedbackRetrier(
+                interpret=interpret_preprocessing,
+                validate=validate_preprocessing,
+                limits=self.model_budget,
+                prepare_feedback_context=prepare_preprocessing_feedback,
+                prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+            ).run(model_context)
+            raw_content, metadata, loop_metadata = (
+                feedback.content,
+                feedback.metadata,
+                feedback.loop_metadata,
+            )
+            if feedback.rounds > 1:
+                metadata = {
+                    **metadata,
+                    "planning_feedback_budget": {
+                        "rounds": feedback.rounds,
+                        "steps_used": feedback.budget.steps,
+                        "tokens_used": feedback.budget.tokens,
+                        "elapsed_seconds": feedback.budget.elapsed_seconds,
+                        "stop_reason": feedback.disposition.value,
+                    },
+                }
+            loop_metadata = _combine_loop_audits(feedback_state["loop_audits"])
             model_metadata = metadata
             if metadata.get("stop_reason") in {"provider_timeout", "budget_time"}:
                 raise ApplicationError(
@@ -968,6 +1242,17 @@ class WorkDialogue:
             if metadata.get("finish_reason") == "length":
                 raise ApplicationError("work_response_truncated", "模型输出不完整。")
             interpreted = WorkInterpretation.model_validate_json(raw_content)
+            if interpreted.action == "prepare_preprocessing_plan":
+                interpreted = interpreted.model_copy(
+                    update={
+                        "draft_patch": _changed_fields(
+                            original_draft_values,
+                            feedback_state["candidate_draft"].model_dump(
+                                mode="json", exclude={"confirmed_hash"}
+                            ),
+                        )
+                    }
+                )
             if not work_agent_allows_action(role, interpreted.action):
                 return reply(
                     "所选 Agent 不负责本次操作，未修改任何草稿或执行任务。请切换到对应角色。",
@@ -1198,8 +1483,40 @@ class WorkDialogue:
                 snapshot["pending_evidence_paths"] = pending_evidence
                 snapshot["input_evidence_stale"] = bool(pending_evidence)
                 snapshot["review_issues"] = list(issues)
+                newly_available_targets = {
+                    path for path, value in current_facts.items() if saved_facts.get(path) != value
+                }
+                validated_feedback = feedback_state["preflight"]
+                if [issue.message for issue, _ in validated_feedback] == list(issues):
+                    # Preserve semantic-conflict classifications made during
+                    # the retrier instead of weakening them when the final
+                    # persisted review is assembled.
+                    checked_preflight = validated_feedback
+                else:
+                    checked_preflight = planning_feedback_for_messages(
+                        issues,
+                        namespace="preprocessing",
+                        draft_revision=draft_hash(draft),
+                        facts=facts,
+                        sources=sources,
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                        newly_available_targets=newly_available_targets,
+                        readable_targets=preflight_readable_targets,
+                    )
+                checked_payload = feedback_payload(checked_preflight)
+                fingerprints = list(
+                    dict.fromkeys(
+                        [
+                            *_snapshot_string_list(saved, "preflight_fingerprints"),
+                            *(item[0].fingerprint for item in checked_preflight),
+                        ]
+                    )
+                )[-100:]
+                snapshot["planning_preflight"] = checked_payload
+                snapshot["preflight_fingerprints"] = fingerprints
                 payload["work_draft"] = snapshot
                 payload["draft_issues"] = list(issues)
+                payload["planning_preflight"] = checked_payload
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
                 if snapshot.get("input_manifest_stale"):
@@ -1519,6 +1836,12 @@ class WorkDialogue:
                 },
             )
 
+        analysis_preflight = planning_feedback_for_messages(
+            statistics_draft_issues(draft),
+            namespace="analysis",
+            draft_revision=statistics_draft_hash(draft),
+            prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+        )
         model_context: dict[str, Any] = {
             "question": request.content,
             "recent_messages": recent_messages_for_agent(conversation, WorkAgentRole.ANALYSIS),
@@ -1557,6 +1880,7 @@ class WorkDialogue:
                     },
                 ),
                 "analysis_draft_issues": list(statistics_draft_issues(draft)),
+                "planning_preflight": feedback_payload(analysis_preflight),
                 "statistical_capabilities": model_visible_capabilities(),
                 "selected_external_source": external_summary,
             },
@@ -1603,10 +1927,19 @@ class WorkDialogue:
                 "当前模型上下文窗口不足，分析草稿已保留。", {"analysis_draft": saved or {}}
             )
 
-        loop_metadata: dict[str, Any] | None = None
-        try:
-            raw, metadata, loop_metadata = await self.model_runtime.interpret(
-                model_context,
+        original_analysis_values = draft.model_dump(mode="json")
+        feedback_state: dict[str, Any] = {
+            "candidate_draft": draft,
+            "preflight": analysis_preflight,
+            "latest_loop_metadata": None,
+            "loop_audits": [],
+        }
+
+        async def interpret_analysis(
+            context: dict[str, Any], remaining_budget: AgentLoopBudget
+        ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+            result = await self._interpret(
+                context,
                 preferred_profile_id=preferred_profile_id,
                 model=request.model,
                 execution_context=AgentExecutionContext(
@@ -1627,7 +1960,155 @@ class WorkDialogue:
                     workspace_content_consent=workspace_content_consent,
                     work_agent_role=WorkAgentRole.ANALYSIS.value,
                 ),
+                budget_override=remaining_budget,
             )
+            feedback_state["latest_loop_metadata"] = result[2]
+            if result[2] is not None:
+                feedback_state["loop_audits"].append(result[2])
+            return result
+
+        def validate_analysis(content: str, _metadata: Mapping[str, Any]) -> PlanningIssue | None:
+            parsed = WorkInterpretation.model_validate_json(content)
+            if parsed.action != "prepare_statistical_analysis" or not parsed.analysis_patch:
+                return None
+            if parsed.workspace_edits or parsed.draft_patch:
+                return None
+            candidate = merge_statistics_draft(
+                feedback_state["candidate_draft"], parsed.analysis_patch
+            )
+            candidate = candidate.model_copy(
+                update={
+                    "source_run_id": None,
+                    "external_import_id": None,
+                    "external_import_hash": None,
+                    "qc_review_revision_id": None,
+                    "qc_review_hash": None,
+                    "qc_skip_id": None,
+                    "qc_skip_hash": None,
+                    "input_manifest_hash": None,
+                    "demographics_revision_id": None,
+                    "demographics_hash": None,
+                    "confirmed_hash": None,
+                }
+            )
+            feedback_state["candidate_draft"] = candidate
+            issues = statistics_draft_issues(candidate)
+            entries = planning_feedback_for_messages(
+                issues,
+                namespace="analysis",
+                draft_revision=statistics_draft_hash(candidate),
+                prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+            )
+            # These missing fields encode the analysis design or inference
+            # contract. A model may explain them, but must not decide them.
+            decision_markers = (
+                "检验类型",
+                "分组列",
+                "分组顺序",
+                "条件列",
+                "条件顺序",
+                "单样本检验基线",
+                "预测变量",
+                "协变量",
+                "校正参数",
+                "校正方法",
+                "尾部",
+                "指标产物类型",
+            )
+            normalized: list[tuple[PlanningIssue, Any]] = []
+            for issue, decision in entries:
+                if issue.kind is PlanningIssueKind.MISSING_EVIDENCE or any(
+                    marker in issue.message for marker in decision_markers
+                ):
+                    issue = replace(
+                        issue,
+                        kind=PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED,
+                        repairs=(
+                            RepairCandidate(
+                                RepairAction.ASK_USER,
+                                RepairBoundary.USER_DECISION,
+                                issue.target,
+                            ),
+                        ),
+                        changes_scientific_semantics=True,
+                        requires_user_decision=True,
+                        retryable=False,
+                    )
+                    decision = replace(
+                        decision,
+                        disposition=FeedbackDisposition.ASK_USER,
+                        reason="analysis design choices require the user's decision",
+                    )
+                normalized.append((issue, decision))
+            feedback_state["preflight"] = tuple(normalized)
+            stop = next(
+                (
+                    issue
+                    for issue, decision in normalized
+                    if decision.disposition
+                    in {
+                        FeedbackDisposition.ASK_USER,
+                        FeedbackDisposition.EVIDENCE_CONFLICT,
+                        FeedbackDisposition.BLOCKED_CAPABILITY,
+                    }
+                    or issue.requires_user_decision
+                    or issue.changes_scientific_semantics
+                ),
+                None,
+            )
+            if stop is not None:
+                return stop
+            return normalized[0][0] if normalized else None
+
+        def prepare_analysis_feedback(
+            context: dict[str, Any], _issue: PlanningIssue
+        ) -> dict[str, Any]:
+            work_context = dict(context.get("work_context", {}))
+            candidate = feedback_state["candidate_draft"]
+            work_context["analysis_draft"] = candidate.model_dump(
+                mode="json",
+                exclude={
+                    "source_run_id",
+                    "external_import_id",
+                    "external_import_hash",
+                    "qc_review_revision_id",
+                    "qc_review_hash",
+                    "qc_skip_id",
+                    "qc_skip_hash",
+                    "input_manifest_hash",
+                    "demographics_revision_id",
+                    "demographics_hash",
+                    "confirmed_hash",
+                },
+            )
+            work_context["analysis_draft_issues"] = list(statistics_draft_issues(candidate))
+            work_context["planning_preflight"] = feedback_payload(feedback_state["preflight"])
+            return {**context, "work_context": work_context}
+
+        try:
+            feedback = await PlanningFeedbackRetrier(
+                interpret=interpret_analysis,
+                validate=validate_analysis,
+                limits=self.model_budget,
+                prepare_feedback_context=prepare_analysis_feedback,
+                prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+            ).run(model_context)
+            raw, metadata, loop_metadata = (
+                feedback.content,
+                feedback.metadata,
+                _combine_loop_audits(feedback_state["loop_audits"]),
+            )
+            if feedback.rounds > 1:
+                metadata = {
+                    **metadata,
+                    "planning_feedback_budget": {
+                        "rounds": feedback.rounds,
+                        "steps_used": feedback.budget.steps,
+                        "tokens_used": feedback.budget.tokens,
+                        "elapsed_seconds": feedback.budget.elapsed_seconds,
+                        "stop_reason": feedback.disposition.value,
+                    },
+                }
             if metadata.get("stop_reason") in {"provider_timeout", "budget_time"}:
                 raise ApplicationError(
                     "work_model_timeout", "数据分析 Agent 请求超时。", status_code=503
@@ -1643,6 +2124,15 @@ class WorkDialogue:
             if metadata.get("finish_reason") == "length":
                 raise ApplicationError("work_response_truncated", "数据分析回复不完整。")
             interpreted = WorkInterpretation.model_validate_json(raw)
+            if interpreted.action == "prepare_statistical_analysis":
+                interpreted = interpreted.model_copy(
+                    update={
+                        "analysis_patch": _changed_fields(
+                            original_analysis_values,
+                            feedback_state["candidate_draft"].model_dump(mode="json"),
+                        )
+                    }
+                )
             payload: dict[str, Any] = {
                 "agent_role": WorkAgentRole.ANALYSIS.value,
                 "agent_name": resolve_work_agent(WorkAgentRole.ANALYSIS).display_name,
@@ -1717,7 +2207,21 @@ class WorkDialogue:
                     }
                 )
                 issues = list(statistics_draft_issues(updated))
+                validated_feedback = feedback_state["preflight"]
+                if [issue.message for issue, _ in validated_feedback] == issues:
+                    # The post-model display must retain the same user-decision
+                    # boundary enforced before another interpretation pass.
+                    checked_analysis_preflight = validated_feedback
+                else:
+                    checked_analysis_preflight = planning_feedback_for_messages(
+                        issues,
+                        namespace="analysis",
+                        draft_revision=statistics_draft_hash(updated),
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    )
+                checked_analysis_payload = feedback_payload(checked_analysis_preflight)
                 payload["draft_issues"] = issues
+                payload["planning_preflight"] = checked_analysis_payload
                 run_id = (
                     None
                     if external_id
@@ -1768,6 +2272,15 @@ class WorkDialogue:
                     "version": _snapshot_int(saved, "version") + 1,
                     "issues": issues,
                     "review": render_statistics_draft_review(updated),
+                    "planning_preflight": checked_analysis_payload,
+                    "preflight_fingerprints": list(
+                        dict.fromkeys(
+                            [
+                                *_snapshot_string_list(saved, "preflight_fingerprints"),
+                                *(item[0].fingerprint for item in checked_analysis_preflight),
+                            ]
+                        )
+                    )[-100:],
                     "source_run_id": updated.source_run_id,
                     "input_manifest_hash": updated.input_manifest_hash,
                     "demographics_revision_id": updated.demographics_revision_id,

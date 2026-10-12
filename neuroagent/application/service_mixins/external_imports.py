@@ -217,6 +217,12 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                     "external_import_metric_unresolved",
                     "无法确认统一的指标类型与缩放版本。",
                 )
+            if current.layout == "paired_conditions" and len(request.group_order) != 2:
+                raise InputValidationError(
+                    "external_import_paired_condition_count",
+                    "配对条件布局必须恰好确认两个条件。",
+                    received_count=len(request.group_order),
+                )
             if set(request.group_order) != set(current.group_order):
                 raise InputValidationError(
                     "external_import_group_order_mismatch",

@@ -9,6 +9,8 @@ from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.providers import ModelProvider
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.secrets import SecretResolver
+from neuroagent.application.automation.ports import WorkTaskRepositoryPort
+from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.chat_tools import build_chat_dispatcher
 from neuroagent.application.contracts.agent import RsFmriQuestionRequest
 from neuroagent.application.conversation_context import ConversationContextCoordinator
@@ -105,6 +107,7 @@ class ApplicationServices:
     statistics: StatisticsMixin
     runs: RunMixin
     models: ModelAgentMixin
+    automation: WorkTaskApplicationService
 
     def __init__(
         self,
@@ -124,6 +127,7 @@ class ApplicationServices:
         plan_repository: PlanRepositoryPort,
         external_import_repository: ExternalAnalysisRepositoryPort,
         model_repository: ModelAgentRepositoryPort,
+        work_task_repository: WorkTaskRepositoryPort,
         path_policy: PathPolicyPort,
         dataset_inspector: DatasetInspectorPort,
         demographics_reader: DemographicsReaderPort,
@@ -175,6 +179,7 @@ class ApplicationServices:
         self.statistics = StatisticsMixin()
         self.runs = RunMixin()
         self.models = ModelAgentMixin()
+        self.automation = WorkTaskApplicationService(work_task_repository)
         capabilities = (
             self.environment,
             self.workspaces,

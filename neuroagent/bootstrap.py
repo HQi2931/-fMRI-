@@ -23,6 +23,9 @@ from neuroagent.infrastructure.mock_executor import MockJobExecutor
 from neuroagent.infrastructure.persistence.artifact_catalog_repository import (
     SqliteArtifactCatalogRepository,
 )
+from neuroagent.infrastructure.persistence.automation_repository import (
+    SqliteWorkTaskRepository,
+)
 from neuroagent.infrastructure.persistence.conversation_repository import (
     SqliteConversationRepository,
 )
@@ -138,6 +141,10 @@ def build_service(
             unit_of_work=resolved_repository.unit_of_work,
         ),
         model_repository=SqliteModelRepository(
+            resolved_database,
+            unit_of_work=resolved_repository.unit_of_work,
+        ),
+        work_task_repository=SqliteWorkTaskRepository(
             resolved_database,
             unit_of_work=resolved_repository.unit_of_work,
         ),

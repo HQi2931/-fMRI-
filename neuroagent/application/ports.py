@@ -13,7 +13,13 @@ from neuroagent.application.repository_ports import (
     RepositoryPort as RepositoryPort,
 )
 from neuroagent.domain.fmri.qc import HeadMotionQcCriteria, HeadMotionQcReport
-from neuroagent.execution.ports import MatlabExecutionCatalog, MockExecutionCatalog
+from neuroagent.execution.ports import (
+    ExecutionResult as ExecutionResult,
+)
+from neuroagent.execution.ports import (
+    MatlabExecutionCatalog,
+    MockExecutionCatalog,
+)
 
 
 class WorkerHostRepositoryPort(

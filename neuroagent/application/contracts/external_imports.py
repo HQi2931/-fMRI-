@@ -31,7 +31,10 @@ class ExternalAnalysisImportIncludeRequest(StrictModel):
 
     expected_version: int = Field(ge=1)
     included_subject_ids: tuple[str, ...] = Field(min_length=2)
-    group_order: tuple[str, ...] = Field(min_length=2)
+    # A grouped layout may contain one cohort for one-sample or correlation
+    # analyses. Paired-condition cardinality is checked against the inspected
+    # layout by the application service.
+    group_order: tuple[str, ...] = Field(min_length=1)
     coordinate_space: ExternalCoordinateSpace
     acknowledge_unknown_processing: Literal[True]
     actor: str = Field(min_length=1, max_length=200)

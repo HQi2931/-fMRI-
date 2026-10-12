@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：matlab_dpabi_engineer
-- 更新日期：2026-10-11
+- 更新日期：2026-10-12
 - 关联：[项目结构](../../docs/architecture/project-structure.md)
 
 `neuroagent.execution` 负责结构化 Job、固定模板、受控进程和产物边界。它不决定科研参数、不修改工作流状态，也不接受 Agent 生成的任意 Shell 或 MATLAB 文本。
@@ -11,6 +11,7 @@
 当前实现包括：
 
 - `MatlabJobSpec`、路径绑定、冻结 SkillPlan/manifest 编译和必需产物合同。
+- `units.py` 定义逻辑 Skill 步骤到物理 `ExecutionUnit` 的边界合同；预处理编译结果会附带一次 `DPARSFA_run` 映射、输入/输出、调用前后 gate 和重试边界。Worker/executor 尚未消费该映射，因此它用于审查与架构演进，不代表调用内暂停或分段恢复已经实现。
 - 执行器协议、`ExecutionResult` 与 MATLAB 编译器所需的窄产物目录端口由 `execution/ports.py` 所有；Worker 领取记录由 `workflow/models.py` 所有。Application 仅为旧调用点保留兼容重导出。编译器与预处理投影均不再导入 Application DTO；冻结 manifest 由 `execution/manifest.py` 的结构化只读协议描述，数据集分类枚举归领域层所有。
 - 固定 MATLAB 模板渲染与 dry-run，可审查输入清单、Cfg、脚本、运行目录和预期产物。
 - `MockMatlabExecutor`，用于 CI 和完整工作流测试。

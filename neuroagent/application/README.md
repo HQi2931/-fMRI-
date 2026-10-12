@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-11
+- 更新日期：2026-10-12
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
@@ -29,6 +29,8 @@
 - `work_prompts.py` 按 Work 角色提供系统提示词；模型网关只接收显式注入的提示词，不再从 `work_context.agent_role` 推断业务角色。提示词中的动作清单直接读取 `work_actions.py`，避免模型契约在应用与 Gateway 之间重复维护；
 - `work_model_runtime.py` 负责角色提示词注入、工具循环、单轮回退和本轮 token/时间预算；`work_dialogue.py` 保留草稿、证据、交接和业务动作编排。
 - `work_models.py` 独立定义模型输出合同，动作字段只接受 `READ`/`PROPOSE` 白名单；`work_dialogue.py` 继续重导出类型以兼容现有调用点。
+- `planning_feedback.py` 与 `preflight_adapter.py` 将 Work 草稿检查映射为有来源和修复边界的确定性反馈；Work 两角色的有界提案反馈已通过集成测试。预处理仅在共享预算内修订未批准草稿；统计科研选择留给用户。该回路尚未统一覆盖 Skill 编译与统计设计装配，也不授予批准、启动或任意写入权限。
+- `automation/` 定义持久 WorkTask/TaskStep 的传输中立状态及应用服务；SQLite 仓储通过组合根接入现有 Unit of Work。事件核对任务所绑定的 Run，并以版本、游标和去重回执原子记录。后台事件订阅、领取/唤醒调度及唤醒后重读权威 Run/QC/Artifact 尚未接入，当前接口不等于自动续接。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。
