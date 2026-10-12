@@ -21,6 +21,7 @@
 | 开发代理规则与完成标准 | [`AGENTS.md`](../AGENTS.md) | [`.agents/`](../.agents/README.md) 为角色契约 |
 | 产品定位与范围 | [MVP 产品范围](product/mvp-scope.md) | 计划文档不作为范围来源 |
 | 系统分层与运行边界 | [系统设计](architecture/system-design.md) | [目标架构](architecture/target-architecture.md) 为演进方向 |
+| Agent 持续自动化编排 | [Agent 通用自动化运行架构方案](architecture/agent-automation-runtime.md) | [计划 0014](plans/0014-general-agent-automation.md) 维护实施阶段和验收 |
 | Skill 层设计 | [静息态 fMRI Skill 层架构](architecture/fmri-skill-layer.md) | 归档中的通用框架草案仅为历史 |
 | 项目结构 | [项目结构](architecture/project-structure.md) | |
 | 统计设计装配 | [统计设计的取值来源与装配](architecture/statistical-design-assembly.md) | |
@@ -47,6 +48,7 @@
 ### 架构
 
 - [系统设计](architecture/system-design.md)
+- [Agent 通用自动化运行架构方案](architecture/agent-automation-runtime.md)
 - [目标架构](architecture/target-architecture.md)
 - [静息态 fMRI Skill 层架构](architecture/fmri-skill-layer.md)
 - [扩展分析服务设计](architecture/analysis-services.md)
