@@ -1,5 +1,10 @@
 """Persistent user-goal automation contracts and pure state rules."""
 
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxClaim,
+    AnalysisOutboxStatus,
+    AnalysisProposalOutbox,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     AuthorityReferences,
@@ -26,6 +31,9 @@ from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.automation.service import WorkTaskApplicationService
 
 __all__ = [
+    "AnalysisOutboxClaim",
+    "AnalysisOutboxStatus",
+    "AnalysisProposalOutbox",
     "AuthoritativeRunSnapshot",
     "AuthorityReferences",
     "EventConsumptionDecision",

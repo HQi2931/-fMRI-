@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxStatus,
+    AnalysisProposalOutbox,
+)
 from neuroagent.application.automation.models import (
     AuthorityReferences,
     EventConsumptionDecision,
@@ -135,6 +139,121 @@ def test_reconciliation_claim_is_exclusive_and_respects_cooldown(tmp_path, monke
     )
     assert second is not None
     assert second.worker_id == "worker-b"
+    database.dispose()
+
+
+def test_analysis_outbox_is_idempotent_and_ready_binds_exact_verified_ids(tmp_path) -> None:
+    path = tmp_path / "analysis-outbox.sqlite"
+    database, repository = open_repository(path)
+    record = AnalysisProposalOutbox(
+        intent_task_id="intent-01",
+        conversation_id="conversation-3",
+        project_id="project-1",
+        preprocessing_task_id="prep-task-1",
+        plan_revision_id="plan-1",
+        manifest_hash="a" * 64,
+        run_id="run-1",
+        analysis_request_hash="b" * 64,
+    )
+    assert repository.ensure_analysis_outbox(record) == record
+    assert repository.ensure_analysis_outbox(record) == record
+    with pytest.raises(ConflictError):
+        repository.ensure_analysis_outbox(record.model_copy(update={"run_id": "wrong-run"}))
+    with pytest.raises(ConflictError):
+        repository.mark_analysis_outbox_ready(
+            "intent-01",
+            preprocessing_task_id="other-task",
+            plan_revision_id="plan-1",
+            manifest_hash="a" * 64,
+            run_id="run-1",
+            artifact_ids=("art-1",),
+        )
+    with pytest.raises(ConflictError):
+        repository.mark_analysis_outbox_ready(
+            "intent-01",
+            preprocessing_task_id="prep-task-1",
+            plan_revision_id="plan-1",
+            manifest_hash="a" * 64,
+            run_id="wrong-run",
+            artifact_ids=("art-1",),
+        )
+
+    ready = repository.mark_analysis_outbox_ready(
+        "intent-01",
+        preprocessing_task_id="prep-task-1",
+        plan_revision_id="plan-1",
+        manifest_hash="a" * 64,
+        run_id="run-1",
+        artifact_ids=("art-2", "art-1"),
+    )
+    assert ready.status is AnalysisOutboxStatus.READY
+    assert ready.artifact_ids == ("art-2", "art-1")
+    assert (
+        repository.mark_analysis_outbox_ready(
+            "intent-01",
+            preprocessing_task_id="prep-task-1",
+            plan_revision_id="plan-1",
+            manifest_hash="a" * 64,
+            run_id="run-1",
+            artifact_ids=("art-2", "art-1"),
+        )
+        == ready
+    )
+    with pytest.raises(ConflictError):
+        repository.mark_analysis_outbox_ready(
+            "intent-01",
+            preprocessing_task_id="prep-task-1",
+            plan_revision_id="plan-1",
+            manifest_hash="a" * 64,
+            run_id="run-1",
+            artifact_ids=("different",),
+        )
+    database.dispose()
+
+    restarted, restarted_repository = open_repository(path)
+    restored = restarted_repository.get_analysis_outbox("intent-01")
+    assert restored == ready
+    assert "analysis_request" not in AnalysisProposalOutbox.model_fields
+    restarted.dispose()
+
+
+def test_analysis_outbox_claim_uses_expiring_lease_and_fencing_token(tmp_path, monkeypatch) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    database, repository = open_repository(tmp_path / "analysis-claim.sqlite")
+    record = AnalysisProposalOutbox(
+        intent_task_id="intent-claim",
+        conversation_id="conversation-3",
+        project_id="project-1",
+        preprocessing_task_id="prep-task-claim",
+        plan_revision_id="plan-claim",
+        manifest_hash="c" * 64,
+        run_id="run-claim",
+        analysis_request_hash="d" * 64,
+    )
+    repository.ensure_analysis_outbox(record)
+    repository.mark_analysis_outbox_ready(
+        record.intent_task_id,
+        preprocessing_task_id=record.preprocessing_task_id,
+        plan_revision_id=record.plan_revision_id,
+        manifest_hash=record.manifest_hash,
+        run_id=record.run_id,
+        artifact_ids=("artifact-1",),
+    )
+    first = repository.claim_analysis_outbox("worker-a", lease_seconds=5)
+    assert first is not None
+    assert first.fencing_token == 1
+    assert repository.validate_analysis_outbox_claim(first)
+    assert repository.claim_analysis_outbox("worker-b", lease_seconds=5) is None
+
+    now[0] += 6
+    second = repository.claim_analysis_outbox("worker-b", lease_seconds=5)
+    assert second is not None
+    assert second.fencing_token == 2
+    assert not repository.validate_analysis_outbox_claim(first)
+    assert repository.validate_analysis_outbox_claim(second)
     database.dispose()
 
 

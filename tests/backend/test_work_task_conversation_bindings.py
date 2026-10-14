@@ -22,6 +22,7 @@ from neuroagent.application.contracts.projects import (
 )
 from neuroagent.application.contracts.runs import QcReviewState, RunCreate
 from neuroagent.application.errors import ConflictError, NotFoundError
+from neuroagent.application.work_agents import analysis_dependency_for_request
 from neuroagent.application.work_draft import draft_hash
 from neuroagent.bootstrap import build_service
 from neuroagent.domain.execution import QcExecutionMode
@@ -86,7 +87,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             ),
             "work-task-binding-conversation",
         )
-        user_goal = "请对这批静息态 fMRI 数据做预处理，并保留预处理后的目标产物。"
+        user_goal = "先预处理这批静息态 fMRI 数据，然后对 ALFF 做两组统计比较。"
+        analysis_intent = analysis_dependency_for_request(user_goal, project.project_id)
+        assert analysis_intent is not None
         draft = complete_draft()
         service.repository.append_conversation_exchange(
             conversation.conversation_id,
@@ -102,6 +105,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                     "workspace_path": str(source),
                     "compiled": False,
                 },
+                "analysis_dependency": analysis_intent,
             },
             tool=None,
             workspace_path=str(source),
@@ -244,6 +248,21 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert unchanged_view.plan_revision_id == plan_id
             assert unchanged_view.run_id == run_id
             assert service.automation.get_task(task_id).status is TaskStatus.WAITING_RUN
+            pending_outbox = (
+                service.automation._repository.get_analysis_outbox_for_preprocessing_task(task_id)
+            )
+            assert pending_outbox is not None
+            assert pending_outbox.intent_task_id == analysis_intent["task_id"]
+            assert pending_outbox.run_id == run_id
+            assert pending_outbox.plan_revision_id == plan_id
+            assert pending_outbox.artifact_ids == ()
+            with pytest.raises(ConflictError, match="项目"):
+                service.automation.ensure_analysis_proposal_outbox(
+                    intent=analysis_intent,
+                    conversation_id=conversation.conversation_id,
+                    project_id="wrong-project",
+                    preprocessing_task_id=task_id,
+                )
 
             # A progress lookup for an older Run from another Work conversation
             # must not create a task for that old Plan or replace this current link.
@@ -298,6 +317,12 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             target_task_id = target_task_view["work_task_id"]
             assert target_task_id is not None
             assert service.automation.get_task(target_task_id).status is TaskStatus.WAITING_USER
+            assert (
+                service.automation._repository.get_analysis_outbox_for_preprocessing_task(
+                    target_task_id
+                )
+                is None
+            )
             historical_task_id = service.automation.preprocessing_task_id(
                 target_conversation.conversation_id, plan_id
             )
@@ -509,6 +534,11 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert completed.task.steps[0].status.value == "succeeded"
             assert completed.task.steps[0].authority_refs.artifact_ids == ("verified-timeseries",)
             assert completed.task.authority_refs.artifact_ids == ("verified-timeseries",)
+            ready_outbox = service.automation._repository.get_analysis_outbox(
+                str(analysis_intent["task_id"])
+            )
+            assert ready_outbox.status.value == "ready"
+            assert ready_outbox.artifact_ids == ("verified-timeseries",)
             wrong_subject_lineage = lineage.model_copy(update={"subject_id": "sub-99"})
             wrong_subject_artifact = SimpleNamespace(
                 **{

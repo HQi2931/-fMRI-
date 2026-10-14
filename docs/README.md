@@ -13,6 +13,7 @@
 ## 权威文档表
 
 - [ADR 0018：Work 选项式确认弹窗](adr/0018-work-confirmation-dialog.md)
+- [ADR 0041：复合任务的提案专用分析续接 outbox](adr/0041-proposal-only-analysis-continuation-outbox.md)
 
 每个主题只有一个事实来源。其他文档只能引用，不得复述结论。
 
@@ -136,6 +137,7 @@
 - [ADR 0038：逻辑科研方案与物理执行单元](adr/0038-logical-plan-to-execution-units.md)
 - [ADR 0039：WorkTask 权威状态重核协调器](adr/0039-work-task-reconciliation-worker.md)
 - [ADR 0040：预处理任务以冻结目标产物完成](adr/0040-preprocessing-task-output-completion.md)
+- [ADR 0041：复合任务的提案专用分析续接 outbox](adr/0041-proposal-only-analysis-continuation-outbox.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

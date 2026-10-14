@@ -13,6 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxClaim,
+    AnalysisOutboxStatus,
+    AnalysisProposalOutbox,
+)
 from neuroagent.application.automation.models import (
     EventConsumptionDecision,
     WorkEventIdentity,
@@ -110,6 +115,239 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     "event_cursors": [dict(item) for item in cursor_rows],
                 }
             )
+
+    def ensure_analysis_outbox(self, record: AnalysisProposalOutbox) -> AnalysisProposalOutbox:
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            existing = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": record.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                current = self._outbox_from_row(existing)
+                if (
+                    current.conversation_id != record.conversation_id
+                    or current.project_id != record.project_id
+                    or current.preprocessing_task_id != record.preprocessing_task_id
+                    or current.plan_revision_id != record.plan_revision_id
+                    or current.manifest_hash != record.manifest_hash
+                    or current.run_id != record.run_id
+                    or current.analysis_request_hash != record.analysis_request_hash
+                ):
+                    raise ConflictError(
+                        "analysis_outbox_binding_conflict",
+                        "复合分析续接已绑定到不同的会话、项目或预处理证据。",
+                    )
+                return current
+            session.execute(
+                text(
+                    """INSERT INTO analysis_proposal_outbox
+                    (intent_task_id, conversation_id, project_id, preprocessing_task_id,
+                     plan_revision_id, manifest_hash, run_id, analysis_request_hash,
+                     artifact_ids_json, status, lease_owner, lease_expires_at, fencing_token)
+                    VALUES (:intent_id, :conversation_id, :project_id, :task_id, :plan_id,
+                            :manifest_hash, :run_id, :request_hash, '[]', 'pending',
+                            NULL, NULL, 0)"""
+                ),
+                {
+                    "intent_id": record.intent_task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "task_id": record.preprocessing_task_id,
+                    "plan_id": record.plan_revision_id,
+                    "manifest_hash": record.manifest_hash,
+                    "run_id": record.run_id,
+                    "request_hash": record.analysis_request_hash,
+                },
+            )
+        return record
+
+    def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("分析续接 outbox", intent_task_id)
+            return self._outbox_from_row(row)
+
+    def get_analysis_outbox_for_preprocessing_task(
+        self, preprocessing_task_id: str
+    ) -> AnalysisProposalOutbox | None:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM analysis_proposal_outbox "
+                        "WHERE preprocessing_task_id=:task_id"
+                    ),
+                    {"task_id": preprocessing_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            return self._outbox_from_row(row) if row is not None else None
+
+    def mark_analysis_outbox_ready(
+        self,
+        intent_task_id: str,
+        *,
+        preprocessing_task_id: str,
+        plan_revision_id: str,
+        manifest_hash: str,
+        run_id: str,
+        artifact_ids: tuple[str, ...],
+    ) -> AnalysisProposalOutbox:
+        if not artifact_ids or len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("verified Artifact IDs must be nonempty and unique")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("分析续接 outbox", intent_task_id)
+            current = self._outbox_from_row(row)
+            if (
+                current.preprocessing_task_id != preprocessing_task_id
+                or current.plan_revision_id != plan_revision_id
+                or current.manifest_hash != manifest_hash
+                or current.run_id != run_id
+            ):
+                raise ConflictError(
+                    "analysis_outbox_authority_mismatch",
+                    "续接记录绑定了不同的预处理任务、Plan、manifest 或 Run。",
+                )
+            if current.status is AnalysisOutboxStatus.READY:
+                if current.artifact_ids != artifact_ids:
+                    raise ConflictError(
+                        "analysis_outbox_artifacts_conflict", "续接记录已绑定不同的核验产物。"
+                    )
+                return current
+            session.execute(
+                text(
+                    """UPDATE analysis_proposal_outbox SET status='ready',
+                       artifact_ids_json=:artifact_ids
+                       WHERE intent_task_id=:intent_id AND status='pending'"""
+                ),
+                {"artifact_ids": json.dumps(artifact_ids), "intent_id": intent_task_id},
+            )
+            updated = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(updated)
+
+    def claim_analysis_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200 or lease_seconds < 1:
+            raise ValueError("worker_id and positive lease_seconds are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT intent_task_id FROM analysis_proposal_outbox
+                       WHERE status='ready' AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                       ORDER BY intent_task_id LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            intent_id = str(row["intent_task_id"])
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                       SET lease_owner=:owner, lease_expires_at=:expires,
+                           fencing_token=fencing_token+1
+                       WHERE intent_task_id=:intent_id AND status='ready'
+                         AND (lease_expires_at IS NULL OR lease_expires_at<=:now)"""
+                    ),
+                    {
+                        "owner": owner,
+                        "expires": now + lease_seconds,
+                        "intent_id": intent_id,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            token = int(
+                session.execute(
+                    text(
+                        "SELECT fencing_token FROM analysis_proposal_outbox "
+                        "WHERE intent_task_id=:id"
+                    ),
+                    {"id": intent_id},
+                ).scalar_one()
+            )
+        return AnalysisOutboxClaim(
+            intent_task_id=intent_id,
+            worker_id=owner,
+            lease_expires_at=now + lease_seconds,
+            fencing_token=token,
+        )
+
+    def validate_analysis_outbox_claim(self, claim: AnalysisOutboxClaim) -> bool:
+        with self._read_session() as session:
+            row = session.execute(
+                text(
+                    """SELECT 1 FROM analysis_proposal_outbox
+                       WHERE intent_task_id=:intent_id AND status='ready'
+                         AND lease_owner=:owner AND fencing_token=:fence
+                         AND lease_expires_at>:now"""
+                ),
+                {
+                    "intent_id": claim.intent_task_id,
+                    "owner": claim.worker_id,
+                    "fence": claim.fencing_token,
+                    "now": time.time(),
+                },
+            ).first()
+            return row is not None
+
+    @staticmethod
+    def _outbox_from_row(row: Any) -> AnalysisProposalOutbox:
+        return AnalysisProposalOutbox(
+            intent_task_id=row["intent_task_id"],
+            conversation_id=row["conversation_id"],
+            project_id=row["project_id"],
+            preprocessing_task_id=row["preprocessing_task_id"],
+            plan_revision_id=row["plan_revision_id"],
+            manifest_hash=row["manifest_hash"],
+            run_id=row["run_id"],
+            analysis_request_hash=row["analysis_request_hash"],
+            artifact_ids=tuple(json.loads(row["artifact_ids_json"])),
+            status=row["status"],
+            lease_owner=row["lease_owner"],
+            lease_expires_at=row["lease_expires_at"],
+            fencing_token=row["fencing_token"],
+        )
 
     def save_task(
         self,

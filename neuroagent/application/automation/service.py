@@ -10,6 +10,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisProposalOutbox,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     EventConsumptionDecision,
@@ -119,6 +122,68 @@ class WorkTaskApplicationService:
 
     def create_task(self, task: WorkTask) -> WorkTask:
         return self._repository.create_task(task)
+
+    def ensure_analysis_proposal_outbox(
+        self,
+        *,
+        intent: Mapping[str, Any] | None,
+        conversation_id: str,
+        project_id: str,
+        preprocessing_task_id: str,
+    ) -> AnalysisProposalOutbox | None:
+        """Persist a proposal-only outbox only for the explicit composite intent."""
+
+        if not isinstance(intent, Mapping) or intent.get("task_kind") != "preprocess_then_analyze":
+            return None
+        intent_id = intent.get("task_id")
+        request = intent.get("analysis_request")
+        if not isinstance(intent_id, str) or not intent_id or not isinstance(request, str):
+            raise InputValidationError(
+                "analysis_intent_invalid", "复合分析意图缺少稳定身份或原始请求。"
+            )
+        if intent.get("project_id") != project_id:
+            raise ConflictError(
+                "analysis_intent_project_mismatch", "复合分析意图与当前项目不匹配。"
+            )
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        task = self._repository.get_task(preprocessing_task_id)
+        plan_id = task.authority_refs.plan_revision_id
+        run_id = task.authority_refs.workflow_run_id
+        if (
+            task.authority_refs.conversation_id != conversation_id
+            or plan_id is None
+            or run_id is None
+        ):
+            raise ConflictError(
+                "analysis_outbox_preprocessing_binding_missing",
+                "预处理任务尚未绑定冻结方案和运行。",
+            )
+        plan = self._plan_repository.get_plan(plan_id)
+        run = self._run_repository.get_run(run_id)
+        if (
+            plan.plan_revision_id != plan_id
+            or plan.project_id != project_id
+            or task.authority_refs.input_revision != plan.manifest_hash
+            or run.run_id != run_id
+            or run.project_id != project_id
+            or run.plan_revision_id != plan_id
+        ):
+            raise ConflictError(
+                "analysis_outbox_authority_mismatch",
+                "续接记录的项目、预处理任务、Plan、manifest 或 Run 引用不一致。",
+            )
+        record = AnalysisProposalOutbox(
+            intent_task_id=intent_id,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            preprocessing_task_id=preprocessing_task_id,
+            plan_revision_id=plan_id,
+            manifest_hash=plan.manifest_hash,
+            run_id=run_id,
+            analysis_request_hash=content_hash(request.strip()),
+        )
+        return self._repository.ensure_analysis_outbox(record)
 
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
@@ -1289,11 +1354,22 @@ class WorkTaskApplicationService:
                 ),
             }
         )
-        completed = self._save_task(
-            WorkTask.model_validate(completed.model_dump()),
-            expected_version=task.version,
-            claim_token=claim_token,
-        )
+        with self._repository.atomic():
+            completed = self._save_task(
+                WorkTask.model_validate(completed.model_dump()),
+                expected_version=task.version,
+                claim_token=claim_token,
+            )
+            outbox = self._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+            if outbox is not None and self._outbox_intent_matches(outbox):
+                self._repository.mark_analysis_outbox_ready(
+                    outbox.intent_task_id,
+                    preprocessing_task_id=task.task_id,
+                    plan_revision_id=plan_revision_id,
+                    manifest_hash=plan.manifest_hash,
+                    run_id=run_id,
+                    artifact_ids=verified_ids,
+                )
         return WorkflowRunReconciliation(
             task=completed,
             readiness=RunReadiness.COMPLETED,
@@ -1301,6 +1377,28 @@ class WorkTaskApplicationService:
             authoritative=authority.snapshot,
             reason="冻结预处理 Plan、QC 决策及所有精确目标 Artifact 均已核验；任务完成。",
         )
+
+    def _outbox_intent_matches(self, outbox: AnalysisProposalOutbox) -> bool:
+        """Resolve the request only through its exact persisted intent ID."""
+
+        try:
+            conversation = self._conversation_repository.get_conversation(outbox.conversation_id)
+        except NotFoundError:
+            return False
+        if conversation.project_id != outbox.project_id:
+            return False
+        for message in reversed(conversation.messages):
+            intent = message.payload.get("analysis_dependency")
+            if not isinstance(intent, dict) or intent.get("task_id") != outbox.intent_task_id:
+                continue
+            request = intent.get("analysis_request")
+            return (
+                intent.get("task_kind") == "preprocess_then_analyze"
+                and intent.get("project_id") == outbox.project_id
+                and isinstance(request, str)
+                and content_hash(request.strip()) == outbox.analysis_request_hash
+            )
+        return False
 
     def _block_preprocessing_task(
         self,

@@ -921,6 +921,23 @@ class ConversationMixin(BaseServiceMixin):
             plan_revision_id=run_plan_revision_id,
             run_id=run_id,
         )
+        intent = payload.get("analysis_dependency")
+        if not isinstance(intent, dict):
+            intent = next(
+                (
+                    message.payload.get("analysis_dependency")
+                    for message in reversed(conversation.messages)
+                    if isinstance(message.payload.get("analysis_dependency"), dict)
+                    and message.payload["analysis_dependency"].get("project_id") == run_project_id
+                ),
+                None,
+            )
+        self.automation.ensure_analysis_proposal_outbox(
+            intent=intent if isinstance(intent, dict) else None,
+            conversation_id=conversation.conversation_id,
+            project_id=run_project_id,
+            preprocessing_task_id=task_id,
+        )
         return task_id
 
     def _commit_analysis_work_task_binding(

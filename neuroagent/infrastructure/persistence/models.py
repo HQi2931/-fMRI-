@@ -94,6 +94,31 @@ class DatasetSplitRevisionRow(Base):
     __table_args__ = (UniqueConstraint("dataset_id", "revision"),)
 
 
+class AnalysisProposalOutboxRow(Base):
+    __tablename__ = "analysis_proposal_outbox"
+    intent_task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    preprocessing_task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    plan_revision_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    analysis_request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lease_expires_at: Mapped[float | None] = mapped_column(nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "project_id",
+            "preprocessing_task_id",
+            name="uq_analysis_outbox_prep_binding",
+        ),
+    )
+
+
 class PlanRevisionRow(Base):
     __tablename__ = "plan_revisions"
     plan_revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)
