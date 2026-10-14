@@ -145,12 +145,12 @@ async def test_consumer_records_assistant_only_question_and_deduplicates(
                 input_manifest_verified=True,
                 metric_count=300,
                 metric_artifact_types=(
-                metric_type
-                for metric_type in (
-                    "metric.alff.z_score",
-                    "metric.falff.z_score",
-                    "metric.reho.z_score",
-                )
+                    metric_type
+                    for metric_type in (
+                        "metric.alff.z_score",
+                        "metric.falff.z_score",
+                        "metric.reho.z_score",
+                    )
                     for _ in range(100)
                 ),
                 subject_count=100,
@@ -229,11 +229,22 @@ async def test_statistical_assembler_receives_only_verified_targets_and_lineage_
     add_model_profile(service)
     captured = {}
 
-    def assemble(*, draft, run_id, allowed_artifact_ids):
+    def assemble(
+        *,
+        draft,
+        run_id,
+        external_import_id=None,
+        project_id=None,
+        allowed_artifact_ids,
+        verify_source_files=True,
+    ):
         captured.update(
             draft=draft,
             run_id=run_id,
+            external_import_id=external_import_id,
+            project_id=project_id,
             allowed_artifact_ids=allowed_artifact_ids,
+            verify_source_files=verify_source_files,
         )
         return None, (
             DesignIssue(
@@ -242,7 +253,10 @@ async def test_statistical_assembler_receives_only_verified_targets_and_lineage_
             ),
         )
 
-    monkeypatch.setattr(service.work_dialogue, "prepare_statistical_proposal", assemble)
+    # The dialogue's registered callback is the production dry-run. Stub only
+    # the shared proposal assembler here to expose the exact outbox allowlist
+    # it receives; the internal lineage contract has its own real-source test.
+    monkeypatch.setattr(service.statistics, "prepare_work_statistical_design_proposal", assemble)
     monkeypatch.setattr(
         service.work_dialogue,
         "_interpret",
@@ -257,6 +271,8 @@ async def test_statistical_assembler_receives_only_verified_targets_and_lineage_
                             "one_sample_baseline": 0,
                             "metric_artifact_type": "metric.synthetic.alff",
                             "tail": "two_sided",
+                            "missing_value_policy": "error",
+                            "correction_method": "none",
                         },
                     }
                 ),
@@ -280,6 +296,8 @@ async def test_statistical_assembler_receives_only_verified_targets_and_lineage_
 
     assert captured["run_id"] == source.run_id
     assert captured["allowed_artifact_ids"] == frozenset({"target-metric", "registered-mask"})
+    assert captured["draft"].correction_method == "none"
+    assert captured["draft"].missing_value_policy.value == "error"
     assert "forged-extra" not in captured["allowed_artifact_ids"]
     assert result.payload["statistical_design_issues"] == [
         "Synthetic cross-run mask capability boundary."

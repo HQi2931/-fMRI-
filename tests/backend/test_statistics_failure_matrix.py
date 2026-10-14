@@ -477,8 +477,8 @@ def _external_fixture(service, source_root, work_root):
     ("change", "expected_code"),
     [
         ("project", "cross_project_external_import"),
-        ("tail", "external_method_choices_missing"),
-        ("missing_policy", "external_method_choices_missing"),
+        ("tail", "statistics_choice_unresolved"),
+        ("missing_policy", "statistics_choice_unresolved"),
         ("paired", "external_import_layout_mismatch"),
         ("group_column", "external_group_column_invalid"),
         ("metric", "external_metric_type_mismatch"),
@@ -504,12 +504,19 @@ def test_external_statistical_proposal_rejects_invalid_or_stale_source(
         draft.missing_value_policy = None
     elif change == "paired":
         draft.test = StatisticalTest.PAIRED_T
+        draft.condition_column = "condition"
+        draft.condition_order = ["ASD", "HC"]
     elif change == "group_column":
         draft.grouping_column = "undeclared"
     elif change == "metric":
         draft.metric_artifact_type = "external.reho.z_score"
     elif change == "covariate":
-        draft.covariates = [{"name": "age", "centering": "grand_mean"}]
+        draft = StatisticsDraft.model_validate(
+            {
+                **draft.model_dump(mode="python"),
+                "covariates": [{"name": "age", "centering": "grand_mean"}],
+            }
+        )
     elif change == "source_deleted":
         (source / "ASD" / "sub-01-zALFFMap.nii").unlink()
     elif change == "source_replaced":

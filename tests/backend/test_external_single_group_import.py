@@ -4,6 +4,8 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pytest
+from sqlalchemy import inspect, text
 
 from neuroagent.analysis.external_metric_import import inspect_external_metric_directory
 from neuroagent.application.contracts.external_imports import (
@@ -47,6 +49,25 @@ def _project(service: ApplicationServices, source_root: Path, work_root: Path) -
     return project.project_id
 
 
+def _table_counts(service: ApplicationServices) -> dict[str, int]:
+    engine = service.database.engine
+    with engine.connect() as connection:
+        return {
+            table: int(connection.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+            for table in inspect(engine).get_table_names()
+        }
+
+
+def _file_hashes(root: Path) -> dict[str, str]:
+    import hashlib
+
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_single_explicit_group_directory_preserves_subject_identity(
     service: ApplicationServices, source_root: Path, work_root: Path
 ) -> None:
@@ -71,7 +92,10 @@ def test_single_explicit_group_directory_preserves_subject_identity(
 
 
 def test_single_group_import_can_be_included_for_explicit_one_sample_analysis(
-    service: ApplicationServices, source_root: Path, work_root: Path
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_id = _project(service, source_root, work_root)
     source = source_root / "single-group-analysis"
@@ -99,18 +123,17 @@ def test_single_group_import_can_be_included_for_explicit_one_sample_analysis(
         "single-group-analysis-include",
     )
 
+    draft = StatisticsDraft(
+        test=StatisticalTest.ONE_SAMPLE_T,
+        one_sample_baseline=0.0,
+        metric_artifact_type="external.alff.z_score",
+        tail=Tail.TWO_SIDED,
+        missing_value_policy=MissingValuePolicy.ERROR,
+        correction_method="fdr",
+        correction_parameters={"q_threshold": 0.05},
+    )
     proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
-        external_import_id=included.import_id,
-        project_id=project_id,
-        draft=StatisticsDraft(
-            test=StatisticalTest.ONE_SAMPLE_T,
-            one_sample_baseline=0.0,
-            metric_artifact_type="external.alff.z_score",
-            tail=Tail.TWO_SIDED,
-            missing_value_policy=MissingValuePolicy.ERROR,
-            correction_method="fdr",
-            correction_parameters={"q_threshold": 0.05},
-        ),
+        external_import_id=included.import_id, project_id=project_id, draft=draft
     )
 
     assert issues == ()
@@ -120,6 +143,27 @@ def test_single_group_import_can_be_included_for_explicit_one_sample_analysis(
     assert proposal.design.group_order == ()
     assert proposal.design.subject_order == subjects
     assert all(image.group is None for image in proposal.design.images)
+
+    verification_calls: list[bool] = []
+    validate_external = service.statistics._validate_external_statistical_source
+
+    def count_external_checks(request, *, verify_source_files):
+        verification_calls.append(verify_source_files)
+        return validate_external(request, verify_source_files=verify_source_files)
+
+    monkeypatch.setattr(
+        service.statistics, "_validate_external_statistical_source", count_external_checks
+    )
+    before_tables = _table_counts(service)
+    before_files = _file_hashes(source_root)
+    dry_run_proposal, dry_run_issues = service.statistics.dry_run_work_statistical_design_proposal(
+        external_import_id=included.import_id, project_id=project_id, draft=draft
+    )
+    assert dry_run_issues == ()
+    assert dry_run_proposal is not None
+    assert verification_calls == [False, True, False]
+    assert _table_counts(service) == before_tables
+    assert _file_hashes(source_root) == before_files
 
 
 def test_single_group_order_is_not_accepted_for_paired_layout(

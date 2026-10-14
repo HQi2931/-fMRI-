@@ -6,6 +6,18 @@
 - 更新日期：2026-10-10
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-14 Work 统计候选只读 dry-run
+
+Work 统计候选在保存/确认前复用正式 proposal assembler 与确定性来源合同。预检要求明确检验 tail、缺失值策略、校正方式（显式 `none` 表示不校正）及协变量中心化；缺项与无法证明的旧草稿选择进入 `ASK_USER`。内部候选核验已登记 Artifact 的完整 lineage、内容哈希及当前 manifest；外部候选复核纳入记录、人口学 revision、影像目录和 mask 哈希。校正及设计矩阵、Skill 参数 Schema 通过后才生成仅供用户审查的 proposal。未识别的校正字段、来源变化、mask/lineage mismatch 和统计选择缺项均关闭候选。Work 直接 preparer 也应用选择 gate，因此内部调用方不能绕过只读反馈入口的决策合同。
+
+定向验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/science/test_statistics_draft.py tests/backend/test_work_dialogue_feedback.py tests/backend/test_work_analysis_handoffs.py tests/backend/test_external_single_group_import.py tests/backend/test_external_analysis_imports.py tests/backend/test_statistics_producer_environment.py tests/backend/test_statistics_mock_finalization.py tests/backend/test_statistics_failure_matrix.py tests/backend/test_analysis_outbox_consumer.py -q -o addopts=''
+```
+
+结果为 158 passed、1 项依赖 deprecation warning。另行验证：相关 Python 文件 `ruff check` 与 `ruff format --check` 通过，全量 `neuroagent` Mypy 检查 291 个源文件通过，`scripts/check-docs.ps1` 通过。回归包含 no-side-effects 表/文件快照、内部 Artifact lineage 与精确 allowlist、外部文件哈希后重新读取纳入 revision、outbox continuation 进入同一 dry-run callback、未知校正参数拒绝及直接 Work preparer 拒绝未决选择。本切片未运行真实模型、MATLAB 或 DPABI；dry-run 不探测本机环境，也不创建 Plan、Approval、Run、事件、授权、任务或产物，不能作为实际执行成功证据。
+
 ## 2026-10-10 分析解释事实与方法概况
 
 ### 内部来源的真实网页与完整下载验收

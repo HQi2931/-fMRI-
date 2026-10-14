@@ -404,7 +404,7 @@ class ApplicationServices:
             tool_runner=work_tool_runner,
             create_workspace_proposal=self.workspaces.create_workspace_proposal,
             confirm_workspace_stage=self.conversation_work.confirm_workspace_stage,
-            prepare_statistical_proposal=self.statistics.prepare_work_statistical_design_proposal,
+            dry_run_statistical_proposal=self.statistics.dry_run_work_statistical_design_proposal,
             get_external_import=self.external_imports.get_external_analysis_import,
             get_external_demographics=self.external_imports.get_external_demographics,
             prepare_analysis_handoff=self.statistics.prepare_work_analysis_handoff,

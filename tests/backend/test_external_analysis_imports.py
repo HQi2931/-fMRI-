@@ -216,6 +216,7 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
         tail=Tail.TWO_SIDED,
         missing_value_policy=MissingValuePolicy.ERROR,
         covariates=[{"name": "age", "centering": "grand_mean"}],
+        correction_method="none",
     )
     proposal, issues = service.statistics.prepare_work_statistical_design_proposal(
         external_import_id=imported.import_id, project_id=project_id, draft=draft
@@ -241,6 +242,8 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
                     "target_predictor": "age",
                     "grouping_column": None,
                     "group_order": [],
+                    "correction_method": "none",
+                    "correction_parameters": {},
                 }
             ),
         )
@@ -416,7 +419,9 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
     context = interpretation.call_args.args[0]["work_context"]
     assert context["planning_preflight"]
     assert any(
-        any(repair["boundary"] == "draft_only" for repair in item["repairs"])
+        item["disposition"] == "ask_user"
+        and item["changes_scientific_semantics"]
+        and any(repair["boundary"] == "user_decision" for repair in item["repairs"])
         for item in context["planning_preflight"]
     )
     assert context["selected_external_source"]["grouping_column"] == "group"

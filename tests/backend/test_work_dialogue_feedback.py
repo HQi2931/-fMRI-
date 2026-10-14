@@ -38,6 +38,10 @@ def test_analysis_missing_design_choice_stops_without_inventing_a_retry(
     service: ApplicationServices,
 ) -> None:
     service.work_dialogue.model_budget = AgentLoopBudget(max_steps=4, max_total_tokens=20_000)
+    dry_run_calls: list[dict[str, object]] = []
+    service.work_dialogue.dry_run_statistical_proposal = lambda **kwargs: (
+        dry_run_calls.append(kwargs) or (None, ())
+    )
     conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work"), "feedback-analysis-chat"
     )
@@ -76,6 +80,7 @@ def test_analysis_missing_design_choice_stops_without_inventing_a_retry(
     )
 
     assert service.work_dialogue._interpret.await_count == 1
+    assert dry_run_calls == []
     saved = result.payload["analysis_draft"]
     assert saved["draft"]["test"] == "one_sample_t"
     assert any(issue["disposition"] == "ask_user" for issue in saved["planning_preflight"]), [
@@ -83,6 +88,80 @@ def test_analysis_missing_design_choice_stops_without_inventing_a_retry(
     ]
     assert "planning_feedback_budget" not in result.payload
     assert "statistical_design_proposal" not in result.payload
+
+
+def test_analysis_lineage_dry_run_blocker_is_user_visible_and_stops_once(
+    service: ApplicationServices,
+) -> None:
+    from neuroagent.application.statistics_draft import DesignIssue
+
+    service.work_dialogue.model_budget = AgentLoopBudget(max_steps=4, max_total_tokens=20_000)
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "feedback-analysis-lineage-chat"
+    )
+    proposed = {
+        "answer": "整理统计草稿",
+        "action": "prepare_statistical_analysis",
+        "analysis_patch": {
+            "test": "one_sample_t",
+            "one_sample_baseline": 0.0,
+            "metric_artifact_type": "metric.synthetic.alff",
+            "tail": "two_sided",
+            "missing_value_policy": "error",
+            "correction_method": "none",
+        },
+    }
+    dry_run_calls: list[dict[str, object]] = []
+
+    async def interpret(context, **kwargs):
+        return (
+            json.dumps(proposed),
+            {"request_budget": {"model_steps": 1, "total_tokens": 300}},
+            None,
+        )
+
+    def dry_run(**kwargs):
+        dry_run_calls.append(kwargs)
+        return None, (
+            DesignIssue(
+                code="statistics_artifact_manifest_mismatch",
+                message="登记的统计 Artifact 与来源 manifest 不一致。",
+            ),
+        )
+
+    service.work_dialogue._interpret = AsyncMock(side_effect=interpret)
+    service.work_dialogue.dry_run_statistical_proposal = dry_run
+    service.work_dialogue.get_result_facts = None
+    result = asyncio.run(
+        service.work_dialogue._respond_analysis(
+            conversation,
+            ConversationTurnCreate(content="分析 ALFF", target_run_id="synthetic-run"),
+            ContextPacket(
+                question="分析 ALFF",
+                metadata={"token_budget": 12_000, "selected": {}},
+            ),
+            workspace_path=None,
+            project_id=None,
+            preferred_profile_id=None,
+            workspace_content_consent=False,
+            idempotency_key="feedback-analysis-lineage-turn",
+            has_profiles=True,
+            reply=lambda text, payload: WorkActionResult(
+                assistant_content=text, payload=payload or {}
+            ),
+        )
+    )
+
+    assert service.work_dialogue._interpret.await_count == 1
+    assert len(dry_run_calls) == 1
+    assert dry_run_calls[0]["run_id"] == "synthetic-run"
+    assert result.payload["statistical_design_dry_run"]["status"] == "blocked"
+    assert result.payload["statistical_design_dry_run"]["execution_ready"] is False
+    assert result.payload["statistical_design_dry_run"]["environment_probed"] is False
+    assert "statistical_design_proposal" not in result.payload
+    preflight = result.payload["planning_preflight"]
+    assert preflight[0]["kind"] == "conflicting_evidence"
+    assert preflight[0]["disposition"] == "evidence_conflict"
 
 
 def test_preprocessing_scientific_patch_waits_for_user_decision(

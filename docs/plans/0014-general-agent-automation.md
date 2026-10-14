@@ -36,7 +36,7 @@
 
 需要补足的边界：
 
-- Agent loop 在一次模型请求内迭代读取；Work 现在只对预处理/分析草稿提案动作提供有限的同轮预检修订。Skill 编译、统计设计装配和执行前的所有校验仍未统一成通用“反馈—补查—重验”应用服务，分析中的科研缺项继续等待用户决定。
+- Agent loop 在一次模型请求内迭代读取；Work 对预处理/分析草稿提案动作提供有限的同轮预检修订。预处理 Skill 编译与 Work 统计设计装配已分别接入只读 dry-run，但执行前校验尚未统一成通用“反馈—补查—重验”应用服务；分析中的科研缺项继续等待用户决定。
 - `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 已开始承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。现有 Worker 已接入带独立租约和 fencing token 的启动/周期扫描，可重核 Run、QC 决策和统计结果等待；目标预算累计、完整步骤恢复和下游自动准备仍未完成。
 - 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。已能对已绑定运行、QC 决策、冻结预处理目标产物和统计结果做自动重核；显式复合请求可经持久 outbox 自动准备统计草稿。真实统计结果的解释草稿现可由独立 outbox 自动续接；多意图/多分析目标和更广范围的完整目标恢复仍待实现。
 - `SkillResolver` 以有限指标组合选择 Skill。数据扫描能够看到的实体、session/run 和已有中间阶段与执行器实际支持范围仍有差距。例如主预处理单 session，metric-only checkpoint 目前限单主体。
@@ -104,7 +104,7 @@ flowchart TD
 
 ### 阶段 A：结构化预检与有限的校验反馈
 
-当前状态：结构化反馈合同、预检上下文及 Work 两角色的同轮回路已接入。预处理未批准草稿（包括首轮尚未持久化的候选）现可通过只读 `SkillResolver → SkillValidator → SkillCompiler` dry-run，并在预检前后重核项目版本和当前 manifest；该路径不探测本机软件、不创建 Plan、Approval、Run 或事件，也不允许模型修复 Skill 科学阻断。统计设计装配校验仍未接入统一 dry-run。分析草稿缺少检验、基线、预测量或推断参数时会保留为用户决定，不替用户补选；最终持久化反馈沿用冲突/科研决定分类。因此阶段 A 仅完成预处理 Skill dry-run 切片，整体仍为部分完成。
+当前状态：结构化反馈合同、预检上下文及 Work 两角色的同轮回路已接入。预处理未批准草稿（包括首轮尚未持久化的候选）可通过只读 `SkillResolver → SkillValidator → SkillCompiler` dry-run；Work 统计候选调用正式 proposal assembler，并复用来源绑定、完整 lineage、源文件哈希、校正/设计矩阵及 Skill 参数 schema 校验。文件核验后会重读项目及 manifest/外部纳入修订。两类 dry-run 只证明结构与来源预检通过，不证明真实影像或统计可执行，不探测本机软件，不创建 Plan、Approval、Run、事件、授权或任务。tail、missing-value policy、校正方式（含显式 `none`）及协变量中心化必须来自明确选择；无法证明的旧草稿默认值按未决项进入 `ASK_USER`，不由反馈环自动补齐。科研决定和来源冲突交给用户，能力缺口明确停止。该 Stage A 垂直切片已完成；统一执行前反馈服务、编译/审批后的再次重核、跨轮稳定 intent 进度聚合等仍未完成，阶段 A 整体仍为部分完成。
 
 目标是先减少一轮对话内不必要的人工技术排错，不启动跨消息后台循环。
 
@@ -258,6 +258,12 @@ flowchart TD
 - **执行单元映射**：预处理编译产物标注单次 `DPARSFA_run` 的物理边界。该合同目前仍未驱动 executor，也没有建立真实物化 checkpoint；既有一次性 DPABI 调用、Worker retry 和产物检查保持原语义。
 
 本轮定向验证：反馈/Work 集成、单组外部导入、WorkTask 持久化服务、执行单元映射及相关回归共 87 项通过；另单独执行科学测试集为 345 项通过、6 项跳过。文档规范检查、相关文件 Ruff 与 Mypy 通过。现有全量后端和前端测试尚未通过：后端出现旧 composition-root mock 接口等兼容失败；前端失败集中在 Node 测试使用相对 `/api/...` URL 的 fetch 解析等既有问题。定向通过不替代全量门禁。未执行真实 MATLAB 计算，不能据此声称 DPABI 数值路径通过。
+
+### 阶段 A Work 统计设计只读预检（2026-10-14）
+
+Work 统计候选现在在保存/确认前走只读 dry-run：先要求尾部、缺失值策略、校正方法（含明确 `none`）及协变量中心化等必需选择，再复用 proposal assembler 和正式的来源/lineage、源文件哈希、mask allowlist、校正、设计矩阵及 Skill 参数 Schema 校验。外部源文件 hash 完成后会重读纳入及人口学 revision；内部源文件核验后重读项目、Run、Plan 与 manifest。Work 直接 preparer 入口也执行未决选择 gate，未知校正参数不被忽略，设计审查文本展示缺失值策略。所有阻断按类型进入用户决定、证据冲突或能力缺口，不进入自动科学修复；只有同一 draft hash 对应的无阻断 proposal 能展示为待审查设计。
+
+定向命令 `.venv\Scripts\python.exe -m pytest tests/science/test_statistics_draft.py tests/backend/test_work_dialogue_feedback.py tests/backend/test_work_analysis_handoffs.py tests/backend/test_external_single_group_import.py tests/backend/test_external_analysis_imports.py tests/backend/test_statistics_producer_environment.py tests/backend/test_statistics_mock_finalization.py tests/backend/test_statistics_failure_matrix.py tests/backend/test_analysis_outbox_consumer.py -q -o addopts=''` 得到 158 passed。覆盖 Work 草稿 `ASK_USER`/单次无进展停止、内部 lineage 与 allowlist、外部来源后置 revision 重读、outbox 精确输入 allowlist、无数据库/工作区文件写入、未知校正参数及直接 preparer 的缺项拒绝。涉及 Python 文件 Ruff check/format 和全量 `neuroagent` Mypy 通过；`scripts/check-docs.ps1` 通过。未运行模型、MATLAB 或 DPABI。
 
 阶段 B 后续小切片（2026-10-12）：新增按 `task_id` 重核等待中 Run 的应用用例，并在组合根注入现有事件/运行/QC/Artifact 只读端口。SQLite 应用集成测试覆盖运行中、同一 Run 的 retryable 失败与终态失败、成功+QC pending/approved、QC 审查期间版本变化后重读、连续版本变化返回 `indeterminate`、`QC_REVIEW` + failed + draft 等待用户、`awaiting_review` 且尚无草稿时等待用户创建审查、失败状态缺失/冲突审查证据时阻断、上游 Run Artifact 引用、错 Run 事件拒绝及重复事件无二次推进；当前三个 automation 后端测试模块 26 项通过。测试通过不代表已有后台订阅器或续接调度器。当前 task readiness 对成功且 QC 已审定的处理是明确等待目标级依赖，而不是宣称整个 WorkTask 完成。
 

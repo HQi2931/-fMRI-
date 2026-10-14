@@ -15,6 +15,7 @@ from neuroagent.analysis.external_metric_import import (
     inspect_external_mask,
     inspect_external_metric_directory,
 )
+from neuroagent.application.artifact_content import artifact_content_path
 from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.plans import PlanRevisionView
@@ -51,6 +52,7 @@ from neuroagent.application.statistics_draft import (
     proposal_hash,
     render_statistics_draft_review,
     statistics_draft_hash,
+    statistics_draft_issues,
 )
 from neuroagent.application.work_handoffs import (
     WorkAnalysisHandoff,
@@ -66,6 +68,7 @@ from neuroagent.domain.fmri.external_import import external_metric_artifact_id
 from neuroagent.domain.fmri.qc import assert_statistics_ready
 from neuroagent.domain.fmri.results import StatisticalAtlasSelection
 from neuroagent.domain.fmri.statistics import (
+    Centering,
     FdrCorrection,
     GrfCorrection,
     MissingValuePolicy,
@@ -109,7 +112,10 @@ def _choices_from_draft(draft: StatisticsDraft) -> StatisticsChoices:
         target_predictor=draft.target_predictor,
         condition_column=draft.condition_column,
         condition_order=tuple(draft.condition_order),
-        covariates=tuple(draft.covariates),
+        covariates=tuple(
+            item.model_copy(update={"centering": item.centering or Centering.GRAND_MEAN})
+            for item in draft.covariates
+        ),
         tail=draft.tail or Tail.TWO_SIDED,
         one_sample_baseline=draft.one_sample_baseline,
         missing_value_policy=draft.missing_value_policy or MissingValuePolicy.ERROR,
@@ -851,6 +857,10 @@ class StatisticsMixin(BaseServiceMixin):
             image_artifact_ids = tuple(image.artifact_id for image in request.design.images)
             if request.design.qc_source is StatisticalQcSource.EXTERNAL_IMPORT:
                 self._validate_external_statistical_source(request, verify_source_files=True)
+                # The source files can take time to hash. Re-read the binding
+                # after that scan so a concurrent inclusion revision cannot
+                # turn a stale candidate into a green preflight.
+                self._validate_external_statistical_source(request, verify_source_files=False)
             else:
                 source_run_id = self._validate_statistics_qc_source(request, image_artifact_ids)
                 self.artifact_repository.assert_artifacts_belong_to_run(
@@ -1146,8 +1156,15 @@ class StatisticsMixin(BaseServiceMixin):
         external_import_id: str | None = None,
         project_id: str | None = None,
         allowed_artifact_ids: frozenset[str] | None = None,
+        verify_source_files: bool = True,
     ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
         """Bind a Work statistics draft to registered run and demographics evidence."""
+
+        unresolved = statistics_draft_issues(draft)
+        if unresolved:
+            return None, tuple(
+                _design_issue("statistics_choice_unresolved", message) for message in unresolved
+            )
 
         if draft.test is not None:
             capability = next(
@@ -1170,7 +1187,10 @@ class StatisticsMixin(BaseServiceMixin):
                     ),
                 )
             return self.prepare_external_statistical_design_proposal(
-                external_import_id=external_import_id, project_id=project_id, draft=draft
+                external_import_id=external_import_id,
+                project_id=project_id,
+                draft=draft,
+                verify_source_files=verify_source_files,
             )
         if run_id is None:
             return None, (_design_issue("statistics_source_missing", "请先选择统计来源。"),)
@@ -1271,8 +1291,145 @@ class StatisticsMixin(BaseServiceMixin):
             )
         return proposal, issues
 
+    def dry_run_work_statistical_design_proposal(
+        self,
+        *,
+        run_id: str | None = None,
+        draft: StatisticsDraft,
+        external_import_id: str | None = None,
+        project_id: str | None = None,
+        allowed_artifact_ids: frozenset[str] | None = None,
+    ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
+        """Read-only validation of a Work statistical candidate before persistence.
+
+        This deliberately mirrors the deterministic preparation checks performed
+        before ``create_statistical_design`` commits a PlanRevision, but does not
+        probe MATLAB/DPABI, open a transaction for writes, or create a plan,
+        approval, run, event, task, or artifact. Internal source artifacts and
+        their manifest/lineage are rechecked; external source files are only
+        read to verify their registered hashes and grids.
+        """
+
+        unresolved = statistics_draft_issues(draft)
+        if unresolved:
+            return None, tuple(
+                _design_issue("statistics_choice_unresolved", message) for message in unresolved
+            )
+
+        try:
+            proposal, issues = self.prepare_work_statistical_design_proposal(
+                run_id=run_id,
+                draft=draft,
+                external_import_id=external_import_id,
+                project_id=project_id,
+                allowed_artifact_ids=allowed_artifact_ids,
+                # The full source verification below runs once for the candidate.
+                verify_source_files=False,
+            )
+            if issues or proposal is None:
+                return proposal, issues
+
+            request = StatisticalDesignCreate(
+                project_id=proposal.project_id,
+                expected_project_version=proposal.project_version,
+                input_manifest_hash=proposal.input_manifest_hash,
+                design=proposal.design,
+                correction=proposal.correction,
+            )
+            self._require_project_version(request.project_id, request.expected_project_version)
+            image_artifact_ids = tuple(image.artifact_id for image in request.design.images)
+            if request.design.qc_source is StatisticalQcSource.EXTERNAL_IMPORT:
+                self._validate_external_statistical_source(request, verify_source_files=True)
+                # Re-read the inclusion/demographics revisions after hashing the
+                # potentially large external source tree and mask.
+                self._validate_external_statistical_source(request, verify_source_files=False)
+            else:
+                source_run_id = self._validate_statistics_qc_source(request, image_artifact_ids)
+                self.artifact_repository.assert_artifacts_belong_to_run(
+                    (*image_artifact_ids, request.design.mask_artifact_id), source_run_id
+                )
+                self._validate_statistical_artifact_lineage(
+                    request.design,
+                    manifest_hash=request.input_manifest_hash,
+                    source_run_id=source_run_id,
+                )
+                source_run = self.run_repository.get_run(source_run_id)
+                project = self.project_repository.get_project(request.project_id)
+                for artifact_id in (*image_artifact_ids, request.design.mask_artifact_id):
+                    artifact_content_path(
+                        self.artifact_repository.get_artifact(artifact_id), source_run, project
+                    )
+                handoff = self.prepare_work_analysis_handoff(
+                    source_run_id, request.project_id, verify_files=True
+                )
+                if handoff.status != "ready":
+                    return None, tuple(
+                        _design_issue(
+                            f"statistics_{code}",
+                            "来源运行的 manifest、输入或 Artifact lineage 已变化或无法核实。",
+                        )
+                        for code in handoff.blocking_items
+                    ) or (
+                        _design_issue(
+                            "statistics_work_handoff_blocked",
+                            "来源运行的 manifest、输入或 Artifact lineage 已变化或无法核实。",
+                        ),
+                    )
+                # File hashing is read-only but may be long. Re-read all
+                # authority-bearing revisions after it completes.
+                current_project = self.project_repository.get_project(request.project_id)
+                if current_project.version != request.expected_project_version:
+                    raise ConflictError(
+                        "project_version_conflict",
+                        "统计来源核验期间项目版本已变化，请重新检查草稿。",
+                    )
+                current_run = self.run_repository.get_run(source_run_id)
+                current_plan = self.plan_repository.get_plan(current_run.plan_revision_id)
+                current_manifest_id = current_plan.plan.get("dataset_manifest_id")
+                if not isinstance(current_manifest_id, str) or not current_manifest_id:
+                    raise ConflictError(
+                        "source_manifest_unavailable", "来源运行的 manifest 已不可用。"
+                    )
+                current_manifest = self.project_repository.get_manifest(current_manifest_id)
+                if (
+                    current_plan.manifest_hash != request.input_manifest_hash
+                    or current_manifest.content_hash != request.input_manifest_hash
+                    or current_manifest.dataset_id != handoff.data_references.get("dataset_id")
+                ):
+                    raise ConflictError(
+                        "source_manifest_mismatch",
+                        "统计来源核验期间 manifest revision 已变化。",
+                    )
+
+            self._validate_correction(request.design, request.correction)
+            self._require_skill_parameter_schema(
+                "plan-rsfmri-statistics",
+                {
+                    **request.design.model_dump(mode="json"),
+                    "correction": (
+                        None
+                        if request.correction is None
+                        else request.correction.model_dump(mode="json")
+                    ),
+                },
+            )
+            design_matrix(request.design)
+            # Recheck project version after the complete deterministic
+            # validation path, including registered-file reads.
+            self._require_project_version(request.project_id, request.expected_project_version)
+        except ApplicationError as exc:
+            return None, (_design_issue(exc.code, str(exc)),)
+        except (ValidationError, ValueError) as exc:
+            return None, (_design_issue("statistics_dry_run_rejected", str(exc)),)
+        return proposal, ()
+
     def prepare_external_statistical_design_proposal(
-        self, *, external_import_id: str, project_id: str, draft: StatisticsDraft
+        self,
+        *,
+        external_import_id: str,
+        project_id: str,
+        draft: StatisticsDraft,
+        verify_source_files: bool = True,
     ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
         """Bind method choices to an explicitly selected, independently reviewed import."""
         capability = next(
@@ -1421,7 +1578,7 @@ class StatisticsMixin(BaseServiceMixin):
                     design=design,
                     correction=correction,
                 ),
-                verify_source_files=True,
+                verify_source_files=verify_source_files,
             )
         except ApplicationError as exc:
             return None, (_design_issue(exc.code, str(exc)),)

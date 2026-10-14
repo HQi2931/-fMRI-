@@ -40,20 +40,20 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
     )
     consumer = created.plan_revision
     producer = service.plans.get_plan(source_run.plan_revision_id)
-    original_plan = service.repository.get_plan
-    original_run = service.repository.get_run
+    original_plan = service.statistics.plan_repository.get_plan
+    original_run = service.statistics.run_repository.get_run
     # The lightweight producer's Skill/input checks are covered separately;
     # isolate the historical environment boundary using the real QC/design.
     historical = producer.model_copy(
         update={"environment_hash": "a" * 64, "plan": {**producer.plan, "kind": "skill_plan"}}
     )
     monkeypatch.setattr(
-        service.repository,
+        service.statistics.plan_repository,
         "get_plan",
         lambda key: historical if key == producer.plan_revision_id else original_plan(key),
     )
     monkeypatch.setattr(
-        service.repository,
+        service.statistics.run_repository,
         "get_run",
         lambda key: (
             original_run(key).model_copy(update={"state": source_state})
@@ -62,7 +62,9 @@ def test_completed_producer_environment_is_historical_but_consumer_remains_curre
         ),
     )
     monkeypatch.setattr(
-        service, "_skill_plan_staleness_reasons", lambda plan, reasons, verify: reasons
+        service.statistics,
+        "_skill_plan_staleness_reasons",
+        lambda plan, reasons, verify: reasons,
     )
     reasons = service.statistics._plan_staleness_reasons(
         consumer, current_environment_hash=consumer.environment_hash, verify_source_files=False

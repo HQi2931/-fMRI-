@@ -21,6 +21,7 @@ from neuroagent.application.planning_feedback import (
     RepairCandidate,
     decide_feedback,
 )
+from neuroagent.application.statistics_draft import DesignIssue
 
 _READABLE_METADATA_TARGETS = frozenset(
     {
@@ -281,6 +282,147 @@ def planning_feedback_for_skill_issues(
             )
         )
     return tuple(results)
+
+
+def planning_feedback_for_design_issues(
+    issues: Iterable[DesignIssue],
+    *,
+    draft_revision: str,
+    prior_fingerprints: Iterable[str] = (),
+) -> tuple[tuple[PlanningIssue, PreflightFeedback], ...]:
+    """Map statistical dry-run results to fail-closed Work feedback.
+
+    The assembler's prose is never fed through the generic message classifier:
+    known source-revision conflicts and unsupported capabilities retain their
+    typed meaning, known scientific-design failures ask the user, and unknown
+    blockers stop for user review instead of inviting the model to patch them.
+    """
+
+    results: list[tuple[PlanningIssue, PreflightFeedback]] = []
+    prior = tuple(prior_fingerprints)
+    capability_codes = frozenset(
+        {"statistics_capability_not_validated", "skill_parameter_schema_invalid"}
+    )
+    scientific_codes = frozenset(
+        {
+            "design_rejected_by_domain",
+            "correction_rejected_by_domain",
+            "invalid_correction_for_design",
+            "statistics_choice_unresolved",
+        }
+    )
+    for item in issues:
+        safe_code = item.code if _SAFE_TARGET.fullmatch(item.code) else "statistics_dry_run"
+        missing: tuple[str, ...] = ()
+        target = (
+            "input_manifest"
+            if "manifest" in item.code
+            else "registered_artifacts"
+            if "artifact" in item.code or "mask" in item.code
+            else "qc_decision"
+            if "qc_" in item.code
+            else "demographics_revision"
+            if "demographics" in item.code
+            else "external_import_revision"
+            if "external_import" in item.code
+            else "project_revision"
+            if "project" in item.code
+            else "statistical_source"
+            if "source" in item.code
+            else safe_code[:181]
+        )
+        if item.code in capability_codes:
+            kind = PlanningIssueKind.UNSUPPORTED_CAPABILITY
+            repair = RepairCandidate(RepairAction.NONE, RepairBoundary.UNSUPPORTED, target)
+            requires_user = False
+            changes_semantics = False
+            missing = ()
+        elif (
+            item.code in scientific_codes
+            or item.code.startswith("statistics_choice_unresolved")
+            or item.code.endswith("_required")
+        ):
+            kind = PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = True
+            missing = (target,)
+        elif any(token in item.code for token in ("_mismatch", "_changed", "_stale")) or (
+            item.code.startswith("artifact_lineage_")
+            or item.code.startswith("statistics_artifact_")
+            or item.code.startswith("statistics_metric_")
+            or item.code.startswith("statistics_mask_")
+        ):
+            kind = PlanningIssueKind.CONFLICTING_EVIDENCE
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = True
+            missing = ()
+        else:
+            # A deterministic blocker with no registered automatic repair is
+            # surfaced to the user. It is deliberately non-retryable.
+            kind = PlanningIssueKind.MISSING_EVIDENCE
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = False
+            missing = (target,)
+
+        issue = PlanningIssue(
+            code=f"statistics_preflight_{safe_code.casefold()}",
+            kind=kind,
+            target=target,
+            message=item.message,
+            missing_evidence=missing,
+            evidence=(
+                EvidenceRef(
+                    "work_statistics_draft",
+                    EvidenceSourceKind.MODEL_INFERENCE,
+                    EvidenceStatus.CANDIDATE_INFERENCE,
+                    draft_revision,
+                ),
+                *(
+                    (
+                        EvidenceRef(
+                            target,
+                            EvidenceSourceKind.UNKNOWN,
+                            EvidenceStatus.UNKNOWN,
+                        ),
+                    )
+                    if target != safe_code
+                    else ()
+                ),
+            ),
+            repairs=(repair,),
+            changes_scientific_semantics=changes_semantics,
+            requires_user_decision=requires_user,
+            retryable=False,
+        )
+        results.append((issue, decide_feedback(issue, prior_fingerprints=prior)))
+    return tuple(results)
+
+
+def planning_feedback_for_statistics_draft_issues(
+    messages: Iterable[str],
+    *,
+    draft_revision: str,
+    prior_fingerprints: Iterable[str] = (),
+) -> tuple[tuple[PlanningIssue, PreflightFeedback], ...]:
+    """Treat unresolved Work statistics fields as user-controlled decisions."""
+
+    issues: list[DesignIssue] = []
+    for message in messages:
+        suffix = sha256(message.encode("utf-8")).hexdigest()[:12]
+        code = (
+            "statistics_capability_not_validated"
+            if "不受支持" in message or "尚未通过" in message
+            else f"statistics_choice_unresolved_{suffix}"
+        )
+        issues.append(DesignIssue(code=code, message=message))
+    return planning_feedback_for_design_issues(
+        issues,
+        draft_revision=draft_revision,
+        prior_fingerprints=prior_fingerprints,
+    )
 
 
 def planning_feedback_for_input_conflict(

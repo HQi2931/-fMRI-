@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import inspect, text
 
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
@@ -266,6 +267,78 @@ def _work_plan(service, project, run, subjects):
         "handoff-statistical-plan",
     )
     return created.plan_revision, proof
+
+
+def _database_table_counts(service) -> dict[str, int]:
+    engine = service.database.engine
+    with engine.connect() as connection:
+        return {
+            table: int(connection.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+            for table in inspect(engine).get_table_names()
+        }
+
+
+def _file_snapshot(root: Path) -> dict[str, str]:
+    return {
+        item.relative_to(root).as_posix(): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in root.rglob("*")
+        if item.is_file()
+    }
+
+
+def test_work_statistical_dry_run_reuses_lineage_and_allowlist_checks_without_writes(
+    service, source_root, work_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _project, run, _manifest, subjects, metrics, _run_root = _source(
+        service, source_root, work_root
+    )
+    draft = StatisticsDraft(
+        test="one_sample_t",
+        metric_artifact_type="metric.synthetic.alff",
+        one_sample_baseline=0.0,
+        tail="two_sided",
+        missing_value_policy="error",
+        correction_method="fdr",
+        correction_parameters={"q_threshold": 0.05},
+    )
+    checks = {"lineage": 0}
+    validate_lineage = service.statistics._validate_statistical_artifact_lineage
+
+    def count_lineage_checks(*args, **kwargs):
+        checks["lineage"] += 1
+        return validate_lineage(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.statistics, "_validate_statistical_artifact_lineage", count_lineage_checks
+    )
+    before_tables = _database_table_counts(service)
+    before_files = _file_snapshot(work_root)
+    proposal, issues = service.statistics.dry_run_work_statistical_design_proposal(
+        run_id=run.run_id, draft=draft
+    )
+
+    assert issues == ()
+    assert proposal is not None
+    assert proposal.design.subject_order == subjects
+    assert checks["lineage"] == 1
+
+    unresolved = draft.model_copy(update={"correction_method": None, "correction_parameters": {}})
+    blocked, choice_issues = service.statistics.prepare_work_statistical_design_proposal(
+        run_id=run.run_id, draft=unresolved
+    )
+    assert blocked is None
+    assert any("校正尚未明确选择" in item.message for item in choice_issues)
+    assert checks["lineage"] == 1
+
+    omitted_mask, selection_issues = service.statistics.dry_run_work_statistical_design_proposal(
+        run_id=run.run_id,
+        draft=draft,
+        allowed_artifact_ids=frozenset(item.artifact_id for item in metrics),
+    )
+    assert omitted_mask is None
+    assert selection_issues[0].code == "analysis_mask_not_allowlisted"
+    assert _database_table_counts(service) == before_tables
+    assert _file_snapshot(work_root) == before_files
 
 
 def test_full_handoff_is_deterministic_and_preserves_qc_order(service, source_root, work_root):

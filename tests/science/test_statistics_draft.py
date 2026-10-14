@@ -620,7 +620,12 @@ def test_draft_accumulates_choices_across_turns() -> None:
     )
     draft = merge_statistics_draft(draft, {"grouping_column": "group"})
     draft = merge_statistics_draft(
-        draft, {"group_order": ["control", "patient"], "tail": "two_sided"}
+        draft,
+        {
+            "group_order": ["control", "patient"],
+            "tail": "two_sided",
+            "missing_value_policy": "error",
+        },
     )
     draft = merge_statistics_draft(
         draft,
@@ -721,6 +726,7 @@ def test_draft_review_states_that_identifiers_come_from_the_server() -> None:
             group_order=["control", "patient"],
             tail=Tail.TWO_SIDED,
             covariates=[CovariateChoice(name="age", centering=Centering.GRAND_MEAN)],
+            missing_value_policy=MissingValuePolicy.ERROR,
             correction_method="fdr",
             correction_parameters={"q_threshold": 0.05},
         )
@@ -728,6 +734,7 @@ def test_draft_review_states_that_identifiers_come_from_the_server() -> None:
 
     assert "independent_two_sample_t" in rendered
     assert "group（顺序：control、patient）" in rendered
+    assert "缺失值处理：error" in rendered
     assert "age（grand_mean）" in rendered
     assert "fdr（q_threshold=0.05）" in rendered
     # The review must be explicit that the model did not choose the data binding.
@@ -736,12 +743,41 @@ def test_draft_review_states_that_identifiers_come_from_the_server() -> None:
 
 def test_draft_review_shows_an_uncorrected_design_explicitly() -> None:
     rendered = render_statistics_draft_review(
-        StatisticsDraft(test=StatisticalTest.ONE_SAMPLE_T, one_sample_baseline=0.0)
+        StatisticsDraft(
+            test=StatisticalTest.ONE_SAMPLE_T,
+            one_sample_baseline=0.0,
+            missing_value_policy=MissingValuePolicy.ERROR,
+            correction_method="none",
+        )
     )
 
     assert "- 协变量：无" in rendered
     assert "- 多重比较校正：未校正" in rendered
+    assert "- 缺失值处理：error" in rendered
     assert "检验基线：0.0" in rendered
+
+
+@pytest.mark.parametrize(
+    ("method", "parameters"),
+    [
+        ("fdr", {"q_threshold": 0.05, "invented": 1}),
+        ("grf", {"voxel_p_threshold": 0.001, "cluster_p_threshold": 0.05, "invented": 1}),
+    ],
+)
+def test_draft_rejects_unrecognized_correction_parameters(method, parameters) -> None:
+    issues = statistics_draft_issues(
+        StatisticsDraft(
+            test=StatisticalTest.ONE_SAMPLE_T,
+            one_sample_baseline=0,
+            metric_artifact_type="metric.alff.raw",
+            tail=Tail.TWO_SIDED,
+            missing_value_policy=MissingValuePolicy.ERROR,
+            correction_method=method,
+            correction_parameters=parameters,
+        )
+    )
+
+    assert any("未识别参数" in issue for issue in issues)
 
 
 def test_merged_draft_feeds_choices_for_assembly() -> None:
@@ -755,6 +791,8 @@ def test_merged_draft_feeds_choices_for_assembly() -> None:
             "grouping_column": "group",
             "group_order": ["control", "patient"],
             "tail": "two_sided",
+            "missing_value_policy": "error",
+            "correction_method": "none",
         },
     )
     assert statistics_draft_issues(draft) == ()

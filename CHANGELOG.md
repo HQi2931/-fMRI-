@@ -4,7 +4,8 @@
 
 ## Unreleased
 
-- Work 预处理草稿现在在首次候选和反馈校验中通过真实 SkillResolver、SkillValidator 与 SkillCompiler 执行只读 dry-run，并在校验前后重核项目版本及冻结 manifest。dry-run 仅验证登记的 Skill 合同，不探测 MATLAB/SPM/DPABI 或真实影像，不写 Plan/Approval/Run/事件/授权；科研选择及输入冲突转交用户，编译能力与 Skill 审核治理缺口明确停止。当前预处理模型修订 allowlist 为空，统计设计装配未接入。
+- Work 分析草稿现在在保存/确认前执行只读统计设计 dry-run：复用正式 proposal assembler、来源绑定、完整 lineage、源文件哈希、校正/设计矩阵及 Skill 参数 schema 校验，并在长文件核验后重读来源修订。该预检不探测 MATLAB/SPM/DPABI，不证明实际统计可执行，也不创建 Plan/Approval/Run/事件/授权/任务。tail、缺失值策略、校正（包括显式 `none`）和协变量中心化必须明确选定；来源冲突与未决科研选择进入 `ASK_USER`，反馈环不会自动替用户决定。无法证明旧草稿中心化来源时要求重新确认。
+- Work 预处理草稿在首次候选和反馈校验中通过真实 SkillResolver、SkillValidator 与 SkillCompiler 执行只读 dry-run，并在校验前后重核项目版本及冻结 manifest。dry-run 仅验证登记的 Skill 合同，不探测 MATLAB/SPM/DPABI 或真实影像，不写 Plan/Approval/Run/事件/授权；科研选择及输入冲突转交用户，编译能力与 Skill 审核治理缺口明确停止。当前预处理模型修订 allowlist 为空。
 
 - 真实统计 WorkTask 在其唯一、非占位 StatisticalResult 与冻结 Artifact lineage 全部复核通过后，会与任务完成在同一事务创建独立的结果解释 outbox。独立消费者只生成 assistant 解释/报告草稿，调用模型前后重验 Run、Plan/design、bundle 与 Artifact 证据；零显著结果正常解释，synthetic/mock 和来源冲突失败关闭，未知空间不编造定位。模型只接收有限白名单聚合事实，不接收完整报告、subject-level 矩阵或路径。前端自动读取续接终态，并提供按幂等键重试可恢复错误的入口；流程不批准方案或启动新统计 Run。
 

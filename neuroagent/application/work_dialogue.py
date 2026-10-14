@@ -43,9 +43,11 @@ from neuroagent.application.planning_feedback import (
 from neuroagent.application.planning_feedback_loop import PlanningFeedbackRetrier
 from neuroagent.application.preflight_adapter import (
     feedback_payload,
+    planning_feedback_for_design_issues,
     planning_feedback_for_input_conflict,
     planning_feedback_for_messages,
     planning_feedback_for_skill_issues,
+    planning_feedback_for_statistics_draft_issues,
 )
 from neuroagent.application.statistical_capabilities import model_visible_capabilities
 from neuroagent.application.statistics_draft import (
@@ -134,6 +136,28 @@ def _changed_fields(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
         elif key not in before or previous != value:
             changed[key] = value
     return changed
+
+
+def _statistics_candidate_hash(draft: StatisticsDraft) -> str:
+    """Hash candidate choices without server-owned source bindings."""
+
+    return statistics_draft_hash(
+        draft.model_copy(
+            update={
+                "source_run_id": None,
+                "external_import_id": None,
+                "external_import_hash": None,
+                "qc_review_revision_id": None,
+                "qc_review_hash": None,
+                "qc_skip_id": None,
+                "qc_skip_hash": None,
+                "input_manifest_hash": None,
+                "demographics_revision_id": None,
+                "demographics_hash": None,
+                "confirmed_hash": None,
+            }
+        )
+    )
 
 
 def _combine_loop_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -352,7 +376,7 @@ class WorkDialogue:
         tool_runner: WorkToolRunner | None = None,
         create_workspace_proposal: Callable[..., dict[str, Any]] | None = None,
         confirm_workspace_stage: Callable[..., Any] | None = None,
-        prepare_statistical_proposal: Callable[
+        dry_run_statistical_proposal: Callable[
             ..., tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]
         ]
         | None = None,
@@ -371,7 +395,7 @@ class WorkDialogue:
         self.tool_runner = tool_runner
         self.create_workspace_proposal = create_workspace_proposal
         self.confirm_workspace_stage = confirm_workspace_stage
-        self.prepare_statistical_proposal = prepare_statistical_proposal
+        self.dry_run_statistical_proposal = dry_run_statistical_proposal
         self.get_external_import = get_external_import
         self.get_external_demographics = get_external_demographics
         self.prepare_analysis_handoff = prepare_analysis_handoff
@@ -2277,11 +2301,23 @@ class WorkDialogue:
             else latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
         )
         try:
-            draft = (
-                StatisticsDraft.model_validate(saved.get("draft", {}))
-                if saved
-                else StatisticsDraft()
-            )
+            saved_draft_data = saved.get("draft", {}) if saved else {}
+            if (
+                saved
+                and saved.get("decision_contract_version") != 1
+                and isinstance(saved_draft_data, dict)
+            ):
+                # Older Work payloads serialized the dataclass default as if
+                # it were a choice. Its provenance cannot be recovered, so
+                # require a fresh centering decision before using covariates.
+                saved_draft_data = dict(saved_draft_data)
+                legacy_covariates = saved_draft_data.get("covariates")
+                if isinstance(legacy_covariates, list):
+                    saved_draft_data["covariates"] = [
+                        {**item, "centering": None} if isinstance(item, dict) else item
+                        for item in legacy_covariates
+                    ]
+            draft = StatisticsDraft.model_validate(saved_draft_data) if saved else StatisticsDraft()
         except ValidationError:
             draft = StatisticsDraft()
             saved = None
@@ -2389,13 +2425,13 @@ class WorkDialogue:
                     "analysis_draft": {
                         "draft": draft.model_dump(mode="json"),
                         "issues": list(statistics_draft_issues(draft)),
+                        "decision_contract_version": 1,
                     }
                 },
             )
 
-        analysis_preflight = planning_feedback_for_messages(
+        analysis_preflight = planning_feedback_for_statistics_draft_issues(
             statistics_draft_issues(draft),
-            namespace="analysis",
             draft_revision=statistics_draft_hash(draft),
             prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
         )
@@ -2514,6 +2550,18 @@ class WorkDialogue:
         feedback_state: dict[str, Any] = {
             "candidate_draft": draft,
             "preflight": analysis_preflight,
+            "statistical_proposal": None,
+            "statistical_proposal_draft_hash": None,
+            "statistical_design_issues": (),
+            "statistical_dry_run": {
+                "status": "not_run_unresolved_choices",
+                "scope": "design_assembly_and_registered_source_contract",
+                "execution_ready": False,
+                "environment_probed": False,
+                "matlab_started": False,
+                "records_written": False,
+                "source_integrity_status": "not_attempted",
+            },
             "latest_loop_metadata": None,
             "loop_audits": [],
         }
@@ -2581,54 +2629,127 @@ class WorkDialogue:
             )
             feedback_state["candidate_draft"] = candidate
             issues = statistics_draft_issues(candidate)
-            entries = planning_feedback_for_messages(
-                issues,
-                namespace="analysis",
-                draft_revision=statistics_draft_hash(candidate),
-                prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+            draft_revision = _statistics_candidate_hash(candidate)
+            prior_fingerprints = _snapshot_string_list(saved, "preflight_fingerprints")
+            entries = list(
+                planning_feedback_for_statistics_draft_issues(
+                    issues,
+                    draft_revision=draft_revision,
+                    prior_fingerprints=prior_fingerprints,
+                )
             )
-            # These missing fields encode the analysis design or inference
-            # contract. A model may explain them, but must not decide them.
-            decision_markers = (
-                "检验类型",
-                "分组列",
-                "分组顺序",
-                "条件列",
-                "条件顺序",
-                "单样本检验基线",
-                "预测变量",
-                "协变量",
-                "校正参数",
-                "校正方法",
-                "尾部",
-                "指标产物类型",
-            )
-            normalized: list[tuple[PlanningIssue, Any]] = []
-            for issue, decision in entries:
-                if issue.kind is PlanningIssueKind.MISSING_EVIDENCE or any(
-                    marker in issue.message for marker in decision_markers
-                ):
-                    issue = replace(
-                        issue,
-                        kind=PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED,
-                        repairs=(
-                            RepairCandidate(
-                                RepairAction.ASK_USER,
-                                RepairBoundary.USER_DECISION,
-                                issue.target,
-                            ),
+            feedback_state["statistical_proposal"] = None
+            feedback_state["statistical_proposal_draft_hash"] = None
+            feedback_state["statistical_design_issues"] = ()
+            feedback_state["statistical_dry_run"] = {
+                "status": "not_run_unresolved_choices" if issues else "not_run",
+                "scope": "design_assembly_and_registered_source_contract",
+                "execution_ready": False,
+                "environment_probed": False,
+                "matlab_started": False,
+                "records_written": False,
+                "source_integrity_status": "not_attempted",
+            }
+            if not issues:
+                dry_run_called = False
+                run_id = (
+                    None
+                    if external_id
+                    else preprocessing_source_run(conversation, request.target_run_id)
+                )
+                source_args: dict[str, Any] = (
+                    {"external_import_id": external_id, "project_id": project_id}
+                    if external_id
+                    else {"run_id": run_id}
+                )
+                if continuation_source is not None:
+                    source_args["allowed_artifact_ids"] = frozenset(
+                        (
+                            *continuation_source.artifact_ids,
+                            *continuation_source.dependency_artifact_ids,
+                        )
+                    )
+                design_issues: tuple[DesignIssue, ...]
+                if run_id is None and external_id is None:
+                    design_issues = (
+                        DesignIssue(
+                            code="statistics_source_missing",
+                            message="请先选择一份已成功运行并具有 QC 证据的统计来源。",
                         ),
-                        changes_scientific_semantics=True,
-                        requires_user_decision=True,
-                        retryable=False,
                     )
-                    decision = replace(
-                        decision,
-                        disposition=FeedbackDisposition.ASK_USER,
-                        reason="analysis design choices require the user's decision",
+                elif self.dry_run_statistical_proposal is None:
+                    design_issues = (
+                        DesignIssue(
+                            code="statistics_dry_run_unavailable",
+                            message="当前服务未连接只读统计设计预检器。",
+                        ),
                     )
-                normalized.append((issue, decision))
-            feedback_state["preflight"] = tuple(normalized)
+                else:
+                    try:
+                        dry_run_called = True
+                        proposal, design_issues = self.dry_run_statistical_proposal(
+                            draft=candidate, **source_args
+                        )
+                    except ApplicationError as exc:
+                        proposal, design_issues = (
+                            None,
+                            (DesignIssue(code=exc.code, message=str(exc)),),
+                        )
+                    except (ValidationError, ValueError) as exc:
+                        proposal, design_issues = (
+                            None,
+                            (
+                                DesignIssue(
+                                    code="statistics_dry_run_rejected",
+                                    message=str(exc) or "统计设计只读预检失败。",
+                                ),
+                            ),
+                        )
+                    if proposal is not None and design_issues:
+                        proposal = None
+                        design_issues = (
+                            *design_issues,
+                            DesignIssue(
+                                code="statistics_dry_run_inconsistent",
+                                message="统计预检同时返回方案和阻断项，已按阻断处理。",
+                            ),
+                        )
+                    elif proposal is None and not design_issues:
+                        design_issues = (
+                            DesignIssue(
+                                code="statistics_dry_run_incomplete",
+                                message="统计预检没有形成方案，也没有返回具体状态。",
+                            ),
+                        )
+                    feedback_state["statistical_proposal"] = proposal
+                    if proposal is not None:
+                        feedback_state["statistical_proposal_draft_hash"] = draft_revision
+                feedback_state["statistical_design_issues"] = tuple(design_issues)
+                feedback_state["statistical_dry_run"] = {
+                    "status": "assembled_for_review"
+                    if feedback_state["statistical_proposal"] is not None
+                    else "blocked",
+                    "scope": "design_assembly_and_registered_source_contract",
+                    "execution_ready": False,
+                    "environment_probed": False,
+                    "matlab_started": False,
+                    "records_written": False,
+                    "source_integrity_status": "verified"
+                    if feedback_state["statistical_proposal"] is not None
+                    else "blocked_or_incomplete"
+                    if dry_run_called
+                    else "not_attempted",
+                }
+                if design_issues:
+                    entries.extend(
+                        planning_feedback_for_design_issues(
+                            design_issues,
+                            draft_revision=draft_revision,
+                            prior_fingerprints=prior_fingerprints,
+                        )
+                    )
+            normalized = tuple(entries)
+            feedback_state["preflight"] = normalized
             stop = next(
                 (
                     issue
@@ -2731,6 +2852,7 @@ class WorkDialogue:
                     "version": _snapshot_int(saved, "version") + 1,
                     "issues": list(statistics_draft_issues(draft)),
                     "review": render_statistics_draft_review(draft),
+                    "decision_contract_version": 1,
                 },
             }
             if saved is not None and interpreted.action in {
@@ -2801,91 +2923,91 @@ class WorkDialogue:
                     }
                 )
                 issues = list(statistics_draft_issues(updated))
-                validated_feedback = feedback_state["preflight"]
-                if [issue.message for issue, _ in validated_feedback] == issues:
-                    # The post-model display must retain the same user-decision
-                    # boundary enforced before another interpretation pass.
-                    checked_analysis_preflight = validated_feedback
+                if feedback_state["statistical_proposal"] is not None and feedback_state[
+                    "statistical_proposal_draft_hash"
+                ] != _statistics_candidate_hash(updated):
+                    stale_issue = DesignIssue(
+                        code="statistics_dry_run_candidate_changed",
+                        message="最终草稿与只读预检所用候选不同，必须重新核验后才能展示方案。",
+                    )
+                    feedback_state["statistical_proposal"] = None
+                    feedback_state["statistical_design_issues"] = (stale_issue,)
+                    feedback_state["preflight"] = (
+                        *feedback_state["preflight"],
+                        *planning_feedback_for_design_issues(
+                            (stale_issue,),
+                            draft_revision=statistics_draft_hash(updated),
+                            prior_fingerprints=_snapshot_string_list(
+                                saved, "preflight_fingerprints"
+                            ),
+                        ),
+                    )
+                    feedback_state["statistical_dry_run"] = {
+                        **feedback_state["statistical_dry_run"],
+                        "status": "blocked",
+                        "source_integrity_status": "blocked_or_incomplete",
+                    }
+                if _statistics_candidate_hash(updated) == _statistics_candidate_hash(
+                    feedback_state["candidate_draft"]
+                ):
+                    checked_analysis_preflight = feedback_state["preflight"]
                 else:
-                    checked_analysis_preflight = planning_feedback_for_messages(
+                    checked_analysis_preflight = planning_feedback_for_statistics_draft_issues(
                         issues,
-                        namespace="analysis",
                         draft_revision=statistics_draft_hash(updated),
                         prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
                     )
                 checked_analysis_payload = feedback_payload(checked_analysis_preflight)
                 payload["draft_issues"] = issues
                 payload["planning_preflight"] = checked_analysis_payload
-                run_id = (
-                    None
-                    if external_id
-                    else preprocessing_source_run(conversation, request.target_run_id)
-                )
+                payload["statistical_design_dry_run"] = feedback_state["statistical_dry_run"]
                 if not issues:
-                    if run_id is None and external_id is None:
-                        payload["statistical_design_issues"] = [
-                            "统计草稿已完整；请先选择一份已成功运行并通过 QC 或记录 QC 跳过的来源运行。"
-                        ]
-                    elif self.prepare_statistical_proposal is None:
-                        payload["statistical_design_issues"] = [
-                            "当前服务未连接统计设计装配器，草稿已保留。"
-                        ]
-                    else:
-                        source_args: dict[str, Any] = (
-                            {"external_import_id": external_id, "project_id": project_id}
-                            if external_id
-                            else {"run_id": run_id}
+                    proposal = (
+                        feedback_state["statistical_proposal"]
+                        if feedback_state["statistical_proposal_draft_hash"]
+                        == _statistics_candidate_hash(updated)
+                        else None
+                    )
+                    design_issues = feedback_state["statistical_design_issues"]
+                    payload["statistical_design_issues"] = [
+                        issue.message for issue in design_issues
+                    ]
+                    if proposal is not None and not design_issues:
+                        if continuation_source is not None and (
+                            proposal.project_id != continuation_source.project_id
+                            or proposal.source_run_id != continuation_source.run_id
+                            or proposal.input_manifest_hash != continuation_source.manifest_hash
+                            or not set(proposal.metric_artifact_ids).issubset(
+                                continuation_source.artifact_ids
+                            )
+                            or proposal.design.mask_artifact_id
+                            not in set(continuation_source.artifact_ids)
+                            | set(continuation_source.dependency_artifact_ids)
+                        ):
+                            raise ApplicationError(
+                                "analysis_outbox_proposal_source_mismatch",
+                                "统计草稿使用了续接记录之外的来源产物。",
+                            )
+                        updated = updated.model_copy(
+                            update={
+                                "source_run_id": proposal.source_run_id,
+                                "external_import_id": proposal.design.external_import_id,
+                                "external_import_hash": proposal.design.external_import_hash,
+                                "qc_review_revision_id": proposal.design.qc_review_revision_id,
+                                "qc_review_hash": proposal.design.qc_review_hash,
+                                "qc_skip_id": proposal.design.qc_skip_id,
+                                "qc_skip_hash": proposal.design.qc_skip_hash,
+                                "input_manifest_hash": proposal.input_manifest_hash,
+                                "demographics_revision_id": proposal.demographics_revision_id,
+                                "demographics_hash": proposal.demographics_hash,
+                            }
                         )
-                        if continuation_source is not None:
-                            source_args["allowed_artifact_ids"] = frozenset(
-                                (
-                                    *continuation_source.artifact_ids,
-                                    *continuation_source.dependency_artifact_ids,
-                                )
-                            )
-                        proposal, design_issues = self.prepare_statistical_proposal(
-                            draft=updated, **source_args
-                        )
-                        payload["statistical_design_issues"] = [
-                            issue.message for issue in design_issues
-                        ]
-                        if proposal is not None:
-                            if continuation_source is not None and (
-                                proposal.project_id != continuation_source.project_id
-                                or proposal.source_run_id != continuation_source.run_id
-                                or proposal.input_manifest_hash != continuation_source.manifest_hash
-                                or not set(proposal.metric_artifact_ids).issubset(
-                                    continuation_source.artifact_ids
-                                )
-                                or proposal.design.mask_artifact_id
-                                not in set(continuation_source.artifact_ids)
-                                | set(continuation_source.dependency_artifact_ids)
-                            ):
-                                raise ApplicationError(
-                                    "analysis_outbox_proposal_source_mismatch",
-                                    "统计草稿使用了续接记录之外的来源产物。",
-                                )
-                            updated = updated.model_copy(
-                                update={
-                                    "source_run_id": proposal.source_run_id,
-                                    "external_import_id": proposal.design.external_import_id,
-                                    "external_import_hash": proposal.design.external_import_hash,
-                                    "qc_review_revision_id": proposal.design.qc_review_revision_id,
-                                    "qc_review_hash": proposal.design.qc_review_hash,
-                                    "qc_skip_id": proposal.design.qc_skip_id,
-                                    "qc_skip_hash": proposal.design.qc_skip_hash,
-                                    "input_manifest_hash": proposal.input_manifest_hash,
-                                    "demographics_revision_id": proposal.demographics_revision_id,
-                                    "demographics_hash": proposal.demographics_hash,
-                                }
-                            )
-                            payload["statistical_design_proposal"] = proposal.model_dump(
-                                mode="json"
-                            )
+                        payload["statistical_design_proposal"] = proposal.model_dump(mode="json")
                 saved_draft = {
                     "draft": updated.model_dump(mode="json"),
                     "hash": statistics_draft_hash(updated),
                     "version": _snapshot_int(saved, "version") + 1,
+                    "decision_contract_version": 1,
                     "issues": issues,
                     "review": render_statistics_draft_review(updated),
                     "planning_preflight": checked_analysis_payload,

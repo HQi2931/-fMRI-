@@ -58,7 +58,10 @@ class CovariateChoice(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=100)
-    centering: Centering = Centering.GRAND_MEAN
+    # Work candidates must distinguish an explicit choice from the historical
+    # grand-mean default. The server-side adapter preserves that default for
+    # callers outside the Work draft gate.
+    centering: Centering | None = None
 
 
 class StatisticsChoices(BaseModel):
@@ -326,6 +329,10 @@ def statistics_draft_issues(draft: StatisticsDraft) -> tuple[str, ...]:
     """What the user still has to decide before a design can be assembled."""
 
     issues: list[str] = []
+    if draft.tail is None:
+        issues.append("统计尾部尚未明确选择")
+    if draft.missing_value_policy is None:
+        issues.append("缺失值处理策略尚未明确选择")
     if draft.test is None:
         issues.append("检验类型尚未选择")
     elif draft.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
@@ -355,18 +362,37 @@ def statistics_draft_issues(draft: StatisticsDraft) -> tuple[str, ...]:
             issues.append("目标预测变量必须出现在已登记预测变量清单中")
     if not draft.metric_artifact_type:
         issues.append("指标产物类型尚未选择")
-    if draft.correction_method and not draft.correction_parameters:
-        issues.append("已选择校正方法但尚未给出校正参数")
+    if draft.correction_method is None:
+        issues.append("多重比较校正尚未明确选择（FDR、GRF 或明确选择不校正）")
+    elif draft.correction_method not in {"none", "fdr", "grf"}:
+        issues.append("多重比较校正方法不受支持")
+    elif draft.correction_method == "none" and draft.correction_parameters:
+        issues.append("明确选择不校正时不能同时提供校正参数")
+    elif draft.correction_method == "fdr":
+        if set(draft.correction_parameters) - {"q_threshold"}:
+            issues.append("FDR 校正包含未识别参数，不能忽略")
+        elif "q_threshold" not in draft.correction_parameters:
+            issues.append("FDR 校正尚未给出 q_threshold")
+    elif draft.correction_method == "grf":
+        allowed_parameters = {"voxel_p_threshold", "cluster_p_threshold"}
+        if set(draft.correction_parameters) - allowed_parameters:
+            issues.append("GRF 校正包含未识别参数，不能忽略")
+        elif not allowed_parameters.issubset(draft.correction_parameters):
+            issues.append("GRF 校正尚未同时给出 voxel_p_threshold 与 cluster_p_threshold")
+    if any(item.centering is None for item in draft.covariates):
+        issues.append("协变量中心化方式尚未明确选择")
     return tuple(issues)
 
 
 def render_statistics_draft_review(draft: StatisticsDraft) -> str:
     """Render the concrete, reviewable decisions for the user to confirm."""
 
+    missing_policy = draft.missing_value_policy.value if draft.missing_value_policy else "未选择"
     lines = [
         f"- 检验类型：{draft.test.value if draft.test else '未选择'}",
         f"- 指标产物类型：{draft.metric_artifact_type or '未选择'}",
         f"- 尾部：{draft.tail.value if draft.tail else '未选择'}",
+        f"- 缺失值处理：{missing_policy}",
     ]
     if draft.grouping_column:
         order = "、".join(draft.group_order) or "未指定顺序"
@@ -379,17 +405,22 @@ def render_statistics_draft_review(draft: StatisticsDraft) -> str:
     if draft.one_sample_baseline is not None:
         lines.append(f"- 检验基线：{draft.one_sample_baseline}")
     if draft.covariates:
-        rendered = "、".join(f"{item.name}（{item.centering.value}）" for item in draft.covariates)
+        rendered = "、".join(
+            f"{item.name}（{item.centering.value if item.centering else '中心化未选择'}）"
+            for item in draft.covariates
+        )
         lines.append(f"- 协变量：{rendered}")
     else:
         lines.append("- 协变量：无")
-    if draft.correction_method:
+    if draft.correction_method == "none":
+        lines.append("- 多重比较校正：未校正（已明确选择）")
+    elif draft.correction_method:
         parameters = "、".join(
             f"{key}={value}" for key, value in sorted(draft.correction_parameters.items())
         )
         lines.append(f"- 多重比较校正：{draft.correction_method}（{parameters or '无参数'}）")
     else:
-        lines.append("- 多重比较校正：未校正")
+        lines.append("- 多重比较校正：未选择")
     lines.append(
         "- 受试者顺序、逐受试者产物与掩膜：由服务端从已确认的外部纳入记录冻结登记，"
         "不由模型或本草稿提供"
@@ -453,10 +484,36 @@ def build_correction(
     legal at all.
     """
 
-    if not draft.correction_method:
+    # Keep the non-Work assembler's historical compatibility behavior. The
+    # Work dry-run gate calls statistics_draft_issues() first and refuses a
+    # missing choice; only an explicit "none" can pass that gate as no correction.
+    if draft.correction_method is None:
+        return None, ()
+    if draft.correction_method == "none":
+        if draft.correction_parameters:
+            return None, (
+                _issue(
+                    "correction_parameters_without_method",
+                    "未校正的选择不能同时提供校正参数。",
+                ),
+            )
         return None, ()
 
     parameters = draft.correction_parameters
+    allowed_parameters = (
+        {"q_threshold"}
+        if draft.correction_method == "fdr"
+        else {"voxel_p_threshold", "cluster_p_threshold"}
+        if draft.correction_method == "grf"
+        else set()
+    )
+    if set(parameters) - allowed_parameters:
+        return None, (
+            _issue(
+                "correction_parameter_unsupported",
+                "校正参数包含未识别字段，不能静默忽略。",
+            ),
+        )
     tail_two_sided = design.tail is Tail.TWO_SIDED
     statistic_type = (
         StatisticalMapType.F
@@ -588,7 +645,10 @@ def _covariate_columns(
             CovariateColumn(
                 name=choice.name,
                 values=tuple(resolved),
-                centering=choice.centering,
+                # Preserve the formal assembler's historical default for
+                # non-Work callers. Work's dry-run gate rejects missing
+                # centering before reaching this conversion.
+                centering=choice.centering or Centering.GRAND_MEAN,
             )
         )
     return tuple(columns), tuple(issues)
