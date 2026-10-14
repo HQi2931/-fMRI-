@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     memory_half_life_days: float = Field(default=180, gt=0)
     memory_minimum_similarity: float = Field(default=0.45, ge=-1, le=1)
     worker_lease_seconds: int = Field(default=30, ge=1)
+    automation_claim_lease_seconds: int = Field(default=15, ge=1, le=300)
     idempotency_lease_seconds: int = Field(default=300, ge=30)
     # Bounded Agent tool loop.  The loop is opt-in per model profile (the profile
     # must declare ``tool_use``); these values bound what one turn may spend once

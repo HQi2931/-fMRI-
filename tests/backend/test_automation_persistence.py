@@ -9,6 +9,8 @@ from neuroagent.application.automation.models import (
     TaskStatus,
     TaskStep,
     TaskStepStatus,
+    WaitingCondition,
+    WaitingKind,
     WorkEventIdentity,
     WorkGoal,
     WorkTask,
@@ -69,6 +71,150 @@ def test_work_task_survives_database_restart_with_steps_and_authority_references
     assert restored.authority_refs.workflow_run_id == "run-4"
     assert "run_status" not in WorkTask.model_fields
     restarted_db.dispose()
+
+
+def test_reconciliation_claim_is_exclusive_and_respects_cooldown(tmp_path, monkeypatch) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    database, repository = open_repository(tmp_path / "claim-exclusive.sqlite")
+    task = make_task().model_copy(
+        update={
+            "status": TaskStatus.WAITING_RUN,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="run-4",
+                reason="wait for the bound run",
+            ),
+            "version": 2,
+        }
+    )
+    repository.create_task(task)
+
+    first = repository.claim_next_reconciliation_task(
+        "worker-a", lease_seconds=10, cooldown_seconds=3
+    )
+    assert first is not None
+    assert first.task_id == task.task_id
+    assert (
+        repository.claim_next_reconciliation_task("worker-b", lease_seconds=10, cooldown_seconds=3)
+        is None
+    )
+    assert repository.release_reconciliation_claim(
+        first.task_id, first.worker_id, first.claim_token
+    )
+    assert (
+        repository.claim_next_reconciliation_task("worker-b", lease_seconds=10, cooldown_seconds=3)
+        is None
+    )
+
+    now[0] += 3
+    second = repository.claim_next_reconciliation_task(
+        "worker-b", lease_seconds=10, cooldown_seconds=0
+    )
+    assert second is not None
+    assert second.worker_id == "worker-b"
+    database.dispose()
+
+
+def test_expired_reconciliation_claim_is_fenced_after_reclaim(tmp_path, monkeypatch) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [2000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    database, repository = open_repository(tmp_path / "claim-fencing.sqlite")
+    task = make_task().model_copy(
+        update={
+            "status": TaskStatus.WAITING_RUN,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="run-4",
+                reason="wait for the bound run",
+            ),
+            "version": 2,
+        }
+    )
+    repository.create_task(task)
+    old_claim = repository.claim_next_reconciliation_task(
+        "old-worker", lease_seconds=5, cooldown_seconds=0
+    )
+    assert old_claim is not None
+
+    now[0] += 6
+    new_claim = repository.claim_next_reconciliation_task(
+        "new-worker", lease_seconds=10, cooldown_seconds=0
+    )
+    assert new_claim is not None
+    assert new_claim.claim_token != old_claim.claim_token
+
+    blocked = transition_task(task, TaskStatus.BLOCKED)
+    with pytest.raises(ConflictError) as error:
+        repository.save_task(
+            blocked,
+            expected_version=task.version,
+            claim_token=old_claim.claim_token,
+        )
+    assert error.value.code == "work_task_claim_lost"
+    assert repository.get_task(task.task_id) == task
+
+    repository.save_task(
+        blocked,
+        expected_version=task.version,
+        claim_token=new_claim.claim_token,
+    )
+    assert repository.get_task(task.task_id).status is TaskStatus.BLOCKED
+    assert not repository.release_reconciliation_claim(
+        old_claim.task_id, old_claim.worker_id, old_claim.claim_token
+    )
+    assert repository.release_reconciliation_claim(
+        new_claim.task_id, new_claim.worker_id, new_claim.claim_token
+    )
+    database.dispose()
+
+
+@pytest.mark.parametrize(
+    ("status", "waiting_kind", "reference", "expected"),
+    [
+        (TaskStatus.WAITING_USER, WaitingKind.USER_DECISION, "proposal:hash", False),
+        (TaskStatus.WAITING_DEPENDENCY, WaitingKind.DEPENDENCY, "downstream:run-4", False),
+        (
+            TaskStatus.WAITING_USER,
+            WaitingKind.USER_DECISION,
+            "qc:run-4",
+            True,
+        ),
+        (
+            TaskStatus.WAITING_DEPENDENCY,
+            WaitingKind.DEPENDENCY,
+            "statistical-result:run-4",
+            True,
+        ),
+    ],
+)
+def test_reconciliation_target_only_indexes_supported_waits(
+    tmp_path, status, waiting_kind, reference, expected
+) -> None:
+    database, repository = open_repository(tmp_path / f"target-{status.value}-{expected}.sqlite")
+    task = make_task().model_copy(
+        update={
+            "status": status,
+            "waiting_condition": WaitingCondition(
+                kind=waiting_kind,
+                reference=reference,
+                reason="test wait",
+            ),
+            "version": 2,
+        }
+    )
+    repository.create_task(task)
+    claim = repository.claim_next_reconciliation_task(
+        "target-worker", lease_seconds=10, cooldown_seconds=0
+    )
+    assert (claim is not None) is expected
+    if claim is not None:
+        repository.release_reconciliation_claim(claim.task_id, claim.worker_id, claim.claim_token)
+    database.dispose()
 
 
 def test_save_task_uses_optimistic_version_and_rejects_stale_writer(tmp_path) -> None:

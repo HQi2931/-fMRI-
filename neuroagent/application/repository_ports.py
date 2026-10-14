@@ -608,6 +608,7 @@ class EventRepositoryPort(Protocol):
         after_event_id: int = 0,
         *,
         project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[RuntimeEventView]: ...
 
 

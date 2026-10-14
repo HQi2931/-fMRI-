@@ -86,6 +86,31 @@ class WorkTaskApplicationService:
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
 
+    def reconcile_next_due_task(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> WorkflowRunReconciliation | None:
+        """Claim and reconcile one due Run wait; the lease only fences task writes."""
+
+        claim = self._repository.claim_next_reconciliation_task(
+            worker_id,
+            lease_seconds=lease_seconds,
+            cooldown_seconds=cooldown_seconds,
+        )
+        if claim is None:
+            return None
+        try:
+            return self.reconcile_waiting_run(claim.task_id, claim_token=claim.claim_token)
+        finally:
+            self._repository.release_reconciliation_claim(
+                claim.task_id,
+                claim.worker_id,
+                claim.claim_token,
+            )
+
     @staticmethod
     def analysis_proposal_task_id(conversation_id: str, proposal_hash: str) -> str:
         binding = f"{conversation_id}\0analysis\0{proposal_hash}".encode()
@@ -707,6 +732,8 @@ class WorkTaskApplicationService:
         self,
         task_id: str,
         event: WorkEventIdentity,
+        *,
+        claim_token: str | None = None,
     ) -> tuple[EventConsumptionDecision, WorkTask]:
         """Record a workflow notification once; workflow truth is reloaded elsewhere.
 
@@ -743,12 +770,18 @@ class WorkTaskApplicationService:
             event,
             expected_version=current.version,
             updated_task=candidate,
+            claim_token=claim_token,
         )
         # Read after both applied and no-op decisions so a concurrent duplicate
         # returns current persisted state rather than a stale pre-read snapshot.
         return decision, self._repository.get_task(task_id)
 
-    def reconcile_waiting_run(self, task_id: str) -> WorkflowRunReconciliation:
+    def reconcile_waiting_run(
+        self,
+        task_id: str,
+        *,
+        claim_token: str | None = None,
+    ) -> WorkflowRunReconciliation:
         """Consume Run event identities, then reread Workflow, QC and Artifacts.
 
         Runtime event type and payload are deliberately ignored. Events only
@@ -797,7 +830,11 @@ class WorkTaskApplicationService:
             (item.event_id for item in task.event_cursors if item.stream_key == stream_key),
             0,
         )
-        events = self._event_repository.list_events(run_id=run_id, after_event_id=cursor)
+        events = self._event_repository.list_events(
+            run_id=run_id,
+            after_event_id=cursor,
+            limit=1000,
+        )
         # Validate the entire returned batch before consuming any identity so a
         # broken adapter cannot partially advance the task with a wrong-Run event.
         for event in events:
@@ -819,7 +856,11 @@ class WorkTaskApplicationService:
                 event_id=event.event_id,
                 dedupe_key=f"runtime-event:{event.event_id}",
             )
-            decision, task = self.consume_workflow_event(task_id, identity)
+            decision, task = self.consume_workflow_event(
+                task_id,
+                identity,
+                claim_token=claim_token,
+            )
             receipts.append(EventReconciliationReceipt(event_id=event.event_id, decision=decision))
 
         # Consume can race with user/API state changes. Always use the persisted
@@ -855,7 +896,12 @@ class WorkTaskApplicationService:
             )
 
         if self._has_statistical_step(task):
-            return self._reconcile_statistical_run(task, run_id, tuple(receipts))
+            return self._reconcile_statistical_run(
+                task,
+                run_id,
+                tuple(receipts),
+                claim_token=claim_token,
+            )
 
         try:
             snapshot = self._read_stable_authoritative_snapshot(task, run_id)
@@ -987,9 +1033,10 @@ class WorkTaskApplicationService:
                 target_status,
                 waiting_condition=waiting_condition,
             )
-            updated_task = self._repository.save_task(
+            updated_task = self._save_task(
                 updated_task,
                 expected_version=task.version,
+                claim_token=claim_token,
             )
         elif (
             target_status
@@ -1010,9 +1057,10 @@ class WorkTaskApplicationService:
                     "version": task.version + 1,
                 }
             )
-            updated_task = self._repository.save_task(
+            updated_task = self._save_task(
                 updated_task,
                 expected_version=task.version,
+                claim_token=claim_token,
             )
 
         return WorkflowRunReconciliation(
@@ -1028,6 +1076,8 @@ class WorkTaskApplicationService:
         task: WorkTask,
         run_id: str,
         receipts: tuple[EventReconciliationReceipt, ...],
+        *,
+        claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
         if self._statistical_step(task) is None:
             return self._block_statistical_task(
@@ -1035,6 +1085,7 @@ class WorkTaskApplicationService:
                 run_id,
                 receipts,
                 reason="统计 WorkTask 必须恰好包含一个 statistical_run 步骤；当前绑定无效。",
+                claim_token=claim_token,
             )
         try:
             snapshot, evidence_error = self._read_stable_statistical_snapshot(task, run_id)
@@ -1046,7 +1097,13 @@ class WorkTaskApplicationService:
                 reason="绑定的统计 Run 暂不可读取；任务状态未推进。",
             )
         except _InvalidStatisticalAuthority as exc:
-            return self._block_statistical_task(task, run_id, receipts, reason=str(exc))
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason=str(exc),
+                claim_token=claim_token,
+            )
         if snapshot is None:
             return WorkflowRunReconciliation(
                 task=task,
@@ -1063,6 +1120,7 @@ class WorkTaskApplicationService:
                 receipts,
                 reason=evidence_error,
                 authoritative=snapshot,
+                claim_token=claim_token,
             )
         if state in {WorkflowState.QUEUED, WorkflowState.RUNNING, WorkflowState.CANCELLING}:
             return self._apply_statistical_task_state(
@@ -1078,6 +1136,7 @@ class WorkTaskApplicationService:
                     reason="等待该统计 Workflow Run 进入可核验的终态。",
                 ),
                 reason="权威统计 Workflow 状态仍在排队、运行或取消中。",
+                claim_token=claim_token,
             )
         if state is WorkflowState.SUCCEEDED:
             if snapshot.statistical_result_ids:
@@ -1088,8 +1147,15 @@ class WorkTaskApplicationService:
                         receipts,
                         reason="统计 Run 的结果记录未通过真实科学结果核验；任务已阻断。",
                         authoritative=snapshot,
+                        claim_token=claim_token,
                     )
-                return self._complete_statistical_task(task, run_id, receipts, snapshot)
+                return self._complete_statistical_task(
+                    task,
+                    run_id,
+                    receipts,
+                    snapshot,
+                    claim_token=claim_token,
+                )
             if "mock.result" in snapshot.registered_artifact_types or any(
                 artifact_type.startswith("synthetic.")
                 for artifact_type in snapshot.registered_artifact_types
@@ -1103,6 +1169,7 @@ class WorkTaskApplicationService:
                         "不能作为科学分析完成。"
                     ),
                     authoritative=snapshot,
+                    claim_token=claim_token,
                 )
             return self._apply_statistical_task_state(
                 task,
@@ -1120,6 +1187,7 @@ class WorkTaskApplicationService:
                     "统计 Run 已成功但尚无 StatisticalResult；保留 waiting_dependency "
                     "并等待结果登记。"
                 ),
+                claim_token=claim_token,
             )
         if state in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
             if task.status is TaskStatus.WAITING_RUN:
@@ -1136,6 +1204,7 @@ class WorkTaskApplicationService:
                         reason="Worker 正在按原有预算处理同一统计 Run。",
                     ),
                     reason=f"统计 Workflow 暂处于 {state.value}；继续等待同一 Run 的处理。",
+                    claim_token=claim_token,
                 )
             return self._block_statistical_task(
                 task,
@@ -1143,6 +1212,7 @@ class WorkTaskApplicationService:
                 receipts,
                 reason="等待统计结果时 Run 又回到非终态，任务与权威 Workflow 状态不一致。",
                 authoritative=snapshot,
+                claim_token=claim_token,
             )
         return self._block_statistical_task(
             task,
@@ -1150,6 +1220,7 @@ class WorkTaskApplicationService:
             receipts,
             reason=f"统计 Workflow 已处于 {state.value}；本任务不会自动重试或创建新 Run。",
             authoritative=snapshot,
+            claim_token=claim_token,
         )
 
     def _read_stable_statistical_snapshot(
@@ -1424,6 +1495,7 @@ class WorkTaskApplicationService:
         readiness: RunReadiness,
         waiting_condition: WaitingCondition,
         reason: str,
+        claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
         updated = task
         if task.status is not target or task.waiting_condition != waiting_condition:
@@ -1434,6 +1506,7 @@ class WorkTaskApplicationService:
                     receipts,
                     reason="统计任务等待结果时 Run 又回到非终态，任务与 Workflow 状态不一致。",
                     authoritative=snapshot,
+                    claim_token=claim_token,
                 )
             if task.status is not target:
                 updated = transition_task(task, target, waiting_condition=waiting_condition)
@@ -1445,7 +1518,11 @@ class WorkTaskApplicationService:
                         "version": task.version + 1,
                     }
                 )
-            updated = self._repository.save_task(updated, expected_version=task.version)
+            updated = self._save_task(
+                updated,
+                expected_version=task.version,
+                claim_token=claim_token,
+            )
         return WorkflowRunReconciliation(
             task=updated,
             readiness=readiness,
@@ -1460,6 +1537,8 @@ class WorkTaskApplicationService:
         run_id: str,
         receipts: tuple[EventReconciliationReceipt, ...],
         snapshot: AuthoritativeRunSnapshot,
+        *,
+        claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
         step = self._statistical_step(task)
         if (
@@ -1474,6 +1553,7 @@ class WorkTaskApplicationService:
                 receipts,
                 reason="统计结果虽存在，但 WorkTask 步骤或 Artifact 完成绑定无效；任务已阻断。",
                 authoritative=snapshot,
+                claim_token=claim_token,
             )
         succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED)
         result_artifact_ids = tuple(sorted(set(snapshot.result_artifact_ids)))
@@ -1494,8 +1574,10 @@ class WorkTaskApplicationService:
                 ),
             }
         )
-        completed = self._repository.save_task(
-            WorkTask.model_validate(completed.model_dump()), expected_version=task.version
+        completed = self._save_task(
+            WorkTask.model_validate(completed.model_dump()),
+            expected_version=task.version,
+            claim_token=claim_token,
         )
         return WorkflowRunReconciliation(
             task=completed,
@@ -1513,6 +1595,7 @@ class WorkTaskApplicationService:
         *,
         reason: str,
         authoritative: AuthoritativeRunSnapshot | None = None,
+        claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
         updated = task
         if task.status in {TaskStatus.WAITING_RUN, TaskStatus.WAITING_DEPENDENCY}:
@@ -1524,8 +1607,10 @@ class WorkTaskApplicationService:
                     blocked_step if item.step_id == step.step_id else item for item in task.steps
                 )
             updated = transition_task(task, TaskStatus.BLOCKED).model_copy(update=updates)
-            updated = self._repository.save_task(
-                WorkTask.model_validate(updated.model_dump()), expected_version=task.version
+            updated = self._save_task(
+                WorkTask.model_validate(updated.model_dump()),
+                expected_version=task.version,
+                claim_token=claim_token,
             )
         return WorkflowRunReconciliation(
             task=updated,
@@ -1538,6 +1623,21 @@ class WorkTaskApplicationService:
     @staticmethod
     def _has_statistical_step(task: WorkTask) -> bool:
         return any(step.kind == "statistical_run" for step in task.steps)
+
+    def _save_task(
+        self,
+        task: WorkTask,
+        *,
+        expected_version: int,
+        claim_token: str | None,
+    ) -> WorkTask:
+        if claim_token is None:
+            return self._repository.save_task(task, expected_version=expected_version)
+        return self._repository.save_task(
+            task,
+            expected_version=expected_version,
+            claim_token=claim_token,
+        )
 
     def _read_stable_authoritative_snapshot(
         self,

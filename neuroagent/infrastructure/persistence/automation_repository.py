@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, cast
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
@@ -15,6 +17,7 @@ from neuroagent.application.automation.models import (
     EventConsumptionDecision,
     WorkEventIdentity,
     WorkTask,
+    WorkTaskClaim,
     advance_event_cursor,
     decide_event_consumption,
 )
@@ -108,15 +111,114 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 }
             )
 
-    def save_task(self, task: WorkTask, *, expected_version: int) -> WorkTask:
+    def save_task(
+        self,
+        task: WorkTask,
+        *,
+        expected_version: int,
+        claim_token: str | None = None,
+    ) -> WorkTask:
         if task.version != expected_version + 1:
             raise ValueError("saved WorkTask version must equal expected_version + 1")
         with self.unit_of_work.atomic(), self._write_session() as session:
+            if claim_token is not None:
+                self._require_reconciliation_claim(session, task.task_id, claim_token)
             changed = self._update_task_row(session, task, expected_version)
             if changed != 1:
                 self._raise_version_conflict(session, task.task_id, expected_version)
             self._replace_children(session, task)
         return task
+
+    def claim_next_reconciliation_task(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> WorkTaskClaim | None:
+        """Atomically claim one indexed task whose authoritative state needs a recheck."""
+
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200:
+            raise ValueError("worker_id must contain 1 to 200 characters")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be at least 1")
+        if cooldown_seconds < 0:
+            raise ValueError("cooldown_seconds must be nonnegative")
+        now = time.time()
+        claim_token = uuid4().hex
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            task_id = session.execute(
+                text(
+                    """SELECT task.task_id
+                    FROM work_task_reconciliation_targets AS target
+                    JOIN work_tasks AS task ON task.task_id = target.task_id
+                    LEFT JOIN work_task_reconciliation_claims AS claim
+                      ON claim.task_id = task.task_id
+                    WHERE (
+                        (task.status = 'waiting_run' AND target.target_kind = 'workflow_run')
+                        OR (task.status = 'waiting_user' AND target.target_kind = 'qc_decision')
+                        OR (task.status = 'waiting_dependency'
+                            AND target.target_kind = 'statistical_result')
+                    )
+                    AND (claim.task_id IS NULL OR (
+                        claim.available_at <= :now
+                        AND (claim.lease_expires_at IS NULL OR claim.lease_expires_at <= :now)
+                    ))
+                    ORDER BY COALESCE(claim.available_at, 0), task.task_id
+                    LIMIT 1"""
+                ),
+                {"now": now},
+            ).scalar_one_or_none()
+            if task_id is None:
+                return None
+            inserted = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """INSERT INTO work_task_reconciliation_claims
+                        (task_id, lease_owner, claim_token, lease_expires_at, available_at)
+                        VALUES (:task_id, :owner, :token, :expires, :available)
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            lease_owner = excluded.lease_owner,
+                            claim_token = excluded.claim_token,
+                            lease_expires_at = excluded.lease_expires_at,
+                            available_at = excluded.available_at
+                        WHERE work_task_reconciliation_claims.available_at <= :now
+                          AND (work_task_reconciliation_claims.lease_expires_at IS NULL
+                               OR work_task_reconciliation_claims.lease_expires_at <= :now)"""
+                    ),
+                    {
+                        "task_id": task_id,
+                        "owner": owner,
+                        "token": claim_token,
+                        "expires": now + lease_seconds,
+                        "available": now + cooldown_seconds,
+                        "now": now,
+                    },
+                ),
+            )
+            if inserted.rowcount != 1:
+                return None
+        return WorkTaskClaim(task_id=str(task_id), worker_id=owner, claim_token=claim_token)
+
+    def release_reconciliation_claim(self, task_id: str, worker_id: str, claim_token: str) -> bool:
+        """Release only the matching owner/token; keep the due-time backoff."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE work_task_reconciliation_claims
+                        SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL
+                        WHERE task_id = :task_id AND lease_owner = :owner
+                          AND claim_token = :token"""
+                    ),
+                    {"task_id": task_id, "owner": worker_id, "token": claim_token},
+                ),
+            )
+            return result.rowcount == 1
 
     def consume_event(
         self,
@@ -125,12 +227,15 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         *,
         expected_version: int,
         updated_task: WorkTask,
+        claim_token: str | None = None,
     ) -> tuple[EventConsumptionDecision, WorkTask | None]:
         """Atomically dedupe, version-check, persist task progress and advance cursor."""
 
         if updated_task.task_id != task_id or updated_task.version != expected_version + 1:
             raise ValueError("updated_task identity/version does not match event transaction")
         with self.unit_of_work.atomic(), self._write_session() as session:
+            if claim_token is not None:
+                self._require_reconciliation_claim(session, task_id, claim_token)
             duplicate = session.execute(
                 text(
                     "SELECT 1 FROM work_task_event_receipts "
@@ -243,6 +348,71 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     "stream_key": cursor.stream_key,
                     "event_id": cursor.event_id,
                 },
+            )
+        self._replace_reconciliation_target(session, task)
+
+    @staticmethod
+    def _replace_reconciliation_target(session: Session, task: WorkTask) -> None:
+        session.execute(
+            text("DELETE FROM work_task_reconciliation_targets WHERE task_id = :task_id"),
+            {"task_id": task.task_id},
+        )
+        run_id = task.authority_refs.workflow_run_id
+        waiting = task.waiting_condition
+        if run_id is None or waiting is None:
+            return
+        target_kind: str | None = None
+        if (
+            task.status.value == "waiting_run"
+            and waiting.kind.value == "workflow_run"
+            and waiting.reference == run_id
+        ):
+            target_kind = "workflow_run"
+        elif (
+            task.status.value == "waiting_user"
+            and waiting.kind.value == "user_decision"
+            and waiting.reference == f"qc:{run_id}"
+        ):
+            target_kind = "qc_decision"
+        elif (
+            task.status.value == "waiting_dependency"
+            and waiting.kind.value == "dependency"
+            and waiting.reference == f"statistical-result:{run_id}"
+        ):
+            target_kind = "statistical_result"
+        if target_kind is not None:
+            session.execute(
+                text(
+                    """INSERT INTO work_task_reconciliation_targets
+                    (task_id, run_id, target_kind) VALUES (:task_id, :run_id, :target_kind)"""
+                ),
+                {"task_id": task.task_id, "run_id": run_id, "target_kind": target_kind},
+            )
+
+    @staticmethod
+    def _require_reconciliation_claim(session: Session, task_id: str, claim_token: str) -> None:
+        row = (
+            session.execute(
+                text(
+                    """SELECT claim_token, lease_expires_at
+                FROM work_task_reconciliation_claims
+                WHERE task_id = :task_id"""
+                ),
+                {"task_id": task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            row is None
+            or row["claim_token"] != claim_token
+            or row["lease_expires_at"] is None
+            or float(row["lease_expires_at"]) <= time.time()
+        ):
+            raise ConflictError(
+                "work_task_claim_lost",
+                "自动化任务领取已过期或已转交。本次恢复结果未写入。",
+                task_id=task_id,
             )
 
     @staticmethod

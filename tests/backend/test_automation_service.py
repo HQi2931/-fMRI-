@@ -260,6 +260,39 @@ def test_reconciliation_reads_authoritative_running_state_and_duplicate_delivery
     assert replay.task.version == version_after_first
 
 
+def test_due_task_reconciliation_scans_without_event_and_rechecks_current_run(service) -> None:
+    task = make_waiting_task()
+    service.automation.create_task(task)
+    reads = AuthoritativeReadDoubles(
+        run_state=WorkflowState.RUNNING,
+        qc_status="pending",
+    )
+    bind_authoritative_read_doubles(service, reads)
+
+    first = service.automation.reconcile_next_due_task(
+        "automation-worker",
+        lease_seconds=10,
+        cooldown_seconds=0,
+    )
+    assert first is not None
+    assert first.readiness is RunReadiness.WAITING_RUN
+    assert first.task.status is TaskStatus.WAITING_RUN
+    assert first.event_receipts == ()
+
+    reads.run.state = WorkflowState.FAILED_TERMINAL
+    recovered = service.automation.reconcile_next_due_task(
+        "automation-worker",
+        lease_seconds=10,
+        cooldown_seconds=0,
+    )
+    assert recovered is not None
+    assert recovered.readiness is RunReadiness.BLOCKED
+    assert recovered.authoritative is not None
+    assert recovered.authoritative.run_state == WorkflowState.FAILED_TERMINAL.value
+    assert recovered.task.status is TaskStatus.BLOCKED
+    assert recovered.event_receipts == ()
+
+
 def test_reconciliation_blocks_failed_run_without_retry_or_new_run(service) -> None:
     task = make_waiting_task()
     service.automation.create_task(task)

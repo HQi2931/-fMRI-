@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-11
 - 更新日期：2026-10-14
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)
 
 ## 目标里程碑
 
@@ -37,8 +37,8 @@
 需要补足的边界：
 
 - Agent loop 在一次模型请求内迭代读取；Work 现在只对预处理/分析草稿提案动作提供有限的同轮预检修订。Skill 编译、统计设计装配和执行前的所有校验仍未统一成通用“反馈—补查—重验”应用服务，分析中的科研缺项继续等待用户决定。
-- `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 已开始承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。事件唤醒后的完整步骤恢复、目标预算累计和下游自动准备仍未完成。
-- 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。尚缺消费任务依赖、等待 Worker/QC、自动续接分析的确定性调度。
+- `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 已开始承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。现有 Worker 已接入带独立租约和 fencing token 的启动/周期扫描，可重核 Run、QC 决策和统计结果等待；目标预算累计、完整步骤恢复和下游自动准备仍未完成。
+- 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。已能对已绑定运行、QC 决策和统计结果做自动重核；尚缺目标级 Artifact 检查、依赖消费和自动准备分析/报告的确定性续接。
 - `SkillResolver` 以有限指标组合选择 Skill。数据扫描能够看到的实体、session/run 和已有中间阶段与执行器实际支持范围仍有差距。例如主预处理单 session，metric-only checkpoint 目前限单主体。
 - 外部指标目录仍以显式组/条件导入为主；单组目录现可登记为一个纳入组并进入单样本候选，但多 session/run、人口学表驱动纳入和复杂重复测量结构仍未覆盖。
 - Skill 的逻辑步骤不能自动推导出 DPABI 的物理暂停点。当前主模板为一次 `DPARSFA_run` 调用，并在执行后检查实际产物；已有受控 checkpoint 输入复用不等于任意失败节点都能断点续跑。
@@ -91,11 +91,17 @@ flowchart TD
 
 ### 阶段 B：持久任务推进与事件唤醒
 
-当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或审查状态与 Run 不一致时阻断。终态失败、引用 Artifact 不存在或不属于当前项目时转为 `blocked`。任务引用的 Artifact ID 按通用引用处理，允许指向上游 Run；当前 Run 的登记产物清单单独返回，不与通用引用做差集。成功且 QC 已批准/显式跳过后转为 `waiting_dependency`，等待目标级产物完整性与下一步骤检查。该切片不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。后台事件订阅、领取/唤醒调度和目标级下游准备仍未实现，因此本阶段尚未达到自动续接验收。
+当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或审查状态与 Run 不一致时阻断。终态失败、引用 Artifact 不存在或不属于当前项目时转为 `blocked`。任务引用的 Artifact ID 按通用引用处理，允许指向上游 Run；当前 Run 的登记产物清单单独返回，不与通用引用做差集。成功且 QC 已批准/显式跳过后转为 `waiting_dependency`，等待目标级产物完整性与下一步骤检查。该切片不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。WorkTask 启动/周期扫描、持久事件回放、带 fencing 的短租约已实现；目标级下游准备和自动续接仍未实现，因此本阶段尚未达到跨步骤自动化验收。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。
 
 阶段 B 统计任务纵向接线（2026-10-14）：合法的分析提案按 `(conversation_id, analysis, proposal_hash)` 创建或复用持久 WorkTask，保留用户目标、草稿哈希和唯一 `statistical_run` 步骤。正式统计 Plan 创建时，将 WorkTask、Plan 引用和会话分析角色链接放入同一 Unit of Work；旧会话缺少任务记录时仅按服务端提案/草稿证据补建。Work Run 创建仍要求原有方案校验、审批/确认和角色作用域；创建 Run 后，在同一事务绑定 task、Plan、Run 和会话引用，失败会整体回滚。统计 Run 使用类型专属重核：不要求预处理头动 QC；仅当 Run/Plan/design revision 一致，且结果摘要、detail、冻结报告、manifest、Plan 哈希和登记 Artifact 元数据全部一致时，唯一真实且非占位的 StatisticalResult 才能完成任务。零显著体素是有效成功；统计 Run 成功但结果尚未登记时保持 `waiting_dependency`；mock/synthetic、重复、身份冲突或不可验证结果均 fail closed。WorkTask、会话、SQLite 重启恢复、重复 Plan/Run 和类型化结果核验相关定向回归共 47 项通过，Ruff、Mypy、文档校验通过；未运行 MATLAB。此切片不包含后台事件订阅、任务领取租约、自动下游统计/报告准备或完整任务恢复调度，不能据此宣称跨步骤自动续接完成。
+
+### 阶段 B Worker 恢复扫描与任务租约（2026-10-14）
+
+既有 Workflow Worker 现在同时担任确定性 WorkTask 恢复协调器：启动后立即扫描，之后按空闲轮询节奏继续扫描，每轮领取一个到期目标。WorkTask 侧使用独立于 Job attempt 的 SQLite 租约；目标索引只包含 `waiting_run`、绑定 Run 的 QC 决策等待和统计结果登记等待。普通提案决策与尚无下游检查器的预处理 `downstream` 等待不会进入扫描。事件以最多 1000 项的批次按游标回放；payload 不参与判定。即使没有新事件，协调器也重新读取当前 Run/QC/Artifact/StatisticalResult，以补回停机遗漏唤醒或消费事件后未完成任务提交的情况。随机 Claim token 在事件消费与状态提交时 fencing 旧持有者；cooldown 限制无进展重查频率。此协调器仅更新 WorkTask 和事件回执，不调用模型、不创建 Run、不审批 Plan/QC。
+
+定向验证覆盖无事件周期补扫、唯一领取、cooldown、租约到期重领、旧 token 写入拒绝、支持状态筛选和 Worker `--once` 恢复入口；自动化相关测试共 55 项通过，另有旧数据库目标回填迁移测试 1 项通过。扩展回归 92 项通过、1 项失败；失败是基线中 `test_database_restart_preserves_queued_run` 对 `ApplicationServices.get_run` 的旧调用，当前服务组合根只暴露 `runs.get_run`，且该测试在本切片前已存在。Ruff、格式、Mypy 和 78 份 Markdown 检查通过；未运行 MATLAB。目标级 Artifact expectations、下游步骤自动准备和跨步骤完成判定仍未实现。
 
 目标是解决关闭页面、等待运行、跨角色交接后需要用户手动“继续”的问题。
 

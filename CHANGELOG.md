@@ -8,6 +8,8 @@
 
 - Work 统计提案现在创建或复用持久分析任务；冻结统计 Plan、显式授权的 Run 与会话引用会原子绑定。统计结果重核校验真实结果及其 Plan、设计修订、manifest、报告和 Artifact 证据，允许零显著结果，并在结果缺失时等待登记；此增量不实现后台调度或下游自动续接。
 
+- 现有 Worker 启动时及空闲轮询时扫描可重核的 WorkTask，使用独立 SQLite 短租约和 fencing token 协调领取；通过持久事件游标回放并重新读取 Run/QC/统计结果权威状态，周期扫描可补回漏事件。协调器不调用模型、不创建运行、不批准 QC；目标级产物检查和下游自动准备仍未完成。
+
 - 持久 WorkTask 可按 `task_id` 重核等待中的 Workflow Run：事件只提供去重身份和唤醒信号，应用服务以 Run `version` 前后夹读 Run/QC/Artifact，最多重试三次；持续变化时返回 `indeterminate` 并保留任务生命周期状态。`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查尚无或为 draft，以及 `failed` 且 draft 审查，等待用户明确处理；失败状态缺少审查或证据冲突时阻断。通用 Artifact 引用按 ID/项目归属解析，可引用上游 Run；不会拿当前 Run 的输出清单推断通用引用缺失。成功且 QC 已明确处理后仍停在 `waiting_dependency`，因为目标级 Artifact 完整性和下一步骤判定未实现。不创建 Run、不调用模型、不隐含审批；后台订阅与恢复调度仍待实现。
 
 - 将持久 WorkTask 接入预处理 Work Plan 生命周期：成功的 preprocessing SkillPlan 创建/复用等待用户审查的任务，任务与会话角色链接一同持久化；显式一次性启动确认在 `send_conversation_turn` finalize 中绑定同一任务、Run 和会话引用。`work-draft` 与 `work-review` 的成功 Plan 路径也写入该关联。任务 ID 按会话/角色/Plan 修订稳定生成，目标保留用户原始意图与 manifest hash。测试覆盖失败回滚、确认重放和错项目拒绝；本变更不启用统计任务或后台调度，也不运行 MATLAB。

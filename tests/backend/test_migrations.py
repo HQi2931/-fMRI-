@@ -111,6 +111,63 @@ def test_work_task_migration_preserves_legacy_preprocessing_run_and_round_trips(
         engine.dispose()
 
 
+def test_reconciliation_migration_backfills_only_supported_waiting_targets(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "reconciliation-backfill.sqlite"
+    url = f"sqlite:///{database_path.as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0022_persistent_work_tasks")
+    engine = create_engine(url)
+    legacy_tasks = (
+        ("legacy-run-wait", "waiting_run", "workflow_run", "run-1"),
+        ("legacy-qc-wait", "waiting_user", "user_decision", "qc:run-2"),
+        (
+            "legacy-result-wait",
+            "waiting_dependency",
+            "dependency",
+            "statistical-result:run-3",
+        ),
+        ("legacy-choice-wait", "waiting_user", "user_decision", "analysis-proposal:abc"),
+    )
+    try:
+        with engine.begin() as connection:
+            for task_id, status, waiting_kind, reference in legacy_tasks:
+                run_id = reference.split(":")[-1] if task_id != "legacy-run-wait" else reference
+                connection.execute(
+                    text(
+                        "INSERT INTO work_tasks "
+                        "(task_id,status,version,goal_json,waiting_condition_json,"
+                        "authority_refs_json,recovery_steps_json,budget_json) "
+                        "VALUES (:task_id,:status,1,'{}',:waiting,:authority,'[]','{}')"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "status": status,
+                        "waiting": json.dumps(
+                            {"kind": waiting_kind, "reference": reference, "reason": "legacy"}
+                        ),
+                        "authority": json.dumps({"workflow_run_id": run_id}),
+                    },
+                )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            targets = connection.execute(
+                text(
+                    "SELECT task_id,run_id,target_kind "
+                    "FROM work_task_reconciliation_targets ORDER BY task_id"
+                )
+            ).all()
+        assert [tuple(row) for row in targets] == [
+            ("legacy-qc-wait", "run-2", "qc_decision"),
+            ("legacy-result-wait", "run-3", "statistical_result"),
+            ("legacy-run-wait", "run-1", "workflow_run"),
+        ]
+    finally:
+        engine.dispose()
+
+
 def test_initial_alembic_migration_creates_metadata_schema(tmp_path: Path) -> None:
     database_path = tmp_path / "migration.sqlite"
     config = Config("alembic.ini")

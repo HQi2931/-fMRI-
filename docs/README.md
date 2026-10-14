@@ -4,7 +4,7 @@
 - 文档类型：Development
 - 维护者：documentation_maintainer
 - 创建日期：2026-09-23
-- 更新日期：2026-10-11
+- 更新日期：2026-10-14
 - 适用范围：`docs/` 全部文档的导航、权威来源与归档登记
 - 关联：[文档规范](development/documentation-standard.md)
 
@@ -134,6 +134,7 @@
 - [ADR 0036：持久 Work 任务与运行状态边界](adr/0036-persistent-work-task-boundary.md)
 - [ADR 0037：fMRI 输入身份与证据来源](adr/0037-fmri-input-identity-and-evidence.md)
 - [ADR 0038：逻辑科研方案与物理执行单元](adr/0038-logical-plan-to-execution-units.md)
+- [ADR 0039：WorkTask 权威状态重核协调器](adr/0039-work-task-reconciliation-worker.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

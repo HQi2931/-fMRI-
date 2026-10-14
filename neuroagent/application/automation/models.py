@@ -123,6 +123,16 @@ class WorkEventIdentity(BaseModel):
     dedupe_key: str = Field(min_length=1, max_length=300)
 
 
+class WorkTaskClaim(BaseModel):
+    """Short-lived, fenced ownership of one background reconciliation pass."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str = Field(min_length=1, max_length=100)
+    worker_id: str = Field(min_length=1, max_length=200)
+    claim_token: str = Field(min_length=32, max_length=64)
+
+
 class WorkTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

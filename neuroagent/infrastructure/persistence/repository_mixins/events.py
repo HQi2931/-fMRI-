@@ -46,6 +46,7 @@ class RuntimeEventMixin(RepositoryBaseMixin):
         after_event_id: int = 0,
         *,
         project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[RuntimeEventView]:
         with self._read_session() as session:
             query = select(RuntimeEventRow).where(RuntimeEventRow.event_id > after_event_id)
@@ -53,7 +54,10 @@ class RuntimeEventMixin(RepositoryBaseMixin):
                 query = query.where(RuntimeEventRow.run_id == run_id)
             if project_id is not None:
                 query = query.where(RuntimeEventRow.project_id == project_id)
-            rows = session.scalars(query.order_by(RuntimeEventRow.event_id)).all()
+            ordered = query.order_by(RuntimeEventRow.event_id)
+            if limit is not None:
+                ordered = ordered.limit(max(limit, 0))
+            rows = session.scalars(ordered).all()
             return [
                 RuntimeEventView(
                     event_id=row.event_id,
