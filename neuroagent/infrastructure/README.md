@@ -3,13 +3,13 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-10
+- 更新日期：2026-10-14
 - 关联：[项目结构](../../docs/architecture/project-structure.md)
 
 `neuroagent.infrastructure` 实现应用端口的本地适配器，当前包括：
 
 - SQLAlchemy 2 + SQLite 持久化与 Alembic 迁移；
-- 分析提案 outbox 的租约、fencing token、有界退避与终态引用； assistant continuation message 与分析 WorkTask/outbox 终态由应用层共享 Unit of Work 原子写入，迁移约束禁止半完成引用和重复 continuation key；
+- 分析提案及统计结果解释 outbox 分别使用独立状态、租约、fencing token、有界退避与终态引用；assistant continuation message 与对应 WorkTask/outbox 终态由应用层共享 Unit of Work 原子写入，迁移约束禁止半完成引用和重复 continuation key；
 - 会话保存前台角色与两个角色各自的方案/运行引用；迁移将旧 Work 运行归属预处理。统计运行及绑定共用 writer 事务；客户端缓存不承担任务持久化。
 - 数据集只读扫描、文件哈希和允许根目录路径策略；
 - 快速概况附带基于相对路径、文件大小、时间戳及顶层目录的 `metadata_revision`，用于发现规划输入变化；它不进入冻结清单，也不能替代执行前完整内容哈希。保留或伪造时间戳的内容变化仍由冻结与 Worker 校验识别。

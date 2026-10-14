@@ -16,6 +16,11 @@ from neuroagent.application.automation.models import (
     WorkTask,
     WorkTaskClaim,
 )
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationClaim,
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+)
 
 
 class WorkTaskRepositoryPort(Protocol):
@@ -106,5 +111,43 @@ class WorkTaskRepositoryPort(Protocol):
     def requeue_analysis_outbox(
         self, intent_task_id: str, *, recoverable_error_codes: tuple[str, ...]
     ) -> AnalysisProposalOutbox | None: ...
+
+    def ensure_result_interpretation_outbox(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> StatisticalResultInterpretationOutbox: ...
+
+    def get_result_interpretation_outbox(
+        self, task_id: str
+    ) -> StatisticalResultInterpretationOutbox: ...
+
+    def claim_result_interpretation_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None: ...
+
+    def renew_result_interpretation_claim(
+        self, claim: ResultInterpretationClaim, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None: ...
+
+    def defer_result_interpretation_claim(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool: ...
+
+    def complete_result_interpretation_outbox(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        status: ResultInterpretationStatus,
+        continuation_message_id: str,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> StatisticalResultInterpretationOutbox: ...
+
+    def requeue_result_interpretation_outbox(
+        self, task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> StatisticalResultInterpretationOutbox | None: ...
 
     def atomic(self) -> AbstractContextManager[None]: ...

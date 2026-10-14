@@ -35,6 +35,11 @@ def test_worker_main_runs_one_deterministic_task_reconciliation_on_startup(monke
         "process_one_analysis_outbox",
         lambda _service, _worker_id: calls.append(("analysis-outbox",)) or "deferred",
     )
+    monkeypatch.setattr(
+        worker_main,
+        "process_one_result_interpretation_outbox",
+        lambda _service, _worker_id: calls.append(("result-interpretation-outbox",)) or "completed",
+    )
     monkeypatch.setattr(sys, "argv", ["rsfmri-worker", "--once"])
 
     worker_main.main()
@@ -47,5 +52,6 @@ def test_worker_main_runs_one_deterministic_task_reconciliation_on_startup(monke
             {"lease_seconds": 17, "cooldown_seconds": 0.5},
         ),
         ("analysis-outbox",),
+        ("result-interpretation-outbox",),
         ("close",),
     ]

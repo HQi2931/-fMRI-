@@ -164,6 +164,55 @@ class AnalysisProposalOutboxRow(Base):
     )
 
 
+class StatisticalResultInterpretationOutboxRow(Base):
+    __tablename__ = "statistical_result_interpretation_outbox"
+    task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    plan_revision_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    result_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    result_bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lease_expires_at: Mapped[float | None] = mapped_column(nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_generation: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[float | None] = mapped_column(nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    continuation_message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversation_messages.message_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ready', 'completed', 'waiting_user', 'blocked')",
+            name="ck_result_interpretation_status",
+        ),
+        CheckConstraint(
+            "(status = 'ready' AND continuation_message_id IS NULL) OR "
+            "(status != 'ready' AND continuation_message_id IS NOT NULL)",
+            name="ck_result_interpretation_terminal_message",
+        ),
+        CheckConstraint("fencing_token >= 0", name="ck_result_interpretation_fencing_nonnegative"),
+        CheckConstraint("attempt_count >= 0", name="ck_result_interpretation_attempt_nonnegative"),
+        CheckConstraint(
+            "retry_generation >= 0",
+            name="ck_result_interpretation_generation_nonnegative",
+        ),
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["conversations.conversation_id"],
+            ondelete="RESTRICT",
+            name="fk_result_interpretation_conversation",
+        ),
+    )
+
+
 class PlanRevisionRow(Base):
     __tablename__ = "plan_revisions"
     plan_revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)

@@ -65,6 +65,25 @@ function pendingAnalysisOutboxIntentId(conversation?: Conversation): string | nu
   return continuationExistsForGeneration ? null : envelope.task_id;
 }
 
+function pendingResultInterpretationTaskId(conversation: Conversation | undefined, runId: string): string | null {
+  const task = conversation?.work_tasks?.find((item) => item.agent_role === "analysis" && item.run_id === runId);
+  if (!task?.work_task_id) return null;
+  let latestGeneration = -1;
+  let latestStatus: unknown;
+  for (const message of conversation?.messages ?? []) {
+    for (const key of ["statistical_result_interpretation", "statistical_result_interpretation_retry"]) {
+      const state = message.payload[key] as { task_id?: unknown; retry_generation?: unknown; status?: unknown } | undefined;
+      if (state?.task_id !== task.work_task_id || typeof state.retry_generation !== "number") continue;
+      if (state.retry_generation >= latestGeneration) {
+        latestGeneration = state.retry_generation;
+        latestStatus = state.status;
+      }
+    }
+  }
+  return latestStatus === "completed" || latestStatus === "blocked" || latestStatus === "waiting_user"
+    ? null : task.work_task_id;
+}
+
 import {
   WELCOME,
   confirmedInputStage,
@@ -165,6 +184,20 @@ export function AgentPage() {
       setBusy(false);
     }
   }, [activeConversation?.conversation_id, busy, draftDirty]);
+  const retryResultInterpretation = useCallback(async (taskId: string) => {
+    if (!activeConversation?.conversation_id || busy || draftDirty) return;
+    setBusy(true);
+    setError("");
+    try {
+      const latest = await agentApi.retryStatisticalResultInterpretation(activeConversation.conversation_id, taskId);
+      cache(latest);
+      setAgentRole("analysis");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeConversation?.conversation_id, busy, draftDirty]);
   const confirmedWorkspaceStage = confirmedInputStage(activeConversation, workspacePath);
   const canAuthorizeWorkspaceFiles = Boolean(selectedModel?.capabilities.includes("tool_use"));
   const authorizationUnavailableReason = !selectedModel
@@ -205,6 +238,8 @@ export function AgentPage() {
   const pendingOutboxIntentId = pendingAnalysisOutboxIntentId(activeConversation);
   const observedRunId = activeRun?.run_id;
   const observedRunState = activeRun?.state;
+  const pendingResultInterpretationId = observedRunId && observedRunState === "succeeded"
+    ? pendingResultInterpretationTaskId(activeConversation, observedRunId) : null;
 
   useEffect(() => {
     const runId = monitoredRunId;
@@ -243,7 +278,12 @@ export function AgentPage() {
 
     const controller = new AbortController();
     const intentTaskId = pendingOutboxIntentId;
-    const maxRefreshes = intentTaskId && observedRunState === "succeeded"
+    const resultTaskId = pendingResultInterpretationId;
+    const hasAnalysisTaskForRun = activeConversation?.work_tasks?.some(
+      (item) => item.agent_role === "analysis" && item.run_id === observedRunId,
+    ) ?? false;
+    if (observedRunState === "succeeded" && hasAnalysisTaskForRun && !resultTaskId) return;
+    const maxRefreshes = ((intentTaskId || resultTaskId) && observedRunState === "succeeded")
       ? MAX_OUTBOX_CONVERSATION_REFRESHES : 1;
     let refreshes = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -258,7 +298,10 @@ export function AgentPage() {
         const latest = await agentApi.conversation(conversationId, controller.signal);
         if (controller.signal.aborted || currentConversationId.current !== conversationId) return;
         setConversations((items) => items.map((item) => item.conversation_id === conversationId ? latest : item));
-        if (refreshes < maxRefreshes && pendingAnalysisOutboxIntentId(latest) === intentTaskId) {
+        if (refreshes < maxRefreshes && (
+          (intentTaskId && pendingAnalysisOutboxIntentId(latest) === intentTaskId)
+          || (resultTaskId && pendingResultInterpretationTaskId(latest, observedRunId) === resultTaskId)
+        )) {
           scheduleRefresh();
         }
       } catch {
@@ -267,7 +310,7 @@ export function AgentPage() {
     };
     void refresh();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId]);
+  }, [activeConversation?.conversation_id, activeConversation?.version, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -614,7 +657,7 @@ export function AgentPage() {
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
       {mode === "work" && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
-      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
+      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} onRetryResultInterpretation={(taskId) => void retryResultInterpretation(taskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       <div className="chat-composer">

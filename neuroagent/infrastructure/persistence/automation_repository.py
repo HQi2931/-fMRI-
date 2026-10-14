@@ -26,6 +26,11 @@ from neuroagent.application.automation.models import (
     advance_event_cursor,
     decide_event_consumption,
 )
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationClaim,
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+)
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
@@ -556,6 +561,365 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             last_error_code=row["last_error_code"],
             continuation_message_id=row["continuation_message_id"],
             analysis_work_task_id=row["analysis_work_task_id"],
+        )
+
+    def ensure_result_interpretation_outbox(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> StatisticalResultInterpretationOutbox:
+        """Create one READY result continuation without duplicating task/result rows."""
+        if not record.artifact_ids or len(set(record.artifact_ids)) != len(record.artifact_ids):
+            raise ValueError("verified result Artifact IDs must be nonempty and unique")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            existing = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id OR result_id=:result_id"
+                    ),
+                    {"task_id": record.task_id, "result_id": record.result_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                current = self._result_interpretation_from_row(existing)
+                if current != record:
+                    immutable = (
+                        "task_id",
+                        "conversation_id",
+                        "project_id",
+                        "run_id",
+                        "plan_revision_id",
+                        "result_id",
+                        "result_bundle_hash",
+                        "result_version",
+                        "artifact_ids",
+                    )
+                    if any(getattr(current, key) != getattr(record, key) for key in immutable):
+                        raise ConflictError(
+                            "result_interpretation_binding_conflict",
+                            "统计结果续接已绑定到不同的 WorkTask 或结果证据。",
+                        )
+                    return current
+                return current
+            session.execute(
+                text(
+                    """INSERT INTO statistical_result_interpretation_outbox
+                    (task_id, conversation_id, project_id, run_id, plan_revision_id,
+                     result_id, result_bundle_hash, result_version, artifact_ids_json,
+                     status, lease_owner, lease_expires_at, fencing_token, attempt_count,
+                     retry_generation, next_attempt_at, last_error_code, continuation_message_id)
+                    VALUES (:task_id, :conversation_id, :project_id, :run_id, :plan_revision_id,
+                     :result_id, :bundle_hash, :result_version, :artifact_ids, 'ready',
+                     NULL, NULL, 0, 0, 0, NULL, NULL, NULL)"""
+                ),
+                {
+                    "task_id": record.task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "run_id": record.run_id,
+                    "plan_revision_id": record.plan_revision_id,
+                    "result_id": record.result_id,
+                    "bundle_hash": record.result_bundle_hash,
+                    "result_version": record.result_version,
+                    "artifact_ids": json.dumps(record.artifact_ids),
+                },
+            )
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": record.task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._result_interpretation_from_row(row)
+
+    def get_result_interpretation_outbox(
+        self, task_id: str
+    ) -> StatisticalResultInterpretationOutbox:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("统计结果解释续接", task_id)
+            return self._result_interpretation_from_row(row)
+
+    def claim_result_interpretation_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200 or lease_seconds < 1:
+            raise ValueError("worker_id and positive lease_seconds are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT task_id FROM statistical_result_interpretation_outbox
+                    WHERE status='ready'
+                      AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                      AND (next_attempt_at IS NULL OR next_attempt_at<=:now)
+                    ORDER BY task_id LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            task_id = str(row["task_id"])
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET lease_owner=:owner, lease_expires_at=:expires,
+                            fencing_token=fencing_token+1, next_attempt_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                          AND (next_attempt_at IS NULL OR next_attempt_at<=:now)"""
+                    ),
+                    {
+                        "owner": owner,
+                        "expires": now + lease_seconds,
+                        "task_id": task_id,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            fence = int(
+                session.execute(
+                    text(
+                        "SELECT fencing_token FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                ).scalar_one()
+            )
+        return ResultInterpretationClaim(
+            task_id=task_id,
+            worker_id=owner,
+            lease_expires_at=now + lease_seconds,
+            fencing_token=fence,
+        )
+
+    def renew_result_interpretation_claim(
+        self, claim: ResultInterpretationClaim, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        now = time.time()
+        expires = now + lease_seconds
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET lease_expires_at=:expires
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "expires": expires,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+        return claim.model_copy(update={"lease_expires_at": expires})
+
+    def defer_result_interpretation_claim(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        if retry_after_seconds < 1 or not error_code or len(error_code) > 64:
+            raise ValueError("positive retry delay and bounded error code are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET attempt_count=attempt_count+1, last_error_code=:error_code,
+                            next_attempt_at=:retry_at, lease_owner=NULL, lease_expires_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "error_code": error_code,
+                        "retry_at": now + retry_after_seconds,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            return changed == 1
+
+    def complete_result_interpretation_outbox(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        status: ResultInterpretationStatus,
+        continuation_message_id: str,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> StatisticalResultInterpretationOutbox:
+        if status is ResultInterpretationStatus.READY or not continuation_message_id:
+            raise ValueError("outbox completion requires a terminal status and assistant message")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET status=:status, continuation_message_id=:message_id,
+                            attempt_count=attempt_count+:record_attempt,
+                            last_error_code=:error_code, next_attempt_at=NULL,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now AND continuation_message_id IS NULL"""
+                    ),
+                    {
+                        "status": status.value,
+                        "message_id": continuation_message_id,
+                        "record_attempt": int(record_attempt),
+                        "error_code": error_code,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError(
+                    "result_interpretation_claim_lost",
+                    "统计结果解释续接 claim 已过期或已被替换。本轮草稿未提交。",
+                )
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": claim.task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._result_interpretation_from_row(row)
+
+    def requeue_result_interpretation_outbox(
+        self, task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> StatisticalResultInterpretationOutbox | None:
+        if not recoverable_error_codes:
+            raise ValueError("manual requeue requires recoverable error codes")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            current = self._result_interpretation_from_row(row)
+            if current.status is ResultInterpretationStatus.READY and current.retry_generation > 0:
+                return current
+            if (
+                current.status is not ResultInterpretationStatus.WAITING_USER
+                or current.last_error_code not in recoverable_error_codes
+            ):
+                return None
+            binds = {f"error_{index}": value for index, value in enumerate(recoverable_error_codes)}
+            placeholders = ", ".join(f":error_{index}" for index in range(len(binds)))
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        f"""UPDATE statistical_result_interpretation_outbox
+                        SET status='ready', attempt_count=0, retry_generation=retry_generation+1,
+                            fencing_token=fencing_token+1, next_attempt_at=NULL,
+                            lease_owner=NULL, lease_expires_at=NULL,
+                            continuation_message_id=NULL, last_error_code=NULL
+                        WHERE task_id=:task_id AND status='waiting_user'
+                          AND last_error_code IN ({placeholders})"""
+                    ),
+                    {"task_id": task_id, **binds},
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            updated = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._result_interpretation_from_row(updated)
+
+    @staticmethod
+    def _result_interpretation_from_row(row: Any) -> StatisticalResultInterpretationOutbox:
+        return StatisticalResultInterpretationOutbox(
+            task_id=row["task_id"],
+            conversation_id=row["conversation_id"],
+            project_id=row["project_id"],
+            run_id=row["run_id"],
+            plan_revision_id=row["plan_revision_id"],
+            result_id=row["result_id"],
+            result_bundle_hash=row["result_bundle_hash"],
+            result_version=row["result_version"],
+            artifact_ids=tuple(json.loads(row["artifact_ids_json"])),
+            status=row["status"],
+            lease_owner=row["lease_owner"],
+            lease_expires_at=row["lease_expires_at"],
+            fencing_token=row["fencing_token"],
+            attempt_count=row["attempt_count"],
+            retry_generation=row["retry_generation"],
+            next_attempt_at=row["next_attempt_at"],
+            last_error_code=row["last_error_code"],
+            continuation_message_id=row["continuation_message_id"],
         )
 
     def save_task(

@@ -493,15 +493,54 @@ class ConversationMixin(RepositoryBaseMixin):
             )
             if existing is not None:
                 existing_payload = _load(existing.payload_json, {})
-                existing_outbox = existing_payload.get("analysis_outbox_continuation")
-                requested_outbox = assistant_payload.get("analysis_outbox_continuation")
+                binding_keys = (
+                    "analysis_outbox_continuation",
+                    "statistical_result_interpretation",
+                    "statistical_result_interpretation_retry",
+                )
+                existing_binding = next(
+                    (
+                        (key, existing_payload.get(key))
+                        for key in binding_keys
+                        if isinstance(existing_payload.get(key), dict)
+                    ),
+                    None,
+                )
+                requested_binding = next(
+                    (
+                        (key, assistant_payload.get(key))
+                        for key in binding_keys
+                        if isinstance(assistant_payload.get(key), dict)
+                    ),
+                    None,
+                )
+                bindings_match = False
+                if (
+                    existing_binding is not None
+                    and requested_binding is not None
+                    and existing_binding[0] == requested_binding[0]
+                ):
+                    existing_data = existing_binding[1]
+                    requested_data = requested_binding[1]
+                    identity_fields = (
+                        "intent_task_id",
+                        "task_id",
+                        "retry_generation",
+                    )
+                    if isinstance(existing_data, dict) and isinstance(requested_data, dict):
+                        present_fields = tuple(
+                            key
+                            for key in identity_fields
+                            if key in existing_data or key in requested_data
+                        )
+                        bindings_match = bool(present_fields) and all(
+                            existing_data.get(key) == requested_data.get(key)
+                            for key in present_fields
+                        )
                 if (
                     existing.conversation_id != conversation_id
                     or existing.role != ConversationRole.ASSISTANT.value
-                    or not isinstance(existing_outbox, dict)
-                    or not isinstance(requested_outbox, dict)
-                    or existing_outbox.get("intent_task_id")
-                    != requested_outbox.get("intent_task_id")
+                    or not bindings_match
                 ):
                     raise ConflictError(
                         "analysis_continuation_key_conflict",

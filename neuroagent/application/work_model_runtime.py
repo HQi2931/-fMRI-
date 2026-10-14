@@ -81,6 +81,7 @@ class WorkModelRuntime:
         preferred_profile_id: str | None,
         model: str | None,
         execution_context: AgentExecutionContext | None = None,
+        allow_tools: bool = True,
     ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
         """Produce the Work JSON contract, preferring the bounded tool loop.
 
@@ -102,7 +103,7 @@ class WorkModelRuntime:
         spent_tokens = 0
         loop_metadata: dict[str, Any] | None = None
         tools_available = False
-        if self.tool_runner is not None:
+        if allow_tools and self.tool_runner is not None:
             try:
                 tools_available = await asyncio.wait_for(
                     self.tool_runner.available(preferred_profile_id),
@@ -110,7 +111,7 @@ class WorkModelRuntime:
                 )
             except TimeoutError:
                 return "", {"stop_reason": "budget_time"}, None
-        if self.tool_runner is not None and tools_available:
+        if allow_tools and self.tool_runner is not None and tools_available:
             remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
             if remaining_seconds <= 0:
                 return "", {"stop_reason": "budget_time"}, None

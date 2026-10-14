@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-12
+- 更新日期：2026-10-14
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
@@ -34,7 +34,8 @@
 - `automation/analysis_outbox.py` 为明确的 `preprocess_then_analyze` 请求持久化提案专用续接记录；记录通过 intent ID/hash 精确指向会话原请求，绑定 conversation/project、预处理 WorkTask、冻结 Plan/manifest/Run。只有预处理目标 Artifact 全部通过现有完整性核验后，任务完成与 outbox `ready` 状态及精确 Artifact IDs 才在同一 SQLite 事务提交。独立消费者会在模型调用前重新核验全部权威源，在事务外准备草稿，再以 fencing token 把 assistant-only continuation、分析 WorkTask/提案及 outbox 终态放在同一 Unit of Work 内原子提交。精确统计输入 allowlist 由本次目标 Artifact 和单独核验的 lineage mask 依赖组成。重复消费幂等；源变化、fencing 失效会丢弃模型结果；缺少用户科研决策或超过有界重试次数时等待用户，提供针对性重试入口。该通道与现有 workflow job/reconciliation 隔离，不创建/批准统计 Plan 或 Run；详见 [ADR 0041](../../docs/adr/0041-proposal-only-analysis-continuation-outbox.md)。
 - 复合分析 intent ID 按会话与 HTTP 幂等键作用域化，并随 active 预处理草稿经编辑/审查/编译写入 WorkTask/TaskStep；启动后仅凭该任务引用精确恢复并校验原始请求。普通新预处理和已消费草稿不继承 intent。当前每个 preprocessing WorkTask 最多绑定一个 intent/outbox。
 - Work 预处理在已提交的 `skill_plan` 确含冻结预处理参数后，按会话/角色/Plan 修订 ID 创建持久 WorkTask；目标文本来自可关联到预处理 Agent 的用户消息，任务引用冻结 manifest hash。显式授权创建的 Run 与任务状态、会话角色链接在同一 Unit of Work 中收口；`work-draft`、`work-review` 的成功 Plan 路径也写入任务及会话关联。部分入口的 Plan 在 finalize 前已经保存，因此不概括承诺所有 Plan 生成入口都与任务同事务。
-- Work 分析提案按会话与 proposal hash 创建持久 `statistical_run` WorkTask，冻结统计 Plan 时绑定任务和会话角色链接，显式授权创建 Run 时再原子绑定 Run。统计任务不使用头动 QC 判据；唯一真实、非占位、且完整匹配 Run、设计修订、Plan 哈希、报告/manifest 和 Artifact 清单的结果完成任务。零显著结果有效；无结果时等待登记；mock/synthetic 或身份不一致时阻断。真实统计结果重核不启动 MATLAB；任务完成后仍没有后台事件订阅器或下游自动生成统计/报告的调度器。
+- Work 分析提案按会话与 proposal hash 创建持久 `statistical_run` WorkTask，冻结统计 Plan 时绑定任务和会话角色链接，显式授权创建 Run 时再原子绑定 Run。统计任务不使用头动 QC 判据；唯一真实、非占位、且完整匹配 Run、设计修订、Plan 哈希、报告/manifest 和 Artifact 清单的结果完成任务。零显著结果有效；无结果时等待登记；mock/synthetic 或身份不一致时阻断。结果任务完成后会以同一 Unit of Work 创建独立的解释 outbox；模型调用仍由独立 Worker 完成，不在 reconciler 中执行。
+- `automation/result_interpretation.py` 定义真实 StatisticalResult 解释续接状态和有界模型事实投影。完成器在任务收口事务内入队，消费者重核完整来源并只提交 assistant-only 解释/报告草稿；有界聚合事实不包含完整报告、受试者矩阵、路径或逐 Artifact 详情。该消费者不创建或批准统计 Plan/Run，详见 [ADR 0042](../../docs/adr/0042-statistical-result-interpretation-outbox.md)。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。

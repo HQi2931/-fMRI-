@@ -112,6 +112,7 @@ type Options = {
   review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
   retryOutbox?: (init?: RequestInit) => Promise<Response>;
+  retryResultInterpretation?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
 };
 
@@ -140,6 +141,7 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();
     if (path.includes("/analysis-outbox/") && path.endsWith("/retry")) return options.retryOutbox?.(init) ?? notFound();
+    if (path.includes("/statistical-result-interpretations/") && path.endsWith("/retry")) return options.retryResultInterpretation?.(init) ?? notFound();
     if (path.endsWith("/conversations/work-1")) return options.conversation?.() ?? notFound();
     if (path.endsWith("/turns")) {
       if (options.turn) return options.turn(init);
@@ -628,6 +630,126 @@ describe("agent workbench page", () => {
     });
     expect(await screen.findByText("重试后的统计草稿已到达。")).toBeInTheDocument();
     expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a completed statistical WorkTask until its result interpretation arrives", async () => {
+    const taskId = "statistical-task-1";
+    const original = conversation({
+      project_id: "project-1",
+      active_run_id: "run-1",
+      foreground_agent_role: "analysis",
+      work_tasks: [{ agent_role: "analysis", work_task_id: taskId, run_id: "run-1" }],
+      messages: [message("result-pending", "assistant", "统计运行已完成，正在整理结果。", { agent_role: "analysis" })],
+    });
+    const delivered = conversation({
+      ...original,
+      version: 2,
+      messages: [...original.messages, message("result-interpretation", "assistant", "统计结果解释报告草稿已生成。", {
+        agent_role: "analysis",
+        statistical_result_interpretation: {
+          task_id: taskId,
+          retry_generation: 0,
+          status: "completed",
+          retry_available: false,
+        },
+      })],
+    });
+    let reads = 0;
+    const refresh = vi.fn(() => json(reads++ === 0 ? original : delivered));
+    const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
+    installFetch({ conversations: () => json([original]), conversation: refresh, run });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByText("统计结果解释报告草稿已生成。", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the conversation after a failed statistical Run", async () => {
+    const taskId = "failed-statistical-task";
+    const original = conversation({
+      project_id: "project-1",
+      active_run_id: "run-1",
+      foreground_agent_role: "analysis",
+      work_tasks: [{ agent_role: "analysis", work_task_id: taskId, run_id: "run-1" }],
+      messages: [message("prior-result", "assistant", "上一次结果解释已完成。", {
+        statistical_result_interpretation: {
+          task_id: taskId,
+          retry_generation: 0,
+          status: "completed",
+          retry_available: false,
+        },
+      })],
+    });
+    const delivered = conversation({
+      ...original,
+      version: 2,
+      messages: [...original.messages, message("run-failure", "assistant", "统计运行失败，已刷新最新状态。")],
+    });
+    const refresh = vi.fn(() => json(delivered));
+    const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "failed_terminal", version: 5, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "not_required", stage: "failed_terminal", stage_progress: 0, created_at: now, updated_at: now });
+    installFetch({ conversations: () => json([original]), conversation: refresh, run });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByText("统计运行失败，已刷新最新状态。", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("keeps result interpretation retry separate and restores its action for the new generation", async () => {
+    const taskId = "statistical-task-retry";
+    const paused = message("result-paused", "assistant", "模型不可用，请配置后重试。", {
+      agent_role: "analysis",
+      statistical_result_interpretation: {
+        task_id: taskId,
+        retry_generation: 0,
+        status: "waiting_user",
+        retry_available: true,
+      },
+    });
+    const original = conversation({
+      project_id: "project-1",
+      active_run_id: "run-1",
+      foreground_agent_role: "analysis",
+      work_tasks: [{ agent_role: "analysis", work_task_id: taskId, run_id: "run-1" }],
+      messages: [paused],
+    });
+    const queued = conversation({
+      ...original,
+      version: 2,
+      messages: [...original.messages, message("result-retry", "assistant", "已排队重新生成解释草稿。", {
+        statistical_result_interpretation_retry: {
+          task_id: taskId,
+          retry_generation: 1,
+          status: "ready",
+        },
+      })],
+    });
+    const delivered = conversation({
+      ...queued,
+      version: 3,
+      messages: [...queued.messages, message("result-paused-again", "assistant", "模型仍不可用，请检查配置。", {
+        agent_role: "analysis",
+        statistical_result_interpretation: {
+          task_id: taskId,
+          retry_generation: 1,
+          status: "waiting_user",
+          retry_available: true,
+        },
+      })],
+    });
+    const refresh = vi.fn(() => json(delivered));
+    const retry = vi.fn((_init?: RequestInit) => json(queued));
+    const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
+    installFetch({ conversations: () => json([original]), conversation: refresh, retryResultInterpretation: retry, run });
+
+    render(<AgentPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "重新生成结果解读草稿" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledOnce());
+    expect(await screen.findByText("模型仍不可用，请检查配置。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新生成结果解读草稿" })).toBeInTheDocument();
+    expect(retry.mock.calls[0]?.[0]?.body).toBe("{}");
+    expect(refresh).toHaveBeenCalled();
   });
 
   it("lists every model the bound provider returns and lets the operator pick one", async () => {

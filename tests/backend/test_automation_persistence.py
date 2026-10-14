@@ -21,13 +21,17 @@ from neuroagent.application.automation.models import (
     transition_task,
     transition_task_step,
 )
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+)
 from neuroagent.application.errors import ConflictError
 from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 from neuroagent.infrastructure.persistence.automation_repository import (
     SqliteWorkTaskRepository,
 )
 from neuroagent.infrastructure.persistence.database import Database
-from neuroagent.infrastructure.persistence.models import ConversationRow
+from neuroagent.infrastructure.persistence.models import ConversationMessageRow, ConversationRow
 from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
 
 
@@ -271,6 +275,67 @@ def test_analysis_outbox_claim_uses_expiring_lease_and_fencing_token(tmp_path, m
     assert second.fencing_token == 2
     assert not repository.validate_analysis_outbox_claim(first)
     assert repository.validate_analysis_outbox_claim(second)
+    database.dispose()
+
+
+def test_result_interpretation_outbox_binds_unique_task_and_result(tmp_path, monkeypatch) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    database, repository = open_repository(tmp_path / "result-interpretation-outbox.sqlite")
+    ensure_conversation(database, "conversation-3")
+    record = StatisticalResultInterpretationOutbox(
+        task_id="stat-task-1",
+        conversation_id="conversation-3",
+        project_id="project-1",
+        run_id="run-1",
+        plan_revision_id="plan-1",
+        result_id="result-1",
+        result_bundle_hash="a" * 64,
+        result_version=1,
+        artifact_ids=("artifact-1",),
+    )
+    assert repository.ensure_result_interpretation_outbox(record) == record
+    assert repository.ensure_result_interpretation_outbox(record) == record
+    conflicting_task = record.model_copy(update={"task_id": "stat-task-2"})
+    with pytest.raises(ConflictError, match="不同的 WorkTask"):
+        repository.ensure_result_interpretation_outbox(conflicting_task)
+    conflicting_result = record.model_copy(update={"result_id": "result-2"})
+    with pytest.raises(ConflictError, match="不同的 WorkTask"):
+        repository.ensure_result_interpretation_outbox(conflicting_result)
+
+    claim = repository.claim_result_interpretation_outbox("worker-a", lease_seconds=5)
+    assert claim is not None and claim.task_id == "stat-task-1"
+    assert repository.claim_result_interpretation_outbox("worker-b", lease_seconds=5) is None
+    now[0] += 6
+    second = repository.claim_result_interpretation_outbox("worker-b", lease_seconds=5)
+    assert second is not None and second.fencing_token > claim.fencing_token
+    with pytest.raises(ConflictError, match="claim 已过期"):
+        repository.complete_result_interpretation_outbox(
+            claim,
+            status=ResultInterpretationStatus.COMPLETED,
+            continuation_message_id="stale-message",
+        )
+    with database.session_factory.begin() as session:
+        session.add(
+            ConversationMessageRow(
+                message_id="assistant-result-1",
+                conversation_id="conversation-3",
+                sequence=1,
+                role="assistant",
+                content="result interpretation draft",
+                payload_json="{}",
+                continuation_key="stat_result_interpretation:stat-task-1:g0",
+            )
+        )
+    completed = repository.complete_result_interpretation_outbox(
+        second,
+        status=ResultInterpretationStatus.COMPLETED,
+        continuation_message_id="assistant-result-1",
+    )
+    assert completed.status is ResultInterpretationStatus.COMPLETED
+    assert repository.get_result_interpretation_outbox("stat-task-1") == completed
     database.dispose()
 
 

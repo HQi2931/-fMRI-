@@ -405,3 +405,9 @@ DPABI 执行输出与 WorkTask 共用不可变目标合同，精确表达冻结 
 迁移 0024 和 SQLite 目标索引只恢复 Plan/Run 引用相符的预处理 `waiting_dependency/downstream:<run_id>` 任务；普通 dependency 与用户科研决定等待仍不调度。统计任务依旧按 StatisticalResult 专属凭据完成；本切片不自动创建统计设计、批准 QC、创建下游 Run、调用模型或生成报告。
 
 定向测试覆盖 DPABI 多受试者/指标/缩放输出合同、auto mask 与重复 scaling、成功后显式 QC skip 和精确产物验证、approved QC 下目标缺失阻断、错 subject/项目的产物拒绝、旧下游等待领取与重核、普通 dependency 排除及迁移选择性回填。自动化 service、持久化、迁移、Work 绑定、Worker 主循环、预处理执行与科学编译器回归共 81 项通过、1 项跳过；Ruff 规则与格式检查、6 个 Python 源文件 strict Mypy、79 份 Markdown 规范和 `git diff --check` 通过。未运行 MATLAB；通过 Mock 权威记录的应用层验证不构成 DPABI 数值路径证据。
+
+## 2026-10-14 统计结果解释自动续接
+
+真实统计 WorkTask 在唯一、非 synthetic 的 StatisticalResult、冻结设计/bundle 和已登记 Artifact lineage 通过服务端复核后，会与任务完成在同一 Unit of Work 中写入独立结果解释 outbox。后台消费者在模型调用前后重核来源，并只把有限、白名单统计事实与确定性 readout 交给模型；仅追加 assistant 解释/报告草稿。零显著结果作为正常结果处理。暂态消费错误最多自动尝试 5 次，随后进入可人工重试状态；重试使用独立 generation 和幂等 API。计划、统计 Run、QC 和科学方法选择均不由该续接改变。
+
+本切片定向后端/持久化/Worker/迁移回归 29 项通过；Agent 页面测试 41 项通过，前端 TypeScript 类型检查通过；Mypy 291 个 Python 源文件通过，Ruff 与格式检查覆盖 317 个文件，文档规范检查覆盖 81 份 Markdown。没有调用真实模型或 MATLAB/DPABI；因此验证的是任务、证据核验、队列消费、重试和页面状态的应用层行为，不代表模型解释质量、真实统计数值路径或完整浏览器至 MATLAB 端到端验收。

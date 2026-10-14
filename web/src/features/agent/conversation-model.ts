@@ -31,6 +31,7 @@ export type Message = {
   analysisDependency?: { analysis_request?: string; status?: string; source_run_state?: string; task_id?: string };
   statisticalResults?: Array<{ result_id: string; run_id: string; mode: string; non_scientific: boolean; artifact_count: number; cluster_count: number }>;
   analysisOutboxRecovery?: { intentTaskId: string };
+  resultInterpretationRecovery?: { taskId: string };
 };
 export type WorkAgentRole = "auto" | "preprocessing" | "analysis";
 export type ModelChoice = {
@@ -55,15 +56,25 @@ export const WELCOME: Record<ConversationMode, Message> = {
 export function messagesFrom(conversation?: Conversation): Message[] {
   if (!conversation) return [];
   const latestRetryGeneration = new Map<string, number>();
+  const latestResultInterpretationGeneration = new Map<string, number>();
   for (const item of conversation.messages) {
     const retry = item.payload.analysis_outbox_retry as
       | { intent_task_id?: unknown; retry_generation?: unknown }
       | undefined;
-    if (typeof retry?.intent_task_id !== "string" || typeof retry.retry_generation !== "number") continue;
-    latestRetryGeneration.set(
-      retry.intent_task_id,
-      Math.max(latestRetryGeneration.get(retry.intent_task_id) ?? 0, retry.retry_generation),
-    );
+    if (typeof retry?.intent_task_id === "string" && typeof retry.retry_generation === "number") {
+      latestRetryGeneration.set(
+        retry.intent_task_id,
+        Math.max(latestRetryGeneration.get(retry.intent_task_id) ?? 0, retry.retry_generation),
+      );
+    }
+    for (const key of ["statistical_result_interpretation", "statistical_result_interpretation_retry"]) {
+      const continuation = item.payload[key] as { task_id?: unknown; retry_generation?: unknown } | undefined;
+      if (typeof continuation?.task_id !== "string" || typeof continuation.retry_generation !== "number") continue;
+      latestResultInterpretationGeneration.set(
+        continuation.task_id,
+        Math.max(latestResultInterpretationGeneration.get(continuation.task_id) ?? 0, continuation.retry_generation),
+      );
+    }
   }
   // A tool-loop turn writes one row per step, keyed to the user message that
   // triggered it, so the steps are re-attached to its reply on every reload.
@@ -129,6 +140,16 @@ export function messagesFrom(conversation?: Conversation): Message[] {
           return result?.retry_available === true && typeof continuation?.intent_task_id === "string"
             && generation === (latestRetryGeneration.get(continuation.intent_task_id) ?? 0)
             ? { intentTaskId: continuation.intent_task_id }
+            : undefined;
+        })(),
+        resultInterpretationRecovery: (() => {
+          const result = item.payload.statistical_result_interpretation as {
+            task_id?: unknown; retry_generation?: unknown; status?: unknown; retry_available?: unknown;
+          } | undefined;
+          const generation = typeof result?.retry_generation === "number" ? result.retry_generation : 0;
+          return result?.retry_available === true && typeof result.task_id === "string"
+            && generation === (latestResultInterpretationGeneration.get(result.task_id) ?? 0)
+            ? { taskId: result.task_id }
             : undefined;
         })(),
       };

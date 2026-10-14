@@ -91,6 +91,9 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
+| `POST` | `/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry` | 对当前会话中可恢复的统计结果解释续接进行幂等重试，返回更新后的对话 |
+
+结果解释重试使用 `Idempotency-Key` 请求头，不需要请求正文。服务端要求 task 属于该 conversation，且 outbox 为可恢复的 `waiting_user`；不支持的错误类别返回 `result_interpretation_not_recoverable`。重试只将原 outbox 的新 generation 重新排队并追加 assistant 状态消息，不创建或批准统计设计，也不创建或启动 Run。续接状态通过会话 assistant message payload 的 `statistical_result_interpretation` 或 `statistical_result_interpretation_retry` discriminator 呈现；该状态独立于 `analysis_outbox_*`。仅 `retry_available=true` 的当前 generation 显示重试操作。完整证据边界见 [ADR 0042](../adr/0042-statistical-result-interpretation-outbox.md)。
 
 Work 回合请求可带 `agent_role: "preprocessing" | "analysis" | null`。省略或传 `null` 时由服务端根据当前任务和最近交接记录路由；显式角色用于界面手动切换。响应的 assistant payload 保存 `agent_role`、角色显示名和该角色独立草稿，工具审计行也记录角色。旧的预处理草稿默认归属 `preprocessing`。
 

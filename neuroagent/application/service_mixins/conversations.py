@@ -16,6 +16,10 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxRetryRequest,
     AnalysisOutboxStatus,
 )
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationRetryRequest,
+    ResultInterpretationStatus,
+)
 from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.agent import (
     ModelProfileView,
@@ -91,10 +95,16 @@ from neuroagent.observability.work_timings import capture_work_timings
 
 logger = logging.getLogger(__name__)
 MAX_ANALYSIS_OUTBOX_ATTEMPTS = 5
+MAX_RESULT_INTERPRETATION_ATTEMPTS = 5
 RECOVERABLE_ANALYSIS_OUTBOX_ERRORS = (
     "analysis_model_profile_missing",
     "analysis_model_retry_exhausted",
     "analysis_outbox_retry_exhausted",
+)
+RECOVERABLE_RESULT_INTERPRETATION_ERRORS = (
+    "result_interpretation_model_profile_missing",
+    "result_interpretation_model_retry_exhausted",
+    "result_interpretation_retry_exhausted",
 )
 
 
@@ -618,6 +628,364 @@ class ConversationMixin(BaseServiceMixin):
             return defer(code)
         finally:
             await stop_heartbeat()
+
+    async def consume_next_result_interpretation_outbox(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+    ) -> str | None:
+        """Generate one interpretation draft from a freshly verified real result."""
+        claim = self.automation.claim_next_result_interpretation_outbox(
+            worker_id, lease_seconds=lease_seconds
+        )
+        if claim is None:
+            return None
+        outbox = self.automation.get_result_interpretation_outbox(claim.task_id)
+        stop_renewal = asyncio.Event()
+        claim_lost = asyncio.Event()
+
+        async def renew_claim() -> None:
+            interval = max(1.0, lease_seconds / 3)
+            while not stop_renewal.is_set():
+                await asyncio.sleep(interval)
+                if stop_renewal.is_set():
+                    return
+                try:
+                    renewed = self.automation.renew_result_interpretation_claim(
+                        claim, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    logger.exception("Statistical result interpretation lease renewal failed")
+                    claim_lost.set()
+                    return
+                if renewed is None:
+                    claim_lost.set()
+                    return
+
+        heartbeat = asyncio.create_task(renew_claim())
+
+        async def stop_heartbeat() -> None:
+            stop_renewal.set()
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+        def defer(error_code: str) -> str:
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
+                error_code = "result_interpretation_consumer_error"
+            if outbox.attempt_count + 1 >= MAX_RESULT_INTERPRETATION_ATTEMPTS:
+                try:
+                    latest = self.repository.get_conversation(outbox.conversation_id)
+                except Exception:
+                    latest = None
+                if latest is not None:
+                    source_matches = (
+                        latest.mode is ConversationMode.WORK
+                        and latest.project_id == outbox.project_id
+                    )
+                    try:
+                        if source_matches:
+                            return commit_terminal(
+                                expected_version=latest.version,
+                                status=ResultInterpretationStatus.WAITING_USER,
+                                content=(
+                                    "统计结果解释连续多次遇到暂态错误，自动重试已暂停。"
+                                    "确认服务与结果证据恢复后，可手动重新生成；"
+                                    "系统不会更改方案或重新运行分析。"
+                                ),
+                                error_code="result_interpretation_retry_exhausted",
+                                retry_available=True,
+                            )
+                        return commit_terminal(
+                            expected_version=latest.version,
+                            status=ResultInterpretationStatus.BLOCKED,
+                            content=(
+                                "当前会话已切换工作区或模式，原统计结果解释续接已停止。"
+                                "请回到原项目查看已登记结果。"
+                            ),
+                            error_code="result_interpretation_conversation_mismatch",
+                            safe_notice=True,
+                            include_source=False,
+                        )
+                    except ConflictError:
+                        logger.info(
+                            "Statistical result interpretation terminal retry notice raced "
+                            "with a conversation update"
+                        )
+            delay = min(300, 5 * 2 ** min(outbox.attempt_count, 6))
+            committed = self.automation.defer_result_interpretation_claim(
+                claim, retry_after_seconds=delay, error_code=error_code
+            )
+            return "deferred" if committed else "claim_lost"
+
+        def status_payload(
+            status: ResultInterpretationStatus,
+            *,
+            error_code: str | None = None,
+            retry_available: bool = False,
+            include_source: bool = True,
+        ) -> dict[str, Any]:
+            return {
+                "agent_role": WorkAgentRole.ANALYSIS.value,
+                "agent_name": "数据分析 Agent",
+                "statistical_result_interpretation": {
+                    **(
+                        {"task_id": outbox.task_id, "retry_generation": outbox.retry_generation}
+                        if include_source
+                        else {}
+                    ),
+                    "status": status.value,
+                    "retry_available": retry_available,
+                    **({"error_code": error_code} if error_code else {}),
+                },
+            }
+
+        def commit_terminal(
+            *,
+            expected_version: int,
+            status: ResultInterpretationStatus,
+            content: str,
+            error_code: str | None = None,
+            retry_available: bool = False,
+            safe_notice: bool = False,
+            include_source: bool = True,
+            record_attempt: bool = False,
+        ) -> str:
+            continuation_key = (
+                f"stat_result_interpretation:{outbox.task_id}:g{outbox.retry_generation}"
+            )
+            with self.automation.atomic():
+                current = self.repository.get_conversation(outbox.conversation_id)
+                if current.version != expected_version:
+                    raise ConflictError(
+                        "result_interpretation_conversation_changed",
+                        "生成期间会话有新变化，本轮解释草稿没有提交。",
+                    )
+                source_matches = (
+                    current.mode is ConversationMode.WORK
+                    and current.project_id == outbox.project_id
+                )
+                if not source_matches and not safe_notice:
+                    raise ConflictError(
+                        "result_interpretation_conversation_mismatch",
+                        "统计结果所属会话已切换模式或项目。",
+                    )
+                payload = status_payload(
+                    status,
+                    error_code=error_code,
+                    retry_available=retry_available,
+                    include_source=include_source and source_matches,
+                )
+                _, assistant = self.repository.append_assistant_continuation(
+                    outbox.conversation_id,
+                    continuation_key=continuation_key,
+                    assistant_content=content,
+                    assistant_payload=payload,
+                    project_id=current.project_id,
+                    work_task_id=None,
+                    update_work_state=source_matches,
+                )
+                self.automation.complete_result_interpretation_outbox(
+                    claim,
+                    status=status,
+                    continuation_message_id=assistant.message_id,
+                    error_code=error_code,
+                    record_attempt=record_attempt,
+                )
+            return status.value
+
+        try:
+            conversation = self.repository.get_conversation(outbox.conversation_id)
+            if (
+                conversation.mode is not ConversationMode.WORK
+                or conversation.project_id != outbox.project_id
+            ):
+                await stop_heartbeat()
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=ResultInterpretationStatus.BLOCKED,
+                    content="当前会话已切换工作区或模式，原统计结果解释续接已停止。请回到原项目查看已登记结果。",
+                    error_code="result_interpretation_conversation_mismatch",
+                    safe_notice=True,
+                    include_source=False,
+                )
+
+            try:
+                source = self.automation.verify_result_interpretation_source(outbox)
+            except ApplicationError as exc:
+                if exc.code == "result_interpretation_authority_indeterminate":
+                    await stop_heartbeat()
+                    if outbox.attempt_count + 1 >= MAX_RESULT_INTERPRETATION_ATTEMPTS:
+                        return commit_terminal(
+                            expected_version=conversation.version,
+                            status=ResultInterpretationStatus.WAITING_USER,
+                            content="统计结果证据连续多次无法稳定读取，自动解释已暂停。确认结果和数据库恢复可读后，可手动重试；系统不会更改统计方案或重新运行分析。",
+                            error_code="result_interpretation_model_retry_exhausted",
+                            retry_available=True,
+                        )
+                    return defer(exc.code)
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=ResultInterpretationStatus.BLOCKED,
+                    content="统计结果或其冻结设计/产物证据未能重新核实，系统没有生成解释。请查看正式结果与运行记录。",
+                    error_code=exc.code,
+                )
+
+            if not self.list_model_profiles():
+                await stop_heartbeat()
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=ResultInterpretationStatus.WAITING_USER,
+                    content="当前没有配置可用模型，统计结果解释报告草稿尚未生成。请先在设置中配置并测试模型，再点击本消息中的“重新生成结果解读草稿”。",
+                    error_code="result_interpretation_model_profile_missing",
+                    retry_available=True,
+                )
+
+            prepared = await self.work_dialogue.prepare_statistical_result_interpretation(
+                conversation,
+                source,
+                preferred_profile_id=conversation.preferred_profile_id,
+            )
+            if claim_lost.is_set():
+                return "claim_lost"
+            model_error = prepared.payload.get("model_error")
+            if isinstance(model_error, dict):
+                await stop_heartbeat()
+                code = str(model_error.get("code", "result_interpretation_model_unavailable"))
+                if outbox.attempt_count + 1 >= MAX_RESULT_INTERPRETATION_ATTEMPTS:
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=ResultInterpretationStatus.WAITING_USER,
+                        content="模型连续多次未能生成符合科研边界的解释草稿，自动重试已暂停。请检查模型配置与服务状态后，手动重试生成；系统不会更改方案或启动运行。",
+                        error_code="result_interpretation_model_retry_exhausted",
+                        retry_available=True,
+                    )
+                return defer(code)
+
+            try:
+                current_source = self.automation.verify_result_interpretation_source(outbox)
+            except ApplicationError as exc:
+                if exc.code == "result_interpretation_authority_indeterminate":
+                    await stop_heartbeat()
+                    return defer(exc.code)
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=ResultInterpretationStatus.BLOCKED,
+                    content="生成期间统计结果或冻结证据发生变化，刚才的解释草稿已丢弃。请核对新的正式结果后重新查看。",
+                    error_code="result_interpretation_source_changed_during_generation",
+                )
+            current_conversation = self.repository.get_conversation(outbox.conversation_id)
+            if current_conversation.version != conversation.version:
+                await stop_heartbeat()
+                return defer("result_interpretation_conversation_changed")
+            if current_source.source_evidence_hash != source.source_evidence_hash:
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=ResultInterpretationStatus.BLOCKED,
+                    content=(
+                        "生成期间统计结果、Plan 或 Artifact 证据发生变化，解释草稿已丢弃。"
+                        "请以最新正式结果为准。"
+                    ),
+                    error_code="result_interpretation_source_changed_during_generation",
+                )
+            if claim_lost.is_set():
+                return "claim_lost"
+            return commit_terminal(
+                expected_version=conversation.version,
+                status=ResultInterpretationStatus.COMPLETED,
+                content=prepared.assistant_content,
+                record_attempt=True,
+            )
+        except ConflictError as exc:
+            if exc.code in {
+                "result_interpretation_claim_lost",
+                "result_interpretation_conversation_changed",
+            }:
+                if exc.code == "result_interpretation_claim_lost":
+                    return "claim_lost"
+                return defer(exc.code)
+            logger.exception("Statistical result interpretation outbox was rejected")
+            return defer(exc.code)
+        except Exception:
+            logger.exception("Statistical result interpretation outbox consumer failed")
+            return defer("result_interpretation_consumer_error")
+        finally:
+            await stop_heartbeat()
+
+    def retry_result_interpretation_outbox(
+        self,
+        conversation_id: str,
+        task_id: str,
+        idempotency_key: str,
+    ) -> ConversationView:
+        request = ResultInterpretationRetryRequest(task_id=task_id)
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:result-interpretation-retry",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationView,
+            action=lambda: self._retry_result_interpretation_outbox(conversation_id, task_id),
+        )
+
+    def _retry_result_interpretation_outbox(
+        self, conversation_id: str, task_id: str
+    ) -> ConversationView:
+        outbox = self.automation.get_result_interpretation_outbox(task_id)
+        if outbox.conversation_id != conversation_id:
+            raise ConflictError(
+                "result_interpretation_retry_scope_mismatch",
+                "该结果解释续接不属于当前会话。",
+            )
+        latest = self.automation.get_result_interpretation_outbox(task_id)
+        if latest.status is ResultInterpretationStatus.READY and latest.retry_generation > 0:
+            current = self.repository.get_conversation(conversation_id)
+            return self._append_result_interpretation_retry(current, latest)
+        if latest.status is not ResultInterpretationStatus.WAITING_USER:
+            raise ConflictError(
+                "result_interpretation_not_recoverable",
+                "当前结果解释续接不处于可重试状态。",
+            )
+        requeued = self.automation.requeue_result_interpretation_outbox(
+            task_id, recoverable_error_codes=RECOVERABLE_RESULT_INTERPRETATION_ERRORS
+        )
+        if requeued is None:
+            raise ConflictError(
+                "result_interpretation_not_recoverable",
+                "该结果解释续接原因不支持自动重试。",
+            )
+        current = self.repository.get_conversation(conversation_id)
+        return self._append_result_interpretation_retry(current, requeued)
+
+    def _append_result_interpretation_retry(
+        self,
+        conversation: ConversationView,
+        outbox: Any,
+    ) -> ConversationView:
+        with self.automation.atomic():
+            current = self.repository.get_conversation(conversation.conversation_id)
+            if current.version != conversation.version:
+                raise ConflictError(
+                    "revision_conflict", "会话已更新，请刷新后再试。", resource="conversation"
+                )
+            _, _assistant = self.repository.append_assistant_continuation(
+                conversation.conversation_id,
+                continuation_key=(
+                    f"stat_result_interpretation_retry:{outbox.task_id}:g{outbox.retry_generation}"
+                ),
+                assistant_content="已排队重新生成这份统计结果解释草稿。系统会再次核验原结果证据，不会创建或启动新的统计运行。",
+                assistant_payload={
+                    "agent_role": WorkAgentRole.ANALYSIS.value,
+                    "statistical_result_interpretation_retry": {
+                        "task_id": outbox.task_id,
+                        "retry_generation": outbox.retry_generation,
+                        "status": ResultInterpretationStatus.READY.value,
+                    },
+                },
+                project_id=current.project_id,
+                work_task_id=None,
+                update_work_state=True,
+            )
+            return self.repository.get_conversation(conversation.conversation_id)
 
     def retry_analysis_outbox(
         self, conversation_id: str, intent_task_id: str, idempotency_key: str

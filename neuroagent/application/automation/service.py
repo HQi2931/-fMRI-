@@ -36,6 +36,13 @@ from neuroagent.application.automation.models import (
     transition_task_step,
 )
 from neuroagent.application.automation.ports import WorkTaskRepositoryPort
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationClaim,
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+    VerifiedResultInterpretationSource,
+    project_result_model_facts,
+)
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
@@ -57,7 +64,11 @@ from neuroagent.application.repository_ports import (
     QcRepositoryPort,
     RunRepositoryPort,
 )
-from neuroagent.application.statistical_result_facts import verified_result_design
+from neuroagent.application.statistical_result_facts import (
+    render_result_readout,
+    result_model_facts,
+    verified_result_design,
+)
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
@@ -248,6 +259,226 @@ class WorkTaskApplicationService:
     ) -> AnalysisProposalOutbox | None:
         return self._repository.requeue_analysis_outbox(
             intent_task_id, recoverable_error_codes=recoverable_error_codes
+        )
+
+    def ensure_result_interpretation_outbox(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> StatisticalResultInterpretationOutbox:
+        return self._repository.ensure_result_interpretation_outbox(record)
+
+    def get_result_interpretation_outbox(
+        self, task_id: str
+    ) -> StatisticalResultInterpretationOutbox:
+        return self._repository.get_result_interpretation_outbox(task_id)
+
+    def claim_next_result_interpretation_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        return self._repository.claim_result_interpretation_outbox(
+            worker_id, lease_seconds=lease_seconds
+        )
+
+    def renew_result_interpretation_claim(
+        self, claim: ResultInterpretationClaim, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        return self._repository.renew_result_interpretation_claim(
+            claim, lease_seconds=lease_seconds
+        )
+
+    def defer_result_interpretation_claim(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        return self._repository.defer_result_interpretation_claim(
+            claim, retry_after_seconds=retry_after_seconds, error_code=error_code
+        )
+
+    def complete_result_interpretation_outbox(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        status: ResultInterpretationStatus,
+        continuation_message_id: str,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> StatisticalResultInterpretationOutbox:
+        return self._repository.complete_result_interpretation_outbox(
+            claim,
+            status=status,
+            continuation_message_id=continuation_message_id,
+            error_code=error_code,
+            record_attempt=record_attempt,
+        )
+
+    def requeue_result_interpretation_outbox(
+        self, task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> StatisticalResultInterpretationOutbox | None:
+        return self._repository.requeue_result_interpretation_outbox(
+            task_id, recoverable_error_codes=recoverable_error_codes
+        )
+
+    def verify_result_interpretation_source(
+        self, outbox: StatisticalResultInterpretationOutbox
+    ) -> VerifiedResultInterpretationSource:
+        """Re-read the full completed WorkTask → Run/Plan → result → Artifact chain."""
+        for _attempt in range(3):
+            task = self._repository.get_task(outbox.task_id)
+            refs = task.authority_refs
+            step = self._statistical_step(task)
+            if (
+                task.status is not TaskStatus.COMPLETED
+                or step is None
+                or step.status is not TaskStepStatus.SUCCEEDED
+                or refs.conversation_id != outbox.conversation_id
+                or refs.workflow_run_id != outbox.run_id
+                or refs.plan_revision_id != outbox.plan_revision_id
+                or tuple(sorted(refs.artifact_ids)) != tuple(sorted(outbox.artifact_ids))
+                or tuple(sorted(step.authority_refs.artifact_ids))
+                != tuple(sorted(outbox.artifact_ids))
+                or step.authority_refs.workflow_run_id != outbox.run_id
+                or step.authority_refs.plan_revision_id != outbox.plan_revision_id
+                or not step.input_version
+            ):
+                raise ConflictError(
+                    "result_interpretation_task_mismatch",
+                    "统计 WorkTask 已变化或不再绑定同一真实结果。",
+                )
+            conversation = self._conversation_repository.get_conversation(outbox.conversation_id)
+            self._require_work_conversation(conversation, outbox.conversation_id, outbox.project_id)
+            if conversation.project_id != outbox.project_id:
+                raise ConflictError(
+                    "result_interpretation_conversation_mismatch",
+                    "统计结果所属工作区与当前会话不一致。",
+                )
+            plan = self._plan_repository.get_plan(outbox.plan_revision_id)
+            run_before = self._run_repository.get_run(outbox.run_id)
+            if (
+                run_before.run_id != outbox.run_id
+                or run_before.project_id != outbox.project_id
+                or run_before.plan_revision_id != outbox.plan_revision_id
+                or run_before.state is not WorkflowState.SUCCEEDED
+                or plan.plan_revision_id != outbox.plan_revision_id
+                or plan.project_id != outbox.project_id
+                or plan.state is not PlanState.APPROVED
+            ):
+                raise ConflictError(
+                    "result_interpretation_run_plan_mismatch",
+                    "统计 Run 或冻结 Plan 与结果解释续接绑定不一致。",
+                )
+            context, design = self._statistical_plan_context(
+                plan,
+                conversation_id=outbox.conversation_id,
+                project_id=outbox.project_id,
+                proposal_hash=step.input_version,
+            )
+            if task.authority_refs.input_revision != context["draft_hash"]:
+                raise ConflictError(
+                    "result_interpretation_draft_binding_mismatch",
+                    "统计任务草稿修订与冻结 Plan 不一致。",
+                )
+            if task.task_id != self.analysis_proposal_task_id(
+                outbox.conversation_id, context["proposal_hash"]
+            ):
+                raise ConflictError(
+                    "result_interpretation_task_identity_mismatch",
+                    "统计 WorkTask ID 与会话/提案绑定不一致。",
+                )
+            summaries = self._artifact_repository.list_statistical_results(
+                project_id=outbox.project_id, run_id=outbox.run_id
+            )
+            if len(summaries) != 1 or summaries[0].result_id != outbox.result_id:
+                raise ConflictError(
+                    "result_interpretation_result_not_unique",
+                    "统计 Run 当前没有唯一且匹配的已登记结果。",
+                )
+            summary = summaries[0]
+            detail = self._artifact_repository.get_statistical_result(outbox.result_id)
+            artifacts = self._artifact_repository.list_artifacts(outbox.run_id)
+            artifact_ids = self._verify_statistical_result(
+                summary=summary,
+                detail=detail,
+                plan=plan,
+                design=design,
+                run_id=outbox.run_id,
+                project_id=outbox.project_id,
+                registered_artifacts=artifacts,
+            )
+            run_after = self._run_repository.get_run(outbox.run_id)
+            if run_before.version != run_after.version:
+                continue
+            if (
+                detail.result_id != outbox.result_id
+                or detail.bundle_hash != outbox.result_bundle_hash
+                or detail.version != outbox.result_version
+                or detail.project_id != outbox.project_id
+                or detail.run_id != outbox.run_id
+                or detail.design_revision_id != design.revision_id
+                or artifact_ids != tuple(sorted(outbox.artifact_ids))
+            ):
+                raise ConflictError(
+                    "result_interpretation_evidence_changed",
+                    "统计结果或其冻结 Artifact 证据与续接记录不一致。",
+                )
+            facts = result_model_facts(detail)
+            # Only aggregate design and result evidence enters model context. The
+            # registered IDs, hashes, paths, report body and subject rows remain
+            # server-side. Cluster indices are display positions, not record IDs.
+            model_facts = project_result_model_facts(facts)
+            # Build the deterministic text from the same bounded whitelist as the
+            # model facts; free-form design labels remain explicitly untrusted data.
+            readout = render_result_readout(
+                {**model_facts.model_dump(mode="json"), "status": "succeeded"}
+            )
+            evidence = {
+                "task_id": task.task_id,
+                "task_version": task.version,
+                "task_status": task.status.value,
+                "step_id": step.step_id,
+                "step_version": step.version,
+                "step_input_version": step.input_version,
+                "conversation_id": conversation.conversation_id,
+                "conversation_project_id": conversation.project_id,
+                "plan_revision_id": plan.plan_revision_id,
+                "plan_hash": plan.plan_hash,
+                "run_id": run_after.run_id,
+                "run_version": run_after.version,
+                "result_id": detail.result_id,
+                "result_bundle_hash": detail.bundle_hash,
+                "result_version": detail.version,
+                "artifact_ids": artifact_ids,
+                "artifact_metadata": [
+                    {
+                        "artifact_id": item.artifact_id,
+                        "artifact_type": item.artifact_type,
+                        "checksum": item.checksum,
+                        "size_bytes": item.size_bytes,
+                        "relative_path": item.relative_path,
+                        "provenance_hash": content_hash(item.provenance),
+                    }
+                    for item in sorted(artifacts, key=lambda item: item.artifact_id)
+                    if item.artifact_id in set(artifact_ids)
+                ],
+            }
+            return VerifiedResultInterpretationSource(
+                task_id=task.task_id,
+                conversation_id=conversation.conversation_id,
+                project_id=outbox.project_id,
+                run_id=outbox.run_id,
+                plan_revision_id=outbox.plan_revision_id,
+                result_id=detail.result_id,
+                result_bundle_hash=detail.bundle_hash,
+                result_version=detail.version,
+                artifact_ids=artifact_ids,
+                source_evidence_hash=content_hash(evidence),
+                model_facts=model_facts,
+                deterministic_readout=readout,
+            )
+        raise ConflictError(
+            "result_interpretation_authority_indeterminate",
+            "统计 Run 在多次权威读取期间持续变化，暂不能解释结果。",
         )
 
     def verify_analysis_outbox_source(
@@ -2517,17 +2748,145 @@ class WorkTaskApplicationService:
                 ),
             }
         )
-        completed = self._save_task(
-            WorkTask.model_validate(completed.model_dump()),
-            expected_version=task.version,
-            claim_token=claim_token,
-        )
+        try:
+            outbox = self._statistical_result_interpretation_record(
+                task=task,
+                run_id=run_id,
+                snapshot=snapshot,
+                result_artifact_ids=result_artifact_ids,
+            )
+        except (
+            NotFoundError,
+            ConflictError,
+            InputValidationError,
+            ValueError,
+            TypeError,
+            KeyError,
+            ValidationError,
+        ) as exc:
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason=(
+                    "统计结果通过初步核验，但无法建立稳定的解释续接绑定；"
+                    f"任务已阻断。({type(exc).__name__})"
+                ),
+                authoritative=snapshot,
+                claim_token=claim_token,
+            )
+        # WorkTask completion and durable READY enqueue share the same SQLite
+        # UoW. A failed outbox write rolls back the completed task as well.
+        with self._repository.atomic():
+            completed = self._save_task(
+                WorkTask.model_validate(completed.model_dump()),
+                expected_version=task.version,
+                claim_token=claim_token,
+            )
+            self._repository.ensure_result_interpretation_outbox(outbox)
         return WorkflowRunReconciliation(
             task=completed,
             readiness=RunReadiness.COMPLETED,
             event_receipts=receipts,
             authoritative=snapshot,
             reason="唯一真实统计结果及其 Artifact 已与冻结设计和 Plan 绑定并通过核验；任务已完成。",
+        )
+
+    def _statistical_result_interpretation_record(
+        self,
+        *,
+        task: WorkTask,
+        run_id: str,
+        snapshot: AuthoritativeRunSnapshot,
+        result_artifact_ids: tuple[str, ...],
+    ) -> StatisticalResultInterpretationOutbox:
+        """Build the immutable outbox identity from the already verified result chain."""
+        conversation_id = task.authority_refs.conversation_id
+        plan_id = task.authority_refs.plan_revision_id
+        result_id = snapshot.verified_statistical_result_id
+        step = self._statistical_step(task)
+        if conversation_id is None or plan_id is None or result_id is None or step is None:
+            raise ConflictError(
+                "result_interpretation_binding_missing",
+                "已完成统计任务缺少会话、Plan、步骤或真实结果引用。",
+            )
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        run = self._run_repository.get_run(run_id)
+        self._require_work_conversation(conversation, conversation_id, run.project_id)
+        if conversation.project_id != run.project_id:
+            raise ConflictError(
+                "result_interpretation_conversation_mismatch",
+                "统计会话没有绑定到结果所属项目。",
+            )
+        if (
+            run.run_id != run_id
+            or run.state is not WorkflowState.SUCCEEDED
+            or run.version != snapshot.run_version
+            or run.plan_revision_id != plan_id
+        ):
+            raise ConflictError(
+                "result_interpretation_run_changed",
+                "统计 Run 在完成续接绑定前发生变化。",
+            )
+        plan = self._plan_repository.get_plan(plan_id)
+        if plan.project_id != run.project_id or plan.state is not PlanState.APPROVED:
+            raise ConflictError(
+                "result_interpretation_plan_mismatch", "统计 Plan 不是当前 Run 的已批准方案。"
+            )
+        context, design = self._statistical_plan_context(
+            plan,
+            conversation_id=conversation_id,
+            project_id=run.project_id,
+            proposal_hash=step.input_version or "",
+        )
+        if (
+            task.task_id
+            != self.analysis_proposal_task_id(conversation_id, context["proposal_hash"])
+            or task.authority_refs.input_revision != context["draft_hash"]
+        ):
+            raise ConflictError(
+                "result_interpretation_task_binding_mismatch",
+                "统计 WorkTask 与冻结统计提案不匹配。",
+            )
+        summaries = self._artifact_repository.list_statistical_results(
+            project_id=run.project_id, run_id=run_id
+        )
+        if len(summaries) != 1 or summaries[0].result_id != result_id:
+            raise ConflictError(
+                "result_interpretation_result_not_unique", "Run 没有唯一且匹配的统计结果。"
+            )
+        detail = self._artifact_repository.get_statistical_result(result_id)
+        artifacts = self._artifact_repository.list_artifacts(run_id)
+        verified_artifact_ids = self._verify_statistical_result(
+            summary=summaries[0],
+            detail=detail,
+            plan=plan,
+            design=design,
+            run_id=run_id,
+            project_id=run.project_id,
+            registered_artifacts=artifacts,
+        )
+        if (
+            verified_artifact_ids != result_artifact_ids
+            or detail.mode != StatisticalResultMode.REAL.value
+            or detail.non_scientific
+        ):
+            raise ConflictError(
+                "result_interpretation_result_not_scientific",
+                "结果不是与当前 WorkTask 绑定的真实科学 StatisticalResult。",
+            )
+        # Verify the reproducibility bundle now, before publishing READY.
+        result_model_facts(detail)
+        return StatisticalResultInterpretationOutbox(
+            task_id=task.task_id,
+            conversation_id=conversation_id,
+            project_id=run.project_id,
+            run_id=run_id,
+            plan_revision_id=plan_id,
+            result_id=detail.result_id,
+            result_bundle_hash=detail.bundle_hash,
+            result_version=detail.version,
+            artifact_ids=verified_artifact_ids,
         )
 
     def _block_statistical_task(

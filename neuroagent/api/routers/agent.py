@@ -145,6 +145,28 @@ def retry_analysis_outbox(
     )
 
 
+@router.post(
+    "/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry",
+    response_model=ConversationView,
+    tags=["agent"],
+)
+def retry_statistical_result_interpretation(
+    conversation_id: str,
+    task_id: str,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationView:
+    return cast(
+        ConversationView,
+        to_http_response(
+            capability_from(request, "conversations").retry_result_interpretation_outbox(
+                conversation_id, task_id, idempotency_key
+            ),
+            ConversationView,
+        ),
+    )
+
+
 @router.patch(
     "/conversations/{conversation_id}/work-agent", response_model=ConversationView, tags=["agent"]
 )
