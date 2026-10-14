@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
 from neuroagent.application.contracts.plans import (
+    SkillPlanDryRunView,
     SkillPlanIntent,
     SkillPlanResolveRequest,
     SkillPlanResolveView,
@@ -30,6 +32,7 @@ from neuroagent.domain.fmri.preprocessing import NormalizationMode
 from neuroagent.observability.work_timings import measure_work_stage
 from neuroagent.skills.compiler import SkillCompileError
 from neuroagent.skills.models import (
+    EnvironmentSnapshot,
     IssueSeverity,
     SkillPlan,
     SkillRequest,
@@ -48,6 +51,15 @@ _REPORT_ONLY_MANIFEST_CODES = frozenset(
         "manifest_anatomical_input_ambiguous",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSkillPlan:
+    manifest_id: str
+    manifest_hash: str
+    skill_plan: SkillPlan | None
+    issues: tuple[SkillValidationIssue, ...]
+    warnings: tuple[ValidationIssue, ...]
 
 
 class SkillPlanMixin(BaseServiceMixin):
@@ -313,105 +325,21 @@ class SkillPlanMixin(BaseServiceMixin):
     def resolve_skill_plan(
         self, request: SkillPlanResolveRequest, idempotency_key: str
     ) -> SkillPlanResolveView:
-        def prepare() -> tuple[str, SkillPlan, list[ValidationIssue]]:
-            self._require_project_version(
-                request.request.project_id, request.expected_project_version
+        def prepare() -> _PreparedSkillPlan:
+            prepared = self._prepare_skill_plan(
+                request,
+                environment=None,
+                collect_blockers=False,
             )
-            dataset = self.get_dataset(request.request.dataset_ref)
-            if dataset.project_id != request.request.project_id:
-                raise ConflictError(
-                    "cross_project_dataset",
-                    "Skill 请求引用的数据集不属于当前项目。",
-                )
-            if dataset.current_manifest_id is None:
-                raise ConflictError(
-                    "dataset_manifest_missing",
-                    "Skill 请求引用的数据集尚未生成冻结 manifest。",
-                )
-            manifest = self.get_manifest(dataset.current_manifest_id)
-            if manifest.content_hash != request.request.input_manifest_hash:
-                raise ConflictError(
-                    "manifest_hash_mismatch",
-                    "Skill 请求的输入清单哈希不是数据集当前 manifest。",
-                    expected=manifest.content_hash,
-                    received=request.request.input_manifest_hash,
-                )
-            format_issues: list[SkillValidationIssue] = []
-            if request.validation_mode == "report_only":
-                format_issues.extend(
-                    SkillValidationIssue(
-                        code="MANIFEST_FORMAT_ISSUE",
-                        severity=IssueSeverity.WARNING,
-                        message=message,
-                        remediation="请在执行前根据 Work 格式建议复核工作区。",
-                    )
-                    for message in manifest.profile.issues[:100]
-                )
-            try:
-                self._validate_manifest_for_skill_intent(request.request, manifest)
-            except InputValidationError as exc:
-                if (
-                    request.validation_mode != "report_only"
-                    or exc.code not in _REPORT_ONLY_MANIFEST_CODES
-                ):
-                    raise
-                format_issues.append(
-                    SkillValidationIssue(
-                        code=exc.code.upper(),
-                        severity=IssueSeverity.WARNING,
-                        message=exc.message,
-                        remediation="请在执行前根据 Work 格式建议整理并复核功能像/T1 配对。",
-                    )
-                )
-            format_issues = list(
-                {(issue.code, issue.message): issue for issue in format_issues}.values()
-            )
-            skill_request = self._materialize_skill_request(request.request, manifest)
-            environment = self.environment_provider.current().snapshot
-            resolution = self.skill_resolver.resolve(skill_request, environment)
-            with measure_work_stage("validation"):
-                report = self.skill_validator.validate_resolution(resolution)
-            if report.has_blockers:
-                raise InputValidationError(
-                    "skill_plan_blocked",
-                    "Skill 方案存在阻断问题, 不能编译或进入审批。",
-                    issues=[issue.model_dump(mode="json") for issue in report.issues],
-                )
-            try:
-                with measure_work_stage("compilation"):
-                    skill_plan = self.skill_compiler.compile(resolution)
-            except SkillCompileError as exc:
-                raise InputValidationError(
-                    "skill_compile_failed", "Skill 方案编译失败。", reason=str(exc)
-                ) from exc
-            warnings = [
-                ValidationIssue(
-                    code=issue.code,
-                    message=issue.message,
-                    severity=issue.severity.value,
-                    path=issue.path,
-                )
-                for issue in report.issues
-            ]
-            warnings.extend(
-                ValidationIssue(
-                    code=issue.code,
-                    message=issue.message,
-                    severity=issue.severity.value,
-                    path=issue.path,
-                )
-                for issue in format_issues
-            )
-            if format_issues:
-                skill_plan = skill_plan.model_copy(
-                    update={"warnings": tuple([*skill_plan.warnings, *format_issues])}
-                )
-            return manifest.manifest_id, skill_plan, warnings
+            assert prepared.skill_plan is not None
+            return prepared
 
         def finalize(
-            prepared: tuple[str, SkillPlan, list[ValidationIssue]],
+            prepared: _PreparedSkillPlan,
         ) -> SkillPlanResolveView:
-            manifest_id, skill_plan, warnings = prepared
+            manifest_id = prepared.manifest_id
+            skill_plan = prepared.skill_plan
+            assert skill_plan is not None
             dataset = self.get_dataset(request.request.dataset_ref)
             if dataset.current_manifest_id != manifest_id:
                 raise ConflictError(
@@ -440,18 +368,18 @@ class SkillPlanMixin(BaseServiceMixin):
             stored = self.repository.validate_plan(
                 stored.plan_revision_id,
                 expected_version=stored.version,
-                issues=warnings,
+                issues=list(prepared.warnings),
             )
             self.event_store.append_event(
                 project_id=stored.project_id,
                 run_id=None,
                 event_type="SkillPlanCompiled",
-                severity="warning" if warnings else "info",
+                severity="warning" if prepared.warnings else "info",
                 payload={
                     "plan_revision_id": stored.plan_revision_id,
                     "plan_hash": stored.plan_hash,
                     "skill_ids": [lock.skill_id for lock in skill_plan.skill_locks],
-                    "warning_count": len(warnings),
+                    "warning_count": len(prepared.warnings),
                 },
             )
             return SkillPlanResolveView(skill_plan=skill_plan, plan_revision=stored)
@@ -464,3 +392,226 @@ class SkillPlanMixin(BaseServiceMixin):
             prepare=prepare,
             finalize=finalize,
         )
+
+    def dry_run_skill_plan(self, request: SkillPlanResolveRequest) -> SkillPlanDryRunView:
+        """Run the real preprocessing Skill pipeline without persistence or probing.
+
+        Unlike the normal resolver, this path uses only configured version labels
+        to create a temporary compiler snapshot. It deliberately does not inspect
+        MATLAB/SPM/DPABI files; environment readiness remains a separate action.
+        """
+        if not request.request.request_preprocessing:
+            raise InputValidationError(
+                "preprocessing_dry_run_required",
+                "Work Skill dry-run 仅支持预处理草稿。",
+            )
+        prepared = self._prepare_skill_plan(
+            request,
+            environment=self._configured_environment_snapshot(),
+            collect_blockers=True,
+        )
+        self._recheck_prepared_skill_inputs(request, prepared)
+        return SkillPlanDryRunView(
+            scope="skill_contract_compile_only",
+            environment_probed=False,
+            manifest_id=prepared.manifest_id,
+            manifest_hash=prepared.manifest_hash,
+            ready=prepared.skill_plan is not None,
+            plan_hash=prepared.skill_plan.plan_hash if prepared.skill_plan else None,
+            issues=prepared.warnings
+            + tuple(
+                ValidationIssue(
+                    code=issue.code,
+                    message=issue.message,
+                    severity=issue.severity.value,
+                    path=issue.path,
+                )
+                for issue in prepared.issues
+            ),
+        )
+
+    def _configured_environment_snapshot(self) -> EnvironmentSnapshot:
+        configuration = self.environment_provider.configuration()
+        versions = {
+            "matlab_version": configuration.matlab_version,
+            "spm_version": configuration.spm_version,
+            "dpabi_version": configuration.dpabi_version,
+            "adapter_version": configuration.adapter_version,
+        }
+        return EnvironmentSnapshot(
+            **versions,
+            environment_hash=content_hash({"kind": "configuration_only_preflight", **versions}),
+        )
+
+    def _prepare_skill_plan(
+        self,
+        request: SkillPlanResolveRequest,
+        *,
+        environment: EnvironmentSnapshot | None,
+        collect_blockers: bool,
+    ) -> _PreparedSkillPlan:
+        self._require_project_version(request.request.project_id, request.expected_project_version)
+        dataset = self.get_dataset(request.request.dataset_ref)
+        if dataset.project_id != request.request.project_id:
+            raise ConflictError("cross_project_dataset", "Skill 请求引用的数据集不属于当前项目。")
+        if dataset.current_manifest_id is None:
+            raise ConflictError(
+                "dataset_manifest_missing", "Skill 请求引用的数据集尚未生成冻结 manifest。"
+            )
+        manifest = self.get_manifest(dataset.current_manifest_id)
+        if manifest.content_hash != request.request.input_manifest_hash:
+            raise ConflictError(
+                "manifest_hash_mismatch",
+                "Skill 请求的输入清单哈希不是数据集当前 manifest。",
+                expected=manifest.content_hash,
+                received=request.request.input_manifest_hash,
+            )
+        format_issues: list[SkillValidationIssue] = []
+        if request.validation_mode == "report_only":
+            format_issues.extend(
+                SkillValidationIssue(
+                    code="MANIFEST_FORMAT_ISSUE",
+                    severity=IssueSeverity.WARNING,
+                    message=message,
+                    remediation="请在执行前根据 Work 格式建议复核工作区。",
+                )
+                for message in manifest.profile.issues[:100]
+            )
+        try:
+            self._validate_manifest_for_skill_intent(request.request, manifest)
+        except InputValidationError as exc:
+            if request.validation_mode == "report_only" and exc.code in _REPORT_ONLY_MANIFEST_CODES:
+                format_issues.append(
+                    SkillValidationIssue(
+                        code=exc.code.upper(),
+                        severity=IssueSeverity.WARNING,
+                        message=exc.message,
+                        remediation="请在执行前根据 Work 格式建议整理并复核功能像/T1 配对。",
+                    )
+                )
+            elif collect_blockers:
+                format_issues.append(
+                    SkillValidationIssue(
+                        code=exc.code.upper(),
+                        severity=IssueSeverity.BLOCKING,
+                        message=exc.message,
+                        path=_manifest_issue_path(exc.code),
+                    )
+                )
+                return _PreparedSkillPlan(
+                    manifest.manifest_id,
+                    manifest.content_hash,
+                    None,
+                    tuple(format_issues),
+                    (),
+                )
+            else:
+                raise
+        format_issues = list(
+            {(issue.code, issue.message): issue for issue in format_issues}.values()
+        )
+        skill_request = self._materialize_skill_request(request.request, manifest)
+        if environment is None:
+            environment = self.environment_provider.current().snapshot
+        resolution = self.skill_resolver.resolve(skill_request, environment)
+        with measure_work_stage("validation"):
+            report = self.skill_validator.validate_resolution(resolution)
+        warning_issues = tuple(
+            ValidationIssue(
+                code=issue.code,
+                message=issue.message,
+                severity=issue.severity.value,
+                path=issue.path,
+            )
+            for issue in (*report.issues, *format_issues)
+            if issue.severity is not IssueSeverity.BLOCKING
+        )
+        if report.has_blockers:
+            if not collect_blockers:
+                raise InputValidationError(
+                    "skill_plan_blocked",
+                    "Skill 方案存在阻断问题, 不能编译或进入审批。",
+                    issues=[issue.model_dump(mode="json") for issue in report.issues],
+                )
+            return _PreparedSkillPlan(
+                manifest.manifest_id,
+                manifest.content_hash,
+                None,
+                report.issues,
+                warning_issues,
+            )
+        try:
+            with measure_work_stage("compilation"):
+                skill_plan = self.skill_compiler.compile(resolution)
+        except SkillCompileError as exc:
+            if not collect_blockers:
+                raise InputValidationError(
+                    "skill_compile_failed", "Skill 方案编译失败。", reason=str(exc)
+                ) from exc
+            return _PreparedSkillPlan(
+                manifest.manifest_id,
+                manifest.content_hash,
+                None,
+                (
+                    SkillValidationIssue(
+                        code="SKILL_COMPILE_FAILED",
+                        severity=IssueSeverity.BLOCKING,
+                        message="Skill 工作流编译器无法组成受支持的预处理计划。",
+                        path="steps",
+                        remediation="请由用户审查当前能力边界并调整方案。",
+                    ),
+                ),
+                warning_issues,
+            )
+        if format_issues:
+            skill_plan = skill_plan.model_copy(
+                update={"warnings": tuple([*skill_plan.warnings, *format_issues])}
+            )
+        warnings = tuple(
+            ValidationIssue(
+                code=issue.code,
+                message=issue.message,
+                severity=issue.severity.value,
+                path=issue.path,
+            )
+            for issue in (*report.issues, *format_issues)
+        )
+        return _PreparedSkillPlan(
+            manifest.manifest_id,
+            manifest.content_hash,
+            skill_plan,
+            (),
+            warnings,
+        )
+
+    def _recheck_prepared_skill_inputs(
+        self, request: SkillPlanResolveRequest, prepared: _PreparedSkillPlan
+    ) -> None:
+        self._require_project_version(request.request.project_id, request.expected_project_version)
+        dataset = self.get_dataset(request.request.dataset_ref)
+        if dataset.project_id != request.request.project_id:
+            raise ConflictError("cross_project_dataset", "Skill dry-run 期间数据集项目归属已变化。")
+        if dataset.current_manifest_id != prepared.manifest_id:
+            raise ConflictError(
+                "dataset_manifest_changed_during_prepare",
+                "Skill dry-run 期间数据集 manifest 已变化，请重新核对输入。",  # noqa: RUF001
+            )
+        manifest = self.get_manifest(prepared.manifest_id)
+        if (
+            manifest.content_hash != prepared.manifest_hash
+            or manifest.content_hash != request.request.input_manifest_hash
+        ):
+            raise ConflictError(
+                "manifest_hash_changed_during_prepare",
+                "Skill dry-run 期间冻结 manifest 已变化，请重新核对输入。",  # noqa: RUF001
+            )
+
+
+def _manifest_issue_path(code: str) -> str:
+    return {
+        "manifest_functional_input_missing": "manifest.functional_files",
+        "manifest_functional_input_ambiguous": "manifest.functional_files",
+        "manifest_anatomical_input_missing": "manifest.anatomical_files",
+        "manifest_anatomical_input_ambiguous": "manifest.anatomical_files",
+        "manifest_dpabi_stage_step_conflict": "manifest.completed_steps",
+    }.get(code, "manifest")

@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from hashlib import sha256
 from typing import Any
 
+from neuroagent.application.contracts.plans import ValidationIssue
 from neuroagent.application.planning_feedback import (
     EvidenceRef,
     EvidenceSourceKind,
@@ -27,6 +28,31 @@ _READABLE_METADATA_TARGETS = frozenset(
         "preprocessing.expected_time_points",
         "preprocessing.slice_timing.slice_count",
         "preprocessing.slice_timing.slice_order",
+    }
+)
+
+_SKILL_CAPABILITY_BLOCKER_CODES = frozenset(
+    {
+        "SKILL_COMPILE_FAILED",
+        "SKILL_NOT_AVAILABLE",
+        "UNSUPPORTED_METRIC_REQUEST",
+        "MANIFEST_DICOM_INVENTORY_ONLY",
+        "REVIEWED_SKILL_WITHOUT_EVIDENCE",
+        "SCIENTIFIC_SKILL_WITHOUT_METHODOLOGIST_REVIEW",
+    }
+)
+_SKILL_SCIENTIFIC_BLOCKER_CODES = frozenset(
+    {
+        "EFFECTIVE_VOLUME_COUNT_UNKNOWN",
+        "FREQUENCY_BAND_BELOW_EFFECTIVE_RESOLUTION",
+        "FALFF_INPUT_ALREADY_FILTERED",
+        "ALFF_INPUT_SPATIALLY_SMOOTHED",
+        "ALFF_FILTER_TIMING_BEFORE_NORMALIZE",
+        "REHO_INPUT_SPATIALLY_SMOOTHED",
+        "REHO_INPUT_ALREADY_FILTERED",
+        "METRIC_PREPROCESSING_SMOOTHING_CONFLICT",
+        "FALFF_PREPROCESSING_FILTERED_INPUT",
+        "REHO_PREPROCESSING_PREFILTERED_INPUT",
     }
 )
 
@@ -182,6 +208,120 @@ def feedback_payload(
             }
         )
     return result
+
+
+def planning_feedback_for_skill_issues(
+    issues: Iterable[ValidationIssue],
+    *,
+    draft_revision: str,
+    manifest_revision: str,
+    prior_fingerprints: Iterable[str] = (),
+) -> tuple[tuple[PlanningIssue, PreflightFeedback], ...]:
+    """Map typed Skill blockers directly; never classify their prose as patches."""
+    results: list[tuple[PlanningIssue, PreflightFeedback]] = []
+    for item in issues:
+        if item.severity != "blocking":
+            continue
+        target = item.path if item.path and _SAFE_TARGET.fullmatch(item.path) else "skill_plan"
+        unsupported = item.code in _SKILL_CAPABILITY_BLOCKER_CODES
+        conflict = item.code.endswith("_AMBIGUOUS") or "_MISMATCH" in item.code
+        if unsupported:
+            kind = PlanningIssueKind.UNSUPPORTED_CAPABILITY
+            repair = RepairCandidate(RepairAction.NONE, RepairBoundary.UNSUPPORTED, target)
+            requires_user = False
+            changes_semantics = False
+        elif conflict:
+            kind = PlanningIssueKind.CONFLICTING_EVIDENCE
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = True
+        elif item.code in _SKILL_SCIENTIFIC_BLOCKER_CODES:
+            kind = PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = True
+        else:
+            # Unknown Skill blockers still stop for review, but their code does
+            # not prove that the user must choose a scientific method.
+            kind = PlanningIssueKind.INVALID_DRAFT
+            repair = RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target)
+            requires_user = True
+            changes_semantics = False
+        issue = PlanningIssue(
+            code=f"skill_preflight_{item.code.casefold()}",
+            kind=kind,
+            target=target,
+            message=item.message,
+            missing_evidence=(target,)
+            if kind is PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED
+            else (),
+            evidence=(
+                EvidenceRef(
+                    "work_draft",
+                    EvidenceSourceKind.MODEL_INFERENCE,
+                    EvidenceStatus.CANDIDATE_INFERENCE,
+                    draft_revision,
+                ),
+                EvidenceRef(
+                    "input_manifest",
+                    EvidenceSourceKind.FILE_METADATA,
+                    EvidenceStatus.EXECUTOR_VERIFIED,
+                    manifest_revision,
+                ),
+            ),
+            repairs=(repair,),
+            changes_scientific_semantics=changes_semantics,
+            requires_user_decision=requires_user,
+            retryable=False,
+        )
+        results.append(
+            (
+                issue,
+                decide_feedback(issue, prior_fingerprints=prior_fingerprints),
+            )
+        )
+    return tuple(results)
+
+
+def planning_feedback_for_input_conflict(
+    code: str,
+    message: str,
+    *,
+    draft_revision: str,
+    manifest_revision: str,
+    prior_fingerprints: Iterable[str] = (),
+) -> tuple[PlanningIssue, PreflightFeedback]:
+    """Fail closed when the registered project or frozen manifest moved."""
+    issue = PlanningIssue(
+        code=f"skill_preflight_input_conflict_{sha256(code.encode()).hexdigest()[:12]}",
+        kind=PlanningIssueKind.CONFLICTING_EVIDENCE,
+        target="input_manifest",
+        message=message,
+        evidence=(
+            EvidenceRef(
+                "work_draft",
+                EvidenceSourceKind.MODEL_INFERENCE,
+                EvidenceStatus.CANDIDATE_INFERENCE,
+                draft_revision,
+            ),
+            EvidenceRef(
+                "input_manifest",
+                EvidenceSourceKind.FILE_METADATA,
+                EvidenceStatus.EXECUTOR_VERIFIED,
+                manifest_revision,
+            ),
+        ),
+        repairs=(
+            RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, "input_manifest"),
+        ),
+        changes_scientific_semantics=True,
+        requires_user_decision=True,
+        retryable=False,
+    )
+    return issue, decide_feedback(issue, prior_fingerprints=prior_fingerprints)
+
+
+_SAFE_TARGET = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]{0,180}$")
 
 
 def _target_and_detail(message: str, namespace: str) -> tuple[str, str]:

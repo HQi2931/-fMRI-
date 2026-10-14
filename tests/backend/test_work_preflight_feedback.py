@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from neuroagent.application.contracts.plans import ValidationIssue
+
 # Full-width colon is the existing Chinese validator-message delimiter.
 # ruff: noqa: RUF001
 from neuroagent.application.planning_feedback import FeedbackDisposition
 from neuroagent.application.preflight_adapter import (
     feedback_payload,
     planning_feedback_for_messages,
+    planning_feedback_for_skill_issues,
 )
 
 
@@ -75,3 +78,97 @@ def test_draft_repair_fingerprint_changes_with_draft_revision_and_serializes_saf
     assert first[0][1].disposition is FeedbackDisposition.REVALIDATE
     assert first[0][0].fingerprint != changed[0][0].fingerprint
     assert feedback_payload(first)[0]["repairs"][0]["boundary"] == "draft_only"
+
+
+def test_skill_blockers_keep_typed_disposition_and_same_evidence_fingerprint() -> None:
+    blocker = ValidationIssue(
+        code="EFFECTIVE_VOLUME_COUNT_UNKNOWN",
+        message="The number of retained volumes is not verified",
+        severity="blocking",
+        path="preprocessing.tr_seconds",
+    )
+    first = planning_feedback_for_skill_issues(
+        (blocker,),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+    repeated = planning_feedback_for_skill_issues(
+        (blocker,),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+        prior_fingerprints=(first[0][0].fingerprint,),
+    )
+
+    issue, feedback = first[0]
+    assert issue.kind.value == "scientific_decision_required"
+    assert issue.retryable is False
+    assert feedback.disposition is FeedbackDisposition.ASK_USER
+    assert repeated[0][0].fingerprint == issue.fingerprint
+    assert repeated[0][1].disposition is FeedbackDisposition.ASK_USER
+
+
+def test_skill_compiler_failure_is_capability_block_not_user_method_choice() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="SKILL_COMPILE_FAILED",
+                message="compiler could not compose supported steps",
+                severity="blocking",
+                path="steps",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "unsupported_capability"
+    assert issue.requires_user_decision is False
+    assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
+def test_skill_dicom_inventory_and_package_governance_are_capability_blocks() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="MANIFEST_DICOM_INVENTORY_ONLY",
+                message="DICOM conversion is not registered",
+                severity="blocking",
+                path="manifest",
+            ),
+            ValidationIssue(
+                code="SCIENTIFIC_SKILL_WITHOUT_METHODOLOGIST_REVIEW",
+                message="A reviewed scientific Skill lacks required review",
+                severity="blocking",
+                path="skill",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    assert [item[1].disposition for item in feedback] == [
+        FeedbackDisposition.BLOCKED_CAPABILITY,
+        FeedbackDisposition.BLOCKED_CAPABILITY,
+    ]
+
+
+def test_unknown_skill_blocker_fails_closed_without_claiming_scientific_choice() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="FUTURE_SKILL_CONTRACT_BLOCKER",
+                message="An unclassified contract issue occurred",
+                severity="blocking",
+                path="skill_plan",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "invalid_draft"
+    assert issue.requires_user_decision is True
+    assert issue.changes_scientific_semantics is False
+    assert decision.disposition is FeedbackDisposition.ASK_USER

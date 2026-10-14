@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -26,10 +26,11 @@ from neuroagent.application.contracts.conversations import (
     WorkspaceCitation,
 )
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
+from neuroagent.application.contracts.plans import SkillPlanResolveRequest, ValidationIssue
 from neuroagent.application.contracts.projects import ExternalDemographicsRevisionView
 from neuroagent.application.contracts.runs import QcExecutionMode
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
-from neuroagent.application.errors import ApplicationError
+from neuroagent.application.errors import ApplicationError, ConflictError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.planning_feedback import (
     FeedbackDisposition,
@@ -42,7 +43,9 @@ from neuroagent.application.planning_feedback import (
 from neuroagent.application.planning_feedback_loop import PlanningFeedbackRetrier
 from neuroagent.application.preflight_adapter import (
     feedback_payload,
+    planning_feedback_for_input_conflict,
     planning_feedback_for_messages,
+    planning_feedback_for_skill_issues,
 )
 from neuroagent.application.statistical_capabilities import model_visible_capabilities
 from neuroagent.application.statistics_draft import (
@@ -80,6 +83,7 @@ from neuroagent.application.work_draft import (
     merge_work_draft,
     plan_preview,
     planning_decisions,
+    preflight_skill_intent,
     render_draft_review,
     review_issues,
 )
@@ -112,6 +116,10 @@ from neuroagent.multi_agent.registry import (
 from neuroagent.observability.work_timings import measure_work_stage
 
 logger = logging.getLogger(__name__)
+
+# There are currently no preprocessing WorkDraft fields whose automatic
+# revision is non-scientific; parameter and QC choices remain user-owned.
+_PREPROCESSING_NON_SCIENTIFIC_REPAIR_TARGETS: frozenset[str] = frozenset()
 
 
 def _changed_fields(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
@@ -353,6 +361,7 @@ class WorkDialogue:
         | None = None,
         prepare_analysis_handoff: Callable[..., WorkAnalysisHandoff] | None = None,
         prepare_preprocessing_handoff: Callable[..., WorkPreprocessingHandoff] | None = None,
+        dry_run_skill_plan: Callable[[SkillPlanResolveRequest], Any] | None = None,
         get_result_facts: Callable[[str, bool], list[dict[str, Any]]] | None = None,
         model_budget: AgentLoopBudget | None = None,
     ) -> None:
@@ -367,6 +376,7 @@ class WorkDialogue:
         self.get_external_demographics = get_external_demographics
         self.prepare_analysis_handoff = prepare_analysis_handoff
         self.prepare_preprocessing_handoff = prepare_preprocessing_handoff
+        self.dry_run_skill_plan = dry_run_skill_plan
         self.get_result_facts = get_result_facts
         self.model_budget = model_budget or AgentLoopBudget()
         self.model_runtime = WorkModelRuntime(
@@ -1049,7 +1059,7 @@ class WorkDialogue:
                 and request.workspace_file_scope.paths
                 else set()
             )
-            initial_preflight = planning_feedback_for_messages(
+            base_initial_preflight = planning_feedback_for_messages(
                 review_issues(draft, saved_facts),
                 namespace="preprocessing",
                 draft_revision=draft_hash(draft),
@@ -1058,8 +1068,146 @@ class WorkDialogue:
                 prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
                 readable_targets=preflight_readable_targets,
             )
+
+            def run_skill_dry_run(
+                candidate: WorkDraft, facts: dict[str, Any]
+            ) -> tuple[dict[str, Any] | None, tuple[tuple[PlanningIssue, Any], ...]]:
+                if (
+                    self.dry_run_skill_plan is None
+                    or bool((saved or {}).get("compiled"))
+                    or bool((saved or {}).get("input_manifest_stale"))
+                    or bool((saved or {}).get("pending_evidence_paths"))
+                    or packet.work_context.get("workspace_stage_selection_required")
+                    or review_issues(candidate, facts)
+                ):
+                    return None, ()
+                project_payload = latest_payload(conversation, "project")
+                dataset_payload = latest_payload(conversation, "dataset")
+                manifest_payload = latest_payload(conversation, "manifest")
+                if project_payload is None and dataset_payload is None and manifest_payload is None:
+                    return None, ()
+                if not project_payload or not dataset_payload or not manifest_payload:
+                    conflict, feedback = planning_feedback_for_input_conflict(
+                        "incomplete_work_payload_binding",
+                        "项目、数据集或冻结输入绑定不完整，请重新读取工作区后再预检。",
+                        draft_revision=draft_hash(candidate),
+                        manifest_revision=str(
+                            (manifest_payload or {}).get("content_hash", "unbound")
+                        ),
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    )
+                    return None, ((conflict, feedback),)
+                manifest_id = manifest_payload.get("manifest_id")
+                manifest_hash = manifest_payload.get("content_hash")
+                dataset_id = dataset_payload.get("dataset_id")
+                project_version = project_payload.get("version")
+                if (
+                    not isinstance(project_id, str)
+                    or not project_id.strip()
+                    or not isinstance(manifest_id, str)
+                    or not manifest_id.strip()
+                    or not isinstance(manifest_hash, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", manifest_hash)
+                    or not isinstance(dataset_id, str)
+                    or not dataset_id.strip()
+                    or not isinstance(project_version, int)
+                    or isinstance(project_version, bool)
+                    or project_version < 1
+                ):
+                    conflict, feedback = planning_feedback_for_input_conflict(
+                        "invalid_work_payload_binding",
+                        "当前工作区缺少可核验的项目版本或冻结输入身份，请重新读取后再预检。",
+                        draft_revision=draft_hash(candidate),
+                        manifest_revision=str(manifest_hash or "unbound"),
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    )
+                    return None, ((conflict, feedback),)
+                revision = manifest_hash
+                candidate_revision = draft_hash(candidate)
+                if (
+                    dataset_payload.get("project_id") != project_id
+                    or project_payload.get("project_id") != project_id
+                    or manifest_payload.get("dataset_id") != dataset_id
+                    or dataset_payload.get("current_manifest_id") != manifest_id
+                ):
+                    conflict, feedback = planning_feedback_for_input_conflict(
+                        "work_payload_binding_mismatch",
+                        "当前工作区的项目、数据集或冻结输入绑定已变化，请重新读取后再预检。",
+                        draft_revision=candidate_revision,
+                        manifest_revision=revision,
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    )
+                    return None, ((conflict, feedback),)
+                try:
+                    intent = preflight_skill_intent(
+                        candidate,
+                        project_id=project_id,
+                        dataset_ref=dataset_id,
+                        input_manifest_hash=manifest_hash,
+                        structural_artifact_id=f"manifest:{manifest_id}:anatomical-source",
+                    )
+                    result = self.dry_run_skill_plan(
+                        SkillPlanResolveRequest(
+                            request=intent,
+                            expected_project_version=project_version,
+                            validation_mode="strict",
+                        )
+                    )
+                except ConflictError as exc:
+                    return None, (
+                        planning_feedback_for_input_conflict(
+                            exc.code,
+                            exc.message,
+                            draft_revision=candidate_revision,
+                            manifest_revision=revision,
+                            prior_fingerprints=_snapshot_string_list(
+                                saved, "preflight_fingerprints"
+                            ),
+                        ),
+                    )
+                except ValidationError:
+                    return None, planning_feedback_for_skill_issues(
+                        (
+                            ValidationIssue(
+                                code="WORK_DRAFT_SKILL_CONTRACT_INVALID",
+                                message="当前预处理草稿无法转换为已登记 Skill 输入合同，请复核结构化参数。",
+                                severity="blocking",
+                                path="skill_plan",
+                            ),
+                        ),
+                        draft_revision=candidate_revision,
+                        manifest_revision=revision,
+                        prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                    )
+                entries = planning_feedback_for_skill_issues(
+                    result.issues,
+                    draft_revision=candidate_revision,
+                    manifest_revision=result.manifest_hash,
+                    prior_fingerprints=_snapshot_string_list(saved, "preflight_fingerprints"),
+                )
+                return (
+                    {
+                        "scope": result.scope,
+                        "environment_probed": result.environment_probed,
+                        "ready": result.ready,
+                        "manifest_hash": result.manifest_hash,
+                        "limitation": "仅证明已登记 Skill 契约可解析、校验并编译；不代表本机 MATLAB/SPM/DPABI 可用，也不代表真实影像已校验。",
+                        "issues": [item.model_dump(mode="json") for item in result.issues],
+                    },
+                    entries,
+                )
+
+            initial_skill_dry_run, initial_skill_feedback = run_skill_dry_run(draft, saved_facts)
+            initial_preflight = (*base_initial_preflight, *initial_skill_feedback)
             model_context: dict[str, Any] = {
-                "question": request.content,
+                "question": request.content
+                + (
+                    "\n系统 Skill dry-run 仅检查已登记的预处理 Skill 契约能否解析、校验和编译；"
+                    "ready 不代表本机 MATLAB/SPM/DPABI 可用，也不代表影像已真实校验。"
+                    "不得把它表述为已批准或可执行。"
+                    if initial_skill_dry_run is not None
+                    else ""
+                ),
                 "recent_messages": recent_messages_for_agent(
                     conversation, WorkAgentRole.PREPROCESSING
                 ),
@@ -1076,6 +1224,11 @@ class WorkDialogue:
                         "requires_refreeze": bool((saved or {}).get("input_manifest_stale")),
                     },
                     "planning_preflight": feedback_payload(initial_preflight),
+                    **(
+                        {"skill_dry_run": initial_skill_dry_run}
+                        if initial_skill_dry_run is not None
+                        else {}
+                    ),
                 },
                 "context_window_tokens": int(packet.metadata.get("context_window_tokens", 16_384)),
                 "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
@@ -1122,6 +1275,9 @@ class WorkDialogue:
                 "candidate_sources": _snapshot_sources(saved),
                 "facts": saved_facts,
                 "preflight": initial_preflight,
+                "initial_skill_feedback": initial_skill_feedback,
+                "skill_dry_run": initial_skill_dry_run,
+                "validated_draft_hash": None,
                 "latest_loop_metadata": None,
                 "loop_audits": [],
                 "blocked_patch": False,
@@ -1173,6 +1329,10 @@ class WorkDialogue:
                 parsed = WorkInterpretation.model_validate_json(content)
                 if parsed.action != "prepare_preprocessing_plan":
                     return None
+                if feedback_state["initial_skill_feedback"]:
+                    # A model response cannot amend a deterministic Skill or
+                    # manifest blocker into a passing plan.
+                    return cast(PlanningIssue, feedback_state["initial_skill_feedback"][0][0])
                 if (
                     model_context["work_context"].get("workspace_stage_selection_required")
                     or bool((saved or {}).get("input_manifest_stale"))
@@ -1257,8 +1417,45 @@ class WorkDialogue:
                             requires_user_decision=True,
                             retryable=False,
                         )
+                    if (
+                        any(
+                            repair.action is RepairAction.PATCH_UNAPPROVED_DRAFT
+                            for repair in issue.repairs
+                        )
+                        and issue.target not in _PREPROCESSING_NON_SCIENTIFIC_REPAIR_TARGETS
+                    ):
+                        scientific_target = issue.target.startswith(
+                            ("preprocessing.", "alff_falff.", "reho.", "requested_metrics")
+                        )
+                        issue = replace(
+                            issue,
+                            kind=(
+                                PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED
+                                if scientific_target
+                                else issue.kind
+                            ),
+                            repairs=(
+                                RepairCandidate(
+                                    RepairAction.ASK_USER,
+                                    RepairBoundary.USER_DECISION,
+                                    issue.target,
+                                ),
+                            ),
+                            changes_scientific_semantics=scientific_target,
+                            requires_user_decision=True,
+                            retryable=False,
+                        )
+                        feedback = type(feedback)(
+                            FeedbackDisposition.ASK_USER,
+                            issue,
+                            "preprocessing draft changes require a user decision",
+                        )
                     normalized.append((issue, feedback))
+                skill_dry_run, skill_feedback = run_skill_dry_run(reviewed, current_facts)
+                normalized.extend(skill_feedback)
                 feedback_state["preflight"] = tuple(normalized)
+                feedback_state["skill_dry_run"] = skill_dry_run
+                feedback_state["validated_draft_hash"] = draft_hash(reviewed)
                 stop = next(
                     (
                         issue
@@ -1290,6 +1487,8 @@ class WorkDialogue:
                     candidate, feedback_state["candidate_sources"]
                 )
                 work_context["planning_preflight"] = feedback_payload(feedback_state["preflight"])
+                if feedback_state["skill_dry_run"] is not None:
+                    work_context["skill_dry_run"] = feedback_state["skill_dry_run"]
                 work_context["input_evidence"] = {
                     **dict(work_context.get("input_evidence", {})),
                     "observed_facts": feedback_state["facts"],
@@ -1337,6 +1536,48 @@ class WorkDialogue:
             if metadata.get("finish_reason") == "length":
                 raise ApplicationError("work_response_truncated", "模型输出不完整。")
             interpreted = WorkInterpretation.model_validate_json(raw_content)
+            if interpreted.action == "prepare_preprocessing_plan" and initial_skill_feedback:
+                messages = list(dict.fromkeys(issue.message for issue, _ in initial_skill_feedback))
+                blocked_payload: dict[str, Any] = {
+                    "work_draft": saved,
+                    "draft_issues": messages,
+                    "planning_preflight": feedback_payload(initial_skill_feedback),
+                    "plan_preview": plan_preview(draft),
+                    "planning_decisions": planning_decisions(draft, _snapshot_sources(saved)),
+                }
+                if initial_skill_dry_run is not None:
+                    blocked_payload["skill_dry_run"] = initial_skill_dry_run
+                capability_blocked = any(
+                    feedback.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+                    for _, feedback in initial_skill_feedback
+                )
+                requires_scientific_decision = any(
+                    issue.kind
+                    in {
+                        PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED,
+                        PlanningIssueKind.CONFLICTING_EVIDENCE,
+                    }
+                    for issue, _ in initial_skill_feedback
+                )
+                if capability_blocked:
+                    lead = (
+                        "当前预处理 Skill 能力或审核条件未满足；本轮保留原稿，"
+                        "需满足对应条件后再继续：\n"
+                    )
+                elif requires_scientific_decision:
+                    lead = (
+                        "当前未批准草稿未通过 Skill 预检；本轮保留原草稿，"
+                        "科研方法或输入冲突需要你决定：\n"
+                    )
+                else:
+                    lead = (
+                        "当前预处理草稿未通过 Skill 合同预检；本轮保留原稿，"
+                        "请检查结构化问题并修改后重试：\n"
+                    )
+                return reply(
+                    lead + "\n".join(messages),
+                    blocked_payload,
+                )
             if interpreted.action == "prepare_preprocessing_plan":
                 interpreted = interpreted.model_copy(
                     update={
@@ -1566,6 +1807,14 @@ class WorkDialogue:
                     issues = review_issues(draft, facts)
                 if pending_evidence:
                     issues += ("输入文件已变化，部分采集信息尚未重新读取，请核实后再启动。",)
+                validated_feedback = feedback_state["preflight"]
+                if feedback_state["validated_draft_hash"] == draft_hash(draft):
+                    skill_messages = [
+                        issue.message
+                        for issue, _ in validated_feedback
+                        if issue.code.startswith("skill_preflight_")
+                    ]
+                    issues = tuple(dict.fromkeys([*issues, *skill_messages]))
                 review = render_draft_review(draft, sources)
                 snapshot = draft_snapshot(
                     draft,
@@ -1581,8 +1830,9 @@ class WorkDialogue:
                 newly_available_targets = {
                     path for path, value in current_facts.items() if saved_facts.get(path) != value
                 }
-                validated_feedback = feedback_state["preflight"]
-                if [issue.message for issue, _ in validated_feedback] == list(issues):
+                if feedback_state["validated_draft_hash"] == draft_hash(draft) or [
+                    issue.message for issue, _ in validated_feedback
+                ] == list(issues):
                     # Preserve semantic-conflict classifications made during
                     # the retrier instead of weakening them when the final
                     # persisted review is assembled.
@@ -1612,6 +1862,8 @@ class WorkDialogue:
                 payload["work_draft"] = snapshot
                 payload["draft_issues"] = list(issues)
                 payload["planning_preflight"] = checked_payload
+                if feedback_state["skill_dry_run"] is not None:
+                    payload["skill_dry_run"] = feedback_state["skill_dry_run"]
                 payload["plan_preview"] = plan_preview(draft)
                 payload["planning_decisions"] = planning_decisions(draft, sources)
                 if snapshot.get("input_manifest_stale"):
@@ -1645,6 +1897,29 @@ class WorkDialogue:
                         + "\n"
                         + "\n".join(f"- {question}" for question in questions)
                     )
+                skill_feedback = [
+                    (issue, feedback)
+                    for issue, feedback in checked_preflight
+                    if issue.code.startswith("skill_preflight_")
+                ]
+                if skill_feedback and not questions:
+                    if any(
+                        issue.kind
+                        in {
+                            PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED,
+                            PlanningIssueKind.CONFLICTING_EVIDENCE,
+                        }
+                        for issue, _ in skill_feedback
+                    ):
+                        lead = "\n\n需要你决定：\n"
+                    elif any(
+                        feedback.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+                        for _, feedback in skill_feedback
+                    ):
+                        lead = "\n\n当前预处理能力或审核条件未满足：\n"
+                    else:
+                        lead = "\n\n请检查并处理预处理 Skill 合同问题：\n"
+                    explanation += lead + "\n".join(issue.message for issue, _ in skill_feedback)
                 review += explanation
                 if (
                     not issues

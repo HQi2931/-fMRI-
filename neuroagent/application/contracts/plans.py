@@ -132,3 +132,15 @@ class SkillPlanResolveRequest(StrictModel):
 class SkillPlanResolveView(StrictModel):
     skill_plan: SkillPlan
     plan_revision: PlanRevisionView
+
+
+class SkillPlanDryRunView(StrictModel):
+    """Read-only preprocessing Skill contract validation and compilation result."""
+
+    scope: Literal["skill_contract_compile_only"] = "skill_contract_compile_only"
+    environment_probed: Literal[False] = False
+    manifest_id: str
+    manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ready: bool
+    plan_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    issues: tuple[ValidationIssue, ...] = ()

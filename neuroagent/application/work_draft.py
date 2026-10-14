@@ -603,6 +603,59 @@ def confirmed_skill_intent(
     )
 
 
+def preflight_skill_intent(
+    draft: WorkDraft,
+    *,
+    project_id: str,
+    dataset_ref: str,
+    input_manifest_hash: str,
+    structural_artifact_id: str,
+) -> SkillPlanIntent:
+    """Build an unapproved proposal for read-only Skill preflight.
+
+    This helper deliberately carries proposal provenance and never accepts a
+    confirmation reference. Its result is only for dry-run validation.
+    """
+    issues = draft_issues(draft)
+    if issues:
+        raise ValueError("\n".join(issues))
+    proposal_ref = f"work-draft:{draft_hash(draft)}"
+
+    def proposed(values: dict[str, Any] | None) -> dict[str, Any] | None:
+        if values is None:
+            return None
+        return {
+            **deepcopy(values),
+            "provenance": [
+                {"name": name, "source": "proposal", "evidence_ref": proposal_ref}
+                for name in sorted(values)
+            ],
+        }
+
+    preprocessing = proposed(draft.preprocessing)
+    if preprocessing is not None:
+        for section in ("t1", "normalization"):
+            settings = preprocessing.get(section)
+            if (
+                isinstance(settings, dict)
+                and settings.get("structural_artifact_id") == "workspace:anatomical-source"
+            ):
+                settings["structural_artifact_id"] = structural_artifact_id
+    return SkillPlanIntent.model_validate(
+        {
+            "project_id": project_id,
+            "dataset_ref": dataset_ref,
+            "input_manifest_hash": input_manifest_hash,
+            "requested_metrics": draft.requested_metrics,
+            "primary_outputs": draft.primary_outputs,
+            "request_preprocessing": True,
+            "preprocessing": preprocessing,
+            "alff_falff": proposed(draft.alff_falff),
+            "reho": proposed(draft.reho),
+        }
+    )
+
+
 _LABELS = {
     "t1": "T1 结构像处理",
     "preparation": "T1 输入准备方式",

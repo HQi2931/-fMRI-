@@ -409,6 +409,7 @@ class ApplicationServices:
             get_external_demographics=self.external_imports.get_external_demographics,
             prepare_analysis_handoff=self.statistics.prepare_work_analysis_handoff,
             prepare_preprocessing_handoff=self.statistics.prepare_work_preprocessing_handoff,
+            dry_run_skill_plan=self.skills.dry_run_skill_plan,
             get_result_facts=self._analysis_result_facts,
             model_budget=AgentLoopBudget(
                 max_steps=settings.agent_max_tool_steps,

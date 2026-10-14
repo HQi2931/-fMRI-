@@ -411,3 +411,9 @@ DPABI 执行输出与 WorkTask 共用不可变目标合同，精确表达冻结 
 真实统计 WorkTask 在唯一、非 synthetic 的 StatisticalResult、冻结设计/bundle 和已登记 Artifact lineage 通过服务端复核后，会与任务完成在同一 Unit of Work 中写入独立结果解释 outbox。后台消费者在模型调用前后重核来源，并只把有限、白名单统计事实与确定性 readout 交给模型；仅追加 assistant 解释/报告草稿。零显著结果作为正常结果处理。暂态消费错误最多自动尝试 5 次，随后进入可人工重试状态；重试使用独立 generation 和幂等 API。计划、统计 Run、QC 和科学方法选择均不由该续接改变。
 
 本切片定向后端/持久化/Worker/迁移回归 29 项通过；Agent 页面测试 41 项通过，前端 TypeScript 类型检查通过；Mypy 291 个 Python 源文件通过，Ruff 与格式检查覆盖 317 个文件，文档规范检查覆盖 81 份 Markdown。没有调用真实模型或 MATLAB/DPABI；因此验证的是任务、证据核验、队列消费、重试和页面状态的应用层行为，不代表模型解释质量、真实统计数值路径或完整浏览器至 MATLAB 端到端验收。
+
+## 2026-10-14 Work 预处理 Skill dry-run 反馈切片
+
+Work 预处理候选现在通过同一只读准备流程调用真实 SkillResolver、SkillValidator 和 SkillCompiler；执行前后重核项目版本、数据集归属、当前 manifest ID 与 hash。该 dry-run 仅验证已登记 Skill 合同，不探测本机 MATLAB/SPM/DPABI 文件、不读取或验证真实影像头、不创建 Plan、Approval、Run、事件、授权或任务。`ready` 明确带 `scope=skill_contract_compile_only` 和 `environment_probed=false`，模型提示与回复均限定其含义。科研参数阻断和输入冲突要求用户决定，编译能力缺口以 `BLOCKED_CAPABILITY` 停止；预处理自动模型修订 allowlist 为空，统计设计装配仍未纳入该回路。
+
+定向回归 24 项通过、1 项跳过，覆盖真实解析/校验/编译、dry-run 前后项目版本和 manifest 重核、并发输入变化失败关闭、数据库所有表计数和工作目录内容不变、首轮未持久化草稿预检、科学 Skill blocker 阻止模型改写参数、相同 issue/evidence 指纹稳定、DICOM/未审查 Skill/编译器能力与治理缺口分类，以及常规编译路径先校验 manifest 再探测本机环境。Ruff 检查和格式检查通过。没有调用真实模型或 MATLAB/DPABI；dry-run 的 `ready` 不是环境可用、真实影像有效、方案已批准或可运行的证据。
