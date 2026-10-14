@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 修复复合分析 intent 的跨轮绑定：intent ID 现在按会话和 HTTP 幂等键作用域化，沿 active 预处理草稿、WorkTask/TaskStep 精确传递；Run 启动仅按任务引用及 conversation/project/request hash 恢复原请求。普通新预处理不再继承历史 intent；同项目不同会话的相同请求可独立建立 outbox。每个 preprocessing WorkTask 当前仍只支持一个 intent/outbox。
+
 - 显式 `preprocess_then_analyze` 目标会创建持久 proposal-only 分析续接 outbox；预处理目标产物全部核验通过后，预处理任务完成和 outbox READY 在同一事务提交，并绑定确切 Artifact IDs。请求正文不复制进 outbox，而由 intent ID/hash 指向会话记录；READY 领取提供短租约与 fencing token。此切片不调用模型或创建/批准统计 Plan、Run，也不运行 MATLAB。
 
 - 执行编译器与持久 WorkTask 共用 DPABI 预处理目标产物合同；Run 成功且 QC 已批准或显式跳过后，按冻结 Plan、manifest、精确 Artifact 类型/路径、subject/metric/scaling lineage 和兼容 mask 核验。所有目标匹配时完成预处理步骤和任务；产物缺失或来源矛盾时阻断。Worker 恢复旧的、绑定有效预处理步骤的 `downstream:<run_id>` 等待，普通 dependency 不会被领取。

@@ -26,6 +26,7 @@ from neuroagent.application.contracts.projects import ExternalDemographicsRevisi
 from neuroagent.application.contracts.runs import QcExecutionMode
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError
+from neuroagent.application.hashing import content_hash
 from neuroagent.application.planning_feedback import (
     FeedbackDisposition,
     PlanningIssue,
@@ -55,11 +56,13 @@ from neuroagent.application.work_actions import (
 )
 from neuroagent.application.work_agents import (
     analysis_dependency_for_request,
+    clear_analysis_intent_envelope,
     handoff_identity,
     latest_agent_payload,
     latest_analysis_dependency,
     latest_handoff_for_agent,
     recent_messages_for_agent,
+    starts_new_preprocessing_task,
     work_agent_role_for_turn,
     work_agent_routing_question,
 )
@@ -539,9 +542,56 @@ class WorkDialogue:
                 and "agent_handoff" not in body
             ):
                 body["agent_handoff"] = received_handoff.model_dump(mode="json")
-            dependency = analysis_dependency_for_request(request.content, project_id)
-            if dependency is None:
-                dependency = latest_analysis_dependency(conversation)
+            explicit_dependency = analysis_dependency_for_request(
+                request.content, project_id, conversation.conversation_id, idempotency_key
+            )
+            dependency = explicit_dependency
+            active_envelope: dict[str, Any] | None = None
+            if dependency is None and not starts_new_preprocessing_task(request.content):
+                active_envelope = next(
+                    (
+                        message.payload.get("analysis_intent_envelope")
+                        for message in reversed(conversation.messages)
+                        if isinstance(message.payload.get("analysis_intent_envelope"), dict)
+                    ),
+                    None,
+                )
+                bound_intent_id = (
+                    active_envelope.get("task_id")
+                    if isinstance(active_envelope, dict)
+                    and active_envelope.get("status") == "active"
+                    and active_envelope.get("conversation_id") == conversation.conversation_id
+                    and active_envelope.get("project_id") == project_id
+                    else None
+                )
+                active_request_hash = (
+                    active_envelope.get("analysis_request_hash")
+                    if isinstance(active_envelope, dict)
+                    else None
+                )
+                if isinstance(bound_intent_id, str):
+                    dependency = next(
+                        (
+                            dict(message.payload["analysis_dependency"])
+                            for message in conversation.messages
+                            if isinstance(message.payload.get("analysis_dependency"), dict)
+                            and message.payload["analysis_dependency"].get("task_id")
+                            == bound_intent_id
+                            and message.payload["analysis_dependency"].get("conversation_id")
+                            == conversation.conversation_id
+                            and message.payload["analysis_dependency"].get("project_id")
+                            == project_id
+                            and content_hash(
+                                str(
+                                    message.payload["analysis_dependency"].get(
+                                        "analysis_request", ""
+                                    )
+                                ).strip()
+                            )
+                            == active_request_hash
+                        ),
+                        None,
+                    )
             if dependency is not None:
                 if role is WorkAgentRole.PREPROCESSING:
                     references: dict[str, Any] = {
@@ -581,6 +631,38 @@ class WorkDialogue:
                 elif role is WorkAgentRole.ANALYSIS:
                     dependency["status"] = "analysis_started"
                 body["analysis_dependency"] = dependency
+            if explicit_dependency is not None and isinstance(body.get("work_draft"), dict):
+                body["work_draft"] = {
+                    **body["work_draft"],
+                    "analysis_intent_task_id": explicit_dependency["task_id"],
+                    "analysis_request_hash": content_hash(
+                        str(explicit_dependency["analysis_request"]).strip()
+                    ),
+                }
+            if explicit_dependency is not None:
+                body["analysis_intent_envelope"] = {
+                    "status": "active",
+                    "task_id": explicit_dependency["task_id"],
+                    "conversation_id": conversation.conversation_id,
+                    "project_id": project_id,
+                    "analysis_request_hash": content_hash(
+                        str(explicit_dependency["analysis_request"]).strip()
+                    ),
+                }
+            elif dependency is not None and isinstance(active_envelope, dict):
+                body["analysis_intent_envelope"] = active_envelope
+                if isinstance(body.get("work_draft"), dict):
+                    body["work_draft"] = {
+                        **body["work_draft"],
+                        "analysis_intent_task_id": active_envelope.get("task_id"),
+                        "analysis_request_hash": active_envelope.get("analysis_request_hash"),
+                    }
+            if explicit_dependency is None and starts_new_preprocessing_task(request.content):
+                clear_analysis_intent_envelope(
+                    body,
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                )
             proposal = body.get("statistical_design_proposal")
             if (
                 role is WorkAgentRole.ANALYSIS
@@ -883,6 +965,15 @@ class WorkDialogue:
                                 path: "included"
                                 for path in leaf_values((saved or {}).get("draft") or {})
                             },
+                        },
+                        "analysis_intent_envelope": {
+                            "task_id": (saved or {}).get("analysis_intent_task_id"),
+                            "conversation_id": conversation.conversation_id,
+                            "project_id": project_id,
+                            "analysis_request_hash": (saved or {}).get(
+                                "analysis_request_hash"
+                            ),
+                            "status": "consumed",
                         },
                     },
                 )

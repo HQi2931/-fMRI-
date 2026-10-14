@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from typing import Any
 
 from neuroagent.application.contracts.conversations import ConversationView
 from neuroagent.multi_agent.registry import WorkAgentRole
@@ -32,6 +33,9 @@ _PREPROCESS_THEN_ANALYZE = re.compile(
     r"\b(?:then|afterwards)\b.{0,70}"
     r"\b(?:compar(?:e|ing)|analy[sz](?:e|ing)|t[ -]?test|statistics)\b",
     re.IGNORECASE,
+)
+_DRAFT_EDIT_LANGUAGE = re.compile(
+    r"修改|调整|补充|改成|设置|参数|其中|把.{0,12}(?:设为|改为|调整)|新增一个参数"
 )
 _CONTINUATION = re.compile(
     r"^(继续|接着|下一步|查看进度|查看结果|刷新|再试一次|重试|continue|next(?: step)?|"
@@ -164,7 +168,7 @@ def _handoff_project_matches(handoff: dict[str, object], conversation: Conversat
 
 
 def analysis_dependency_for_request(
-    content: str, project_id: str | None
+    content: str, project_id: str | None, conversation_id: str, idempotency_key: str
 ) -> dict[str, object] | None:
     """Capture an explicit two-stage request without guessing its parameters."""
 
@@ -172,12 +176,42 @@ def analysis_dependency_for_request(
         return None
     task: dict[str, object] = {
         "task_kind": "preprocess_then_analyze",
+        "conversation_id": conversation_id,
         "project_id": project_id,
         "analysis_request": content.strip(),
         "status": "waiting_for_preprocessing",
     }
-    task["task_id"] = handoff_identity(task)[:24]
+    task["task_id"] = handoff_identity({**task, "idempotency_key": idempotency_key})[:24]
     return task
+
+
+def starts_new_preprocessing_task(content: str) -> bool:
+    """Distinguish a new preprocessing goal from edits to an active draft."""
+    normalized = content.strip()
+    if not _PREPROCESSING_INTENT.search(normalized) or _PREPROCESS_THEN_ANALYZE.search(normalized):
+        return False
+    if _DRAFT_EDIT_LANGUAGE.search(normalized):
+        return False
+    return not re.fullmatch(
+        r"(?:确认方案参数 [a-f0-9]{12}|批准并启动 [a-f0-9]{12} .+|"
+        r"查看运行进度|重新校验当前方案与启动确认。?)",
+        normalized,
+    )
+
+
+def clear_analysis_intent_envelope(
+    payload: dict[str, Any], *, conversation_id: str, project_id: str | None
+) -> None:
+    """Tombstone an old intent even when this turn has not produced a draft yet."""
+    payload["analysis_intent_envelope"] = {
+        "status": "cleared",
+        "conversation_id": conversation_id,
+        "project_id": project_id,
+    }
+    draft = payload.get("work_draft")
+    if isinstance(draft, dict):
+        draft.pop("analysis_intent_task_id", None)
+        draft.pop("analysis_request_hash", None)
 
 
 def latest_analysis_dependency(

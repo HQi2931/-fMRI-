@@ -145,6 +145,10 @@ class WorkTaskApplicationService:
             raise ConflictError(
                 "analysis_intent_project_mismatch", "复合分析意图与当前项目不匹配。"
             )
+        if intent.get("conversation_id") != conversation_id:
+            raise ConflictError(
+                "analysis_intent_conversation_mismatch", "复合分析意图与当前会话不匹配。"
+            )
         conversation = self._conversation_repository.get_conversation(conversation_id)
         self._require_work_conversation(conversation, conversation_id, project_id)
         task = self._repository.get_task(preprocessing_task_id)
@@ -152,6 +156,8 @@ class WorkTaskApplicationService:
         run_id = task.authority_refs.workflow_run_id
         if (
             task.authority_refs.conversation_id != conversation_id
+            or task.authority_refs.analysis_intent_task_id != intent_id
+            or task.authority_refs.analysis_request_hash != content_hash(request.strip())
             or plan_id is None
             or run_id is None
         ):
@@ -550,6 +556,8 @@ class WorkTaskApplicationService:
         project_id: str,
         plan_revision_id: str,
         goal_description: str,
+        analysis_intent_task_id: str | None = None,
+        analysis_request_hash: str | None = None,
     ) -> WorkTask:
         """Persist a user-reviewed preprocessing goal after its Plan commits.
 
@@ -640,6 +648,8 @@ class WorkTaskApplicationService:
             ),
             authority_refs={
                 "conversation_id": conversation_id,
+                "analysis_intent_task_id": analysis_intent_task_id,
+                "analysis_request_hash": analysis_request_hash,
                 "plan_revision_id": plan_revision_id,
                 "input_revision": plan.manifest_hash,
             },
@@ -652,6 +662,8 @@ class WorkTaskApplicationService:
                     input_version=plan.plan_hash,
                     authority_refs={
                         "conversation_id": conversation_id,
+                        "analysis_intent_task_id": analysis_intent_task_id,
+                        "analysis_request_hash": analysis_request_hash,
                         "plan_revision_id": plan_revision_id,
                         "input_revision": plan.manifest_hash,
                     },
@@ -676,6 +688,95 @@ class WorkTaskApplicationService:
         ):
             raise ConflictError(
                 "work_task_binding_conflict", "同一 Plan 已绑定到其他会话的持久任务。"
+            )
+        if (
+            current.authority_refs.analysis_intent_task_id is not None
+            and analysis_intent_task_id is not None
+            and current.authority_refs.analysis_intent_task_id != analysis_intent_task_id
+        ):
+            raise ConflictError(
+                "work_task_analysis_intent_conflict", "预处理任务已绑定另一条复合分析意图。"
+            )
+        if (
+            current.authority_refs.analysis_request_hash is not None
+            and analysis_request_hash is not None
+            and current.authority_refs.analysis_request_hash != analysis_request_hash
+        ):
+            raise ConflictError(
+                "work_task_analysis_intent_conflict", "预处理任务绑定的分析请求摘要不一致。"
+            )
+        if (
+            current.authority_refs.analysis_intent_task_id is not None
+            and analysis_intent_task_id is None
+        ):
+            if (
+                current.authority_refs.workflow_run_id is not None
+                or current.status is not TaskStatus.WAITING_USER
+            ):
+                raise ConflictError(
+                    "work_task_analysis_intent_consumed",
+                    "已经启动的预处理任务不能替换或清除其复合分析意图。",
+                )
+            current = self._repository.save_task(
+                current.model_copy(
+                    update={
+                        "version": current.version + 1,
+                        "authority_refs": current.authority_refs.model_copy(
+                            update={
+                                "analysis_intent_task_id": None,
+                                "analysis_request_hash": None,
+                            }
+                        ),
+                        "steps": tuple(
+                            step.model_copy(
+                                update={
+                                    "version": step.version + 1,
+                                    "authority_refs": step.authority_refs.model_copy(
+                                        update={
+                                            "analysis_intent_task_id": None,
+                                            "analysis_request_hash": None,
+                                        }
+                                    )
+                                }
+                            )
+                            if step.kind == "preprocessing_run"
+                            else step
+                            for step in current.steps
+                        ),
+                    }
+                ),
+                expected_version=current.version,
+            )
+        if current.authority_refs.analysis_intent_task_id is None and (
+            analysis_intent_task_id is not None or analysis_request_hash is not None
+        ):
+            current = self._repository.save_task(
+                current.model_copy(
+                    update={
+                        "version": current.version + 1,
+                        "authority_refs": current.authority_refs.model_copy(
+                            update={"analysis_intent_task_id": analysis_intent_task_id}
+                            | {"analysis_request_hash": analysis_request_hash}
+                        ),
+                        "steps": tuple(
+                            step.model_copy(
+                                update={
+                                    "version": step.version + 1,
+                                    "authority_refs": step.authority_refs.model_copy(
+                                        update={
+                                            "analysis_intent_task_id": analysis_intent_task_id,
+                                            "analysis_request_hash": analysis_request_hash,
+                                        }
+                                    )
+                                }
+                            )
+                            if step.kind == "preprocessing_run"
+                            else step
+                            for step in current.steps
+                        ),
+                    }
+                ),
+                expected_version=current.version,
             )
         current_step = self._preprocessing_step(current)
         if current_step is None:
@@ -1394,6 +1495,7 @@ class WorkTaskApplicationService:
             request = intent.get("analysis_request")
             return (
                 intent.get("task_kind") == "preprocess_then_analyze"
+                and intent.get("conversation_id") == outbox.conversation_id
                 and intent.get("project_id") == outbox.project_id
                 and isinstance(request, str)
                 and content_hash(request.strip()) == outbox.analysis_request_hash

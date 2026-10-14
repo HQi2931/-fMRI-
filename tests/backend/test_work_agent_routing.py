@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+from neuroagent.application.automation.analysis_outbox import AnalysisProposalOutbox
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationTurnCreate,
 )
+from neuroagent.application.hashing import content_hash
 from neuroagent.application.work_agents import (
     analysis_dependency_for_request,
+    clear_analysis_intent_envelope,
+    starts_new_preprocessing_task,
     work_agent_role_for_turn,
     work_agent_routing_question,
 )
@@ -71,11 +75,67 @@ def test_continuation_keeps_the_current_bound_task(service, content, prior):
     "content", ["先预处理再比较两组", "first preprocess images then compare groups"]
 )
 def test_two_stage_intent_records_dependency_without_scientific_defaults(content):
-    dependency = analysis_dependency_for_request(content, "project")
+    dependency = analysis_dependency_for_request(content, "project", "conversation", "key")
     assert dependency["status"] == "waiting_for_preprocessing"
     assert dependency["analysis_request"] == content
     assert "design" not in dependency and "correction" not in dependency
-    assert dependency == analysis_dependency_for_request(content, "project")
+    assert dependency == analysis_dependency_for_request(content, "project", "conversation", "key")
+    assert (
+        dependency["task_id"]
+        != analysis_dependency_for_request(content, "project", "other-conversation", "key")[
+            "task_id"
+        ]
+    )
+    assert (
+        dependency["task_id"]
+        != analysis_dependency_for_request(content, "project", "conversation", "other-key")[
+            "task_id"
+        ]
+    )
+
+
+def test_new_preprocessing_goal_clears_intent_even_without_a_draft_payload():
+    payload: dict[str, object] = {"agent_role": "preprocessing"}
+    assert starts_new_preprocessing_task("请对这批数据进行常规预处理。")
+    clear_analysis_intent_envelope(payload, conversation_id="conversation", project_id="project")
+    assert payload["analysis_intent_envelope"] == {
+        "status": "cleared",
+        "conversation_id": "conversation",
+        "project_id": "project",
+    }
+
+
+def test_same_project_same_request_outboxes_are_independent_per_conversation(service):
+    text = "先预处理这批静息态 fMRI 数据，然后对 ALFF 做两组统计比较。"  # noqa: RUF001
+    first = analysis_dependency_for_request(text, "project", "conversation-a", "same-key")
+    second = analysis_dependency_for_request(text, "project", "conversation-b", "same-key")
+    assert first is not None and second is not None
+    assert first["task_id"] != second["task_id"]
+    common = {
+        "project_id": "project",
+        "plan_revision_id": "plan",
+        "manifest_hash": "a" * 64,
+        "analysis_request_hash": content_hash(text),
+    }
+    first_row = service.automation._repository.ensure_analysis_outbox(
+        AnalysisProposalOutbox(
+            intent_task_id=str(first["task_id"]),
+            conversation_id="conversation-a",
+            preprocessing_task_id="preprocessing-a",
+            run_id="run-a",
+            **common,
+        )
+    )
+    second_row = service.automation._repository.ensure_analysis_outbox(
+        AnalysisProposalOutbox(
+            intent_task_id=str(second["task_id"]),
+            conversation_id="conversation-b",
+            preprocessing_task_id="preprocessing-b",
+            run_id="run-b",
+            **common,
+        )
+    )
+    assert first_row.intent_task_id != second_row.intent_task_id
 
 
 @pytest.mark.asyncio

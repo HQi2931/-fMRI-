@@ -63,6 +63,8 @@ class AuthorityReferences(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+    analysis_intent_task_id: str | None = Field(default=None, min_length=1, max_length=100)
+    analysis_request_hash: str | None = Field(default=None, min_length=64, max_length=64)
     plan_revision_id: str | None = Field(default=None, min_length=1, max_length=100)
     workflow_run_id: str | None = Field(default=None, min_length=1, max_length=100)
     input_revision: str | None = Field(default=None, min_length=1, max_length=200)

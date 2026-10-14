@@ -51,6 +51,7 @@ from neuroagent.application.conversation_work import (
     WorkActionResult,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.work_agents import work_agent_role_for_turn
@@ -228,6 +229,9 @@ class ConversationMixin(BaseServiceMixin):
                 "plan_preview": plan_preview(updated),
                 "planning_decisions": planning_decisions(updated, sources),
             }
+            if isinstance(saved.get("analysis_intent_task_id"), str):
+                payload["work_draft"]["analysis_intent_task_id"] = saved["analysis_intent_task_id"]
+                payload["work_draft"]["analysis_request_hash"] = saved.get("analysis_request_hash")
             review = render_draft_review(updated, sources)
             if not issues:
                 payload["confirmation_request"] = {
@@ -857,15 +861,45 @@ class ConversationMixin(BaseServiceMixin):
                 goal_turns.append(f"执行并核验静息态 fMRI 预处理方案 {plan_revision_id}。")
             return ("用户目标：\n" + "\n".join(f"- {item}" for item in goal_turns))[-4000:]
 
+        def analysis_intent_binding() -> tuple[str | None, str | None]:
+            draft_envelope = payload.get("work_draft")
+            envelope = payload.get("analysis_intent_envelope")
+            task_id = (
+                draft_envelope.get("analysis_intent_task_id")
+                if isinstance(draft_envelope, dict)
+                else None
+            )
+            request_hash = (
+                draft_envelope.get("analysis_request_hash")
+                if isinstance(draft_envelope, dict)
+                else None
+            )
+            if (
+                task_id is None
+                and isinstance(envelope, dict)
+                and envelope.get("status") == "active"
+                and envelope.get("conversation_id") == conversation.conversation_id
+                and envelope.get("project_id") in {None, project_id}
+            ):
+                task_id = envelope.get("task_id")
+                request_hash = envelope.get("analysis_request_hash")
+            return (
+                task_id if isinstance(task_id, str) else None,
+                request_hash if isinstance(request_hash, str) else None,
+            )
+
         task: Any | None = None
         plan = plan_identity(payload.get("plan_revision"))
         if plan is not None:
             plan_id, effective_project_id = plan
+            intent_task_id, intent_request_hash = analysis_intent_binding()
             task = self.automation.ensure_preprocessing_plan_task(
                 conversation_id=conversation.conversation_id,
                 project_id=effective_project_id,
                 plan_revision_id=plan_id,
                 goal_description=goal_description(plan_id),
+                analysis_intent_task_id=intent_task_id,
+                analysis_request_hash=intent_request_hash,
             )
 
         if not bind_run:
@@ -907,11 +941,14 @@ class ConversationMixin(BaseServiceMixin):
             # A legacy conversation may have a valid, previously compiled Plan
             # but no durable task link. Create the record only after a Run has
             # actually been created in this same transaction.
+            intent_task_id, intent_request_hash = analysis_intent_binding()
             task = self.automation.ensure_preprocessing_plan_task(
                 conversation_id=conversation.conversation_id,
                 project_id=run_project_id,
                 plan_revision_id=run_plan_revision_id,
                 goal_description=goal_description(run_plan_revision_id),
+                analysis_intent_task_id=intent_task_id,
+                analysis_request_hash=intent_request_hash,
             )
             task_id = task.task_id
         self.automation.bind_preprocessing_run(
@@ -921,17 +958,33 @@ class ConversationMixin(BaseServiceMixin):
             plan_revision_id=run_plan_revision_id,
             run_id=run_id,
         )
-        intent = payload.get("analysis_dependency")
-        if not isinstance(intent, dict):
+        bound_task = self.automation.get_task(task_id)
+        intent_id = bound_task.authority_refs.analysis_intent_task_id
+        intent = None
+        if intent_id is not None:
             intent = next(
                 (
                     message.payload.get("analysis_dependency")
-                    for message in reversed(conversation.messages)
+                    for message in conversation.messages
                     if isinstance(message.payload.get("analysis_dependency"), dict)
+                    and message.payload["analysis_dependency"].get("task_id") == intent_id
+                    and message.payload["analysis_dependency"].get("conversation_id")
+                    == conversation.conversation_id
                     and message.payload["analysis_dependency"].get("project_id") == run_project_id
+                    and content_hash(
+                        str(
+                            message.payload["analysis_dependency"].get("analysis_request", "")
+                        ).strip()
+                    )
+                    == bound_task.authority_refs.analysis_request_hash
                 ),
                 None,
             )
+            if intent is None:
+                raise ConflictError(
+                    "analysis_intent_source_missing",
+                    "持久预处理任务引用的复合分析原请求缺失或身份摘要不匹配。",
+                )
         self.automation.ensure_analysis_proposal_outbox(
             intent=intent if isinstance(intent, dict) else None,
             conversation_id=conversation.conversation_id,

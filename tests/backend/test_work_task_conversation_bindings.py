@@ -22,6 +22,7 @@ from neuroagent.application.contracts.projects import (
 )
 from neuroagent.application.contracts.runs import QcReviewState, RunCreate
 from neuroagent.application.errors import ConflictError, NotFoundError
+from neuroagent.application.hashing import content_hash
 from neuroagent.application.work_agents import analysis_dependency_for_request
 from neuroagent.application.work_draft import draft_hash
 from neuroagent.bootstrap import build_service
@@ -88,7 +89,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             "work-task-binding-conversation",
         )
         user_goal = "先预处理这批静息态 fMRI 数据，然后对 ALFF 做两组统计比较。"
-        analysis_intent = analysis_dependency_for_request(user_goal, project.project_id)
+        analysis_intent = analysis_dependency_for_request(
+            user_goal, project.project_id, conversation.conversation_id, "work-task-binding-initial"
+        )
         assert analysis_intent is not None
         draft = complete_draft()
         service.repository.append_conversation_exchange(
@@ -104,6 +107,8 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                     "hash": draft_hash(draft),
                     "workspace_path": str(source),
                     "compiled": False,
+                    "analysis_intent_task_id": analysis_intent["task_id"],
+                    "analysis_request_hash": content_hash(user_goal.strip()),
                 },
                 "analysis_dependency": analysis_intent,
             },
@@ -139,9 +144,40 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert task.status is TaskStatus.WAITING_USER
             assert task.authority_refs.conversation_id == conversation.conversation_id
             assert task.authority_refs.plan_revision_id == plan_id
+            assert task.authority_refs.analysis_intent_task_id == analysis_intent["task_id"]
+            assert task.authority_refs.analysis_request_hash == content_hash(user_goal.strip())
+            assert (
+                task.steps[0].authority_refs.analysis_intent_task_id == analysis_intent["task_id"]
+            )
+            assert task.steps[0].authority_refs.analysis_request_hash == content_hash(
+                user_goal.strip()
+            )
             assert task.authority_refs.input_revision == plan_data["manifest_hash"]
             assert user_goal in task.goal.description
             assert any("preprocessed_bold" in item for item in task.goal.completion_conditions)
+
+            # Reusing the same frozen Plan for a new ordinary draft must clear
+            # the pending composite association before any Run has started.
+            service.automation.ensure_preprocessing_plan_task(
+                conversation_id=conversation.conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=plan_id,
+                goal_description=task.goal.description,
+            )
+            cleared_task = service.automation.get_task(task_id)
+            assert cleared_task.authority_refs.analysis_intent_task_id is None
+            assert all(
+                step.authority_refs.analysis_intent_task_id is None for step in cleared_task.steps
+            )
+            service.automation.ensure_preprocessing_plan_task(
+                conversation_id=conversation.conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=plan_id,
+                goal_description=task.goal.description,
+                analysis_intent_task_id=analysis_intent["task_id"],
+                analysis_request_hash=content_hash(user_goal.strip()),
+            )
+            task = service.automation.get_task(task_id)
 
             service.plans.approve_plan(
                 plan_id,
@@ -276,7 +312,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             service.repository.append_conversation_exchange(
                 target_conversation.conversation_id,
-                user_content=user_goal,
+                user_content="请对这批数据进行常规预处理。",
                 assistant_content="预处理参数草稿已准备好。",
                 assistant_payload={
                     "agent_role": "preprocessing",
@@ -288,6 +324,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                         "workspace_path": str(source),
                         "compiled": False,
                     },
+                    # Simulate the old WorkDialogue history fallback leaking a
+                    # prior same-project composite dependency into this turn.
+                    "analysis_dependency": analysis_intent,
                 },
                 tool=None,
                 workspace_path=str(source),
@@ -317,6 +356,53 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             target_task_id = target_task_view["work_task_id"]
             assert target_task_id is not None
             assert service.automation.get_task(target_task_id).status is TaskStatus.WAITING_USER
+            ordinary_task = service.automation.get_task(target_task_id)
+            assert ordinary_task.authority_refs.analysis_intent_task_id is None
+            assert ordinary_task.authority_refs.analysis_request_hash is None
+            assert all(
+                step.authority_refs.analysis_intent_task_id is None for step in ordinary_task.steps
+            )
+            assert (
+                service.automation._repository.get_analysis_outbox_for_preprocessing_task(
+                    target_task_id
+                )
+                is None
+            )
+            target_plan_data = target_body["assistant_message"]["payload"]["plan_revision"]
+            service.plans.approve_plan(
+                target_plan_id,
+                ApprovalCreate(
+                    expected_version=target_plan_data["version"],
+                    plan_hash=target_plan_data["plan_hash"],
+                    actor="test researcher",
+                    decision=ApprovalDecision.APPROVED,
+                    reason="reviewed ordinary preprocessing plan",
+                ),
+                "work-task-binding-target-approval",
+            )
+            target_review = client.post(
+                f"/api/v1/conversations/{target_conversation.conversation_id}/work-review",
+                json={
+                    "base_hash": target_body["assistant_message"]["payload"]["work_draft"]["hash"]
+                },
+                headers={"Idempotency-Key": "work-task-binding-target-review"},
+            )
+            assert target_review.status_code == 200, target_review.text
+            target_command = target_review.json()["assistant_message"]["payload"][
+                "confirmation_request"
+            ]["options"][0]["command"]
+            target_started = client.post(
+                f"/api/v1/conversations/{target_conversation.conversation_id}/work-confirmation",
+                json={
+                    "command": target_command,
+                    "expected_draft_hash": target_review.json()["assistant_message"]["payload"][
+                        "work_draft"
+                    ]["hash"],
+                },
+                headers={"Idempotency-Key": "work-task-binding-target-start"},
+            )
+            assert target_started.status_code == 200, target_started.text
+            assert service.automation.get_task(target_task_id).authority_refs.workflow_run_id
             assert (
                 service.automation._repository.get_analysis_outbox_for_preprocessing_task(
                     target_task_id
@@ -346,8 +432,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert current_view.work_task_id == target_task_id
             assert current_view.plan_revision_id == target_plan_id
-            assert current_view.run_id is None
-            assert service.automation.get_task(target_task_id).status is TaskStatus.WAITING_USER
+            target_run_id = target_started.json()["assistant_message"]["payload"]["run"]["run_id"]
+            assert current_view.run_id == target_run_id
+            assert service.automation.get_task(target_task_id).status is TaskStatus.WAITING_RUN
             with pytest.raises(NotFoundError):
                 service.automation.get_task(historical_task_id)
 
@@ -400,7 +487,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert metric_guard_view.work_task_id == target_task_id
             assert metric_guard_view.plan_revision_id == target_plan_id
-            assert metric_guard_view.run_id is None
+            assert metric_guard_view.run_id == target_run_id
 
         assert started.status_code == 200, started.text
         assert replay.status_code == 200, replay.text
@@ -420,9 +507,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
         assert bound_view.plan_revision_id == plan_id
         assert bound_view.run_id == run_id
         runs = service.runs.list_runs(project_id=project.project_id)
-        assert len(runs) == 1
-        assert runs[0].run_id == run_id
-        assert runs[0].plan_revision_id == plan_id
+        assert len(runs) == 2
+        primary_run = next(item for item in runs if item.run_id == run_id)
+        assert primary_run.plan_revision_id == plan_id
 
         other_project = service.projects.create_project(
             ProjectCreate(
