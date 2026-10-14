@@ -2,15 +2,17 @@
 
 # ruff: noqa: RUF001
 
+import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
-from neuroagent.application.automation.models import TaskStatus
+from neuroagent.application.automation.models import TaskStatus, WaitingCondition, WaitingKind
 from neuroagent.application.contracts.conversations import ConversationCreate, ConversationMode
 from neuroagent.application.contracts.plans import ApprovalCreate, ApprovalDecision
 from neuroagent.application.contracts.projects import (
@@ -18,9 +20,13 @@ from neuroagent.application.contracts.projects import (
     ManifestScanRequest,
     ProjectCreate,
 )
+from neuroagent.application.contracts.runs import QcReviewState, RunCreate
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.work_draft import draft_hash
 from neuroagent.bootstrap import build_service
+from neuroagent.domain.execution import QcExecutionMode
+from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.infrastructure.persistence.models import PlanRevisionRow
 from tests.backend.conftest import make_approved_plan
 from tests.backend.test_environment import _fake_stack
@@ -434,5 +440,169 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 plan_revision_id=non_skill_plan.plan_revision_id,
                 goal_description="wrong plan attempt",
             )
+
+            # A successful Run plus the user's explicit QC skip is insufficient
+            # until every frozen target Artifact has matching typed lineage.
+            frozen_task = service.automation.get_task(task_id)
+            assert len(frozen_task.steps[0].expected_artifacts) == 1
+            target = frozen_task.steps[0].expected_artifacts[0]
+            assert target.artifact_type == "preprocessing.functional_timeseries"
+            assert target.relative_path == "output/sub-01/timeseries.nii"
+            run_view = service.runs.get_run(run_id)
+            successful_run = run_view.model_copy(
+                update={
+                    "state": WorkflowState.SUCCEEDED,
+                    "qc_status": "skipped",
+                    "version": run_view.version + 1,
+                }
+            )
+            lineage = ArtifactLineage(
+                artifact_id="verified-timeseries",
+                kind=ArtifactKind.FUNCTIONAL_TIMESERIES,
+                subject_id=target.subject_id,
+                metadata_verified=True,
+                tr_seconds=2.0,
+                volume_count=20,
+                metadata_evidence_hash="c" * 64,
+                subject_manifest_hash=manifest.content_hash,
+                space="MNI152",
+                grid_signature="grid-3mm",
+                voxel_size_mm=(3.0, 3.0, 3.0),
+                mask_artifact_id=None,
+                mask_grid_signature=None,
+                temporally_filtered=False,
+                frequency_band=None,
+                spatially_smoothed=False,
+                smoothing_fwhm_mm=None,
+                scrubbed=False,
+                producer_step_hash="b" * 64,
+            )
+            artifact = SimpleNamespace(
+                artifact_id=lineage.artifact_id,
+                project_id=project.project_id,
+                run_id=run_id,
+                artifact_type=target.artifact_type,
+                relative_path=target.relative_path,
+                checksum=hashlib.sha256(b"timeseries").hexdigest(),
+                size_bytes=10,
+                provenance={"lineage": lineage.model_dump(mode="json")},
+            )
+            service.automation._run_repository = SimpleNamespace(
+                get_run=lambda _run_id: successful_run
+            )
+            service.automation._qc_repository = SimpleNamespace(
+                get_latest_qc_review_for_run=lambda _run_id: None,
+                get_qc_skip_for_run=lambda _run_id: SimpleNamespace(
+                    run_id=run_id, qc_skip_id="explicit-qc-skip"
+                ),
+            )
+            service.automation._artifact_repository = SimpleNamespace(
+                list_artifacts=lambda _run_id: [artifact],
+                get_artifact=lambda artifact_id: (_ for _ in ()).throw(
+                    NotFoundError("artifact", artifact_id)
+                ),
+            )
+            service.automation._event_repository = SimpleNamespace(list_events=lambda **_kwargs: [])
+            completed = service.automation.reconcile_waiting_run(task_id)
+            assert completed.readiness.value == "completed"
+            assert completed.task.status is TaskStatus.COMPLETED
+            assert completed.task.steps[0].status.value == "succeeded"
+            assert completed.task.steps[0].authority_refs.artifact_ids == ("verified-timeseries",)
+            assert completed.task.authority_refs.artifact_ids == ("verified-timeseries",)
+            wrong_subject_lineage = lineage.model_copy(update={"subject_id": "sub-99"})
+            wrong_subject_artifact = SimpleNamespace(
+                **{
+                    **vars(artifact),
+                    "provenance": {"lineage": wrong_subject_lineage.model_dump(mode="json")},
+                }
+            )
+            with pytest.raises(ValueError, match="lineage differs"):
+                service.automation._verify_preprocessing_artifacts(
+                    expected=(target,),
+                    artifacts=(wrong_subject_artifact,),
+                    project_id=project.project_id,
+                    run_id=run_id,
+                    manifest_hash=manifest.content_hash,
+                    alff=None,
+                    reho=None,
+                )
+            with pytest.raises(ValueError, match="identity or integrity"):
+                service.automation._verify_preprocessing_artifacts(
+                    expected=(target,),
+                    artifacts=(
+                        SimpleNamespace(**{**vars(artifact), "project_id": "other-project"}),
+                    ),
+                    project_id=project.project_id,
+                    run_id=run_id,
+                    manifest_hash=manifest.content_hash,
+                    alff=None,
+                    reho=None,
+                )
+
+            # An old-style dependency wait with no exact target Artifact blocks
+            # instead of being treated as a successful preprocessing goal.
+            service.automation._run_repository = service.run_repository
+            recovered_task = service.automation.ensure_preprocessing_plan_task(
+                conversation_id=target_conversation.conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=plan_id,
+                goal_description=user_goal,
+            )
+            second_run = service.runs.create_run(
+                RunCreate(
+                    project_id=project.project_id,
+                    plan_revision_id=plan_id,
+                    expected_plan_hash=plan_data["plan_hash"],
+                    qc_mode=QcExecutionMode.SKIP,
+                ),
+                "work-task-binding-second-run",
+            )
+            service.automation.bind_preprocessing_run(
+                task_id=recovered_task.task_id,
+                conversation_id=target_conversation.conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=plan_id,
+                run_id=second_run.run_id,
+            )
+            recovered_task = service.automation.transition_task(
+                recovered_task.task_id,
+                expected_version=recovered_task.version + 1,
+                target=TaskStatus.WAITING_DEPENDENCY,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.DEPENDENCY,
+                    reference=f"downstream:{second_run.run_id}",
+                    reason="legacy downstream dependency wait",
+                ),
+            )
+            successful_second_run = second_run.model_copy(
+                update={
+                    "state": WorkflowState.SUCCEEDED,
+                    "qc_status": "approved",
+                    "version": second_run.version + 1,
+                }
+            )
+            service.automation._run_repository = SimpleNamespace(
+                get_run=lambda _run_id: successful_second_run
+            )
+            approved_review = SimpleNamespace(
+                run_id=second_run.run_id,
+                state=QcReviewState.APPROVED,
+                review=SimpleNamespace(review_revision_id="approved-review"),
+            )
+            service.automation._qc_repository = SimpleNamespace(
+                get_latest_qc_review_for_run=lambda _run_id: approved_review,
+                get_qc_skip_for_run=lambda _run_id: None,
+            )
+            service.automation._artifact_repository = SimpleNamespace(
+                list_artifacts=lambda _run_id: [],
+                get_artifact=lambda artifact_id: (_ for _ in ()).throw(
+                    NotFoundError("artifact", artifact_id)
+                ),
+            )
+            blocked = service.automation.reconcile_waiting_run(recovered_task.task_id)
+            assert blocked.readiness.value == "blocked"
+            assert blocked.task.status is TaskStatus.BLOCKED
+            assert blocked.task.steps[0].status.value == "blocked"
+            assert "0 matches" in blocked.reason
     finally:
         service.close()

@@ -11,6 +11,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
+
 
 class TaskStatus(StrEnum):
     QUEUED = "queued"
@@ -64,7 +66,7 @@ class AuthorityReferences(BaseModel):
     plan_revision_id: str | None = Field(default=None, min_length=1, max_length=100)
     workflow_run_id: str | None = Field(default=None, min_length=1, max_length=100)
     input_revision: str | None = Field(default=None, min_length=1, max_length=200)
-    artifact_ids: tuple[str, ...] = Field(default=(), max_length=200)
+    artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
 
 
 class TaskBudget(BaseModel):
@@ -103,6 +105,7 @@ class TaskStep(BaseModel):
     status: TaskStepStatus = TaskStepStatus.PENDING
     input_version: str | None = Field(default=None, min_length=1, max_length=200)
     authority_refs: AuthorityReferences = Field(default_factory=AuthorityReferences)
+    expected_artifacts: tuple[DpabiPreprocessingOutput, ...] = Field(default=(), max_length=20_000)
     recovery_steps: tuple[str, ...] = Field(default=(), max_length=32)
     version: int = Field(default=1, ge=1)
 
@@ -211,13 +214,13 @@ class AuthoritativeRunSnapshot(BaseModel):
     latest_qc_review_id: str | None = Field(default=None, max_length=100)
     latest_qc_review_state: str | None = Field(default=None, max_length=100)
     qc_skip_id: str | None = Field(default=None, max_length=100)
-    registered_artifact_ids: tuple[str, ...] = Field(default=(), max_length=1000)
-    registered_artifact_types: tuple[str, ...] = Field(default=(), max_length=1000)
-    resolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=200)
-    unresolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=200)
-    statistical_result_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    registered_artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
+    registered_artifact_types: tuple[str, ...] = Field(default=(), max_length=2000)
+    resolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
+    unresolved_referenced_artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
+    statistical_result_ids: tuple[str, ...] = Field(default=(), max_length=1000)
     verified_statistical_result_id: str | None = Field(default=None, max_length=100)
-    result_artifact_ids: tuple[str, ...] = Field(default=(), max_length=1000)
+    result_artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
 
 
 class WorkflowRunReconciliation(BaseModel):

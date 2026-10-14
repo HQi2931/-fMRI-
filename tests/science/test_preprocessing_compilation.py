@@ -21,6 +21,9 @@ from neuroagent.domain.fmri import (
 from neuroagent.domain.fmri.dataset import (
     DatasetKind,
 )
+from neuroagent.domain.fmri.preprocessing_outputs import (
+    enumerate_dpabi_preprocessing_outputs,
+)
 from neuroagent.execution.models import ArtifactPathBinding, PreprocessingJobPayload
 from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
 from neuroagent.skills.models import SkillPlan, stable_hash
@@ -274,6 +277,105 @@ def test_combined_metrics_preserve_each_requested_scaling(base_lineage: Artifact
         "output/sub-01/z_score_falff.nii",
         "output/sub-01/z_score_reho.nii",
     }
+
+
+def test_runtime_outputs_match_canonical_contract_across_subjects_and_scalings(
+    base_lineage: ArtifactLineage,
+) -> None:
+    subjects = [
+        SubjectManifestEntry(
+            subject_id=subject_id,
+            functional_files=[f"{subject_id}/func/rest.nii"],
+        )
+        for subject_id in ("sub-01", "sub-02")
+    ]
+    manifest, content = manifest_for(subjects)
+    requested = request(base_lineage)
+    assert requested.alff_falff is not None
+    assert requested.reho is not None
+    alff = requested.alff_falff.model_copy(update={"requested_scalings": tuple(MetricScaling)})
+    reho = requested.reho.model_copy(update={"requested_scalings": tuple(MetricScaling)})
+    plan = frozen_plan(manifest, parameters=common_parameters(), alff=alff, reho=reho)
+
+    result = compile_fixture(plan, manifest, content)
+    payload = result.spec.payload
+    assert isinstance(payload, PreprocessingJobPayload)
+    contract = enumerate_dpabi_preprocessing_outputs(
+        tuple(subject.subject_id for subject in manifest.subjects), alff, reho
+    )
+
+    assert tuple(
+        (item.subject_id, item.metric, item.scaling, item.relative_path) for item in payload.outputs
+    ) == tuple(
+        (
+            item.subject_id,
+            item.metric,
+            item.scaling.value if item.scaling is not None else None,
+            item.relative_path,
+        )
+        for item in contract
+    )
+    assert tuple(item.artifact_type for item in contract) == (
+        "preprocessing.functional_timeseries",
+        "metric.alff.raw",
+        "metric.alff.global_mean",
+        "metric.alff.z_score",
+        "metric.falff.raw",
+        "metric.falff.global_mean",
+        "metric.falff.z_score",
+        "metric.reho.raw",
+        "metric.reho.global_mean",
+        "metric.reho.z_score",
+        "preprocessing.functional_timeseries",
+        "metric.alff.raw",
+        "metric.alff.global_mean",
+        "metric.alff.z_score",
+        "metric.falff.raw",
+        "metric.falff.global_mean",
+        "metric.falff.z_score",
+        "metric.reho.raw",
+        "metric.reho.global_mean",
+        "metric.reho.z_score",
+    )
+
+
+def test_canonical_contract_includes_dpabi_auto_mask_artifacts(
+    base_lineage: ArtifactLineage,
+) -> None:
+    requested = request(base_lineage)
+    assert requested.alff_falff is not None
+    alff = requested.alff_falff.model_copy(update={"requested_scalings": (MetricScaling.Z_SCORE,)})
+    outputs = enumerate_dpabi_preprocessing_outputs(("sub-01",), alff, None, auto_mask=True)
+
+    assert tuple(
+        (item.metric, item.scaling, item.relative_path, item.artifact_type) for item in outputs
+    ) == (
+        (
+            "timeseries",
+            None,
+            "output/sub-01/timeseries.nii",
+            "preprocessing.functional_timeseries",
+        ),
+        ("brain_mask", None, "output/sub-01/brain_mask.nii", "preprocessing.brain_mask"),
+        (
+            "alff",
+            MetricScaling.Z_SCORE,
+            "output/sub-01/z_score_alff.nii",
+            "metric.alff.z_score",
+        ),
+        (
+            "falff",
+            MetricScaling.Z_SCORE,
+            "output/sub-01/z_score_falff.nii",
+            "metric.falff.z_score",
+        ),
+    )
+
+    duplicate_scalings = alff.model_copy(
+        update={"requested_scalings": (MetricScaling.Z_SCORE, MetricScaling.Z_SCORE)}
+    )
+    with pytest.raises(ValueError, match="requested metric scalings must be unique"):
+        enumerate_dpabi_preprocessing_outputs(("sub-01",), duplicate_scalings, None)
 
 
 def test_metric_only_stages_registered_checkpoint_and_disables_earlier_steps(

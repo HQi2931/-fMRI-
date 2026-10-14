@@ -18,6 +18,7 @@ from neuroagent.application.automation.models import (
     transition_task_step,
 )
 from neuroagent.application.errors import ConflictError
+from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 from neuroagent.infrastructure.persistence.automation_repository import (
     SqliteWorkTaskRepository,
 )
@@ -61,7 +62,25 @@ def test_work_task_survives_database_restart_with_steps_and_authority_references
 ) -> None:
     path = tmp_path / "automation.sqlite"
     first_db, first_repo = open_repository(path)
-    task = make_task()
+    expected = DpabiPreprocessingOutput(
+        subject_id="sub-01",
+        metric="timeseries",
+        scaling=None,
+        relative_path="output/sub-01/timeseries.nii",
+        artifact_type="preprocessing.functional_timeseries",
+    )
+    task = make_task().model_copy(
+        update={
+            "steps": (
+                TaskStep(
+                    step_id="preprocessing",
+                    sequence=0,
+                    kind="preprocessing_run",
+                    expected_artifacts=(expected,),
+                ),
+            )
+        }
+    )
     first_repo.create_task(task)
     first_db.dispose()
 
@@ -69,6 +88,7 @@ def test_work_task_survives_database_restart_with_steps_and_authority_references
     restored = restarted_repo.get_task(task.task_id)
     assert restored == task
     assert restored.authority_refs.workflow_run_id == "run-4"
+    assert restored.steps[0].expected_artifacts == (expected,)
     assert "run_status" not in WorkTask.model_fields
     restarted_db.dispose()
 
@@ -214,6 +234,67 @@ def test_reconciliation_target_only_indexes_supported_waits(
     assert (claim is not None) is expected
     if claim is not None:
         repository.release_reconciliation_claim(claim.task_id, claim.worker_id, claim.claim_token)
+    database.dispose()
+
+
+def test_preprocessing_downstream_wait_is_claimable_but_generic_dependency_is_not(
+    tmp_path,
+) -> None:
+    database, repository = open_repository(tmp_path / "preprocessing-dependency-target.sqlite")
+    task = make_task().model_copy(
+        update={
+            "status": TaskStatus.WAITING_DEPENDENCY,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.DEPENDENCY,
+                reference="downstream:run-4",
+                reason="verify frozen preprocessing outputs",
+            ),
+            "steps": (
+                TaskStep(
+                    step_id="preprocessing:plan-rev-2",
+                    sequence=0,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(
+                        plan_revision_id="plan-rev-2",
+                        workflow_run_id="run-4",
+                    ),
+                ),
+            ),
+            "version": 2,
+        }
+    )
+    repository.create_task(task)
+    claim = repository.claim_next_reconciliation_task(
+        "preprocessing-worker", lease_seconds=10, cooldown_seconds=0
+    )
+    assert claim is not None
+    assert claim.task_id == task.task_id
+    repository.release_reconciliation_claim(claim.task_id, claim.worker_id, claim.claim_token)
+    repository.save_task(
+        transition_task(task, TaskStatus.BLOCKED),
+        expected_version=task.version,
+    )
+
+    generic = make_task().model_copy(
+        update={
+            "task_id": "generic-downstream-task",
+            "status": TaskStatus.WAITING_DEPENDENCY,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.DEPENDENCY,
+                reference="downstream:run-4",
+                reason="not a preprocessing target",
+            ),
+            "version": 2,
+        }
+    )
+    repository.create_task(generic)
+    assert (
+        repository.claim_next_reconciliation_task(
+            "preprocessing-worker", lease_seconds=10, cooldown_seconds=0
+        )
+        is None
+    )
     database.dispose()
 
 

@@ -397,3 +397,11 @@ Work 两角色使用同一请求预算策略，工具循环与结构回退共用
 统计提案现在创建或复用持久 WorkTask；正式统计 Plan、显式授权创建的 Run 与会话角色引用按既有 Unit of Work 原子绑定，旧会话可在服务端提案/草稿证据完整时补建任务。Run 完成后的统计专属重核对照唯一真实 StatisticalResult、Run、冻结设计修订与 Plan 哈希，并核验结果 detail、报告、manifest 和登记 Artifact 元数据。统计不依赖预处理头动 QC；零显著体素属于有效结果，结果暂未登记则继续等待，mock/synthetic、占位产物、重复结果或身份不一致会阻断。
 
 自动化 service、持久化、状态机和 Work 任务绑定定向回归共 47 项通过；Ruff、Mypy、文档规范检查和差异空白检查通过。未启动 MATLAB。此项实现持久任务与统计结果证据核验，不包含后台事件订阅、任务领取/恢复调度、自动准备下游步骤或跨步骤目标完成判定。
+
+## 2026-10-14 预处理目标产物完成判定与旧等待恢复
+
+DPABI 执行输出与 WorkTask 共用不可变目标合同，精确表达冻结 manifest 的受试者、指标/缩放、登记类型和相对路径。预处理 Run 成功且 QC approved 或有显式 skip 记录后，应用服务重读冻结 Plan/SkillPlan 与 manifest，检查 Run/项目/会话/Plan 绑定，再按每个目标的 Artifact 类型和路径核验唯一登记项、项目/Run、ID/路径唯一性、SHA-256、非空大小、typed lineage、受试者、manifest hash、指标缩放和已验证 metadata。指标结果的掩膜引用还需指向同项目、类型为 brain mask 且网格兼容的 Artifact；自动掩膜必须是同受试者的本次输出。全部通过后 WorkTask 与预处理 TaskStep 同步完成；缺少目标或存在冲突/错误谱系时阻断。Run 读取期间版本持续变化仍保持 `indeterminate`。
+
+迁移 0024 和 SQLite 目标索引只恢复 Plan/Run 引用相符的预处理 `waiting_dependency/downstream:<run_id>` 任务；普通 dependency 与用户科研决定等待仍不调度。统计任务依旧按 StatisticalResult 专属凭据完成；本切片不自动创建统计设计、批准 QC、创建下游 Run、调用模型或生成报告。
+
+定向测试覆盖 DPABI 多受试者/指标/缩放输出合同、auto mask 与重复 scaling、成功后显式 QC skip 和精确产物验证、approved QC 下目标缺失阻断、错 subject/项目的产物拒绝、旧下游等待领取与重核、普通 dependency 排除及迁移选择性回填。自动化 service、持久化、迁移、Work 绑定、Worker 主循环、预处理执行与科学编译器回归共 81 项通过、1 项跳过；Ruff 规则与格式检查、6 个 Python 源文件 strict Mypy、79 份 Markdown 规范和 `git diff --check` 通过。未运行 MATLAB；通过 Mock 权威记录的应用层验证不构成 DPABI 数值路径证据。

@@ -135,6 +135,7 @@
 - [ADR 0037：fMRI 输入身份与证据来源](adr/0037-fmri-input-identity-and-evidence.md)
 - [ADR 0038：逻辑科研方案与物理执行单元](adr/0038-logical-plan-to-execution-units.md)
 - [ADR 0039：WorkTask 权威状态重核协调器](adr/0039-work-task-reconciliation-worker.md)
+- [ADR 0040：预处理任务以冻结目标产物完成](adr/0040-preprocessing-task-output-completion.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

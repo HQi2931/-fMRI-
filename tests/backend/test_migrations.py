@@ -129,6 +129,13 @@ def test_reconciliation_migration_backfills_only_supported_waiting_targets(
             "dependency",
             "statistical-result:run-3",
         ),
+        (
+            "legacy-preprocessing-dependency",
+            "waiting_dependency",
+            "dependency",
+            "downstream:run-4",
+        ),
+        ("legacy-generic-dependency", "waiting_dependency", "dependency", "downstream:run-5"),
         ("legacy-choice-wait", "waiting_user", "user_decision", "analysis-proposal:abc"),
     )
     try:
@@ -148,9 +155,41 @@ def test_reconciliation_migration_backfills_only_supported_waiting_targets(
                         "waiting": json.dumps(
                             {"kind": waiting_kind, "reference": reference, "reason": "legacy"}
                         ),
-                        "authority": json.dumps({"workflow_run_id": run_id}),
+                        "authority": json.dumps(
+                            {
+                                "workflow_run_id": run_id,
+                                **(
+                                    {"plan_revision_id": "plan-4"}
+                                    if task_id == "legacy-preprocessing-dependency"
+                                    else {}
+                                ),
+                            }
+                        ),
                     },
                 )
+                if task_id == "legacy-preprocessing-dependency":
+                    connection.execute(
+                        text(
+                            "INSERT INTO work_task_steps "
+                            "(task_id,step_id,sequence,status,version,step_json) "
+                            "VALUES (:task_id,'preprocessing:plan-4',0,'waiting',1,:step)"
+                        ),
+                        {
+                            "task_id": task_id,
+                            "step": json.dumps(
+                                {
+                                    "step_id": "preprocessing:plan-4",
+                                    "sequence": 0,
+                                    "kind": "preprocessing_run",
+                                    "status": "waiting",
+                                    "authority_refs": {
+                                        "plan_revision_id": "plan-4",
+                                        "workflow_run_id": "run-4",
+                                    },
+                                }
+                            ),
+                        },
+                    )
         command.upgrade(config, "head")
         with engine.connect() as connection:
             targets = connection.execute(
@@ -160,6 +199,7 @@ def test_reconciliation_migration_backfills_only_supported_waiting_targets(
                 )
             ).all()
         assert [tuple(row) for row in targets] == [
+            ("legacy-preprocessing-dependency", "run-4", "workflow_run"),
             ("legacy-qc-wait", "run-2", "qc_decision"),
             ("legacy-result-wait", "run-3", "statistical_result"),
             ("legacy-run-wait", "run-1", "workflow_run"),

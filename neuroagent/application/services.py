@@ -187,6 +187,7 @@ class ApplicationServices:
             artifact_repository=artifact_repository,
             conversation_repository=conversation_repository,
             plan_repository=plan_repository,
+            project_repository=project_repository,
         )
         capabilities = (
             self.environment,

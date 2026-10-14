@@ -30,6 +30,7 @@ from neuroagent.application.automation.models import (
 )
 from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.contracts.conversations import ConversationMode
+from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
     StatisticalResultDetailView,
     StatisticalResultView,
@@ -45,17 +46,51 @@ from neuroagent.application.repository_ports import (
     ConversationRepositoryPort,
     EventRepositoryPort,
     PlanRepositoryPort,
+    ProjectRepositoryPort,
     QcRepositoryPort,
     RunRepositoryPort,
 )
 from neuroagent.application.statistical_result_facts import verified_result_design
+from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
+from neuroagent.domain.fmri.metrics import (
+    AlffFalffParameters,
+    MetricMaskSource,
+    RehoParameters,
+)
+from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
+from neuroagent.domain.fmri.preprocessing_outputs import (
+    DpabiPreprocessingOutput,
+    enumerate_dpabi_preprocessing_outputs,
+)
 from neuroagent.domain.fmri.results import StatisticalResultMode
 from neuroagent.domain.fmri.statistics import StatisticalDesignRevision
 from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.skills.models import SkillPlan, stable_hash
 
 
 class _InvalidStatisticalAuthority(ValueError):
     """Raised when a stored statistical task/result chain cannot be trusted."""
+
+
+class _InvalidPreprocessingAuthority(ValueError):
+    """Raised when a frozen preprocessing task or its artifacts cannot be trusted."""
+
+
+class _StableRunAuthority:
+    """Run-bracketed workflow, QC and artifact records for one reconciliation pass."""
+
+    def __init__(
+        self,
+        snapshot: AuthoritativeRunSnapshot,
+        *,
+        project_id: str,
+        plan_revision_id: str | None,
+        artifacts: tuple[ArtifactView, ...],
+    ) -> None:
+        self.snapshot = snapshot
+        self.project_id = project_id
+        self.plan_revision_id = plan_revision_id
+        self.artifacts = artifacts
 
 
 class WorkTaskApplicationService:
@@ -71,6 +106,7 @@ class WorkTaskApplicationService:
         artifact_repository: ArtifactCatalogRepositoryPort,
         conversation_repository: ConversationRepositoryPort,
         plan_repository: PlanRepositoryPort,
+        project_repository: ProjectRepositoryPort,
     ) -> None:
         self._repository = repository
         self._event_repository = event_repository
@@ -79,6 +115,7 @@ class WorkTaskApplicationService:
         self._artifact_repository = artifact_repository
         self._conversation_repository = conversation_repository
         self._plan_repository = plan_repository
+        self._project_repository = project_repository
 
     def create_task(self, task: WorkTask) -> WorkTask:
         return self._repository.create_task(task)
@@ -484,6 +521,13 @@ class WorkTaskApplicationService:
             raise ConflictError(
                 "work_task_preprocessing_plan_required", "当前 SkillPlan 未请求预处理。"
             )
+        try:
+            expected_artifacts = self._derive_preprocessing_expectations(plan, project_id)
+        except (NotFoundError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise ConflictError(
+                "work_task_preprocessing_plan_invalid",
+                "冻结预处理方案或数据清单无法通过目标产物核验。",
+            ) from exc
         description = goal_description.strip()[:4000]
         if not description:
             raise InputValidationError("work_task_goal_required", "持久任务缺少用户目标描述。")
@@ -546,6 +590,7 @@ class WorkTaskApplicationService:
                         "plan_revision_id": plan_revision_id,
                         "input_revision": plan.manifest_hash,
                     },
+                    expected_artifacts=expected_artifacts,
                 ),
             ),
             budget=TaskBudget(
@@ -567,7 +612,24 @@ class WorkTaskApplicationService:
             raise ConflictError(
                 "work_task_binding_conflict", "同一 Plan 已绑定到其他会话的持久任务。"
             )
-        if current.authority_refs.input_revision is None:
+        current_step = self._preprocessing_step(current)
+        if current_step is None:
+            raise ConflictError(
+                "work_task_preprocessing_step_missing", "预处理 WorkTask 缺少唯一执行步骤。"
+            )
+        if (
+            current_step.expected_artifacts
+            and current_step.expected_artifacts != expected_artifacts
+        ):
+            raise ConflictError(
+                "work_task_preprocessing_targets_mismatch",
+                "持久任务中的预期产物与冻结预处理方案不一致。",
+            )
+        if (
+            current.authority_refs.input_revision is None
+            or current_step.authority_refs.input_revision is None
+            or not current_step.expected_artifacts
+        ):
             updated = current.model_copy(
                 update={
                     "version": current.version + 1,
@@ -579,9 +641,12 @@ class WorkTaskApplicationService:
                             update={
                                 "authority_refs": step.authority_refs.model_copy(
                                     update={"input_revision": plan.manifest_hash}
-                                )
+                                ),
+                                "expected_artifacts": expected_artifacts,
                             }
                         )
+                        if step.step_id == current_step.step_id
+                        else step
                         for step in current.steps
                     ),
                 }
@@ -809,6 +874,14 @@ class WorkTaskApplicationService:
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"statistical-result:{run_id}"
         )
+        preprocessing_step = self._preprocessing_step(task)
+        is_waiting_for_preprocessing_dependency = (
+            preprocessing_step is not None
+            and task.status is TaskStatus.WAITING_DEPENDENCY
+            and task.waiting_condition is not None
+            and task.waiting_condition.reference == f"downstream:{run_id}"
+            and preprocessing_step.authority_refs.workflow_run_id == run_id
+        )
         is_waiting_for_bound_qc = (
             not is_statistical
             and task.status is TaskStatus.WAITING_USER
@@ -816,7 +889,10 @@ class WorkTaskApplicationService:
             and task.waiting_condition.reference == f"qc:{run_id}"
         )
         if not (
-            is_waiting_for_bound_run or is_waiting_for_bound_qc or is_waiting_for_statistical_result
+            is_waiting_for_bound_run
+            or is_waiting_for_bound_qc
+            or is_waiting_for_statistical_result
+            or is_waiting_for_preprocessing_dependency
         ):
             raise InputValidationError(
                 "task_not_waiting_for_workflow_run",
@@ -883,10 +959,19 @@ class WorkTaskApplicationService:
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"qc:{run_id}"
         )
+        current_preprocessing_step = self._preprocessing_step(task)
+        is_waiting_for_current_preprocessing_dependency = (
+            current_preprocessing_step is not None
+            and task.status is TaskStatus.WAITING_DEPENDENCY
+            and task.waiting_condition is not None
+            and task.waiting_condition.reference == f"downstream:{run_id}"
+            and current_preprocessing_step.authority_refs.workflow_run_id == run_id
+        )
         if not (
             is_waiting_for_current_statistical_result
             or is_waiting_for_current_run
             or is_waiting_for_current_qc
+            or is_waiting_for_current_preprocessing_dependency
         ):
             return WorkflowRunReconciliation(
                 task=task,
@@ -904,7 +989,7 @@ class WorkTaskApplicationService:
             )
 
         try:
-            snapshot = self._read_stable_authoritative_snapshot(task, run_id)
+            stable_authority = self._read_stable_authoritative_snapshot(task, run_id)
         except NotFoundError:
             return WorkflowRunReconciliation(
                 task=task,
@@ -912,13 +997,14 @@ class WorkTaskApplicationService:
                 event_receipts=tuple(receipts),
                 reason="绑定的 Run 或其权威记录暂不可读取;任务状态未推进。",
             )
-        if snapshot is None:
+        if stable_authority is None:
             return WorkflowRunReconciliation(
                 task=task,
                 readiness=RunReadiness.INDETERMINATE,
                 event_receipts=tuple(receipts),
                 reason=("Run 在三次权威状态读取期间都发生版本变化;保留任务原状态,稍后重新核验。"),
             )
+        snapshot = stable_authority.snapshot
         run_state = WorkflowState(snapshot.run_state)
 
         target_status: TaskStatus | None = None
@@ -963,6 +1049,14 @@ class WorkTaskApplicationService:
                 reason = "Workflow 处于 QC_REVIEW,但 QC 状态或审查记录不一致。"
         elif run_state is WorkflowState.SUCCEEDED:
             if snapshot.qc_status == "approved" and snapshot.latest_qc_review_state == "approved":
+                if current_preprocessing_step is not None:
+                    return self._complete_preprocessing_task(
+                        task,
+                        run_id,
+                        stable_authority,
+                        tuple(receipts),
+                        claim_token=claim_token,
+                    )
                 readiness = RunReadiness.WAITING_DEPENDENCY
                 target_status = TaskStatus.WAITING_DEPENDENCY
                 waiting_condition = WaitingCondition(
@@ -975,6 +1069,14 @@ class WorkTaskApplicationService:
                     " Artifact 完整性/下一步骤检查器,因此停在 waiting_dependency。"
                 )
             elif snapshot.qc_status == "skipped" and snapshot.qc_skip_id is not None:
+                if current_preprocessing_step is not None:
+                    return self._complete_preprocessing_task(
+                        task,
+                        run_id,
+                        stable_authority,
+                        tuple(receipts),
+                        claim_token=claim_token,
+                    )
                 readiness = RunReadiness.WAITING_DEPENDENCY
                 target_status = TaskStatus.WAITING_DEPENDENCY
                 waiting_condition = WaitingCondition(
@@ -1070,6 +1172,340 @@ class WorkTaskApplicationService:
             authoritative=snapshot,
             reason=reason,
         )
+
+    def _complete_preprocessing_task(
+        self,
+        task: WorkTask,
+        run_id: str,
+        authority: _StableRunAuthority,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        *,
+        claim_token: str | None,
+    ) -> WorkflowRunReconciliation:
+        """Complete a preprocessing goal only after exact target Artifact checks."""
+
+        expected: tuple[DpabiPreprocessingOutput, ...] = ()
+        try:
+            step = self._preprocessing_step(task)
+            plan_revision_id = task.authority_refs.plan_revision_id
+            conversation_id = task.authority_refs.conversation_id
+            if (
+                step is None
+                or plan_revision_id is None
+                or conversation_id is None
+                or task.authority_refs.workflow_run_id != run_id
+                or authority.plan_revision_id != plan_revision_id
+                or step.authority_refs.plan_revision_id != plan_revision_id
+                or step.authority_refs.workflow_run_id != run_id
+                or step.input_version is None
+            ):
+                raise _InvalidPreprocessingAuthority(
+                    "WorkTask/step/Run authority references differ"
+                )
+            conversation = self._conversation_repository.get_conversation(conversation_id)
+            self._require_work_conversation(conversation, conversation_id, authority.project_id)
+            if task.task_id != self.preprocessing_task_id(conversation_id, plan_revision_id):
+                raise _InvalidPreprocessingAuthority(
+                    "WorkTask ID does not match its frozen binding"
+                )
+            plan = self._plan_repository.get_plan(plan_revision_id)
+            if (
+                plan.plan_revision_id != plan_revision_id
+                or plan.project_id != authority.project_id
+                or plan.state not in {PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+                or plan.plan_hash != step.input_version
+                or task.authority_refs.input_revision != plan.manifest_hash
+                or step.authority_refs.input_revision != plan.manifest_hash
+            ):
+                raise _InvalidPreprocessingAuthority("WorkTask is not bound to this frozen Plan")
+            expected = self._derive_preprocessing_expectations(plan, authority.project_id)
+            if step.expected_artifacts and step.expected_artifacts != expected:
+                raise _InvalidPreprocessingAuthority(
+                    "stored expected Artifacts differ from the frozen preprocessing Plan"
+                )
+            skill_plan = SkillPlan.model_validate(plan.plan["skill_plan"])
+            values = dict(skill_plan.resolved_parameters)
+            alff = (
+                AlffFalffParameters.model_validate(values["alff_falff"])
+                if "alff_falff" in values
+                else None
+            )
+            reho = RehoParameters.model_validate(values["reho"]) if "reho" in values else None
+            verified_ids = self._verify_preprocessing_artifacts(
+                expected=expected,
+                artifacts=authority.artifacts,
+                project_id=authority.project_id,
+                run_id=run_id,
+                manifest_hash=plan.manifest_hash,
+                alff=alff,
+                reho=reho,
+            )
+        except NotFoundError as exc:
+            return self._block_preprocessing_task(
+                task,
+                receipts,
+                authority.snapshot,
+                expected,
+                reason=f"预处理任务引用的冻结对象或目标 Artifact 不存在；任务已阻断。({exc})",
+                claim_token=claim_token,
+            )
+        except (
+            ConflictError,
+            InputValidationError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            ValidationError,
+        ) as exc:
+            return self._block_preprocessing_task(
+                task,
+                receipts,
+                authority.snapshot,
+                expected,
+                reason=(
+                    "预处理目标产物或冻结权威链无法通过核验；任务已阻断。"
+                    f"({type(exc).__name__}: {exc})"
+                ),
+                claim_token=claim_token,
+            )
+
+        assert step is not None
+        succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED).model_copy(
+            update={
+                "authority_refs": step.authority_refs.model_copy(
+                    update={"artifact_ids": verified_ids}
+                ),
+                "expected_artifacts": expected,
+            }
+        )
+        completed = transition_task(task, TaskStatus.COMPLETED).model_copy(
+            update={
+                "authority_refs": task.authority_refs.model_copy(
+                    update={"artifact_ids": verified_ids}
+                ),
+                "steps": tuple(
+                    succeeded_step if item.step_id == step.step_id else item for item in task.steps
+                ),
+            }
+        )
+        completed = self._save_task(
+            WorkTask.model_validate(completed.model_dump()),
+            expected_version=task.version,
+            claim_token=claim_token,
+        )
+        return WorkflowRunReconciliation(
+            task=completed,
+            readiness=RunReadiness.COMPLETED,
+            event_receipts=receipts,
+            authoritative=authority.snapshot,
+            reason="冻结预处理 Plan、QC 决策及所有精确目标 Artifact 均已核验；任务完成。",
+        )
+
+    def _block_preprocessing_task(
+        self,
+        task: WorkTask,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        snapshot: AuthoritativeRunSnapshot,
+        expected: tuple[DpabiPreprocessingOutput, ...],
+        *,
+        reason: str,
+        claim_token: str | None,
+    ) -> WorkflowRunReconciliation:
+        updated = task
+        if task.status in {
+            TaskStatus.WAITING_RUN,
+            TaskStatus.WAITING_USER,
+            TaskStatus.WAITING_DEPENDENCY,
+        }:
+            step = self._preprocessing_step(task)
+            updates: dict[str, Any] = {}
+            if step is not None:
+                blocked_statuses = {
+                    TaskStepStatus.READY,
+                    TaskStepStatus.RUNNING,
+                    TaskStepStatus.WAITING,
+                }
+                if step.status in blocked_statuses:
+                    blocked_step = transition_task_step(step, TaskStepStatus.BLOCKED)
+                    updates["steps"] = tuple(
+                        blocked_step if item.step_id == step.step_id else item
+                        for item in task.steps
+                    )
+                if expected:
+                    current_step = updates.get("steps", task.steps)
+                    updates["steps"] = tuple(
+                        item.model_copy(update={"expected_artifacts": expected})
+                        if item.step_id == step.step_id
+                        else item
+                        for item in current_step
+                    )
+            updated = transition_task(task, TaskStatus.BLOCKED).model_copy(update=updates)
+            updated = self._save_task(
+                WorkTask.model_validate(updated.model_dump()),
+                expected_version=task.version,
+                claim_token=claim_token,
+            )
+        return WorkflowRunReconciliation(
+            task=updated,
+            readiness=RunReadiness.BLOCKED,
+            event_receipts=receipts,
+            authoritative=snapshot,
+            reason=reason,
+        )
+
+    def _verify_preprocessing_artifacts(
+        self,
+        *,
+        expected: tuple[DpabiPreprocessingOutput, ...],
+        artifacts: tuple[ArtifactView, ...],
+        project_id: str,
+        run_id: str,
+        manifest_hash: str,
+        alff: AlffFalffParameters | None,
+        reho: RehoParameters | None,
+    ) -> tuple[str, ...]:
+        if not expected or not artifacts:
+            raise _InvalidPreprocessingAuthority("frozen Plan or Run has no expected outputs")
+        ids = [item.artifact_id for item in artifacts]
+        paths = [item.relative_path for item in artifacts]
+        if len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
+            raise _InvalidPreprocessingAuthority("registered Artifact IDs or paths are duplicated")
+        by_identity: dict[tuple[str, str], list[ArtifactView]] = {}
+        for artifact in artifacts:
+            if (
+                artifact.project_id != project_id
+                or artifact.run_id != run_id
+                or not artifact.artifact_id
+                or not artifact.relative_path
+                or len(artifact.checksum) != 64
+                or any(char not in "0123456789abcdef" for char in artifact.checksum)
+                or artifact.size_bytes < 1
+            ):
+                raise _InvalidPreprocessingAuthority(
+                    "registered Artifact identity or integrity is invalid"
+                )
+            by_identity.setdefault((artifact.artifact_type, artifact.relative_path), []).append(
+                artifact
+            )
+
+        auto_mask = False
+        metric_parameters = tuple(item for item in (alff, reho) if item is not None)
+        mask_sources = {item.mask_source for item in metric_parameters}
+        if len(mask_sources) > 1:
+            raise _InvalidPreprocessingAuthority("metric mask sources disagree")
+        if metric_parameters:
+            auto_mask = next(iter(mask_sources)) is MetricMaskSource.DPABI_AUTO
+
+        targets: dict[tuple[str, str], ArtifactView] = {}
+        lineages: dict[str, ArtifactLineage] = {}
+        kind_for_metric = {
+            "timeseries": ArtifactKind.FUNCTIONAL_TIMESERIES,
+            "brain_mask": ArtifactKind.BRAIN_MASK,
+            "alff": ArtifactKind.ALFF_MAP,
+            "falff": ArtifactKind.FALFF_MAP,
+            "reho": ArtifactKind.REHO_MAP,
+        }
+        for target in expected:
+            identity = (target.artifact_type, target.relative_path)
+            matches = by_identity.get(identity, [])
+            if len(matches) != 1:
+                raise _InvalidPreprocessingAuthority(
+                    f"target {target.artifact_type} at {target.relative_path} "
+                    f"has {len(matches)} matches"
+                )
+            artifact = matches[0]
+            raw_lineage = artifact.provenance.get("lineage")
+            if not isinstance(raw_lineage, Mapping):
+                raise _InvalidPreprocessingAuthority("target Artifact has no typed lineage")
+            lineage = ArtifactLineage.model_validate(raw_lineage)
+            if (
+                lineage.artifact_id != artifact.artifact_id
+                or lineage.kind is not kind_for_metric[target.metric]
+                or lineage.subject_id != target.subject_id
+                or lineage.subject_manifest_hash != manifest_hash
+                or not lineage.metadata_verified
+                or len(lineage.producer_step_hash) != 64
+                or any(char not in "0123456789abcdef" for char in lineage.producer_step_hash)
+            ):
+                raise _InvalidPreprocessingAuthority(
+                    "target Artifact lineage differs from frozen output"
+                )
+            if target.metric in {"alff", "falff", "reho"}:
+                if lineage.metric_scaling is not target.scaling:
+                    raise _InvalidPreprocessingAuthority(
+                        "metric scaling differs from frozen output"
+                    )
+            elif lineage.metric_scaling is not None:
+                raise _InvalidPreprocessingAuthority("non-metric output carries a metric scaling")
+            targets[identity] = artifact
+            lineages[artifact.artifact_id] = lineage
+
+        auto_masks = {
+            item.subject_id: targets[(item.artifact_type, item.relative_path)]
+            for item in expected
+            if item.metric == "brain_mask"
+        }
+        registered_mask_ids = {
+            item.mask_artifact_id
+            for item in metric_parameters
+            if item.mask_source is MetricMaskSource.REGISTERED_ARTIFACT
+        }
+        if len(registered_mask_ids) > 1:
+            raise _InvalidPreprocessingAuthority("frozen metrics use different registered masks")
+
+        for artifact in targets.values():
+            lineage = lineages[artifact.artifact_id]
+            if lineage.mask_artifact_id is None:
+                continue
+            mask_artifact: ArtifactView
+            if lineage.mask_artifact_id in lineages:
+                mask_artifact = next(
+                    item for item in artifacts if item.artifact_id == lineage.mask_artifact_id
+                )
+                mask_lineage = lineages[lineage.mask_artifact_id]
+            else:
+                mask_artifact = self._artifact_repository.get_artifact(lineage.mask_artifact_id)
+                if mask_artifact.artifact_id != lineage.mask_artifact_id:
+                    raise _InvalidPreprocessingAuthority(
+                        "mask lookup returned a different Artifact"
+                    )
+                if mask_artifact.project_id != project_id:
+                    raise _InvalidPreprocessingAuthority("mask Artifact belongs to another project")
+                raw_mask_lineage = mask_artifact.provenance.get("lineage")
+                if not isinstance(raw_mask_lineage, Mapping):
+                    raise _InvalidPreprocessingAuthority("referenced mask has no typed lineage")
+                mask_lineage = ArtifactLineage.model_validate(raw_mask_lineage)
+            if (
+                mask_lineage.artifact_id != mask_artifact.artifact_id
+                or mask_lineage.kind is not ArtifactKind.BRAIN_MASK
+                or not mask_lineage.metadata_verified
+                or len(mask_lineage.producer_step_hash) != 64
+                or any(char not in "0123456789abcdef" for char in mask_lineage.producer_step_hash)
+                or lineage.mask_grid_signature != mask_lineage.grid_signature
+            ):
+                raise _InvalidPreprocessingAuthority(
+                    "referenced mask is not typed or grid-compatible"
+                )
+            if lineage.kind in {
+                ArtifactKind.ALFF_MAP,
+                ArtifactKind.FALFF_MAP,
+                ArtifactKind.REHO_MAP,
+            }:
+                if auto_mask:
+                    expected_mask = auto_masks.get(lineage.subject_id or "")
+                    if (
+                        expected_mask is None
+                        or expected_mask.artifact_id != mask_artifact.artifact_id
+                    ):
+                        raise _InvalidPreprocessingAuthority(
+                            "metric output does not use its DPABI auto mask"
+                        )
+                elif registered_mask_ids and lineage.mask_artifact_id not in registered_mask_ids:
+                    raise _InvalidPreprocessingAuthority(
+                        "metric output uses a different registered mask"
+                    )
+        return tuple(sorted(item.artifact_id for item in targets.values()))
 
     def _reconcile_statistical_run(
         self,
@@ -1624,6 +2060,94 @@ class WorkTaskApplicationService:
     def _has_statistical_step(task: WorkTask) -> bool:
         return any(step.kind == "statistical_run" for step in task.steps)
 
+    @staticmethod
+    def _preprocessing_step(task: WorkTask) -> TaskStep | None:
+        steps = tuple(step for step in task.steps if step.kind == "preprocessing_run")
+        return steps[0] if len(steps) == 1 else None
+
+    def _derive_preprocessing_expectations(
+        self,
+        plan: Any,
+        project_id: str,
+    ) -> tuple[DpabiPreprocessingOutput, ...]:
+        """Rebuild exact DPABI output identities from a frozen Plan and manifest."""
+
+        if plan.project_id != project_id or plan.plan.get("kind") != "skill_plan":
+            raise _InvalidPreprocessingAuthority("Plan project or kind does not match the task")
+        manifest_id = plan.plan.get("dataset_manifest_id")
+        raw_skill_plan = plan.plan.get("skill_plan")
+        if not isinstance(manifest_id, str) or not isinstance(raw_skill_plan, Mapping):
+            raise _InvalidPreprocessingAuthority("frozen Plan is missing its manifest or SkillPlan")
+        skill_plan = SkillPlan.model_validate(raw_skill_plan)
+        body = skill_plan.model_dump(mode="json")
+        for key in ("plan_id", "plan_hash", "warnings"):
+            body.pop(key, None)
+        if (
+            skill_plan.plan_hash != plan.plan_hash
+            or stable_hash(body) != plan.plan_hash
+            or skill_plan.project_id != project_id
+            or skill_plan.input_manifest_hash != plan.manifest_hash
+        ):
+            raise _InvalidPreprocessingAuthority("frozen SkillPlan hash or project binding differs")
+
+        manifest = self._project_repository.get_manifest(manifest_id)
+        manifest_content = self._project_repository.get_manifest_content(manifest_id)
+        dataset = self._project_repository.get_dataset(manifest.dataset_id)
+        if (
+            dataset.project_id != project_id
+            or skill_plan.dataset_ref != manifest.dataset_id
+            or manifest.content_hash != plan.manifest_hash
+            or content_hash(manifest_content) != manifest.content_hash
+        ):
+            raise _InvalidPreprocessingAuthority("frozen dataset manifest binding or hash differs")
+        subject_ids = tuple(subject.subject_id for subject in manifest.subjects)
+        if not subject_ids or len(subject_ids) != len(set(subject_ids)):
+            raise _InvalidPreprocessingAuthority(
+                "frozen manifest subject identities are empty or duplicated"
+            )
+
+        resolved = dict(skill_plan.resolved_parameters)
+        if len(resolved) != len(skill_plan.resolved_parameters):
+            raise _InvalidPreprocessingAuthority("frozen SkillPlan has duplicate parameter names")
+        allowed = {"preprocessing", "alff_falff", "reho", "base_cfg_artifact_id"}
+        if set(resolved) - allowed:
+            raise _InvalidPreprocessingAuthority("frozen SkillPlan contains unsupported parameters")
+        preprocessing = (
+            PreprocessingParameters.model_validate(resolved["preprocessing"])
+            if "preprocessing" in resolved
+            else None
+        )
+        alff = (
+            AlffFalffParameters.model_validate(resolved["alff_falff"])
+            if "alff_falff" in resolved
+            else None
+        )
+        reho = RehoParameters.model_validate(resolved["reho"]) if "reho" in resolved else None
+        if preprocessing is None or skill_plan.preprocessing_parameters_hash != stable_hash(
+            preprocessing.model_dump(mode="json")
+        ):
+            raise _InvalidPreprocessingAuthority(
+                "preprocessing parameter hash differs from SkillPlan"
+            )
+        metric_parameters = tuple(item for item in (alff, reho) if item is not None)
+        mask_sources = {item.mask_source for item in metric_parameters}
+        if len(mask_sources) > 1:
+            raise _InvalidPreprocessingAuthority("requested metrics disagree on their mask source")
+        auto_mask = (
+            bool(metric_parameters) and next(iter(mask_sources)) is MetricMaskSource.DPABI_AUTO
+        )
+        outputs = enumerate_dpabi_preprocessing_outputs(
+            subject_ids,
+            alff,
+            reho,
+            auto_mask=auto_mask,
+        )
+        if len(outputs) > 20_000:
+            raise _InvalidPreprocessingAuthority(
+                "frozen preprocessing output contract exceeds the durable WorkTask limit"
+            )
+        return outputs
+
     def _save_task(
         self,
         task: WorkTask,
@@ -1645,7 +2169,7 @@ class WorkTaskApplicationService:
         run_id: str,
         *,
         max_attempts: int = 3,
-    ) -> AuthoritativeRunSnapshot | None:
+    ) -> _StableRunAuthority | None:
         """Read dependent authority records bracketed by a stable Run version."""
 
         for _attempt in range(max_attempts):
@@ -1675,10 +2199,20 @@ class WorkTaskApplicationService:
                     expected_run_id=run_id,
                     actual_run_id=skip.run_id,
                 )
-            if any(artifact.run_id != run_id for artifact in artifacts):
+            if any(
+                artifact.run_id != run_id or artifact.project_id != run_before.project_id
+                for artifact in artifacts
+            ):
                 raise InputValidationError(
                     "authoritative_artifact_mismatch",
-                    "Artifact 读取端口返回了其他运行的产物。",
+                    "Artifact 读取端口返回了其他项目或运行的产物。",
+                    expected_run_id=run_id,
+                )
+            artifact_ids = [artifact.artifact_id for artifact in artifacts]
+            if len(artifact_ids) != len(set(artifact_ids)):
+                raise InputValidationError(
+                    "authoritative_artifact_duplicate",
+                    "Artifact 读取端口返回了重复的 Artifact ID。",
                     expected_run_id=run_id,
                 )
 
@@ -1708,9 +2242,17 @@ class WorkTaskApplicationService:
                 )
             if run_before.version != run_after.version:
                 continue
+            if run_before.project_id != run_after.project_id or getattr(
+                run_before, "plan_revision_id", None
+            ) != getattr(run_after, "plan_revision_id", None):
+                raise InputValidationError(
+                    "authoritative_run_binding_changed",
+                    "Workflow Run 的项目或 Plan 绑定在读取期间发生变化。",
+                    expected_run_id=run_id,
+                )
 
             registered_ids = {artifact.artifact_id for artifact in artifacts}
-            return AuthoritativeRunSnapshot(
+            snapshot = AuthoritativeRunSnapshot(
                 run_id=run_after.run_id,
                 run_state=run_after.state.value,
                 run_version=run_after.version,
@@ -1726,5 +2268,11 @@ class WorkTaskApplicationService:
                 registered_artifact_types=tuple(sorted({item.artifact_type for item in artifacts})),
                 resolved_referenced_artifact_ids=tuple(resolved_references),
                 unresolved_referenced_artifact_ids=tuple(unresolved_references),
+            )
+            return _StableRunAuthority(
+                snapshot,
+                project_id=run_after.project_id,
+                plan_revision_id=getattr(run_after, "plan_revision_id", None),
+                artifacts=tuple(artifacts),
             )
         return None

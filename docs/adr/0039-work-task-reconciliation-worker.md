@@ -12,13 +12,13 @@
 
 ## 决策
 
-由既有 Workflow Worker 在启动后和空闲轮询期间扫描、领取并重核有限批次的 WorkTask。Worker 不保持模型会话，不调用 Agent；扫描只覆盖绑定 Workflow Run 的 `waiting_run`、绑定该 Run 的 QC 决策 `waiting_user` 和统计结果登记 `waiting_dependency`。没有下游产物检查器的普通预处理依赖和普通科研选择等待不进入领取范围。
+由既有 Workflow Worker 在启动后和空闲轮询期间扫描、领取并重核有限批次的 WorkTask。Worker 不保持模型会话，不调用 Agent；扫描覆盖绑定 Workflow Run 的 `waiting_run`、绑定该 Run 的 QC 决策 `waiting_user`、统计结果登记 `waiting_dependency`，以及由 ADR 0040 明确定义目标检查器的预处理 `waiting_dependency/downstream:<run_id>`。没有目标检查器的普通 dependency 和普通科研选择等待不进入领取范围。
 
 RuntimeEvent 作为持久唤醒提示和事件身份来源。事件回放按有界批次与任务游标读取；每次恢复都以重新读取的 Run、QC、Artifact 和 StatisticalResult 权威记录判定。启动及周期扫描即使没有未消费事件也会重读当前权威状态，用于弥补遗漏唤醒、事件已消费但生命周期更新尚未提交、以及 Worker/API 重启。
 
 SQLite 用独立的目标索引和 WorkTask reconciliation claim 表支持领取。Claim 有独立于 Job attempt 的短租约、随机 token、轮询 cooldown 和到期后可重领。所有由持有者发起的事件消费及任务更新在同一写事务内核验 token 和有效期；过期持有者不能在新持有者接管后写入。普通用户命令继续使用既有任务版本 CAS，不持有 Claim。
 
-协调器只更新 WorkTask 生命周期及事件回执；不得创建或重试 Run、批准 Plan、决定 QC、改变统计方法或调用模型。Job Worker 仍独立负责作业租约、attempt 和重试。目标级 Artifact expectations、下一步骤准备和自动角色续接属于后续计划阶段。
+协调器只更新 WorkTask 生命周期及事件回执；不得创建或重试 Run、批准 Plan、决定 QC、改变统计方法或调用模型。Job Worker 仍独立负责作业租约、attempt 和重试。统计以外的目标产物合同仅由对应的已实现检查器启用；下一步骤准备和自动角色续接仍属于后续计划阶段。
 
 ## 后果
 

@@ -157,6 +157,8 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                       ON claim.task_id = task.task_id
                     WHERE (
                         (task.status = 'waiting_run' AND target.target_kind = 'workflow_run')
+                        OR (task.status = 'waiting_dependency'
+                            AND target.target_kind = 'workflow_run')
                         OR (task.status = 'waiting_user' AND target.target_kind = 'qc_decision')
                         OR (task.status = 'waiting_dependency'
                             AND target.target_kind = 'statistical_result')
@@ -380,6 +382,21 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             and waiting.reference == f"statistical-result:{run_id}"
         ):
             target_kind = "statistical_result"
+        elif (
+            task.status.value == "waiting_dependency"
+            and waiting.kind.value == "dependency"
+            and waiting.reference == f"downstream:{run_id}"
+            and sum(step.kind == "preprocessing_run" for step in task.steps) == 1
+            and any(
+                step.kind == "preprocessing_run"
+                and step.authority_refs.workflow_run_id == run_id
+                and step.authority_refs.plan_revision_id == task.authority_refs.plan_revision_id
+                for step in task.steps
+            )
+        ):
+            # The shared workflow_run target kind is already indexed by 0023;
+            # its precise eligibility is guarded by this preprocessing-only branch.
+            target_kind = "workflow_run"
         if target_kind is not None:
             session.execute(
                 text(

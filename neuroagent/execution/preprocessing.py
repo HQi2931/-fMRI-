@@ -21,6 +21,9 @@ from neuroagent.domain.fmri.preprocessing import (
     PreprocessingParameters,
     ScrubbingMethod,
 )
+from neuroagent.domain.fmri.preprocessing_outputs import (
+    enumerate_dpabi_preprocessing_outputs,
+)
 from neuroagent.execution.manifest import FrozenManifest, ManifestSubject
 from neuroagent.execution.models import (
     ArtifactPathBinding,
@@ -620,46 +623,16 @@ def _outputs(
     *,
     auto_mask: bool = False,
 ) -> tuple[PreprocessingOutput, ...]:
-    result: list[PreprocessingOutput] = []
-    for subject in subjects:
-        result.append(
-            PreprocessingOutput(
-                subject_id=subject,
-                metric="timeseries",
-                scaling=None,
-                relative_path=f"output/{subject}/timeseries.nii",
-            )
+    expectations = enumerate_dpabi_preprocessing_outputs(subjects, alff, reho, auto_mask=auto_mask)
+    return tuple(
+        PreprocessingOutput(
+            subject_id=item.subject_id,
+            metric=item.metric,
+            scaling=item.scaling.value if item.scaling is not None else None,
+            relative_path=item.relative_path,
         )
-        if auto_mask:
-            result.append(
-                PreprocessingOutput(
-                    subject_id=subject,
-                    metric="brain_mask",
-                    scaling=None,
-                    relative_path=f"output/{subject}/brain_mask.nii",
-                )
-            )
-        for parameters in (alff, reho):
-            if parameters is None:
-                continue
-            metrics = (
-                tuple(metric.value for metric in parameters.requested_metrics)
-                if isinstance(parameters, AlffFalffParameters)
-                else ("reho",)
-            )
-            if len(set(parameters.requested_scalings)) != len(parameters.requested_scalings):
-                raise ValueError("requested metric scalings must be unique")
-            for metric in metrics:
-                for scaling in parameters.requested_scalings:
-                    result.append(
-                        PreprocessingOutput(
-                            subject_id=subject,
-                            metric=metric,
-                            scaling=scaling.value,
-                            relative_path=f"output/{subject}/{scaling.value}_{metric}.nii",
-                        )
-                    )
-    return tuple(result)
+        for item in expectations
+    )
 
 
 def _disabled_preprocessing_cfg() -> dict[str, Any]:
