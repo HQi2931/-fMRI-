@@ -696,6 +696,17 @@ class ConversationMixin(BaseServiceMixin):
                         and action_result.tool.get("tool_name") == "start_dpabi_preprocessing"
                     ),
                 )
+            elif (
+                conversation.mode is ConversationMode.WORK
+                and payload.get("agent_role", conversation.foreground_agent_role.value)
+                == WorkAgentRole.ANALYSIS.value
+            ):
+                work_task_id = self._commit_analysis_work_task_binding(
+                    conversation=conversation,
+                    user_content=request.content,
+                    payload=payload,
+                    project_id=project_id,
+                )
             if action_result.tool is not None:
                 action_result = replace(
                     action_result,
@@ -911,6 +922,71 @@ class ConversationMixin(BaseServiceMixin):
             run_id=run_id,
         )
         return task_id
+
+    def _commit_analysis_work_task_binding(
+        self,
+        *,
+        conversation: ConversationView,
+        user_content: str | None,
+        payload: dict[str, Any],
+        project_id: str | None,
+    ) -> str | None:
+        """Persist a statistical WorkTask only for a committed server proposal."""
+
+        proposal = payload.get("statistical_design_proposal")
+        draft = payload.get("analysis_draft")
+        if not isinstance(proposal, dict) or not isinstance(draft, dict):
+            return None
+        proposal_hash = proposal.get("proposal_hash")
+        draft_hash_value = draft.get("hash")
+        effective_project_id = proposal.get("project_id") or project_id
+        if (
+            not isinstance(proposal_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", proposal_hash)
+            or not isinstance(draft_hash_value, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", draft_hash_value)
+            or not isinstance(effective_project_id, str)
+        ):
+            return None
+
+        goal_turns: list[str] = []
+        for index, message in enumerate(conversation.messages[:-1]):
+            if message.role is not ConversationRole.USER:
+                continue
+            assistant = conversation.messages[index + 1]
+            if assistant.role is not ConversationRole.ASSISTANT:
+                continue
+            previous_payload = assistant.payload
+            if previous_payload.get("agent_role") != WorkAgentRole.ANALYSIS.value:
+                continue
+            if not (
+                isinstance(previous_payload.get("analysis_draft"), dict)
+                or isinstance(previous_payload.get("statistical_design_proposal"), dict)
+            ):
+                continue
+            content = message.content.strip()
+            if content and content not in goal_turns:
+                goal_turns.append(content)
+        current_content = (user_content or "").strip()
+        if current_content and current_content not in goal_turns:
+            goal_turns.append(current_content)
+        if not goal_turns:
+            design = proposal.get("design")
+            test_name = design.get("test") if isinstance(design, dict) else None
+            goal_turns.append(
+                "依据已审查的统计设计提案准备并核验静息态 fMRI 统计结果"
+                + (f"（{test_name}）" if isinstance(test_name, str) else "")
+                + f" {proposal_hash[:12]}。"
+            )
+        return self.automation.ensure_analysis_proposal_task(
+            conversation_id=conversation.conversation_id,
+            project_id=effective_project_id,
+            proposal_hash=proposal_hash,
+            draft_hash=draft_hash_value,
+            goal_description=("用户目标：\n" + "\n".join(f"- {item}" for item in goal_turns))[
+                -4000:
+            ],
+        ).task_id
 
     async def _send_chat_turn(
         self,

@@ -26,6 +26,7 @@ from neuroagent.application.artifact_content import (
     nifti_preview_png,
     nifti_preview_slice_count,
 )
+from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.agent import (
     ClusterLocalizationRequest,
     ClusterLocalizationView,
@@ -90,7 +91,10 @@ from neuroagent.application.statistical_result_facts import (
     build_method_summary,
     verified_result_design,
 )
-from neuroagent.application.work_tasks import require_statistical_work_plan
+from neuroagent.application.work_tasks import (
+    ensure_statistical_work_task_for_plan,
+    require_statistical_work_plan,
+)
 from neuroagent.domain.fmri.qc import QcReviewScope
 from neuroagent.domain.fmri.results import (
     RegisteredArtifactMetadata,
@@ -113,6 +117,7 @@ from neuroagent.observability.work_timings import measure_work_stage
 
 
 class RunMixin(BaseServiceMixin):
+    automation: WorkTaskApplicationService
     repository: RunRepositoryPort
     artifact_repository: ArtifactCatalogRepositoryPort
     qc_repository: QcRepositoryPort
@@ -452,6 +457,17 @@ class RunMixin(BaseServiceMixin):
             # source-file scan just completed outside this writer transaction.
             plan = self.plan_repository.get_plan(request.statistical_design_revision_id)
             require_unstarted_work_task(plan)
+            work_task_id = ensure_statistical_work_task_for_plan(
+                self.automation,
+                self.conversation_repository.get_conversation,
+                plan,
+            )
+            work_context = plan.plan.get("work_context")
+            if work_context is not None and work_task_id is None:
+                raise ConflictError(
+                    "statistics_work_task_missing",
+                    "统计 Work 方案未能绑定持久分析任务，无法启动运行。",  # noqa: RUF001
+                )
             design_view = self._statistics_view(plan)
             self._validate_statistics_qc_binding(design_view.design)
             if plan.plan_hash != request.expected_plan_hash:
@@ -498,14 +514,22 @@ class RunMixin(BaseServiceMixin):
                 max_attempts=request.max_attempts,
                 payload=payload,
             )
-            work_context = plan.plan.get("work_context")
             if work_context is not None:
+                assert work_task_id is not None
+                self.automation.bind_statistical_run(
+                    task_id=work_task_id,
+                    conversation_id=work_context["conversation_id"],
+                    project_id=result.project_id,
+                    plan_revision_id=plan.plan_revision_id,
+                    run_id=result.run_id,
+                )
                 self.conversation_repository.bind_statistics_task(
                     conversation_id=work_context["conversation_id"],
                     project_id=result.project_id,
                     proposal_hash=work_context["proposal_hash"],
                     plan_revision_id=plan.plan_revision_id,
                     run_id=result.run_id,
+                    work_task_id=work_task_id,
                 )
             self.event_store.append_event(
                 project_id=result.project_id,

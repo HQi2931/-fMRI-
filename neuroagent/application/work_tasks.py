@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neuroagent.application.contracts.conversations import (
     ConversationMode,
@@ -15,6 +15,9 @@ from neuroagent.application.contracts.conversations import (
 from neuroagent.application.contracts.plans import PlanRevisionView
 from neuroagent.application.errors import ConflictError
 from neuroagent.multi_agent.registry import WorkAgentRole
+
+if TYPE_CHECKING:
+    from neuroagent.application.automation.service import WorkTaskApplicationService
 
 
 def work_task(
@@ -78,6 +81,88 @@ def require_statistical_work_plan(
             "statistics_work_proposal_stale", "统计草稿已变化，请审查当前统计方案。"
         )
     return task
+
+
+def ensure_statistical_work_task_for_plan(
+    automation: WorkTaskApplicationService,
+    get_conversation: Callable[[str], ConversationView],
+    plan: PlanRevisionView,
+) -> str | None:
+    """Ensure a durable statistical task is bound to a committed Work Plan.
+
+    Older conversations can have a valid proposal and frozen statistical Plan
+    without the newer WorkTask reference. This repairs that association within
+    the caller's existing Unit of Work and rejects conflicting server links.
+    """
+
+    role_task = require_statistical_work_plan(get_conversation, plan)
+    if role_task is None:
+        return None
+    context = plan.plan["work_context"]
+    conversation_id = str(context["conversation_id"])
+    proposal_hash = str(context["proposal_hash"])
+    draft_hash = role_task.draft_hash
+    if draft_hash is None:
+        raise ConflictError(
+            "statistics_work_proposal_stale", "统计草稿缺少哈希，无法绑定持久分析任务。"
+        )
+    conversation = get_conversation(conversation_id)
+    design = plan.plan.get("design")
+    test_name = design.get("test") if isinstance(design, dict) else None
+    goal_description = _analysis_goal_description(
+        conversation,
+        role_task,
+        proposal_hash=proposal_hash,
+        test_name=test_name if isinstance(test_name, str) else "statistical analysis",
+    )
+    durable_task = automation.ensure_analysis_proposal_task(
+        conversation_id=conversation_id,
+        project_id=plan.project_id,
+        proposal_hash=proposal_hash,
+        draft_hash=draft_hash,
+        goal_description=goal_description,
+    )
+    if role_task.work_task_id not in {None, durable_task.task_id}:
+        raise ConflictError(
+            "work_task_binding_conflict", "统计会话引用与提案对应的持久任务不一致。"
+        )
+    automation.bind_statistical_plan(
+        task_id=durable_task.task_id,
+        conversation_id=conversation_id,
+        project_id=plan.project_id,
+        proposal_hash=proposal_hash,
+        plan_revision_id=plan.plan_revision_id,
+    )
+    return durable_task.task_id
+
+
+def _analysis_goal_description(
+    conversation: ConversationView,
+    role_task: Any,
+    *,
+    proposal_hash: str,
+    test_name: str,
+) -> str:
+    for index, message in enumerate(conversation.messages):
+        if message.message_id != role_task.proposal_message_id:
+            continue
+        proposal = message.payload.get("statistical_design_proposal")
+        if (
+            message.role.value != "assistant"
+            or message.payload.get("agent_role") != WorkAgentRole.ANALYSIS.value
+            or not isinstance(proposal, dict)
+            or proposal.get("proposal_hash") != proposal_hash
+        ):
+            break
+        for previous in reversed(conversation.messages[:index]):
+            if previous.role.value == "user":
+                content = previous.content.strip()
+                if content:
+                    return ("用户目标：\n- " + content)[:4000]
+    return (
+        "依据已审查的统计设计提案准备并核验静息态 fMRI 统计结果"
+        f"（{test_name}） {proposal_hash[:12]}。"
+    )
 
 
 def preprocessing_source_run(

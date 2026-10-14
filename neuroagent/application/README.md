@@ -31,7 +31,8 @@
 - `work_models.py` 独立定义模型输出合同，动作字段只接受 `READ`/`PROPOSE` 白名单；`work_dialogue.py` 继续重导出类型以兼容现有调用点。
 - `planning_feedback.py` 与 `preflight_adapter.py` 将 Work 草稿检查映射为有来源和修复边界的确定性反馈；Work 两角色的有界提案反馈已通过集成测试。预处理仅在共享预算内修订未批准草稿；统计科研选择留给用户。该回路尚未统一覆盖 Skill 编译与统计设计装配，也不授予批准、启动或任意写入权限。
 - `automation/` 定义持久 WorkTask/TaskStep 的传输中立状态及应用服务；SQLite 仓储通过组合根接入现有 Unit of Work。`reconcile_waiting_run(task_id)` 只用绑定 Run 的事件身份做去重/唤醒，再通过 Run `version` 前后夹读重读 Run/QC/Artifact；三次读取仍不稳定时返回 `indeterminate` 并保留任务生命周期状态。`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查尚无或为 draft，以及 `failed` 且审查为 draft，等待用户明确处理；失败状态缺少审查或证据冲突时阻断。通用 Artifact 引用按 ID 与项目归属核验，可指向上游 Run；当前 Run 输出清单独立返回，不用于推断通用引用缺失。不读取事件 payload，不创建 Run 或批准 QC。后台事件订阅、领取/唤醒调度及目标级 Artifact 完整性/下一步骤判定仍未实现，所以该用例不等于自动续接。
-- Work 预处理在已提交的 `skill_plan` 确含冻结预处理参数后，按会话/角色/Plan 修订 ID 创建持久 WorkTask；目标文本来自可关联到预处理 Agent 的用户消息，任务引用冻结 manifest hash。`send_conversation_turn` 的 finalize 将任务、会话角色链接和显式授权创建的 Run 一起提交；`work-draft`、`work-review` 的成功 Plan 路径也在各自 Unit of Work 中写任务及会话链接。计划生成在部分对话路径可能已于 finalize 前持久化，因此此保证不表示 Plan 创建与任务在所有入口均为同一事务。当前不为统计 Plan 建任务，也没有后台调度或自动续接。
+- Work 预处理在已提交的 `skill_plan` 确含冻结预处理参数后，按会话/角色/Plan 修订 ID 创建持久 WorkTask；目标文本来自可关联到预处理 Agent 的用户消息，任务引用冻结 manifest hash。显式授权创建的 Run 与任务状态、会话角色链接在同一 Unit of Work 中收口；`work-draft`、`work-review` 的成功 Plan 路径也写入任务及会话关联。部分入口的 Plan 在 finalize 前已经保存，因此不概括承诺所有 Plan 生成入口都与任务同事务。
+- Work 分析提案按会话与 proposal hash 创建持久 `statistical_run` WorkTask，冻结统计 Plan 时绑定任务和会话角色链接，显式授权创建 Run 时再原子绑定 Run。统计任务不使用头动 QC 判据；唯一真实、非占位、且完整匹配 Run、设计修订、Plan 哈希、报告/manifest 和 Artifact 清单的结果完成任务。零显著结果有效；无结果时等待登记；mock/synthetic 或身份不一致时阻断。真实统计结果重核不启动 MATLAB；任务完成后仍没有后台事件订阅器或下游自动生成统计/报告的调度器。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api.app import create_app
+from neuroagent.application.automation.models import TaskStatus, TaskStepStatus
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationTurnCreate,
@@ -191,13 +192,13 @@ async def test_analysis_readout_retains_workspace_and_formal_task_on_reload(
     assert turn.tool_call.tool_name == "get_statistical_results"
     fresh = build_service(service.settings)
     try:
-        restored = fresh.get_conversation(conversation_id)
+        restored = fresh.conversations.get_conversation(conversation_id)
         assert restored.workspace_path == before.workspace_path
         assert restored.active_run_id == run.run_id
         assert work_task(restored, WorkAgentRole.ANALYSIS) == work_task(
             before, WorkAgentRole.ANALYSIS
         )
-        assert len(fresh.list_runs(project_id=request.project_id)) == 1
+        assert len(fresh.runs.list_runs(project_id=request.project_id)) == 1
     finally:
         fresh.close()
 
@@ -212,6 +213,12 @@ def test_work_statistics_persists_plan_run_and_role_without_browser_cache(
     conversation = service.conversations.get_conversation(conversation_id)
     task = work_task(conversation, WorkAgentRole.ANALYSIS)
     assert task.plan_revision_id == plan_id
+    assert task.work_task_id is not None
+    durable = service.automation.get_task(task.work_task_id)
+    assert durable.status is TaskStatus.WAITING_USER
+    assert durable.authority_refs.plan_revision_id == plan_id
+    assert durable.steps[0].kind == "statistical_run"
+    assert durable.steps[0].status is TaskStepStatus.READY
     assert context["proposal_message_id"] == task.proposal_message_id
     assert context["draft_hash"] == task.draft_hash == payload["analysis_draft"]["hash"]
     assert service.statistics.create_statistical_design(request, "task-create") == frozen
@@ -231,19 +238,26 @@ def test_work_statistics_persists_plan_run_and_role_without_browser_cache(
     run = service.runs.create_statistics_run(run_request, "task-run")
     fresh = build_service(service.settings)
     try:
-        restored = fresh.get_conversation(conversation_id)
+        restored = fresh.conversations.get_conversation(conversation_id)
         assert restored.active_run_id == run.run_id
         assert restored.foreground_agent_role is WorkAgentRole.ANALYSIS
-        assert work_task(restored, WorkAgentRole.ANALYSIS).run_id == run.run_id
+        restored_role_task = work_task(restored, WorkAgentRole.ANALYSIS)
+        assert restored_role_task is not None
+        assert restored_role_task.run_id == run.run_id
+        assert restored_role_task.work_task_id is not None
+        restored_work_task = fresh.automation.get_task(restored_role_task.work_task_id)
+        assert restored_work_task.status is TaskStatus.WAITING_RUN
+        assert restored_work_task.authority_refs.workflow_run_id == run.run_id
+        assert restored_work_task.steps[0].status is TaskStepStatus.WAITING
         assert preprocessing_source_run(restored, None) is None
         version = restored.version
-        assert fresh.create_statistics_run(run_request, "task-run").run_id == run.run_id
-        assert fresh.get_conversation(conversation_id).version == version
+        assert fresh.runs.create_statistics_run(run_request, "task-run").run_id == run.run_id
+        assert fresh.conversations.get_conversation(conversation_id).version == version
         with pytest.raises(ConflictError) as duplicate:
-            fresh.create_statistics_run(run_request, "different-key-same-task")
+            fresh.runs.create_statistics_run(run_request, "different-key-same-task")
         assert duplicate.value.code == "statistics_work_run_already_created"
-        assert len(fresh.list_runs(project_id=request.project_id)) == 1
-        switched = fresh.select_work_agent(
+        assert len(fresh.runs.list_runs(project_id=request.project_id)) == 1
+        switched = fresh.conversations.select_work_agent(
             conversation_id,
             WorkAgentSelection(agent_role="preprocessing", expected_version=version),
             "task-switch",
@@ -256,13 +270,13 @@ def test_work_statistics_persists_plan_run_and_role_without_browser_cache(
         )
         # Replaying a committed request returns its response without stealing
         # the foreground role or rewriting that role's task references.
-        assert fresh.create_statistics_run(run_request, "task-run").run_id == run.run_id
+        assert fresh.runs.create_statistics_run(run_request, "task-run").run_id == run.run_id
         assert (
-            fresh.get_conversation(conversation_id).foreground_agent_role
+            fresh.conversations.get_conversation(conversation_id).foreground_agent_role
             is WorkAgentRole.PREPROCESSING
         )
         with pytest.raises(ConflictError) as failure:
-            fresh.create_statistics_run(run_request, "new-run-wrong-role")
+            fresh.runs.create_statistics_run(run_request, "new-run-wrong-role")
         assert failure.value.code == "work_agent_confirmation_mismatch"
     finally:
         fresh.close()
@@ -434,7 +448,7 @@ def test_draft_change_between_preparation_and_enqueue_is_rechecked_atomically(
                 {"agent_role": "analysis", "analysis_draft": {"hash": "f" * 64}},
             )
 
-    monkeypatch.setattr(service, "_require_plan_current", change_draft)
+    monkeypatch.setattr(service.runs, "_require_plan_current", change_draft)
     with pytest.raises(ConflictError) as failure:
         service.runs.create_statistics_run(
             StatisticsRunCreate(

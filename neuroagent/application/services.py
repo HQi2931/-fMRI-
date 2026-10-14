@@ -232,12 +232,14 @@ class ApplicationServices:
         self.plans.repository = plan_repository
         self.skills.repository = plan_repository
         self.statistics.artifact_repository = artifact_repository
+        self.statistics.automation = self.automation
         self.statistics.conversation_repository = conversation_repository
         self.statistics.external_import_repository = external_import_repository
         self.statistics.plan_repository = plan_repository
         self.statistics.qc_repository = qc_repository
         self.statistics.run_repository = run_repository
         self.runs.repository = run_repository
+        self.runs.automation = self.automation
         self.runs.artifact_repository = artifact_repository
         self.runs.qc_repository = qc_repository
         self.runs.conversation_repository = conversation_repository

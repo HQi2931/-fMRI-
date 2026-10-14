@@ -5,6 +5,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import ValidationError
 
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
@@ -26,11 +30,16 @@ from neuroagent.application.automation.models import (
 )
 from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.contracts.conversations import ConversationMode
+from neuroagent.application.contracts.statistics import (
+    StatisticalResultDetailView,
+    StatisticalResultView,
+)
 from neuroagent.application.errors import (
     ConflictError,
     InputValidationError,
     NotFoundError,
 )
+from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import (
     ArtifactCatalogRepositoryPort,
     ConversationRepositoryPort,
@@ -39,7 +48,14 @@ from neuroagent.application.repository_ports import (
     QcRepositoryPort,
     RunRepositoryPort,
 )
+from neuroagent.application.statistical_result_facts import verified_result_design
+from neuroagent.domain.fmri.results import StatisticalResultMode
+from neuroagent.domain.fmri.statistics import StatisticalDesignRevision
 from neuroagent.domain.lifecycle import PlanState, WorkflowState
+
+
+class _InvalidStatisticalAuthority(ValueError):
+    """Raised when a stored statistical task/result chain cannot be trusted."""
 
 
 class WorkTaskApplicationService:
@@ -69,6 +85,329 @@ class WorkTaskApplicationService:
 
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
+
+    @staticmethod
+    def analysis_proposal_task_id(conversation_id: str, proposal_hash: str) -> str:
+        binding = f"{conversation_id}\0analysis\0{proposal_hash}".encode()
+        return f"work-analysis-{hashlib.sha256(binding).hexdigest()[:32]}"
+
+    def ensure_analysis_proposal_task(
+        self,
+        conversation_id: str,
+        project_id: str,
+        proposal_hash: str,
+        goal_description: str,
+        draft_hash: str,
+    ) -> WorkTask:
+        """Create/reuse the durable task for one reviewed statistical proposal."""
+
+        self._validate_hash(proposal_hash, "proposal_hash")
+        self._validate_hash(draft_hash, "draft_hash")
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        description = goal_description.strip()[:4000]
+        if not description:
+            raise InputValidationError("work_task_goal_required", "持久任务缺少用户目标描述。")
+
+        task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
+        task = WorkTask(
+            task_id=task_id,
+            goal=WorkGoal(
+                description=description,
+                completion_conditions=(
+                    "统计 Run 已成功，并且存在唯一、可复核、与冻结统计设计和 Plan 哈希一致的"
+                    "真实 StatisticalResult；零显著体素也是有效结果。",
+                ),
+            ),
+            status=TaskStatus.WAITING_USER,
+            waiting_condition=WaitingCondition(
+                kind=WaitingKind.USER_DECISION,
+                reference=f"proposal:{proposal_hash}",
+                reason="统计提案已生成，等待用户审查并确认冻结分析方案。",
+            ),
+            authority_refs={
+                "conversation_id": conversation_id,
+                "input_revision": draft_hash,
+            },
+            steps=(
+                TaskStep(
+                    step_id=f"statistical:{proposal_hash}",
+                    sequence=0,
+                    kind="statistical_run",
+                    status=TaskStepStatus.READY,
+                    input_version=proposal_hash,
+                    authority_refs={
+                        "conversation_id": conversation_id,
+                        "input_revision": draft_hash,
+                    },
+                ),
+            ),
+            budget=TaskBudget(
+                max_steps=100,
+                max_model_calls=40,
+                max_tokens=200_000,
+                max_elapsed_seconds=86_400,
+            ),
+        )
+        try:
+            current = self._repository.get_task(task_id)
+        except NotFoundError:
+            return self._repository.create_task(task)
+        current_step = self._statistical_step(current)
+        if (
+            current.authority_refs.conversation_id != conversation_id
+            or current.authority_refs.input_revision != draft_hash
+            or current_step is None
+            or current_step.input_version != proposal_hash
+            or current_step.authority_refs.conversation_id != conversation_id
+            or current_step.authority_refs.input_revision != draft_hash
+        ):
+            raise ConflictError(
+                "work_task_binding_conflict", "同一统计提案已绑定到不同草稿或会话。"
+            )
+        return current
+
+    def bind_statistical_plan(
+        self,
+        task_id: str,
+        conversation_id: str,
+        project_id: str,
+        proposal_hash: str,
+        plan_revision_id: str,
+    ) -> WorkTask:
+        """Bind the exact frozen statistical Plan while keeping the user gate."""
+
+        expected_task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
+        if task_id != expected_task_id:
+            raise ConflictError("work_task_binding_mismatch", "统计任务 ID 与提案绑定不一致。")
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        plan = self._plan_repository.get_plan(plan_revision_id)
+        if plan.project_id != project_id:
+            raise ConflictError("work_task_plan_project_mismatch", "统计方案不属于当前项目。")
+        context, design = self._statistical_plan_context(
+            plan,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            proposal_hash=proposal_hash,
+        )
+        if plan.state not in {
+            PlanState.DRAFT,
+            PlanState.AWAITING_APPROVAL,
+            PlanState.APPROVED,
+        }:
+            raise ConflictError("work_task_plan_not_reviewable", "统计方案尚未冻结供用户审查。")
+
+        current = self._repository.get_task(task_id)
+        step = self._statistical_step(current)
+        if (
+            current.task_id != expected_task_id
+            or current.authority_refs.conversation_id != conversation_id
+            or current.authority_refs.input_revision != context["draft_hash"]
+            or step is None
+            or step.input_version != proposal_hash
+            or step.authority_refs.conversation_id != conversation_id
+            or step.authority_refs.input_revision != context["draft_hash"]
+        ):
+            raise ConflictError("work_task_binding_mismatch", "统计任务与当前提案草稿不匹配。")
+        if current.authority_refs.plan_revision_id not in {None, plan_revision_id}:
+            raise ConflictError("work_task_plan_already_bound", "统计任务已绑定另一冻结方案。")
+        if step.authority_refs.plan_revision_id not in {None, plan_revision_id}:
+            raise ConflictError("work_task_plan_already_bound", "统计步骤已绑定另一冻结方案。")
+        if current.authority_refs.plan_revision_id == plan_revision_id:
+            return current
+        if current.status is not TaskStatus.WAITING_USER or step.status is not TaskStepStatus.READY:
+            raise ConflictError("work_task_not_waiting_for_plan", "统计任务当前不能绑定新方案。")
+
+        updated_step = step.model_copy(
+            update={
+                "authority_refs": step.authority_refs.model_copy(
+                    update={"plan_revision_id": plan_revision_id}
+                ),
+            }
+        )
+        updated = WorkTask.model_validate(
+            {
+                **current.model_dump(),
+                "version": current.version + 1,
+                "authority_refs": current.authority_refs.model_copy(
+                    update={"plan_revision_id": plan_revision_id}
+                ).model_dump(),
+                "waiting_condition": WaitingCondition(
+                    kind=WaitingKind.USER_DECISION,
+                    reference=f"plan:{plan_revision_id}",
+                    reason=(f"统计方案已冻结，设计 {design.revision_id}；等待用户审查并确认启动。"),
+                ).model_dump(),
+                "steps": tuple(
+                    updated_step if item.step_id == step.step_id else item for item in current.steps
+                ),
+            }
+        )
+        return self._repository.save_task(updated, expected_version=current.version)
+
+    def bind_statistical_run(
+        self,
+        task_id: str,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        run_id: str,
+    ) -> WorkTask:
+        """Bind the Run created by the user's authorized statistics action."""
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        plan = self._plan_repository.get_plan(plan_revision_id)
+        if plan.project_id != project_id:
+            raise ConflictError("work_task_plan_project_mismatch", "统计方案不属于当前项目。")
+        task = self._repository.get_task(task_id)
+        step = self._statistical_step(task)
+        if step is None or task.authority_refs.conversation_id != conversation_id:
+            raise ConflictError("work_task_binding_mismatch", "统计任务与当前会话不匹配。")
+        proposal_hash = step.input_version
+        if not proposal_hash:
+            raise ConflictError("work_task_binding_mismatch", "统计任务缺少已审查提案哈希。")
+        context, _design = self._statistical_plan_context(
+            plan,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            proposal_hash=proposal_hash,
+        )
+        if plan.state is not PlanState.APPROVED:
+            raise ConflictError(
+                "work_task_plan_not_approved", "只能将已批准并授权执行的统计方案绑定到 Run。"
+            )
+        if (
+            task.task_id != self.analysis_proposal_task_id(conversation_id, proposal_hash)
+            or task.authority_refs.input_revision != context["draft_hash"]
+            or task.authority_refs.plan_revision_id != plan_revision_id
+            or step.authority_refs.conversation_id != conversation_id
+            or step.authority_refs.input_revision != context["draft_hash"]
+            or step.authority_refs.plan_revision_id != plan_revision_id
+        ):
+            raise ConflictError("work_task_binding_mismatch", "统计任务与冻结方案不匹配。")
+        run = self._run_repository.get_run(run_id)
+        if run.project_id != project_id or run.plan_revision_id != plan_revision_id:
+            raise ConflictError("work_task_run_plan_mismatch", "统计 Run 与冻结方案或项目不匹配。")
+        if task.authority_refs.workflow_run_id is not None:
+            if (
+                task.authority_refs.workflow_run_id == run_id
+                and step.authority_refs.workflow_run_id == run_id
+                and (
+                    (
+                        task.status is TaskStatus.WAITING_RUN
+                        and step.status is TaskStepStatus.WAITING
+                    )
+                    or (
+                        task.status is TaskStatus.WAITING_DEPENDENCY
+                        and step.status is TaskStepStatus.WAITING
+                    )
+                    or (
+                        task.status is TaskStatus.COMPLETED
+                        and step.status is TaskStepStatus.SUCCEEDED
+                    )
+                )
+            ):
+                return task
+            raise ConflictError("work_task_run_already_bound", "统计任务已绑定另一 Run。")
+        if task.status is not TaskStatus.WAITING_USER or step.status is not TaskStepStatus.READY:
+            raise ConflictError("work_task_not_waiting_for_start", "统计任务当前不在等待启动状态。")
+        started = transition_task_step(step, TaskStepStatus.RUNNING)
+        waiting_step = TaskStep.model_validate(
+            {
+                **transition_task_step(started, TaskStepStatus.WAITING).model_dump(),
+                "authority_refs": started.authority_refs.model_copy(
+                    update={"workflow_run_id": run_id}
+                ).model_dump(),
+            }
+        )
+        updated = transition_task(
+            task,
+            TaskStatus.WAITING_RUN,
+            waiting_condition=WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference=run_id,
+                reason="用户已确认启动统计分析；等待该统计 Workflow Run 和结果登记。",
+            ),
+        ).model_copy(
+            update={
+                "authority_refs": task.authority_refs.model_copy(
+                    update={"workflow_run_id": run_id}
+                ),
+                "steps": tuple(
+                    waiting_step if item.step_id == step.step_id else item for item in task.steps
+                ),
+            }
+        )
+        return self._repository.save_task(
+            WorkTask.model_validate(updated.model_dump()), expected_version=task.version
+        )
+
+    @staticmethod
+    def _validate_hash(value: str, field: str) -> None:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise InputValidationError("work_task_hash_invalid", f"{field} 必须是 SHA-256 哈希。")
+
+    @staticmethod
+    def _require_work_conversation(
+        conversation: Any, conversation_id: str, project_id: str
+    ) -> None:
+        if conversation.mode is not ConversationMode.WORK:
+            raise InputValidationError(
+                "work_task_conversation_mode_required", "持久统计任务需要 Work 会话。"
+            )
+        if conversation.conversation_id != conversation_id:
+            raise ConflictError("work_task_conversation_mismatch", "会话读取结果与请求 ID 不一致。")
+        if conversation.project_id not in {None, project_id}:
+            raise ConflictError("work_task_project_mismatch", "Work 会话已绑定其他项目。")
+
+    @staticmethod
+    def _statistical_step(task: WorkTask) -> TaskStep | None:
+        steps = tuple(step for step in task.steps if step.kind == "statistical_run")
+        return steps[0] if len(steps) == 1 else None
+
+    @staticmethod
+    def _statistical_plan_context(
+        plan: Any,
+        *,
+        conversation_id: str,
+        project_id: str,
+        proposal_hash: str,
+    ) -> tuple[dict[str, Any], StatisticalDesignRevision]:
+        context = plan.plan.get("work_context")
+        raw_design = plan.plan.get("design")
+        if (
+            plan.project_id != project_id
+            or plan.plan.get("kind") != "statistical_design"
+            or not isinstance(context, dict)
+            or not isinstance(raw_design, dict)
+            or context.get("conversation_id") != conversation_id
+            or context.get("proposal_hash") != proposal_hash
+            or not isinstance(context.get("draft_hash"), str)
+        ):
+            raise ConflictError(
+                "work_task_statistical_plan_mismatch", "统计方案 work_context 与提案任务不匹配。"
+            )
+        WorkTaskApplicationService._validate_hash(context["draft_hash"], "draft_hash")
+        try:
+            design = StatisticalDesignRevision.model_validate(raw_design)
+        except ValidationError as exc:
+            raise ConflictError(
+                "work_task_statistical_plan_invalid", "冻结统计方案中的 design 无法核验。"
+            ) from exc
+        expected_plan_hash = content_hash(
+            {
+                "plan": plan.plan,
+                "manifest_hash": plan.manifest_hash,
+                "environment_hash": plan.environment_hash,
+            }
+        )
+        if expected_plan_hash != plan.plan_hash:
+            raise ConflictError(
+                "work_task_statistical_plan_hash_mismatch",
+                "统计方案内容与冻结 Plan 哈希不一致。",
+            )
+        return context, design
 
     @staticmethod
     def preprocessing_task_id(conversation_id: str, plan_revision_id: str) -> str:
@@ -425,17 +764,27 @@ class WorkTaskApplicationService:
                 "自动化任务没有绑定可核验的运行。",
                 task_id=task_id,
             )
+        is_statistical = any(step.kind == "statistical_run" for step in task.steps)
         is_waiting_for_bound_run = (
             task.status is TaskStatus.WAITING_RUN
             and task.waiting_condition is not None
             and task.waiting_condition.reference == run_id
         )
+        is_waiting_for_statistical_result = (
+            is_statistical
+            and task.status is TaskStatus.WAITING_DEPENDENCY
+            and task.waiting_condition is not None
+            and task.waiting_condition.reference == f"statistical-result:{run_id}"
+        )
         is_waiting_for_bound_qc = (
-            task.status is TaskStatus.WAITING_USER
+            not is_statistical
+            and task.status is TaskStatus.WAITING_USER
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"qc:{run_id}"
         )
-        if not (is_waiting_for_bound_run or is_waiting_for_bound_qc):
+        if not (
+            is_waiting_for_bound_run or is_waiting_for_bound_qc or is_waiting_for_statistical_result
+        ):
             raise InputValidationError(
                 "task_not_waiting_for_workflow_run",
                 "自动化任务当前并未等待该运行或其 QC 决定。",
@@ -476,16 +825,27 @@ class WorkTaskApplicationService:
         # Consume can race with user/API state changes. Always use the persisted
         # task version before deciding whether this reconciliation may transition it.
         task = self._repository.get_task(task_id)
-        if (
+        is_waiting_for_current_statistical_result = (
+            self._has_statistical_step(task)
+            and task.status is TaskStatus.WAITING_DEPENDENCY
+            and task.waiting_condition is not None
+            and task.waiting_condition.reference == f"statistical-result:{run_id}"
+        )
+        is_waiting_for_current_run = (
             task.status is TaskStatus.WAITING_RUN
             and task.waiting_condition is not None
             and task.waiting_condition.reference == run_id
-        ):
-            pass
-        elif not (
-            task.status is TaskStatus.WAITING_USER
+        )
+        is_waiting_for_current_qc = (
+            not self._has_statistical_step(task)
+            and task.status is TaskStatus.WAITING_USER
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"qc:{run_id}"
+        )
+        if not (
+            is_waiting_for_current_statistical_result
+            or is_waiting_for_current_run
+            or is_waiting_for_current_qc
         ):
             return WorkflowRunReconciliation(
                 task=task,
@@ -493,6 +853,9 @@ class WorkTaskApplicationService:
                 event_receipts=tuple(receipts),
                 reason="任务等待状态已并发变化;本次只记录事件身份,需重新读取后再协调。",
             )
+
+        if self._has_statistical_step(task):
+            return self._reconcile_statistical_run(task, run_id, tuple(receipts))
 
         try:
             snapshot = self._read_stable_authoritative_snapshot(task, run_id)
@@ -659,6 +1022,522 @@ class WorkTaskApplicationService:
             authoritative=snapshot,
             reason=reason,
         )
+
+    def _reconcile_statistical_run(
+        self,
+        task: WorkTask,
+        run_id: str,
+        receipts: tuple[EventReconciliationReceipt, ...],
+    ) -> WorkflowRunReconciliation:
+        if self._statistical_step(task) is None:
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason="统计 WorkTask 必须恰好包含一个 statistical_run 步骤；当前绑定无效。",
+            )
+        try:
+            snapshot, evidence_error = self._read_stable_statistical_snapshot(task, run_id)
+        except NotFoundError:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                reason="绑定的统计 Run 暂不可读取；任务状态未推进。",
+            )
+        except _InvalidStatisticalAuthority as exc:
+            return self._block_statistical_task(task, run_id, receipts, reason=str(exc))
+        if snapshot is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                reason="统计 Run 在三次权威状态读取期间都发生版本变化；保留原状态后重试。",
+            )
+
+        state = WorkflowState(snapshot.run_state)
+        if evidence_error is not None:
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason=evidence_error,
+                authoritative=snapshot,
+            )
+        if state in {WorkflowState.QUEUED, WorkflowState.RUNNING, WorkflowState.CANCELLING}:
+            return self._apply_statistical_task_state(
+                task,
+                run_id,
+                receipts,
+                snapshot,
+                target=TaskStatus.WAITING_RUN,
+                readiness=RunReadiness.WAITING_RUN,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.WORKFLOW_RUN,
+                    reference=run_id,
+                    reason="等待该统计 Workflow Run 进入可核验的终态。",
+                ),
+                reason="权威统计 Workflow 状态仍在排队、运行或取消中。",
+            )
+        if state is WorkflowState.SUCCEEDED:
+            if snapshot.statistical_result_ids:
+                if snapshot.verified_statistical_result_id is None:
+                    return self._block_statistical_task(
+                        task,
+                        run_id,
+                        receipts,
+                        reason="统计 Run 的结果记录未通过真实科学结果核验；任务已阻断。",
+                        authoritative=snapshot,
+                    )
+                return self._complete_statistical_task(task, run_id, receipts, snapshot)
+            if "mock.result" in snapshot.registered_artifact_types or any(
+                artifact_type.startswith("synthetic.")
+                for artifact_type in snapshot.registered_artifact_types
+            ):
+                return self._block_statistical_task(
+                    task,
+                    run_id,
+                    receipts,
+                    reason=(
+                        "统计 Run 是 mock/synthetic 执行且没有真实 StatisticalResult；"
+                        "不能作为科学分析完成。"
+                    ),
+                    authoritative=snapshot,
+                )
+            return self._apply_statistical_task_state(
+                task,
+                run_id,
+                receipts,
+                snapshot,
+                target=TaskStatus.WAITING_DEPENDENCY,
+                readiness=RunReadiness.WAITING_DEPENDENCY,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.DEPENDENCY,
+                    reference=f"statistical-result:{run_id}",
+                    reason="统计 Run 已成功，等待唯一真实 StatisticalResult 完成登记并通过核验。",
+                ),
+                reason=(
+                    "统计 Run 已成功但尚无 StatisticalResult；保留 waiting_dependency "
+                    "并等待结果登记。"
+                ),
+            )
+        if state in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
+            if task.status is TaskStatus.WAITING_RUN:
+                return self._apply_statistical_task_state(
+                    task,
+                    run_id,
+                    receipts,
+                    snapshot,
+                    target=TaskStatus.WAITING_RUN,
+                    readiness=RunReadiness.WAITING_RUN,
+                    waiting_condition=WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference=run_id,
+                        reason="Worker 正在按原有预算处理同一统计 Run。",
+                    ),
+                    reason=f"统计 Workflow 暂处于 {state.value}；继续等待同一 Run 的处理。",
+                )
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason="等待统计结果时 Run 又回到非终态，任务与权威 Workflow 状态不一致。",
+                authoritative=snapshot,
+            )
+        return self._block_statistical_task(
+            task,
+            run_id,
+            receipts,
+            reason=f"统计 Workflow 已处于 {state.value}；本任务不会自动重试或创建新 Run。",
+            authoritative=snapshot,
+        )
+
+    def _read_stable_statistical_snapshot(
+        self,
+        task: WorkTask,
+        run_id: str,
+        *,
+        max_attempts: int = 3,
+    ) -> tuple[AuthoritativeRunSnapshot | None, str | None]:
+        for _attempt in range(max_attempts):
+            run_before = self._run_repository.get_run(run_id)
+            run_failure: str | None = None
+            if run_before.run_id != run_id:
+                run_failure = "统计 Run 读取端口返回了其他 Run；任务已阻断。"
+
+            plan = None
+            design: StatisticalDesignRevision | None = None
+            project_id = run_before.project_id
+            try:
+                if run_before.plan_revision_id != task.authority_refs.plan_revision_id:
+                    raise _InvalidStatisticalAuthority(
+                        "WorkTask 与统计 Run 引用的 Plan 不一致；任务已阻断。"
+                    )
+                if task.authority_refs.workflow_run_id != run_id:
+                    raise _InvalidStatisticalAuthority(
+                        "WorkTask 与统计 Run 的绑定 ID 不一致；任务已阻断。"
+                    )
+                if task.authority_refs.conversation_id is None:
+                    raise _InvalidStatisticalAuthority("统计 WorkTask 缺少会话绑定；任务已阻断。")
+                conversation = self._conversation_repository.get_conversation(
+                    task.authority_refs.conversation_id
+                )
+                self._require_work_conversation(
+                    conversation, conversation.conversation_id, project_id
+                )
+                if task.authority_refs.plan_revision_id is None:
+                    raise _InvalidStatisticalAuthority(
+                        "统计 WorkTask 缺少冻结 Plan 引用；任务已阻断。"
+                    )
+                plan = self._plan_repository.get_plan(task.authority_refs.plan_revision_id)
+                step = self._statistical_step(task)
+                if step is None or not step.input_version:
+                    raise _InvalidStatisticalAuthority(
+                        "统计 WorkTask 缺少唯一提案哈希；任务已阻断。"
+                    )
+                context, design = self._statistical_plan_context(
+                    plan,
+                    conversation_id=conversation.conversation_id,
+                    project_id=project_id,
+                    proposal_hash=step.input_version,
+                )
+                if task.authority_refs.input_revision != context["draft_hash"]:
+                    raise _InvalidStatisticalAuthority(
+                        "统计 WorkTask 的草稿修订与冻结 Plan work_context 不一致；任务已阻断。"
+                    )
+                if plan.plan_revision_id != run_before.plan_revision_id:
+                    raise _InvalidStatisticalAuthority(
+                        "统计 Run 实际 Plan revision 与当前冻结 Plan 不一致；任务已阻断。"
+                    )
+                if (
+                    step is None
+                    or step.status is not TaskStepStatus.WAITING
+                    or step.authority_refs.plan_revision_id != plan.plan_revision_id
+                    or step.authority_refs.workflow_run_id != run_id
+                ):
+                    raise _InvalidStatisticalAuthority(
+                        "统计步骤的 Plan/Run 权威引用不完整或不一致；任务已阻断。"
+                    )
+                if task.task_id != self.analysis_proposal_task_id(
+                    conversation.conversation_id, context["proposal_hash"]
+                ):
+                    raise _InvalidStatisticalAuthority(
+                        "统计 WorkTask ID 与 conversation/proposal 绑定不一致；任务已阻断。"
+                    )
+            except NotFoundError:
+                run_failure = "统计 WorkTask 引用的会话或冻结 Plan 不存在；任务已阻断。"
+                plan = None
+                design = None
+            except (_InvalidStatisticalAuthority, ConflictError, InputValidationError) as exc:
+                run_failure = str(exc)
+                plan = None
+                design = None
+
+            try:
+                artifacts = self._artifact_repository.list_artifacts(run_id)
+            except NotFoundError:
+                artifacts = []
+                run_failure = run_failure or "统计 Run 的 Artifact 记录暂不可读取。"
+            if any(
+                artifact.run_id != run_id or artifact.project_id != project_id
+                for artifact in artifacts
+            ):
+                run_failure = (
+                    run_failure or "统计 Artifact 仓储返回了其他项目或 Run 的记录；任务已阻断。"
+                )
+            artifact_ids = [artifact.artifact_id for artifact in artifacts]
+            if len(artifact_ids) != len(set(artifact_ids)):
+                run_failure = (
+                    run_failure or "统计 Artifact 仓储返回了重复 Artifact ID；任务已阻断。"
+                )
+
+            summaries: list[StatisticalResultView] = []
+            if run_failure is None and run_before.state is WorkflowState.SUCCEEDED:
+                summaries = self._artifact_repository.list_statistical_results(
+                    project_id=project_id,
+                    run_id=run_id,
+                )
+                if any(
+                    result.project_id != project_id or result.run_id != run_id
+                    for result in summaries
+                ):
+                    run_failure = "统计结果列表包含其他项目或 Run 的记录；任务已阻断。"
+                elif len(summaries) > 1:
+                    run_failure = "同一统计 Run 注册了多个 StatisticalResult；任务已阻断。"
+                elif (
+                    summaries
+                    and design is not None
+                    and summaries[0].design_revision_id != design.revision_id
+                ):
+                    run_failure = (
+                        "StatisticalResult.design_revision_id 与冻结 Plan design 不一致；"
+                        "任务已阻断。"
+                    )
+
+            verified_id: str | None = None
+            result_artifact_ids: tuple[str, ...] = ()
+            if summaries and run_failure is None and plan is not None and design is not None:
+                try:
+                    detail = self._artifact_repository.get_statistical_result(
+                        summaries[0].result_id
+                    )
+                    result_artifact_ids = self._verify_statistical_result(
+                        summary=summaries[0],
+                        detail=detail,
+                        plan=plan,
+                        design=design,
+                        run_id=run_id,
+                        project_id=project_id,
+                        registered_artifacts=artifacts,
+                    )
+                    verified_id = detail.result_id
+                except NotFoundError:
+                    run_failure = "StatisticalResult 列表项对应的 detail 不存在；任务已阻断。"
+                except (ValueError, TypeError, KeyError, AttributeError, ValidationError) as exc:
+                    run_failure = (
+                        "StatisticalResult 权威凭据无法通过核验；任务已阻断。"
+                        f"({type(exc).__name__})"
+                    )
+
+            run_after = self._run_repository.get_run(run_id)
+            if run_after.run_id != run_id:
+                raise _InvalidStatisticalAuthority("统计 Run 读取端口返回了其他 Run；任务已阻断。")
+            if run_before.version != run_after.version:
+                continue
+            snapshot = AuthoritativeRunSnapshot(
+                run_id=run_id,
+                run_state=run_after.state.value,
+                run_version=run_after.version,
+                attempt=run_after.attempt,
+                qc_mode=run_after.qc_mode.value,
+                qc_status=run_after.qc_status,
+                registered_artifact_ids=tuple(sorted(item.artifact_id for item in artifacts)),
+                registered_artifact_types=tuple(sorted({item.artifact_type for item in artifacts})),
+                statistical_result_ids=tuple(result.result_id for result in summaries),
+                verified_statistical_result_id=verified_id,
+                result_artifact_ids=result_artifact_ids,
+            )
+            return snapshot, run_failure
+        return None, None
+
+    @staticmethod
+    def _verify_statistical_result(
+        *,
+        summary: StatisticalResultView,
+        detail: StatisticalResultDetailView,
+        plan: Any,
+        design: StatisticalDesignRevision,
+        run_id: str,
+        project_id: str,
+        registered_artifacts: list[Any],
+    ) -> tuple[str, ...]:
+        manifest, report_design, report = verified_result_design(detail)
+        report_result = report.get("result")
+        frozen_bindings = report.get("frozen_bindings")
+        if not isinstance(report_result, Mapping) or not isinstance(frozen_bindings, Mapping):
+            raise ValueError("report identities are missing")
+        detail_identity = (
+            detail.result_id,
+            detail.project_id,
+            detail.run_id,
+            detail.design_revision_id,
+            detail.mode,
+            detail.non_scientific,
+            detail.bundle_hash,
+            detail.version,
+            detail.artifact_count,
+            detail.cluster_count,
+        )
+        summary_identity = (
+            summary.result_id,
+            summary.project_id,
+            summary.run_id,
+            summary.design_revision_id,
+            summary.mode,
+            summary.non_scientific,
+            summary.bundle_hash,
+            summary.version,
+            summary.artifact_count,
+            summary.cluster_count,
+        )
+        if detail_identity != summary_identity:
+            raise ValueError("result list/detail identities disagree")
+        if (
+            detail.project_id != project_id
+            or detail.run_id != run_id
+            or detail.design_revision_id != design.revision_id
+            or report_design.revision_id != design.revision_id
+            or manifest.design_revision_id != design.revision_id
+            or manifest.run_id != run_id
+            or manifest.result_id != detail.result_id
+            or frozen_bindings.get("design_revision_id") != design.revision_id
+            or frozen_bindings.get("plan_hash") != plan.plan_hash
+            or report_result.get("result_id") != detail.result_id
+            or report_result.get("run_id") != run_id
+            or report_result.get("mode") != detail.mode
+            or report_result.get("non_scientific") != detail.non_scientific
+            or report_result.get("non_scientific_reason") != detail.non_scientific_reason
+            or detail.artifact_count != len(manifest.artifacts)
+            or detail.cluster_count != len(manifest.clusters)
+        ):
+            raise ValueError("report, manifest, detail, Plan or Run identities disagree")
+        if (
+            detail.mode != StatisticalResultMode.REAL.value
+            or manifest.mode is not StatisticalResultMode.REAL
+            or detail.non_scientific
+            or manifest.non_scientific
+            or any(artifact.placeholder for artifact in manifest.artifacts)
+        ):
+            raise ValueError("result is synthetic, marked non-scientific, or has placeholders")
+
+        registered_by_id = {item.artifact_id: item for item in registered_artifacts}
+        artifact_ids: list[str] = []
+        for metadata in manifest.artifacts:
+            artifact = registered_by_id.get(metadata.artifact_id)
+            if artifact is None:
+                raise ValueError("result manifest Artifact is not registered for this Run")
+            if (
+                artifact.project_id != project_id
+                or artifact.run_id != run_id
+                or artifact.artifact_type != metadata.artifact_type
+                or artifact.relative_path != metadata.relative_path
+                or artifact.checksum != metadata.checksum_sha256
+                or artifact.size_bytes != metadata.size_bytes
+                or content_hash(artifact.provenance) != metadata.provenance_hash
+            ):
+                raise ValueError(
+                    "result manifest Artifact metadata differs from registered Artifact"
+                )
+            artifact_ids.append(metadata.artifact_id)
+        if len(set(artifact_ids)) != len(artifact_ids) or not artifact_ids:
+            raise ValueError("verified statistical result Artifact IDs are empty or duplicated")
+        return tuple(sorted(artifact_ids))
+
+    def _apply_statistical_task_state(
+        self,
+        task: WorkTask,
+        run_id: str,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        snapshot: AuthoritativeRunSnapshot,
+        *,
+        target: TaskStatus,
+        readiness: RunReadiness,
+        waiting_condition: WaitingCondition,
+        reason: str,
+    ) -> WorkflowRunReconciliation:
+        updated = task
+        if task.status is not target or task.waiting_condition != waiting_condition:
+            if task.status is TaskStatus.WAITING_DEPENDENCY and target is TaskStatus.WAITING_RUN:
+                return self._block_statistical_task(
+                    task,
+                    run_id,
+                    receipts,
+                    reason="统计任务等待结果时 Run 又回到非终态，任务与 Workflow 状态不一致。",
+                    authoritative=snapshot,
+                )
+            if task.status is not target:
+                updated = transition_task(task, target, waiting_condition=waiting_condition)
+            else:
+                updated = WorkTask.model_validate(
+                    {
+                        **task.model_dump(),
+                        "waiting_condition": waiting_condition.model_dump(),
+                        "version": task.version + 1,
+                    }
+                )
+            updated = self._repository.save_task(updated, expected_version=task.version)
+        return WorkflowRunReconciliation(
+            task=updated,
+            readiness=readiness,
+            event_receipts=receipts,
+            authoritative=snapshot,
+            reason=reason,
+        )
+
+    def _complete_statistical_task(
+        self,
+        task: WorkTask,
+        run_id: str,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        snapshot: AuthoritativeRunSnapshot,
+    ) -> WorkflowRunReconciliation:
+        step = self._statistical_step(task)
+        if (
+            step is None
+            or step.status is not TaskStepStatus.WAITING
+            or snapshot.verified_statistical_result_id is None
+            or not snapshot.result_artifact_ids
+        ):
+            return self._block_statistical_task(
+                task,
+                run_id,
+                receipts,
+                reason="统计结果虽存在，但 WorkTask 步骤或 Artifact 完成绑定无效；任务已阻断。",
+                authoritative=snapshot,
+            )
+        succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED)
+        result_artifact_ids = tuple(sorted(set(snapshot.result_artifact_ids)))
+        succeeded_step = succeeded_step.model_copy(
+            update={
+                "authority_refs": succeeded_step.authority_refs.model_copy(
+                    update={"artifact_ids": result_artifact_ids}
+                )
+            }
+        )
+        completed = transition_task(task, TaskStatus.COMPLETED).model_copy(
+            update={
+                "authority_refs": task.authority_refs.model_copy(
+                    update={"artifact_ids": result_artifact_ids}
+                ),
+                "steps": tuple(
+                    succeeded_step if item.step_id == step.step_id else item for item in task.steps
+                ),
+            }
+        )
+        completed = self._repository.save_task(
+            WorkTask.model_validate(completed.model_dump()), expected_version=task.version
+        )
+        return WorkflowRunReconciliation(
+            task=completed,
+            readiness=RunReadiness.COMPLETED,
+            event_receipts=receipts,
+            authoritative=snapshot,
+            reason="唯一真实统计结果及其 Artifact 已与冻结设计和 Plan 绑定并通过核验；任务已完成。",
+        )
+
+    def _block_statistical_task(
+        self,
+        task: WorkTask,
+        run_id: str,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        *,
+        reason: str,
+        authoritative: AuthoritativeRunSnapshot | None = None,
+    ) -> WorkflowRunReconciliation:
+        updated = task
+        if task.status in {TaskStatus.WAITING_RUN, TaskStatus.WAITING_DEPENDENCY}:
+            updates: dict[str, Any] = {}
+            step = self._statistical_step(task)
+            if step is not None and step.status is TaskStepStatus.WAITING:
+                blocked_step = transition_task_step(step, TaskStepStatus.BLOCKED)
+                updates["steps"] = tuple(
+                    blocked_step if item.step_id == step.step_id else item for item in task.steps
+                )
+            updated = transition_task(task, TaskStatus.BLOCKED).model_copy(update=updates)
+            updated = self._repository.save_task(
+                WorkTask.model_validate(updated.model_dump()), expected_version=task.version
+            )
+        return WorkflowRunReconciliation(
+            task=updated,
+            readiness=RunReadiness.BLOCKED,
+            event_receipts=receipts,
+            authoritative=authoritative,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _has_statistical_step(task: WorkTask) -> bool:
+        return any(step.kind == "statistical_run" for step in task.steps)
 
     def _read_stable_authoritative_snapshot(
         self,

@@ -135,6 +135,7 @@ class ConversationRepositoryPort(Protocol):
         proposal_hash: str,
         plan_revision_id: str,
         run_id: str | None = None,
+        work_task_id: str | None = None,
     ) -> ConversationView: ...
 
     def create_confirmation_challenge(

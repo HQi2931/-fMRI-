@@ -81,6 +81,7 @@ class ConversationMixin(RepositoryBaseMixin):
         proposal_hash: str,
         plan_revision_id: str,
         run_id: str | None = None,
+        work_task_id: str | None = None,
     ) -> ConversationView:
         with self._write_session() as session:
             row = session.get(ConversationRow, conversation_id)
@@ -106,12 +107,13 @@ class ConversationMixin(RepositoryBaseMixin):
                         "statistics_work_run_mismatch", "运行与当前统计方案不匹配。"
                     )
             tasks = _load(row.work_tasks_json, {})
-            tasks["analysis"] = task.model_copy(
-                update={
-                    "plan_revision_id": plan_revision_id,
-                    **({"run_id": run_id} if run_id else {}),
-                }
-            ).model_dump(mode="json")
+            updates: dict[str, Any] = {
+                "plan_revision_id": plan_revision_id,
+                **({"run_id": run_id} if run_id else {}),
+            }
+            if work_task_id is not None:
+                updates["work_task_id"] = work_task_id
+            tasks["analysis"] = task.model_copy(update=updates).model_dump(mode="json")
             row.work_tasks_json = canonical_json(tasks)
             if run_id:
                 row.active_run_id = run_id
@@ -378,7 +380,9 @@ class ConversationMixin(RepositoryBaseMixin):
                             "run_id": None,
                         }
                     )
-                if role is WorkAgentRole.PREPROCESSING and work_task_id is not None:
+                if role in {WorkAgentRole.PREPROCESSING, WorkAgentRole.ANALYSIS} and (
+                    work_task_id is not None
+                ):
                     task = task.model_copy(update={"work_task_id": work_task_id})
                 plan_data = assistant_payload.get("plan_revision")
                 if role is WorkAgentRole.PREPROCESSING and isinstance(plan_data, dict):
@@ -413,8 +417,10 @@ class ConversationMixin(RepositoryBaseMixin):
                     task = task.model_copy(
                         update={
                             "plan_revision_id": None,
+                            "run_id": None,
                             "proposal_hash": proposal["proposal_hash"],
                             "proposal_message_id": assistant_row.message_id,
+                            "work_task_id": work_task_id,
                         }
                     )
                 # An analysis turn may refer to an upstream run; it must never

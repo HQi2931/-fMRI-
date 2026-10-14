@@ -15,6 +15,7 @@ from neuroagent.analysis.external_metric_import import (
     inspect_external_mask,
     inspect_external_metric_directory,
 )
+from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.plans import PlanRevisionView
 from neuroagent.application.contracts.runs import ArtifactView
@@ -59,6 +60,7 @@ from neuroagent.application.work_handoffs import (
     preprocessing_output_requirements,
     require_same_handoff,
 )
+from neuroagent.application.work_tasks import ensure_statistical_work_task_for_plan
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.external_import import external_metric_artifact_id
 from neuroagent.domain.fmri.qc import assert_statistics_ready
@@ -170,6 +172,7 @@ def _validate_statistical_locks(
 
 
 class StatisticsMixin(BaseServiceMixin):
+    automation: WorkTaskApplicationService
     artifact_repository: ArtifactCatalogRepositoryPort
     conversation_repository: ConversationRepositoryPort
     external_import_repository: ExternalAnalysisRepositoryPort
@@ -927,6 +930,23 @@ class StatisticsMixin(BaseServiceMixin):
                     project_id=request.project_id,
                     proposal_hash=request.work_context.proposal_hash,
                     plan_revision_id=plan.plan_revision_id,
+                )
+                work_task_id = ensure_statistical_work_task_for_plan(
+                    self.automation,
+                    self.conversation_repository.get_conversation,
+                    plan,
+                )
+                if work_task_id is None:
+                    raise ConflictError(
+                        "statistics_work_task_missing",
+                        "统计 Work 方案未能绑定持久分析任务，请重新审查方案。",
+                    )
+                self.conversation_repository.bind_statistics_task(
+                    conversation_id=request.work_context.conversation_id,
+                    project_id=request.project_id,
+                    proposal_hash=request.work_context.proposal_hash,
+                    plan_revision_id=plan.plan_revision_id,
+                    work_task_id=work_task_id,
                 )
             self.event_store.append_event(
                 project_id=request.project_id,

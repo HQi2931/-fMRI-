@@ -51,8 +51,10 @@ def test_task_waiting_states_require_matching_condition_and_terminal_is_final() 
     assert waiting.status is TaskStatus.WAITING_RUN
     assert waiting.version == task.version + 1
 
+    completed = transition_task(waiting, TaskStatus.COMPLETED)
+    assert completed.status is TaskStatus.COMPLETED
     with pytest.raises(ValueError, match="invalid task transition"):
-        transition_task(waiting, TaskStatus.COMPLETED)
+        transition_task(completed, TaskStatus.WAITING_RUN)
     with pytest.raises(ValidationError, match="waiting_condition"):
         make_task(status=TaskStatus.WAITING_USER)
 
