@@ -4,12 +4,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxRetryRequest,
+    AnalysisOutboxStatus,
+)
 from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.contracts.agent import (
     ModelProfileView,
@@ -50,7 +56,7 @@ from neuroagent.application.conversation_work import (
     ConversationWorkCoordinator,
     WorkActionResult,
 )
-from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
@@ -78,9 +84,18 @@ from neuroagent.application.work_tasks import work_task as conversation_work_tas
 from neuroagent.chat.agent import ChatAgent
 from neuroagent.chat.interfaces import ChatAgentError
 from neuroagent.chat.models import ChatAgentRequest
+from neuroagent.context.interfaces import ContextPacket
 from neuroagent.memory.models import MemoryCandidateDraft
 from neuroagent.multi_agent.registry import WorkAgentRole
 from neuroagent.observability.work_timings import capture_work_timings
+
+logger = logging.getLogger(__name__)
+MAX_ANALYSIS_OUTBOX_ATTEMPTS = 5
+RECOVERABLE_ANALYSIS_OUTBOX_ERRORS = (
+    "analysis_model_profile_missing",
+    "analysis_model_retry_exhausted",
+    "analysis_outbox_retry_exhausted",
+)
 
 
 class ConversationMixin(BaseServiceMixin):
@@ -122,6 +137,566 @@ class ConversationMixin(BaseServiceMixin):
             response_type=ConversationView,
             action=action,
         )
+
+    async def consume_next_analysis_outbox(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+    ) -> str | None:
+        """Prepare one READY analysis draft; model work never holds a DB transaction."""
+        claim = self.automation.claim_next_analysis_outbox(worker_id, lease_seconds=lease_seconds)
+        if claim is None:
+            return None
+
+        outbox = self.automation.get_analysis_outbox(claim.intent_task_id)
+        stop_renewal = asyncio.Event()
+        claim_lost = asyncio.Event()
+
+        async def renew_claim() -> None:
+            interval = max(1.0, lease_seconds / 3)
+            while not stop_renewal.is_set():
+                await asyncio.sleep(interval)
+                if stop_renewal.is_set():
+                    return
+                try:
+                    renewed = self.automation.renew_analysis_outbox_claim(
+                        claim, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    logger.exception("Analysis outbox lease renewal failed")
+                    claim_lost.set()
+                    return
+                if renewed is None:
+                    claim_lost.set()
+                    return
+
+        heartbeat = asyncio.create_task(renew_claim())
+
+        async def stop_heartbeat() -> None:
+            stop_renewal.set()
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+        def defer(error_code: str, *, retry_seconds: int | None = None) -> str:
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):
+                error_code = "analysis_outbox_consumer_error"
+            delay = retry_seconds or min(300, 5 * 2 ** min(outbox.attempt_count, 6))
+            committed = self.automation.defer_analysis_outbox_claim(
+                claim,
+                retry_after_seconds=delay,
+                error_code=error_code,
+            )
+            return "deferred" if committed else "claim_lost"
+
+        def bounded_waiting_user(*, expected_version: int, error_code: str, content: str) -> str:
+            return commit_terminal(
+                expected_version=expected_version,
+                status=AnalysisOutboxStatus.WAITING_USER,
+                content=content,
+                payload=outbox_payload(
+                    AnalysisOutboxStatus.WAITING_USER,
+                    error_code,
+                    retry_available=True,
+                ),
+                error_code=error_code,
+                record_attempt=True,
+            )
+
+        def outbox_payload(
+            status: AnalysisOutboxStatus,
+            error_code: str | None = None,
+            *,
+            retry_available: bool = False,
+            include_source: bool = True,
+        ) -> dict[str, Any]:
+            continuation = (
+                {
+                    "intent_task_id": outbox.intent_task_id,
+                    "retry_generation": outbox.retry_generation,
+                    "preprocessing_task_id": outbox.preprocessing_task_id,
+                    "run_id": outbox.run_id,
+                    "plan_revision_id": outbox.plan_revision_id,
+                    "manifest_hash": outbox.manifest_hash,
+                    "artifact_ids": list(outbox.artifact_ids),
+                }
+                if include_source
+                else None
+            )
+            return {
+                "agent_role": WorkAgentRole.ANALYSIS.value,
+                "agent_name": "数据分析 Agent",
+                **(
+                    {"analysis_outbox_continuation": continuation}
+                    if continuation is not None
+                    else {}
+                ),
+                "analysis_outbox_result": {
+                    "status": status.value,
+                    **({"error_code": error_code} if error_code else {}),
+                    "retry_available": retry_available,
+                },
+            }
+
+        def commit_terminal(
+            *,
+            expected_version: int,
+            status: AnalysisOutboxStatus,
+            content: str,
+            payload: dict[str, Any],
+            user_content: str | None = None,
+            error_code: str | None = None,
+            record_attempt: bool = False,
+            safe_notice: bool = False,
+        ) -> str:
+            continuation_key = f"analysis_outbox:{outbox.intent_task_id}:g{outbox.retry_generation}"
+            with self.automation.atomic():
+                current = self.repository.get_conversation(outbox.conversation_id)
+                if current.version != expected_version:
+                    raise ConflictError(
+                        "analysis_outbox_conversation_changed",
+                        "分析续接期间会话发生变化，结果没有提交。",
+                    )
+                source_matches = (
+                    current.mode is ConversationMode.WORK
+                    and current.project_id == outbox.project_id
+                )
+                if not source_matches and not safe_notice:
+                    raise ConflictError(
+                        "analysis_outbox_conversation_mismatch",
+                        "分析续接会话已切换模式或项目。",
+                    )
+                work_task_id: str | None = None
+                if status is AnalysisOutboxStatus.PROPOSAL_READY and source_matches:
+                    work_task_id = self._commit_analysis_work_task_binding(
+                        conversation=current,
+                        user_content=user_content,
+                        payload=payload,
+                        project_id=outbox.project_id,
+                    )
+                    if work_task_id is None:
+                        raise ConflictError(
+                            "analysis_outbox_work_task_binding_failed",
+                            "统计提案没有生成可持久化的分析任务。",
+                        )
+                    result_payload = payload.setdefault("analysis_outbox_result", {})
+                    if isinstance(result_payload, dict):
+                        result_payload["work_task_id"] = work_task_id
+                _, assistant = self.repository.append_assistant_continuation(
+                    outbox.conversation_id,
+                    continuation_key=continuation_key,
+                    assistant_content=content,
+                    assistant_payload=payload,
+                    project_id=current.project_id,
+                    work_task_id=work_task_id,
+                    update_work_state=(
+                        source_matches and status is not AnalysisOutboxStatus.BLOCKED
+                    ),
+                )
+                self.automation.complete_analysis_outbox(
+                    claim,
+                    status=status,
+                    continuation_message_id=assistant.message_id,
+                    analysis_work_task_id=work_task_id,
+                    error_code=error_code,
+                    record_attempt=record_attempt,
+                )
+            return status.value
+
+        try:
+            conversation = self.repository.get_conversation(outbox.conversation_id)
+            if (
+                conversation.mode is not ConversationMode.WORK
+                or conversation.project_id != outbox.project_id
+            ):
+                await stop_heartbeat()
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content=(
+                        "当前会话的工作区已切换，原自动续接已停止。"
+                        "请回到原项目，在数据分析 Agent 中重新发起请求。"
+                    ),
+                    payload={
+                        "agent_role": WorkAgentRole.ANALYSIS.value,
+                        "analysis_outbox_result": {
+                            "status": AnalysisOutboxStatus.BLOCKED.value,
+                            "error_code": "analysis_outbox_conversation_mismatch",
+                            "retry_available": False,
+                        },
+                    },
+                    error_code="analysis_outbox_conversation_mismatch",
+                    safe_notice=True,
+                )
+
+            try:
+                source = self.automation.verify_analysis_outbox_source(outbox)
+            except ApplicationError as exc:
+                if exc.code == "analysis_outbox_authority_indeterminate":
+                    await stop_heartbeat()
+                    if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
+                        return bounded_waiting_user(
+                            expected_version=conversation.version,
+                            error_code="analysis_outbox_retry_exhausted",
+                            content="预处理证据连续多次无法稳定读取，自动续接已暂停。确认数据库与运行证据恢复可读后，可手动重试；系统不会替你创建统计方案或运行。",
+                        )
+                    return defer(exc.code)
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content=(
+                        "预处理来源证据目前无法核实，系统已停止自动分析。"
+                        "请检查原运行的冻结方案、QC 决定和指标产物后再继续。"
+                    ),
+                    payload=outbox_payload(AnalysisOutboxStatus.BLOCKED, exc.code),
+                    error_code=exc.code,
+                )
+
+            prepare_analysis_handoff = self.work_dialogue.prepare_analysis_handoff
+            if prepare_analysis_handoff is None:
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content="当前服务缺少分析来源核验能力，自动续接已停止。请联系管理员检查服务配置。",
+                    payload=outbox_payload(
+                        AnalysisOutboxStatus.BLOCKED,
+                        "analysis_handoff_unavailable",
+                    ),
+                    error_code="analysis_handoff_unavailable",
+                )
+            proof = prepare_analysis_handoff(source.run_id, source.project_id, verify_files=True)
+            metric_ids = {
+                str(item["artifact_id"])
+                for item in proof.data_references.get("metrics", [])
+                if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+            }
+            mask_ids = {
+                str(item["artifact_id"])
+                for item in proof.data_references.get("masks", [])
+                if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+            }
+            allowed_ids = set(source.artifact_ids) | set(source.dependency_artifact_ids)
+            if (
+                proof.status != "ready"
+                or not metric_ids
+                or not metric_ids.issubset(set(source.artifact_ids))
+                or not mask_ids
+                or not mask_ids.issubset(allowed_ids)
+                or not set(source.dependency_artifact_ids).issubset(mask_ids)
+            ):
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content=(
+                        "已登记的指标或其 mask 谱系不属于本次已核验来源，自动分析已停止。"
+                        "请检查来源产物和 QC 证据。"
+                    ),
+                    payload=outbox_payload(
+                        AnalysisOutboxStatus.BLOCKED,
+                        "analysis_outbox_handoff_artifact_mismatch",
+                    ),
+                    error_code="analysis_outbox_handoff_artifact_mismatch",
+                )
+
+            if not self.list_model_profiles():
+                await stop_heartbeat()
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.WAITING_USER,
+                    content="当前没有配置可用的模型，分析草稿尚未生成。请先在设置中配置并测试模型，然后点击本消息中的“重新尝试准备草稿”；系统会重新核验原始来源，不会启动统计运行。",
+                    payload=outbox_payload(
+                        AnalysisOutboxStatus.WAITING_USER,
+                        "analysis_model_profile_missing",
+                        retry_available=True,
+                    ),
+                    error_code="analysis_model_profile_missing",
+                )
+
+            context_window, max_output = self.conversation_context.context_limits(
+                conversation.preferred_profile_id
+            )
+            packet = ContextPacket(
+                question=source.analysis_request,
+                work_context={
+                    "project_id": source.project_id,
+                    "agent_role": WorkAgentRole.ANALYSIS.value,
+                    "analysis_source_evidence": source.model_facts.model_dump(mode="json"),
+                },
+                metadata={
+                    "context_window_tokens": context_window,
+                    "max_output_tokens": max_output,
+                    "token_budget": int((context_window - max_output) * 0.85),
+                    "phase": "analysis_outbox_continuation",
+                },
+            )
+            action_result = await self.work_dialogue.prepare_analysis_continuation(
+                conversation,
+                packet,
+                source,
+                has_profiles=True,
+            )
+            if claim_lost.is_set():
+                return "claim_lost"
+
+            model_error = action_result.payload.get("model_error")
+            if isinstance(model_error, dict):
+                error_code = model_error.get("code")
+                await stop_heartbeat()
+                if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
+                    return bounded_waiting_user(
+                        expected_version=conversation.version,
+                        error_code="analysis_model_retry_exhausted",
+                        content="模型连续多次未能生成分析草稿，自动重试已暂停。请检查模型配置与服务状态后，点击本消息中的“重新尝试准备草稿”；系统不会自动决定统计方案或启动运行。",
+                    )
+                return defer(
+                    error_code if isinstance(error_code, str) else "analysis_model_unavailable"
+                )
+
+            # Re-read the authority after generation. If evidence changed while the
+            # model was working, discard its draft and persist only a blocked notice.
+            current_source = self.automation.verify_analysis_outbox_source(outbox)
+            current_proof = prepare_analysis_handoff(
+                current_source.run_id, current_source.project_id, verify_files=True
+            )
+            if (
+                current_source.source_evidence_hash != source.source_evidence_hash
+                or current_proof.status != "ready"
+                or current_proof.evidence_hash != proof.evidence_hash
+            ):
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content=(
+                        "分析草稿生成期间，预处理来源证据发生变化。"
+                        "模型结果已丢弃，请重新检查 QC 和指标产物。"
+                    ),
+                    payload=outbox_payload(
+                        AnalysisOutboxStatus.BLOCKED,
+                        "analysis_outbox_source_changed_during_generation",
+                    ),
+                    error_code="analysis_outbox_source_changed_during_generation",
+                )
+
+            payload = dict(action_result.payload)
+            proposal = payload.get("statistical_design_proposal")
+            analysis_draft = payload.get("analysis_draft")
+            if isinstance(proposal, dict):
+                if not isinstance(analysis_draft, dict) or not isinstance(
+                    analysis_draft.get("draft"), dict
+                ):
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=AnalysisOutboxStatus.BLOCKED,
+                        content="统计提案未能绑定到完整的分析草稿，系统已停止自动续接。请重新提交分析请求。",
+                        payload=outbox_payload(
+                            AnalysisOutboxStatus.BLOCKED,
+                            "analysis_outbox_proposal_contract_invalid",
+                        ),
+                        error_code="analysis_outbox_proposal_contract_invalid",
+                    )
+                status = AnalysisOutboxStatus.PROPOSAL_READY
+                content = action_result.assistant_content
+            else:
+                status = AnalysisOutboxStatus.WAITING_USER
+                issue_text: list[str] = []
+                for key in ("draft_issues", "statistical_design_issues"):
+                    values = payload.get(key)
+                    if isinstance(values, list):
+                        issue_text.extend(
+                            item for item in values if isinstance(item, str) and item.strip()
+                        )
+                if isinstance(analysis_draft, dict):
+                    values = analysis_draft.get("issues")
+                    if isinstance(values, list):
+                        issue_text.extend(
+                            item for item in values if isinstance(item, str) and item.strip()
+                        )
+                questions = list(dict.fromkeys(issue_text))[:12]
+                content = (
+                    "分析草稿尚未完整，请补充或确认以下科研选择：\n"
+                    + "\n".join(f"- {item}" for item in questions)
+                    if questions
+                    else (
+                        "已收到原始分析请求，但本轮没有形成可审查的统计设计草稿。"
+                        "请补充统计检验类型、指标类型、分组或条件信息，以及你希望使用的校正方法；"
+                        "这些科研选择需要由你确认。"
+                    )
+                )
+                payload["continuation_waiting_user"] = True
+
+            terminal_error_code = None
+            record_attempt = False
+            if status is AnalysisOutboxStatus.WAITING_USER:
+                terminal_error_code = "analysis_draft_incomplete"
+                payload["analysis_outbox_result"] = {
+                    "status": status.value,
+                    "error_code": terminal_error_code,
+                    "retry_available": False,
+                }
+            else:
+                payload["analysis_outbox_result"] = {"status": status.value}
+            await stop_heartbeat()
+            if claim_lost.is_set():
+                return "claim_lost"
+            return commit_terminal(
+                expected_version=conversation.version,
+                status=status,
+                content=content,
+                payload=payload,
+                user_content=source.analysis_request,
+                error_code=terminal_error_code,
+                record_attempt=record_attempt,
+            )
+        except ApplicationError as exc:
+            await stop_heartbeat()
+            if claim_lost.is_set():
+                return "claim_lost"
+            if exc.code == "analysis_outbox_claim_lost":
+                # The terminal transaction rolls back its assistant message and
+                # WorkTask binding together with this failed fenced update.
+                return "claim_lost"
+            if exc.code == "analysis_outbox_authority_indeterminate":
+                if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
+                    latest = self.repository.get_conversation(outbox.conversation_id)
+                    return bounded_waiting_user(
+                        expected_version=latest.version,
+                        error_code="analysis_outbox_retry_exhausted",
+                        content="预处理证据连续多次无法稳定读取，自动续接已暂停。确认数据库与运行证据恢复可读后，可手动重试；系统不会替你创建统计方案或运行。",
+                    )
+                return defer(exc.code)
+            latest = self.repository.get_conversation(outbox.conversation_id)
+            mismatch = (
+                latest.mode is not ConversationMode.WORK or latest.project_id != outbox.project_id
+            )
+            return commit_terminal(
+                expected_version=latest.version,
+                status=AnalysisOutboxStatus.BLOCKED,
+                content=(
+                    (
+                        "当前会话的工作区已切换，原自动续接已停止。"
+                        "请回到原项目，在数据分析 Agent 中重新发起请求。"
+                    )
+                    if mismatch
+                    else (
+                        "预处理来源证据已发生冲突，系统已停止自动分析。"
+                        "请检查冻结方案、QC 决定和指标产物后，再由你决定如何继续。"
+                    )
+                ),
+                payload=(
+                    {
+                        "agent_role": WorkAgentRole.ANALYSIS.value,
+                        "analysis_outbox_result": {
+                            "status": AnalysisOutboxStatus.BLOCKED.value,
+                            "error_code": "analysis_outbox_conversation_mismatch",
+                            "retry_available": False,
+                        },
+                    }
+                    if mismatch
+                    else outbox_payload(AnalysisOutboxStatus.BLOCKED, exc.code)
+                ),
+                error_code=("analysis_outbox_conversation_mismatch" if mismatch else exc.code),
+                safe_notice=mismatch,
+            )
+        except Exception as exc:
+            await stop_heartbeat()
+            if claim_lost.is_set():
+                return "claim_lost"
+            code = getattr(exc, "code", "analysis_outbox_consumer_error")
+            if not isinstance(code, str):
+                code = "analysis_outbox_consumer_error"
+            logger.warning("Analysis outbox attempt deferred (%s)", code)
+            if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
+                try:
+                    latest = self.repository.get_conversation(outbox.conversation_id)
+                except Exception:
+                    return "claim_lost"
+                return bounded_waiting_user(
+                    expected_version=latest.version,
+                    error_code="analysis_outbox_retry_exhausted",
+                    content="分析续接遇到连续暂态错误，自动重试已暂停。请检查服务状态后手动重试；系统不会自动决定统计方案或启动运行。",
+                )
+            return defer(code)
+        finally:
+            await stop_heartbeat()
+
+    def retry_analysis_outbox(
+        self, conversation_id: str, intent_task_id: str, idempotency_key: str
+    ) -> ConversationView:
+        """Manually requeue a recoverable WAITING_USER continuation."""
+        request = AnalysisOutboxRetryRequest(intent_task_id=intent_task_id)
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:analysis-outbox-retry",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationView,
+            action=lambda: self._retry_analysis_outbox(conversation_id, request),
+        )
+
+    def _retry_analysis_outbox(
+        self, conversation_id: str, request: AnalysisOutboxRetryRequest
+    ) -> ConversationView:
+        conversation = self.repository.get_conversation(conversation_id)
+        outbox = self.automation.get_analysis_outbox(request.intent_task_id)
+        if (
+            outbox.conversation_id != conversation_id
+            or conversation.mode is not ConversationMode.WORK
+            or conversation.project_id != outbox.project_id
+        ):
+            raise ConflictError(
+                "analysis_outbox_retry_authority_mismatch",
+                "当前会话不再匹配该分析续接，无法重试。",
+            )
+        with self.automation.atomic():
+            current = self.repository.get_conversation(conversation_id)
+            latest = self.automation.get_analysis_outbox(request.intent_task_id)
+            if (
+                latest.conversation_id != conversation_id
+                or current.mode is not ConversationMode.WORK
+                or current.project_id != latest.project_id
+            ):
+                raise ConflictError(
+                    "analysis_outbox_retry_authority_mismatch",
+                    "当前会话不再匹配该分析续接，无法重试。",
+                )
+            if latest.status is AnalysisOutboxStatus.READY and latest.retry_generation > 0:
+                return current
+            if latest.status is not AnalysisOutboxStatus.WAITING_USER:
+                raise ConflictError(
+                    "analysis_outbox_not_recoverable",
+                    "该分析续接当前没有可执行的人工重试。",
+                )
+            requeued = self.automation.requeue_analysis_outbox(
+                request.intent_task_id,
+                recoverable_error_codes=RECOVERABLE_ANALYSIS_OUTBOX_ERRORS,
+            )
+            if requeued is None:
+                raise ConflictError(
+                    "analysis_outbox_not_recoverable",
+                    "该分析续接当前没有可执行的人工重试。",
+                )
+            self.repository.append_assistant_continuation(
+                conversation_id,
+                continuation_key=(
+                    f"analysis_outbox_retry:{request.intent_task_id}:g{requeued.retry_generation}"
+                ),
+                assistant_content=(
+                    "已按你的请求重新排入分析草稿准备。"
+                    "系统会再次核实原始请求、预处理方案、QC 和指标产物；"
+                    "这一步只准备统计提案，不会创建统计方案或启动运行。"
+                ),
+                assistant_payload={
+                    "agent_role": WorkAgentRole.ANALYSIS.value,
+                    "analysis_outbox_retry": {
+                        "intent_task_id": request.intent_task_id,
+                        "retry_generation": requeued.retry_generation,
+                        "status": AnalysisOutboxStatus.READY.value,
+                    },
+                },
+                project_id=outbox.project_id,
+                work_task_id=None,
+                update_work_state=False,
+            )
+            return self.repository.get_conversation(conversation_id)
 
     def _check_work_input_revision(
         self, conversation: ConversationView, saved: dict[str, Any] | None

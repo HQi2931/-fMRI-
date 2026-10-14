@@ -24,6 +24,7 @@ class HandoffArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_id: str
+    run_id: str
     artifact_type: str
     checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
     size_bytes: int = Field(ge=0)
@@ -198,6 +199,7 @@ def prepare_analysis_handoff(
                 continue
             evidence = HandoffArtifact(
                 artifact_id=artifact.artifact_id,
+                run_id=artifact.run_id,
                 artifact_type=artifact.artifact_type,
                 checksum=artifact.checksum,
                 size_bytes=artifact.size_bytes,
@@ -214,7 +216,50 @@ def prepare_analysis_handoff(
                 metrics.append(evidence)
         used_masks: dict[str, HandoffArtifact] = {}
         for metric in metrics:
-            mask = masks.get(metric.lineage.mask_artifact_id or "")
+            mask_id = metric.lineage.mask_artifact_id or ""
+            mask = masks.get(mask_id)
+            if mask is None and mask_id:
+                try:
+                    registered = artifact_repository.get_artifact(mask_id)
+                    registered_run = run_repository.get_run(registered.run_id)
+                    raw_registered_lineage = registered.provenance.get("lineage")
+                    if not isinstance(raw_registered_lineage, dict):
+                        raise ConflictError(
+                            "handoff_mask_lineage_missing", "Registered mask lineage is missing."
+                        )
+                    registered_lineage = ArtifactLineage.model_validate(raw_registered_lineage)
+                    if (
+                        registered.artifact_id != mask_id
+                        or registered.project_id != project_id
+                        or registered_run.project_id != project_id
+                        or registered_run.state.value != "succeeded"
+                        or registered_lineage.artifact_id != mask_id
+                        or registered_lineage.kind is not ArtifactKind.BRAIN_MASK
+                        or registered_lineage.subject_id is not None
+                        or not registered_lineage.metadata_verified
+                    ):
+                        raise ConflictError(
+                            "handoff_mask_lineage_invalid",
+                            "Registered mask does not have verified project-level lineage.",
+                        )
+                    mask = HandoffArtifact(
+                        artifact_id=registered.artifact_id,
+                        run_id=registered.run_id,
+                        artifact_type=registered.artifact_type,
+                        checksum=registered.checksum,
+                        size_bytes=registered.size_bytes,
+                        relative_path=registered.relative_path,
+                        metric_version=registered_lineage.producer_step_hash,
+                        lineage=registered_lineage,
+                        lineage_hash=content_hash(registered_lineage.model_dump(mode="json")),
+                        provenance=registered.provenance,
+                        provenance_hash=content_hash(registered.provenance),
+                    )
+                    masks[mask_id] = mask
+                except ApplicationError as exc:
+                    blockers.append(exc.code)
+                except ValueError:
+                    blockers.append("handoff_mask_lineage_invalid")
             if (
                 mask is None
                 or mask.lineage.subject_id is not None
@@ -293,8 +338,11 @@ def prepare_analysis_handoff(
             blockers.append("handoff_metric_versions_mixed")
         if verify_files and not blockers:
             for item in (*metrics, *used_masks.values()):
+                artifact_run = (
+                    run if item.run_id == run.run_id else run_repository.get_run(item.run_id)
+                )
                 artifact_content_path(
-                    artifact_repository.get_artifact(item.artifact_id), run, project
+                    artifact_repository.get_artifact(item.artifact_id), artifact_run, project
                 )
     except ApplicationError as exc:
         blockers.append(exc.code)
@@ -341,21 +389,32 @@ def handoff_reference_summary(references: dict[str, Any]) -> dict[str, Any]:
             "dataset_id",
             "dataset_manifest_id",
             "input_manifest_hash",
+            "input_manifest_verified",
+            "qc_status",
+            "qc_review_state",
+            "metric_count",
+            "metric_types",
+            "subject_count",
+            "mask_count",
+            "verified_artifact_count",
         )
     }
     metrics = references.get("metrics", [])
-    result["metric_count"] = len(metrics) if isinstance(metrics, list) else 0
-    result["metric_types"] = (
-        sorted(
-            {
-                str(item["artifact_type"])
-                for item in metrics
-                if isinstance(item, dict) and "artifact_type" in item
-            }
+    if not isinstance(result.get("metric_count"), int):
+        result["metric_count"] = len(metrics) if isinstance(metrics, list) else 0
+    if not isinstance(result.get("metric_types"), list):
+        result["metric_types"] = (
+            sorted(
+                {
+                    str(item["artifact_type"])
+                    for item in metrics
+                    if isinstance(item, dict) and "artifact_type" in item
+                }
+            )
+            if isinstance(metrics, list)
+            else []
         )
-        if isinstance(metrics, list)
-        else []
-    )
     subjects = references.get("included_subject_ids", [])
-    result["subject_count"] = len(subjects) if isinstance(subjects, list) else 0
+    if not isinstance(result.get("subject_count"), int):
+        result["subject_count"] = len(subjects) if isinstance(subjects, list) else 0
     return result

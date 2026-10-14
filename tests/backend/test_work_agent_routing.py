@@ -107,8 +107,18 @@ def test_new_preprocessing_goal_clears_intent_even_without_a_draft_payload():
 
 def test_same_project_same_request_outboxes_are_independent_per_conversation(service):
     text = "先预处理这批静息态 fMRI 数据，然后对 ALFF 做两组统计比较。"  # noqa: RUF001
-    first = analysis_dependency_for_request(text, "project", "conversation-a", "same-key")
-    second = analysis_dependency_for_request(text, "project", "conversation-b", "same-key")
+    first_conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "conversation-a"
+    )
+    second_conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "conversation-b"
+    )
+    first = analysis_dependency_for_request(
+        text, "project", first_conversation.conversation_id, "same-key"
+    )
+    second = analysis_dependency_for_request(
+        text, "project", second_conversation.conversation_id, "same-key"
+    )
     assert first is not None and second is not None
     assert first["task_id"] != second["task_id"]
     common = {
@@ -120,7 +130,7 @@ def test_same_project_same_request_outboxes_are_independent_per_conversation(ser
     first_row = service.automation._repository.ensure_analysis_outbox(
         AnalysisProposalOutbox(
             intent_task_id=str(first["task_id"]),
-            conversation_id="conversation-a",
+            conversation_id=first_conversation.conversation_id,
             preprocessing_task_id="preprocessing-a",
             run_id="run-a",
             **common,
@@ -129,7 +139,7 @@ def test_same_project_same_request_outboxes_are_independent_per_conversation(ser
     second_row = service.automation._repository.ensure_analysis_outbox(
         AnalysisProposalOutbox(
             intent_task_id=str(second["task_id"]),
-            conversation_id="conversation-b",
+            conversation_id=second_conversation.conversation_id,
             preprocessing_task_id="preprocessing-b",
             run_id="run-b",
             **common,

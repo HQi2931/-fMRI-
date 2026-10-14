@@ -18,7 +18,11 @@
 
 创建时状态为 `pending`。只有预处理任务通过现有冻结目标 Artifact 完整核验后，才在同一 SQLite Unit of Work 中，将预处理任务完成并把 outbox 转为 `ready`，同时保存已核验 Artifact ID 的精确有序集合。预处理专用请求不创建 outbox。READY 项可用短租约领取；每次重领递增 fencing token，旧租约或旧 token 无法再通过 claim 校验。
 
-本 ADR 只建立 proposal-only 持久合同和 READY outbox。它不消费 outbox、不调用模型、不伪造用户消息、不创建或批准统计 Plan，也不创建统计 Run。后续 Worker 消费和统计提案准备须另行实现，且只能停在用户审查/选择边界。
+本 ADR 建立 proposal-only 持久合同和 READY outbox。当前纵向切片已实现独立 Worker 消费：它先重新核验 conversation/project、intent ID/hash、预处理 WorkTask、冻结 Plan/manifest、Run、QC、目标 Artifact 与 lineage，再在事务外调用现有 Work 分析 Agent 准备统计草稿。outbox 仅绑定本次预处理的目标 Artifact；lineage 所需且另行核验的 mask 作为依赖 ID 单独保留，并与目标 ID 共同组成统计装配器的精确 allowlist。
+
+模型上下文只接收已核验来源的有界摘要，包括 QC 状态、指标类型与数量、纳入受试者数量和 mask 数量；逐 Artifact ID、路径、校验和及完整 lineage 保留在服务端。统计装配器使用服务端核验结果构造 allowlist，不接受模型提供的来源身份。会话页面按 outbox retry generation 区分在途和已完成续接，避免旧一代 `WAITING_USER` 消息终止新一代重试的轮询或保留过期重试按钮。
+
+模型结果提交时，在同一 SQLite Unit of Work 中追加 assistant-only continuation、保存分析 WorkTask/提案绑定并终结 outbox；事务内必须匹配 claim fencing token，失效则整批回滚。重复消费只允许一条 continuation 和一份任务/提案。草稿缺少用户决策时以 `WAITING_USER` 提出具体问题；短暂错误使用有界退避，超过上限或模型不可用时提供显式重试入口。该 Worker 与现有 Workflow job/reconciliation 通道分开运行。它不会伪造 user message、创建或批准统计 Plan、创建统计 Run，也不会运行 MATLAB；分析方法与科研参数仍需用户审查。
 
 当前 MVP 每个 preprocessing WorkTask 最多绑定一个分析 intent/outbox；同一任务的多项独立分析请求仍需后续扩展，当前不会覆盖或合并它们。
 

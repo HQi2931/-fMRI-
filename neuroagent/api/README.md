@@ -11,6 +11,7 @@
 当前能力：
 
 - Work 提供独立的方案审查与确认接口，产物提供按编号校验的下载和有限图像预览；契约与阶段验证边界见 [API v1](../../docs/api/api-v1.md)。
+- 会话提供针对精确 intent ID 的分析 outbox 人工重试入口；它只重新排队可恢复的 proposal-only 草稿准备，依赖 `Idempotency-Key`，不确认统计方法或启动统计运行。
 
 - `routers/` 按环境、工作区、Agent 对话、Literature、项目、方案、Skill、统计、外部导入、运行与 Artifact 切分 HTTP 路由；`routes.py` 只聚合子路由并保留迁移期导出；
 - handler 通过按能力重载的 `capability_from()` 解析具体应用服务类型；全部 JSON 请求体使用 `api/schemas/` 中独立的 HTTP DTO，并由 `to_application_message()` 显式映射到应用命令；响应模型由 `api/responses/` 独立拥有，并由 `to_http_response()` 映射应用结果；

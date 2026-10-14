@@ -27,6 +27,7 @@ from neuroagent.infrastructure.persistence.automation_repository import (
     SqliteWorkTaskRepository,
 )
 from neuroagent.infrastructure.persistence.database import Database
+from neuroagent.infrastructure.persistence.models import ConversationRow
 from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
 
 
@@ -59,6 +60,20 @@ def open_repository(database_path) -> tuple[Database, SqliteWorkTaskRepository]:
     database.initialize()
     unit_of_work = SqliteUnitOfWork(database)
     return database, SqliteWorkTaskRepository(database, unit_of_work=unit_of_work)
+
+
+def ensure_conversation(database: Database, conversation_id: str) -> None:
+    with database.session_factory.begin() as session:
+        if session.get(ConversationRow, conversation_id) is None:
+            session.add(
+                ConversationRow(
+                    conversation_id=conversation_id,
+                    mode="work",
+                    title="Synthetic test conversation",
+                    project_id=None,
+                    version=1,
+                )
+            )
 
 
 def test_work_task_survives_database_restart_with_steps_and_authority_references(
@@ -145,6 +160,7 @@ def test_reconciliation_claim_is_exclusive_and_respects_cooldown(tmp_path, monke
 def test_analysis_outbox_is_idempotent_and_ready_binds_exact_verified_ids(tmp_path) -> None:
     path = tmp_path / "analysis-outbox.sqlite"
     database, repository = open_repository(path)
+    ensure_conversation(database, "conversation-3")
     record = AnalysisProposalOutbox(
         intent_task_id="intent-01",
         conversation_id="conversation-3",
@@ -223,6 +239,7 @@ def test_analysis_outbox_claim_uses_expiring_lease_and_fencing_token(tmp_path, m
     now = [1000.0]
     monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
     database, repository = open_repository(tmp_path / "analysis-claim.sqlite")
+    ensure_conversation(database, "conversation-3")
     record = AnalysisProposalOutbox(
         intent_task_id="intent-claim",
         conversation_id="conversation-3",

@@ -111,6 +111,7 @@ type Options = {
   confirmation?: (init?: RequestInit) => Promise<Response>;
   review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
+  retryOutbox?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
 };
 
@@ -138,6 +139,7 @@ function installFetch(options: Options = {}) {
     }
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();
+    if (path.includes("/analysis-outbox/") && path.endsWith("/retry")) return options.retryOutbox?.(init) ?? notFound();
     if (path.endsWith("/conversations/work-1")) return options.conversation?.() ?? notFound();
     if (path.endsWith("/turns")) {
       if (options.turn) return options.turn(init);
@@ -501,6 +503,131 @@ describe("agent workbench page", () => {
     expect(screen.queryByText(/运行状态连接中断/)).not.toBeInTheDocument();
     expect(fetchSpy.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
     expect(fetchSpy.mock.calls.filter(([input]) => /^\/api\/v1\/runs\/run-1$/.test(pathOf(input))).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("refreshes a delayed assistant analysis continuation after preprocessing succeeds", async () => {
+    const intentTaskId = "analysis-intent-1";
+    const original = conversation({
+      project_id: "project-1",
+      active_run_id: "run-1",
+      messages: [message("intent", "assistant", "预处理完成后继续分析", {
+        analysis_dependency: {
+          task_kind: "preprocess_then_analyze",
+          task_id: intentTaskId,
+          project_id: "project-1",
+          status: "analysis_ready",
+        },
+        analysis_intent_envelope: {
+          status: "active",
+          task_id: intentTaskId,
+          project_id: "project-1",
+        },
+      })],
+    });
+    const delivered = conversation({
+      ...original,
+      version: 2,
+      active_run_id: null,
+      foreground_agent_role: "analysis",
+      messages: [...original.messages, message("continuation", "assistant", "后台准备的统计草稿已到达。", {
+        agent_role: "analysis",
+        analysis_intent_envelope: { status: "consumed", task_id: intentTaskId, project_id: "project-1" },
+        analysis_outbox_continuation: { intent_task_id: intentTaskId },
+        analysis_draft: { draft: { test: "independent_two_sample_t" }, hash: "a".repeat(64) },
+      })],
+    });
+    let conversationReads = 0;
+    const refresh = vi.fn(() => json(conversationReads++ === 0 ? original : delivered));
+    const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
+    installFetch({ conversations: () => json([original]), conversation: refresh, run });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByText("后台准备的统计草稿已到达。", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+  });
+
+  it("resumes polling after a manual analysis outbox retry and hides the prior retry action", async () => {
+    const intentTaskId = "analysis-intent-retry";
+    const intent = message("intent", "assistant", "预处理完成后继续分析", {
+      analysis_dependency: {
+        task_kind: "preprocess_then_analyze",
+        task_id: intentTaskId,
+        project_id: "project-1",
+        status: "analysis_ready",
+      },
+      analysis_intent_envelope: {
+        status: "active",
+        task_id: intentTaskId,
+        project_id: "project-1",
+      },
+    });
+    const paused = message("paused", "assistant", "模型尚未配置，请配置后重试。", {
+      agent_role: "analysis",
+      analysis_outbox_continuation: { intent_task_id: intentTaskId, retry_generation: 0 },
+      analysis_outbox_result: { status: "waiting_user", retry_available: true },
+    });
+    const original = conversation({
+      project_id: "project-1",
+      active_run_id: "run-1",
+      messages: [intent, paused],
+    });
+    const queued = conversation({
+      ...original,
+      version: 3,
+      messages: [
+        ...original.messages,
+        message("retry", "assistant", "已排队重新准备草稿。", {
+          analysis_outbox_retry: {
+            intent_task_id: intentTaskId,
+            retry_generation: 1,
+            status: "ready",
+          },
+        }),
+      ],
+    });
+    const delivered = conversation({
+      ...queued,
+      version: 4,
+      active_run_id: null,
+      foreground_agent_role: "analysis",
+      messages: [
+        ...queued.messages,
+        message("continued", "assistant", "重试后的统计草稿已到达。", {
+          agent_role: "analysis",
+          analysis_outbox_continuation: { intent_task_id: intentTaskId, retry_generation: 1 },
+          analysis_outbox_result: { status: "proposal_ready", retry_available: false },
+          analysis_draft: { draft: { metric_artifact_type: "alff_map" }, hash: "b".repeat(64) },
+        }),
+      ],
+    });
+    let conversationReads = 0;
+    let deliverResponse: ((response: Response) => void) | undefined;
+    const refresh = vi.fn(() => {
+      if (conversationReads++ === 0) return json(original);
+      return new Promise<Response>((resolve) => { deliverResponse = resolve; });
+    });
+    const retry = vi.fn(() => json(queued));
+    const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
+    installFetch({ conversations: () => json([original]), conversation: refresh, retryOutbox: retry, run });
+
+    render(<AgentPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "重新尝试准备草稿" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledOnce());
+    await waitFor(() => expect(deliverResponse).toBeDefined());
+    expect(screen.queryByRole("button", { name: "重新尝试准备草稿" })).not.toBeInTheDocument();
+    expect(screen.queryByText("重试后的统计草稿已到达。")).not.toBeInTheDocument();
+
+    await act(async () => {
+      deliverResponse!(new Response(JSON.stringify(delivered), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    });
+    expect(await screen.findByText("重试后的统计草稿已到达。")).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("lists every model the bound provider returns and lets the operator pick one", async () => {

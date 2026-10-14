@@ -30,6 +30,41 @@ import "./agent-work.css";
 import { ConversationHistory } from "./ConversationHistory";
 export { AnalysisProposalActions } from "./AnalysisProposalActions";
 
+const RUN_TERMINAL_STATES = new Set(["succeeded", "failed_retryable", "failed_terminal", "timed_out", "cancelled", "qc_review"]);
+const OUTBOX_REFRESH_MAX_INTERVAL_MS = 60_000;
+const MAX_OUTBOX_CONVERSATION_REFRESHES = 16;
+
+function pendingAnalysisOutboxIntentId(conversation?: Conversation): string | null {
+  if (!conversation?.project_id) return null;
+  const activeMessage = [...conversation.messages].reverse().find((item) => {
+    const envelope = item.payload.analysis_intent_envelope;
+    return Boolean(
+      envelope && typeof envelope === "object" && "status" in envelope && envelope.status === "active"
+      && "task_id" in envelope && typeof envelope.task_id === "string"
+      && "project_id" in envelope && envelope.project_id === conversation.project_id,
+    );
+  });
+  const envelope = activeMessage?.payload.analysis_intent_envelope;
+  if (!envelope || typeof envelope !== "object" || !("task_id" in envelope) || typeof envelope.task_id !== "string") return null;
+  const retryGeneration = conversation.messages.reduce((latest, item) => {
+    const retry = item.payload.analysis_outbox_retry;
+    return retry && typeof retry === "object" && "intent_task_id" in retry
+      && retry.intent_task_id === envelope.task_id && "retry_generation" in retry
+      && typeof retry.retry_generation === "number"
+      ? Math.max(latest, retry.retry_generation)
+      : latest;
+  }, 0);
+  const continuationExistsForGeneration = conversation.messages.some((item) => {
+    const continuation = item.payload.analysis_outbox_continuation;
+    return Boolean(
+      continuation && typeof continuation === "object" && "intent_task_id" in continuation
+      && continuation.intent_task_id === envelope.task_id
+      && (!("retry_generation" in continuation) || continuation.retry_generation === retryGeneration),
+    );
+  });
+  return continuationExistsForGeneration ? null : envelope.task_id;
+}
+
 import {
   WELCOME,
   confirmedInputStage,
@@ -116,6 +151,20 @@ export function AgentPage() {
     const latest = await agentApi.conversation(activeConversation.conversation_id);
     setConversations((items) => items.map((item) => item.conversation_id === latest.conversation_id ? latest : item));
   }, [activeConversation?.conversation_id]);
+  const retryAnalysisOutbox = useCallback(async (intentTaskId: string) => {
+    if (!activeConversation?.conversation_id || busy || draftDirty) return;
+    setBusy(true);
+    setError("");
+    try {
+      const latest = await agentApi.retryAnalysisOutbox(activeConversation.conversation_id, intentTaskId);
+      cache(latest);
+      setAgentRole("analysis");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeConversation?.conversation_id, busy, draftDirty]);
   const confirmedWorkspaceStage = confirmedInputStage(activeConversation, workspacePath);
   const canAuthorizeWorkspaceFiles = Boolean(selectedModel?.capabilities.includes("tool_use"));
   const authorizationUnavailableReason = !selectedModel
@@ -151,14 +200,18 @@ export function AgentPage() {
     return () => controller.abort();
   }, [initialWorkspace]);
 
+  const taskRunId = activeConversation?.work_tasks?.find((item) => item.agent_role === effectiveAgentRole)?.run_id;
+  const monitoredRunId = mode === "work" && boundToSelectedWorkspace ? taskRunId ?? activeConversation?.active_run_id : null;
+  const pendingOutboxIntentId = pendingAnalysisOutboxIntentId(activeConversation);
+  const observedRunId = activeRun?.run_id;
+  const observedRunState = activeRun?.state;
+
   useEffect(() => {
-    const taskRunId = activeConversation?.work_tasks?.find((item) => item.agent_role === effectiveAgentRole)?.run_id;
-    const runId = mode === "work" && boundToSelectedWorkspace ? taskRunId ?? activeConversation?.active_run_id : null;
+    const runId = monitoredRunId;
     setActiveRun(null);
     if (!runId) { setActiveRun(null); return; }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const terminal = new Set(["succeeded", "failed_retryable", "failed_terminal", "timed_out", "cancelled", "qc_review"]);
     let failures = 0;
     const poll = async () => {
       try {
@@ -167,7 +220,7 @@ export function AgentPage() {
         failures = 0;
         setRunConnectionMessage("");
         updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
-        if (!terminal.has(run.state)) timer = setTimeout(() => void poll(), 2000);
+        if (!RUN_TERMINAL_STATES.has(run.state)) timer = setTimeout(() => void poll(), 2000);
       } catch {
         if (!controller.signal.aborted) {
           failures += 1;
@@ -178,7 +231,43 @@ export function AgentPage() {
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, activeConversation?.work_tasks, boundToSelectedWorkspace, effectiveAgentRole, mode, pollNonce]);
+  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, taskRunId, boundToSelectedWorkspace, effectiveAgentRole, mode, monitoredRunId, pollNonce]);
+
+  useEffect(() => {
+    const conversationId = activeConversation?.conversation_id;
+    if (
+      mode !== "work" || !boundToSelectedWorkspace || !conversationId || !observedRunId
+      || observedRunId !== monitoredRunId || !observedRunState
+      || !RUN_TERMINAL_STATES.has(observedRunState)
+    ) return;
+
+    const controller = new AbortController();
+    const intentTaskId = pendingOutboxIntentId;
+    const maxRefreshes = intentTaskId && observedRunState === "succeeded"
+      ? MAX_OUTBOX_CONVERSATION_REFRESHES : 1;
+    let refreshes = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleRefresh = () => {
+      if (refreshes >= maxRefreshes) return;
+      const delayMs = Math.min(1000 * 2 ** Math.max(0, refreshes - 1), OUTBOX_REFRESH_MAX_INTERVAL_MS);
+      timer = setTimeout(() => void refresh(), delayMs);
+    };
+    const refresh = async () => {
+      refreshes += 1;
+      try {
+        const latest = await agentApi.conversation(conversationId, controller.signal);
+        if (controller.signal.aborted || currentConversationId.current !== conversationId) return;
+        setConversations((items) => items.map((item) => item.conversation_id === conversationId ? latest : item));
+        if (refreshes < maxRefreshes && pendingAnalysisOutboxIntentId(latest) === intentTaskId) {
+          scheduleRefresh();
+        }
+      } catch {
+        if (!controller.signal.aborted) scheduleRefresh();
+      }
+    };
+    void refresh();
+    return () => { controller.abort(); if (timer) clearTimeout(timer); };
+  }, [activeConversation?.conversation_id, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -525,7 +614,7 @@ export function AgentPage() {
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
       {mode === "work" && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
-      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
+      <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       <div className="chat-composer">

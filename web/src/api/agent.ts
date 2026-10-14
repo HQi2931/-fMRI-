@@ -12,6 +12,8 @@ export const agentApi = {
     post<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-confirmation`, { command, expected_draft_hash: expectedDraftHash }, signal),
   prepareWorkReview: (conversationId: string, baseHash: string, signal?: AbortSignal) =>
     post<ConversationTurn>(`/conversations/${encodeURIComponent(conversationId)}/work-review`, { base_hash: baseHash }, signal),
+  retryAnalysisOutbox: (conversationId: string, intentTaskId: string, signal?: AbortSignal) =>
+    post<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/analysis-outbox/${encodeURIComponent(intentTaskId)}/retry`, {}, signal),
   conversations: (mode?: ConversationMode, signal?: AbortSignal) =>
     request<Conversation[]>(
       `/conversations${mode ? `?mode=${encodeURIComponent(mode)}` : ""}`,

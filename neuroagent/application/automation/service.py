@@ -11,7 +11,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxClaim,
+    AnalysisOutboxStatus,
     AnalysisProposalOutbox,
+    AnalysisSourceModelFacts,
+    VerifiedAnalysisOutboxSource,
 )
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
@@ -193,6 +197,309 @@ class WorkTaskApplicationService:
 
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
+
+    def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox:
+        return self._repository.get_analysis_outbox(intent_task_id)
+
+    def claim_next_analysis_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        return self._repository.claim_analysis_outbox(worker_id, lease_seconds=lease_seconds)
+
+    def renew_analysis_outbox_claim(
+        self, claim: AnalysisOutboxClaim, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        return self._repository.renew_analysis_outbox_claim(claim, lease_seconds=lease_seconds)
+
+    def defer_analysis_outbox_claim(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        return self._repository.defer_analysis_outbox_claim(
+            claim,
+            retry_after_seconds=retry_after_seconds,
+            error_code=error_code,
+        )
+
+    def complete_analysis_outbox(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        status: AnalysisOutboxStatus,
+        continuation_message_id: str,
+        analysis_work_task_id: str | None,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> AnalysisProposalOutbox:
+        return self._repository.complete_analysis_outbox(
+            claim,
+            status=status,
+            continuation_message_id=continuation_message_id,
+            analysis_work_task_id=analysis_work_task_id,
+            error_code=error_code,
+            record_attempt=record_attempt,
+        )
+
+    def requeue_analysis_outbox(
+        self, intent_task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> AnalysisProposalOutbox | None:
+        return self._repository.requeue_analysis_outbox(
+            intent_task_id, recoverable_error_codes=recoverable_error_codes
+        )
+
+    def verify_analysis_outbox_source(
+        self, outbox: AnalysisProposalOutbox
+    ) -> VerifiedAnalysisOutboxSource:
+        """Recheck the exact intent and preprocessing authority before model use."""
+
+        try:
+            conversation = self._conversation_repository.get_conversation(outbox.conversation_id)
+        except NotFoundError as exc:
+            raise ConflictError(
+                "analysis_outbox_conversation_missing", "续接来源会话已不存在。"
+            ) from exc
+        self._require_work_conversation(conversation, outbox.conversation_id, outbox.project_id)
+        candidates: list[dict[str, Any]] = []
+        for message in conversation.messages:
+            candidate = message.payload.get("analysis_dependency")
+            if isinstance(candidate, dict) and candidate.get("task_id") == outbox.intent_task_id:
+                candidates.append(candidate)
+        intent = next(
+            (
+                item
+                for item in reversed(candidates)
+                if item.get("task_kind") == "preprocess_then_analyze"
+                and item.get("conversation_id") == outbox.conversation_id
+                and item.get("project_id") == outbox.project_id
+                and isinstance(item.get("analysis_request"), str)
+                and content_hash(str(item["analysis_request"]).strip())
+                == outbox.analysis_request_hash
+            ),
+            None,
+        )
+        if intent is None:
+            raise ConflictError(
+                "analysis_outbox_intent_mismatch", "续接记录无法绑定到精确的原始分析请求。"
+            )
+
+        task = self._repository.get_task(outbox.preprocessing_task_id)
+        refs = task.authority_refs
+        step = self._preprocessing_step(task)
+        if (
+            task.status is not TaskStatus.COMPLETED
+            or step is None
+            or step.status is not TaskStepStatus.SUCCEEDED
+            or refs.conversation_id != outbox.conversation_id
+            or refs.analysis_intent_task_id != outbox.intent_task_id
+            or refs.analysis_request_hash != outbox.analysis_request_hash
+            or refs.plan_revision_id != outbox.plan_revision_id
+            or refs.workflow_run_id != outbox.run_id
+            or refs.input_revision != outbox.manifest_hash
+            or tuple(sorted(refs.artifact_ids)) != tuple(sorted(outbox.artifact_ids))
+            or tuple(sorted(step.authority_refs.artifact_ids)) != tuple(sorted(outbox.artifact_ids))
+        ):
+            raise ConflictError(
+                "analysis_outbox_preprocessing_mismatch",
+                "预处理 WorkTask 已变化或不再绑定同一意图、Plan、Run 与产物。",
+            )
+
+        plan = self._plan_repository.get_plan(outbox.plan_revision_id)
+        run = self._run_repository.get_run(outbox.run_id)
+        if (
+            plan.plan_revision_id != outbox.plan_revision_id
+            or plan.project_id != outbox.project_id
+            or plan.state is not PlanState.APPROVED
+            or plan.plan.get("kind") != "skill_plan"
+            or plan.manifest_hash != outbox.manifest_hash
+            or run.run_id != outbox.run_id
+            or run.project_id != outbox.project_id
+            or run.plan_revision_id != outbox.plan_revision_id
+            or run.state is not WorkflowState.SUCCEEDED
+        ):
+            raise ConflictError(
+                "analysis_outbox_run_authority_mismatch",
+                "来源 Run、冻结预处理 Plan 或 manifest 与续接记录不一致。",
+            )
+        authority = self._read_stable_authoritative_snapshot(task, outbox.run_id)
+        if authority is None:
+            raise ConflictError(
+                "analysis_outbox_authority_indeterminate",
+                "来源 Run、QC 或 Artifact 正在变化，暂不能准备分析草稿。",
+            )
+        snapshot = authority.snapshot
+        qc_approved = (
+            snapshot.qc_status == "approved" and snapshot.latest_qc_review_state == "approved"
+        )
+        qc_skipped = snapshot.qc_status in {"skipped", "qc_skipped"} and bool(snapshot.qc_skip_id)
+        if (
+            authority.project_id != outbox.project_id
+            or authority.plan_revision_id != outbox.plan_revision_id
+            or snapshot.run_state != WorkflowState.SUCCEEDED.value
+            or not (qc_approved or qc_skipped)
+            or snapshot.unresolved_referenced_artifact_ids
+        ):
+            raise ConflictError(
+                "analysis_outbox_qc_or_artifact_mismatch",
+                "来源 QC 尚未通过或续接 Artifact 引用无法核验。",
+            )
+
+        expected = self._derive_preprocessing_expectations(plan, outbox.project_id)
+        if step.expected_artifacts != expected:
+            raise ConflictError(
+                "analysis_outbox_output_contract_changed",
+                "来源 Plan 的预处理目标与任务记录不一致。",
+            )
+        raw_skill = plan.plan.get("skill_plan")
+        if not isinstance(raw_skill, Mapping):
+            raise ConflictError("analysis_outbox_skill_plan_missing", "冻结 SkillPlan 不可读取。")
+        skill = SkillPlan.model_validate(raw_skill)
+        resolved = dict(skill.resolved_parameters)
+        alff = (
+            AlffFalffParameters.model_validate(resolved["alff_falff"])
+            if "alff_falff" in resolved
+            else None
+        )
+        reho = RehoParameters.model_validate(resolved["reho"]) if "reho" in resolved else None
+        verified_ids = self._verify_preprocessing_artifacts(
+            expected=expected,
+            artifacts=authority.artifacts,
+            project_id=outbox.project_id,
+            run_id=outbox.run_id,
+            manifest_hash=outbox.manifest_hash,
+            alff=alff,
+            reho=reho,
+        )
+        if tuple(sorted(outbox.artifact_ids)) != verified_ids:
+            raise ConflictError(
+                "analysis_outbox_artifact_ids_mismatch",
+                "outbox Artifact IDs 与当前冻结目标的完整核验结果不一致。",
+            )
+        target_artifacts = {
+            item.artifact_id: item
+            for item in authority.artifacts
+            if item.artifact_id in set(outbox.artifact_ids)
+        }
+        dependency_artifact_ids: set[str] = set()
+        for target in target_artifacts.values():
+            raw_lineage = target.provenance.get("lineage")
+            if not isinstance(raw_lineage, Mapping):
+                raise ConflictError(
+                    "analysis_outbox_artifact_ids_mismatch",
+                    "目标产物缺少已核验的指标谱系。",
+                )
+            lineage = ArtifactLineage.model_validate(raw_lineage)
+            mask_id = lineage.mask_artifact_id
+            if mask_id is None or mask_id in target_artifacts:
+                continue
+            mask = self._artifact_repository.get_artifact(mask_id)
+            raw_mask_lineage = mask.provenance.get("lineage")
+            if not isinstance(raw_mask_lineage, Mapping):
+                raise ConflictError(
+                    "analysis_outbox_mask_lineage_mismatch",
+                    "目标产物引用的 mask 缺少已登记的类型化谱系。",
+                )
+            mask_lineage = ArtifactLineage.model_validate(raw_mask_lineage)
+            if (
+                mask.artifact_id != mask_id
+                or mask.project_id != outbox.project_id
+                or mask_lineage.artifact_id != mask_id
+                or mask_lineage.kind is not ArtifactKind.BRAIN_MASK
+                or mask_lineage.subject_id is not None
+                or not mask_lineage.metadata_verified
+                or mask_lineage.grid_signature != lineage.mask_grid_signature
+            ):
+                raise ConflictError(
+                    "analysis_outbox_mask_lineage_mismatch",
+                    "目标产物引用的 mask 不属于本项目或其已核验网格谱系不匹配。",
+                )
+            dependency_artifact_ids.add(mask_id)
+        artifact_facts = [
+            {
+                "artifact_id": item.artifact_id,
+                "artifact_type": item.artifact_type,
+                "checksum": item.checksum,
+                "size_bytes": item.size_bytes,
+                "relative_path": item.relative_path,
+                "provenance_hash": content_hash(item.provenance),
+                "lineage": ArtifactLineage.model_validate(
+                    item.provenance.get("lineage", {})
+                ).model_dump(mode="json"),
+            }
+            for item in sorted(
+                (
+                    *target_artifacts.values(),
+                    *(
+                        self._artifact_repository.get_artifact(artifact_id)
+                        for artifact_id in dependency_artifact_ids
+                    ),
+                ),
+                key=lambda artifact: artifact.artifact_id,
+            )
+        ]
+        evidence = {
+            "conversation_id": outbox.conversation_id,
+            "project_id": outbox.project_id,
+            "intent_task_id": outbox.intent_task_id,
+            "request_hash": outbox.analysis_request_hash,
+            "preprocessing_task_id": task.task_id,
+            "plan_revision_id": plan.plan_revision_id,
+            "plan_hash": plan.plan_hash,
+            "manifest_hash": plan.manifest_hash,
+            "run_id": run.run_id,
+            "run_version": snapshot.run_version,
+            "qc_status": snapshot.qc_status,
+            "qc_review_id": snapshot.latest_qc_review_id,
+            "qc_review_state": snapshot.latest_qc_review_state,
+            "qc_skip_id": snapshot.qc_skip_id,
+            "artifact_facts": artifact_facts,
+        }
+        metric_targets = [
+            (target, ArtifactLineage.model_validate(target.provenance.get("lineage", {})))
+            for target in target_artifacts.values()
+        ]
+        metric_targets = [
+            (target, lineage)
+            for target, lineage in metric_targets
+            if lineage.kind
+            in {ArtifactKind.ALFF_MAP, ArtifactKind.FALFF_MAP, ArtifactKind.REHO_MAP}
+        ]
+        metric_lineages = [lineage for _target, lineage in metric_targets]
+        model_facts = AnalysisSourceModelFacts.summarize(
+            source_run_state=snapshot.run_state,
+            qc_status=snapshot.qc_status or "unknown",
+            qc_review_state=snapshot.latest_qc_review_state,
+            input_manifest_verified=True,
+            metric_count=len(metric_lineages),
+            metric_artifact_types=(target.artifact_type for target, _lineage in metric_targets),
+            subject_count=len(
+                {lineage.subject_id for lineage in metric_lineages if lineage.subject_id}
+            ),
+            mask_count=len(dependency_artifact_ids),
+            verified_artifact_count=len(target_artifacts) + len(dependency_artifact_ids),
+        )
+        return VerifiedAnalysisOutboxSource(
+            conversation_id=outbox.conversation_id,
+            project_id=outbox.project_id,
+            intent_task_id=outbox.intent_task_id,
+            preprocessing_task_id=outbox.preprocessing_task_id,
+            retry_generation=outbox.retry_generation,
+            analysis_request=str(intent["analysis_request"]).strip(),
+            run_id=outbox.run_id,
+            plan_revision_id=outbox.plan_revision_id,
+            manifest_hash=outbox.manifest_hash,
+            artifact_ids=outbox.artifact_ids,
+            dependency_artifact_ids=tuple(sorted(dependency_artifact_ids)),
+            source_evidence_hash=content_hash(evidence),
+            model_facts=model_facts,
+        )
+
+    def atomic(self) -> Any:
+        """Expose the shared repository Unit of Work to composite app use cases."""
+
+        return self._repository.atomic()
 
     def reconcile_next_due_task(
         self,
@@ -736,7 +1043,7 @@ class WorkTaskApplicationService:
                                             "analysis_intent_task_id": None,
                                             "analysis_request_hash": None,
                                         }
-                                    )
+                                    ),
                                 }
                             )
                             if step.kind == "preprocessing_run"
@@ -767,7 +1074,7 @@ class WorkTaskApplicationService:
                                             "analysis_intent_task_id": analysis_intent_task_id,
                                             "analysis_request_hash": analysis_request_hash,
                                         }
-                                    )
+                                    ),
                                 }
                             )
                             if step.kind == "preprocessing_run"

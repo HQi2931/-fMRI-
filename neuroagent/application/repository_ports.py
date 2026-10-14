@@ -131,7 +131,7 @@ class ConversationRepositoryPort(Protocol):
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         proposal_hash: str,
         plan_revision_id: str,
         run_id: str | None = None,
@@ -142,7 +142,7 @@ class ConversationRepositoryPort(Protocol):
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         plan_revision_id: str,
         plan_hash: str,
         qc_mode: QcExecutionMode,
@@ -185,6 +185,18 @@ class ConversationRepositoryPort(Protocol):
         ConversationMessageView,
         ConversationToolCallView | None,
     ]: ...
+
+    def append_assistant_continuation(
+        self,
+        conversation_id: str,
+        *,
+        continuation_key: str,
+        assistant_content: str,
+        assistant_payload: dict[str, Any],
+        project_id: str | None,
+        work_task_id: str | None,
+        update_work_state: bool = True,
+    ) -> tuple[ConversationView, ConversationMessageView]: ...
 
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView: ...
 

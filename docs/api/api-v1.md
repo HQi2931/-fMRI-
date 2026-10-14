@@ -18,6 +18,8 @@
 
 同一 Work 统计方案已有绑定运行时，新幂等键的重复启动返回 `statistics_work_run_already_created` 和已有运行编号；相同幂等键仍重放原响应。运行失败后的恢复继续使用现有 Worker 入口。
 
+显式 `preprocess_then_analyze` 目标的预处理产物全部核验通过后，独立 outbox Worker 会自动准备 proposal-only 分析草稿，并仅追加 assistant continuation；该过程不会生成伪造的用户消息，也不会批准或运行统计方案。`POST /conversations/{conversation_id}/analysis-outbox/{intent_task_id}/retry` 接受 `Idempotency-Key`，只重试该会话内可恢复的 `WAITING_USER` outbox；相同幂等键重放原响应，不可恢复的证据冲突返回业务错误。重试只重新排队草稿准备，不会确认统计方法或启动运行。
+
 ### Work 参数编辑与 T1 预处理
 
 Work 体验优化新增以下接口（阶段实现，完整交互验收见计划 0012）：

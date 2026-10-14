@@ -15,6 +15,7 @@ from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.providers import ProviderTimeoutError
 from neuroagent.agent.streaming import current_answer_stream
+from neuroagent.application.automation.analysis_outbox import VerifiedAnalysisOutboxSource
 from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationTurnCreate,
@@ -970,9 +971,7 @@ class WorkDialogue:
                             "task_id": (saved or {}).get("analysis_intent_task_id"),
                             "conversation_id": conversation.conversation_id,
                             "project_id": project_id,
-                            "analysis_request_hash": (saved or {}).get(
-                                "analysis_request_hash"
-                            ),
+                            "analysis_request_hash": (saved or {}).get("analysis_request_hash"),
                             "status": "consumed",
                         },
                     },
@@ -1795,6 +1794,87 @@ class WorkDialogue:
                 },
             )
 
+    async def prepare_analysis_continuation(
+        self,
+        conversation: ConversationView,
+        packet: ContextPacket,
+        source: VerifiedAnalysisOutboxSource,
+        *,
+        has_profiles: bool,
+    ) -> WorkActionResult:
+        """Prepare one analysis draft from an exact, server-verified outbox source."""
+
+        if (
+            conversation.conversation_id != source.conversation_id
+            or conversation.project_id != source.project_id
+        ):
+            raise ValueError("verified analysis source is outside the current Work conversation")
+        request = ConversationTurnCreate(
+            content=source.analysis_request,
+            action=ConversationAction.AUTO,
+            target_run_id=source.run_id,
+            project_id=source.project_id,
+            agent_role=WorkAgentRole.ANALYSIS,
+        )
+        intent = {
+            "task_kind": "preprocess_then_analyze",
+            "task_id": source.intent_task_id,
+            "conversation_id": source.conversation_id,
+            "project_id": source.project_id,
+            "analysis_request": source.analysis_request,
+            "status": "analysis_started",
+            "data_references": source.model_facts.model_dump(mode="json"),
+            "evidence_hash": source.source_evidence_hash,
+        }
+
+        def reply(content: str, payload: dict[str, Any] | None = None) -> WorkActionResult:
+            body = {
+                "agent_role": WorkAgentRole.ANALYSIS.value,
+                "agent_name": resolve_work_agent(WorkAgentRole.ANALYSIS).display_name,
+                **(payload or {}),
+                "analysis_dependency": intent,
+                "analysis_intent_envelope": {
+                    "status": "consumed",
+                    "task_id": source.intent_task_id,
+                    "conversation_id": source.conversation_id,
+                    "project_id": source.project_id,
+                    "analysis_request_hash": content_hash(source.analysis_request),
+                },
+                "analysis_outbox_continuation": {
+                    "intent_task_id": source.intent_task_id,
+                    "retry_generation": source.retry_generation,
+                    "preprocessing_task_id": source.preprocessing_task_id,
+                    "run_id": source.run_id,
+                    "plan_revision_id": source.plan_revision_id,
+                    "manifest_hash": source.manifest_hash,
+                    "source_evidence_hash": source.source_evidence_hash,
+                    "artifact_ids": list(source.artifact_ids),
+                    "dependency_artifact_ids": list(source.dependency_artifact_ids),
+                },
+            }
+            return WorkActionResult(
+                content,
+                payload=body,
+                workspace_path=conversation.workspace_path,
+                project_id=source.project_id,
+                active_run_id=conversation.active_run_id,
+            )
+
+        return await self._respond_analysis(
+            conversation,
+            request,
+            packet,
+            workspace_path=conversation.workspace_path,
+            project_id=source.project_id,
+            preferred_profile_id=conversation.preferred_profile_id,
+            workspace_content_consent=False,
+            idempotency_key=(f"analysis-outbox:{source.intent_task_id}:g{source.retry_generation}"),
+            has_profiles=has_profiles,
+            reply=reply,
+            proposal_only_continuation=True,
+            continuation_source=source,
+        )
+
     async def _respond_analysis(
         self,
         conversation: ConversationView,
@@ -1808,8 +1888,14 @@ class WorkDialogue:
         idempotency_key: str,
         has_profiles: bool,
         reply: Callable[[str, dict[str, Any] | None], WorkActionResult],
+        proposal_only_continuation: bool = False,
+        continuation_source: VerifiedAnalysisOutboxSource | None = None,
     ) -> WorkActionResult:
-        saved = latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
+        saved = (
+            None
+            if proposal_only_continuation
+            else latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
+        )
         try:
             draft = (
                 StatisticsDraft.model_validate(saved.get("draft", {}))
@@ -1979,7 +2065,11 @@ class WorkDialogue:
             "max_output_tokens": int(packet.metadata.get("max_output_tokens", 2_048)),
         }
         model_context["work_context"].setdefault("workspace_path", workspace_path)
-        result_run_id = request.target_run_id or conversation.active_run_id
+        result_run_id = (
+            None
+            if continuation_source is not None
+            else request.target_run_id or conversation.active_run_id
+        )
         if self.get_result_facts is not None and result_run_id:
             spatial_requested = bool(
                 re.search(
@@ -1992,7 +2082,29 @@ class WorkDialogue:
                 "untrusted_content": True,
                 "results": self.get_result_facts(result_run_id, spatial_requested),
             }
-        dependency = latest_analysis_dependency(conversation)
+        dependency = (
+            {
+                "task_id": continuation_source.intent_task_id,
+                "analysis_request": continuation_source.analysis_request,
+                "status": "analysis_started",
+                "data_references": continuation_source.model_facts.model_dump(mode="json"),
+                "evidence_hash": continuation_source.source_evidence_hash,
+                "conversation_id": continuation_source.conversation_id,
+                "project_id": continuation_source.project_id,
+            }
+            if continuation_source is not None
+            else latest_analysis_dependency(conversation)
+        )
+        if continuation_source is not None:
+            model_context["work_context"]["analysis_source_evidence"] = (
+                continuation_source.model_facts.model_dump(mode="json")
+            )
+            for key in (
+                "analysis_verified_artifact_ids",
+                "analysis_verified_target_artifact_ids",
+                "analysis_verified_dependency_artifact_ids",
+            ):
+                model_context["work_context"].pop(key, None)
         if dependency is not None:
             model_context["work_context"]["analysis_dependency"] = {
                 key: dependency.get(key)
@@ -2038,7 +2150,12 @@ class WorkDialogue:
                     project_id=project_id,
                     allowed_run_ids=frozenset(
                         value
-                        for value in (request.target_run_id, conversation.active_run_id)
+                        for value in (
+                            continuation_source.run_id
+                            if continuation_source is not None
+                            else request.target_run_id,
+                            None if continuation_source is not None else conversation.active_run_id,
+                        )
                         if value
                     ),
                     selected_profile_id=preferred_profile_id,
@@ -2245,6 +2362,12 @@ class WorkDialogue:
                 payload["analysis_draft"] = saved
             if not work_agent_allows_action(WorkAgentRole.ANALYSIS, interpreted.action):
                 return reply("该操作不属于数据分析 Agent 的职责范围，未执行任何操作。", payload)
+            if proposal_only_continuation and interpreted.action != "prepare_statistical_analysis":
+                payload["continuation_waiting_user"] = True
+                return reply(
+                    "已收到原始分析请求，但本轮没有形成可审查的统计设计草稿。请补充统计检验类型、指标类型、分组或条件信息，以及你希望使用的校正方法；未确认这些科研选择前不会生成统计方案。",
+                    payload,
+                )
             if loop_metadata is not None:
                 payload["tool_loop"] = {
                     **loop_metadata,
@@ -2328,11 +2451,18 @@ class WorkDialogue:
                             "当前服务未连接统计设计装配器，草稿已保留。"
                         ]
                     else:
-                        source_args = (
+                        source_args: dict[str, Any] = (
                             {"external_import_id": external_id, "project_id": project_id}
                             if external_id
                             else {"run_id": run_id}
                         )
+                        if continuation_source is not None:
+                            source_args["allowed_artifact_ids"] = frozenset(
+                                (
+                                    *continuation_source.artifact_ids,
+                                    *continuation_source.dependency_artifact_ids,
+                                )
+                            )
                         proposal, design_issues = self.prepare_statistical_proposal(
                             draft=updated, **source_args
                         )
@@ -2340,6 +2470,21 @@ class WorkDialogue:
                             issue.message for issue in design_issues
                         ]
                         if proposal is not None:
+                            if continuation_source is not None and (
+                                proposal.project_id != continuation_source.project_id
+                                or proposal.source_run_id != continuation_source.run_id
+                                or proposal.input_manifest_hash != continuation_source.manifest_hash
+                                or not set(proposal.metric_artifact_ids).issubset(
+                                    continuation_source.artifact_ids
+                                )
+                                or proposal.design.mask_artifact_id
+                                not in set(continuation_source.artifact_ids)
+                                | set(continuation_source.dependency_artifact_ids)
+                            ):
+                                raise ApplicationError(
+                                    "analysis_outbox_proposal_source_mismatch",
+                                    "统计草稿使用了续接记录之外的来源产物。",
+                                )
                             updated = updated.model_copy(
                                 update={
                                     "source_run_id": proposal.source_run_id,
@@ -2379,7 +2524,9 @@ class WorkDialogue:
                 }
                 payload["analysis_draft"] = saved_draft
                 if issues:
-                    answer = "统计分析草稿已更新，请补齐草稿中尚未确定的检验和参数信息。"
+                    answer = "统计分析草稿已更新，请补齐尚未确定的科研选择：\n" + "\n".join(
+                        f"- {issue}" for issue in issues[:12]
+                    )
                 elif payload.get("statistical_design_proposal"):
                     answer = (
                         "统计草稿已绑定所选来源的纳入凭据、受试者顺序及登记指标，服务端形成了可审查的设计。"

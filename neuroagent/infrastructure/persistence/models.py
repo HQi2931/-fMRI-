@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -109,7 +120,41 @@ class AnalysisProposalOutboxRow(Base):
     lease_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
     lease_expires_at: Mapped[float | None] = mapped_column(nullable=True)
     fencing_token: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_generation: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[float | None] = mapped_column(nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    continuation_message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversation_messages.message_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    analysis_work_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'proposal_ready', 'waiting_user', 'blocked')",
+            name="ck_analysis_outbox_status",
+        ),
+        CheckConstraint(
+            "(status IN ('pending', 'ready') AND continuation_message_id IS NULL) OR "
+            "(status IN ('proposal_ready', 'waiting_user', 'blocked') "
+            "AND continuation_message_id IS NOT NULL)",
+            name="ck_analysis_outbox_terminal_message",
+        ),
+        CheckConstraint(
+            "(status = 'proposal_ready' AND analysis_work_task_id IS NOT NULL) OR "
+            "(status != 'proposal_ready' AND analysis_work_task_id IS NULL)",
+            name="ck_analysis_outbox_work_task",
+        ),
+        CheckConstraint("retry_generation >= 0", name="ck_analysis_outbox_retry_generation"),
+        CheckConstraint("attempt_count >= 0", name="ck_analysis_outbox_attempt_count"),
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["conversations.conversation_id"],
+            ondelete="RESTRICT",
+            name="fk_analysis_outbox_conversation",
+        ),
+        UniqueConstraint("continuation_message_id", name="uq_analysis_outbox_continuation_message"),
         UniqueConstraint(
             "conversation_id",
             "project_id",
@@ -423,8 +468,12 @@ class ConversationMessageRow(Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    continuation_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    __table_args__ = (UniqueConstraint("conversation_id", "sequence"),)
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence"),
+        UniqueConstraint("continuation_key", name="uq_conversation_message_continuation_key"),
+    )
 
 
 class ConversationToolCallRow(Base):

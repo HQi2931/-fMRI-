@@ -30,6 +30,7 @@ export type Message = {
   agentHandoff?: AgentHandoff;
   analysisDependency?: { analysis_request?: string; status?: string; source_run_state?: string; task_id?: string };
   statisticalResults?: Array<{ result_id: string; run_id: string; mode: string; non_scientific: boolean; artifact_count: number; cluster_count: number }>;
+  analysisOutboxRecovery?: { intentTaskId: string };
 };
 export type WorkAgentRole = "auto" | "preprocessing" | "analysis";
 export type ModelChoice = {
@@ -53,6 +54,17 @@ export const WELCOME: Record<ConversationMode, Message> = {
 
 export function messagesFrom(conversation?: Conversation): Message[] {
   if (!conversation) return [];
+  const latestRetryGeneration = new Map<string, number>();
+  for (const item of conversation.messages) {
+    const retry = item.payload.analysis_outbox_retry as
+      | { intent_task_id?: unknown; retry_generation?: unknown }
+      | undefined;
+    if (typeof retry?.intent_task_id !== "string" || typeof retry.retry_generation !== "number") continue;
+    latestRetryGeneration.set(
+      retry.intent_task_id,
+      Math.max(latestRetryGeneration.get(retry.intent_task_id) ?? 0, retry.retry_generation),
+    );
+  }
   // A tool-loop turn writes one row per step, keyed to the user message that
   // triggered it, so the steps are re-attached to its reply on every reload.
   const stepsByUser = new Map<string, ToolStep[]>();
@@ -106,6 +118,19 @@ export function messagesFrom(conversation?: Conversation): Message[] {
         statisticalResults: Array.isArray(item.payload.statistical_results)
           ? item.payload.statistical_results.filter((value): value is NonNullable<Message["statisticalResults"]>[number] => Boolean(value && typeof value === "object" && "result_id" in value && "run_id" in value))
           : undefined,
+        analysisOutboxRecovery: (() => {
+          const result = item.payload.analysis_outbox_result as { retry_available?: unknown } | undefined;
+          const continuation = item.payload.analysis_outbox_continuation as {
+            intent_task_id?: unknown;
+            retry_generation?: unknown;
+          } | undefined;
+          const generation = typeof continuation?.retry_generation === "number"
+            ? continuation.retry_generation : 0;
+          return result?.retry_available === true && typeof continuation?.intent_task_id === "string"
+            && generation === (latestRetryGeneration.get(continuation.intent_task_id) ?? 0)
+            ? { intentTaskId: continuation.intent_task_id }
+            : undefined;
+        })(),
       };
       const proposal = item.payload.workspace_change_proposal as WorkspaceProposal | undefined;
       const workspaceCitations = item.payload.workspace_citations as Array<{ path: string; locator: string }> | undefined;

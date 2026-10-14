@@ -17,7 +17,7 @@ function HistoricalPlan({ item }: { item: Message }) {
   </details>;
 }
 
-export function ConversationHistory({ messages, busy, onApply, onUndo, latestDraftId, onOpenPlan, onStatisticsRun, conversation, agentRole, onTaskChange }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; latestDraftId?: string; onOpenPlan: () => void; onStatisticsRun: (run: Run) => void; conversation?: Conversation; agentRole: "preprocessing" | "analysis"; onTaskChange: () => Promise<void> }) {
+export function ConversationHistory({ messages, busy, onApply, onUndo, onRetryAnalysisOutbox, latestDraftId, onOpenPlan, onStatisticsRun, conversation, agentRole, onTaskChange }: { messages: Message[]; busy: boolean; onApply: (proposal: WorkspaceProposal) => void; onUndo: (proposal: WorkspaceProposal) => void; onRetryAnalysisOutbox: (intentTaskId: string) => void; latestDraftId?: string; onOpenPlan: () => void; onStatisticsRun: (run: Run) => void; conversation?: Conversation; agentRole: "preprocessing" | "analysis"; onTaskChange: () => Promise<void> }) {
   return <div className="chat-history" aria-live="polite">
     {messages.map((item) => <div className={`chat-bubble chat-${item.role}`} key={item.id}>
       <span>{item.role === "assistant" ? (item.agentRole === "analysis" ? "数据分析 Agent" : "预处理 Agent") : "你"}</span>
@@ -30,6 +30,7 @@ export function ConversationHistory({ messages, busy, onApply, onUndo, latestDra
         </li>)}
       </ol></details>}
       <ConversationText text={item.text} />
+      {item.analysisOutboxRecovery && conversation && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onRetryAnalysisOutbox(item.analysisOutboxRecovery!.intentTaskId)}>重新尝试准备草稿</button>}
       {item.analysisDraft && <details className="chat-technical" open>
         <summary>统计分析草稿{item.analysisDraft.version ? ` · 第 ${item.analysisDraft.version} 版` : ""}</summary>
         {item.analysisDraft.review && <pre>{item.analysisDraft.review}</pre>}

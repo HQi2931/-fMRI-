@@ -236,6 +236,10 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                         "analysis_outbox_artifacts_conflict", "续接记录已绑定不同的核验产物。"
                     )
                 return current
+            if current.status is not AnalysisOutboxStatus.PENDING:
+                raise ConflictError(
+                    "analysis_outbox_already_consumed", "已消费的续接记录不能重新置为 READY。"
+                )
             session.execute(
                 text(
                     """UPDATE analysis_proposal_outbox SET status='ready',
@@ -267,6 +271,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     text(
                         """SELECT intent_task_id FROM analysis_proposal_outbox
                        WHERE status='ready' AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                         AND (next_attempt_at IS NULL OR next_attempt_at<=:now)
                        ORDER BY intent_task_id LIMIT 1"""
                     ),
                     {"now": now},
@@ -283,9 +288,10 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     text(
                         """UPDATE analysis_proposal_outbox
                        SET lease_owner=:owner, lease_expires_at=:expires,
-                           fencing_token=fencing_token+1
+                           fencing_token=fencing_token+1, next_attempt_at=NULL
                        WHERE intent_task_id=:intent_id AND status='ready'
-                         AND (lease_expires_at IS NULL OR lease_expires_at<=:now)"""
+                         AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                         AND (next_attempt_at IS NULL OR next_attempt_at<=:now)"""
                     ),
                     {
                         "owner": owner,
@@ -331,6 +337,203 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             ).first()
             return row is not None
 
+    def renew_analysis_outbox_claim(
+        self, claim: AnalysisOutboxClaim, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        now = time.time()
+        expires = now + lease_seconds
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET lease_expires_at=:expires
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "expires": expires,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+        return claim.model_copy(update={"lease_expires_at": expires})
+
+    def defer_analysis_outbox_claim(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        if retry_after_seconds < 1:
+            raise ValueError("retry_after_seconds must be positive")
+        if not error_code or len(error_code) > 64:
+            raise ValueError("error_code must be a bounded code")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET attempt_count=attempt_count+1, last_error_code=:error_code,
+                               next_attempt_at=:retry_at, lease_owner=NULL,
+                               lease_expires_at=NULL
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "retry_at": now + retry_after_seconds,
+                        "error_code": error_code,
+                    },
+                ),
+            ).rowcount
+            return changed == 1
+
+    def complete_analysis_outbox(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        status: AnalysisOutboxStatus,
+        continuation_message_id: str,
+        analysis_work_task_id: str | None,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> AnalysisProposalOutbox:
+        if status not in {
+            AnalysisOutboxStatus.PROPOSAL_READY,
+            AnalysisOutboxStatus.WAITING_USER,
+            AnalysisOutboxStatus.BLOCKED,
+        }:
+            raise ValueError("outbox completion requires a terminal status")
+        if not continuation_message_id:
+            raise ValueError("terminal outbox completion requires an assistant message")
+        if status is AnalysisOutboxStatus.PROPOSAL_READY and not analysis_work_task_id:
+            raise ValueError("proposal-ready outbox completion requires a WorkTask")
+        if status is not AnalysisOutboxStatus.PROPOSAL_READY and analysis_work_task_id is not None:
+            raise ValueError("only a proposal-ready continuation may bind an analysis WorkTask")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET status=:status, continuation_message_id=:message_id,
+                               analysis_work_task_id=:work_task_id,
+                               attempt_count=attempt_count + :record_attempt,
+                               last_error_code=:error_code,
+                               next_attempt_at=NULL, lease_owner=NULL, lease_expires_at=NULL
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now
+                             AND continuation_message_id IS NULL"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "status": status.value,
+                        "message_id": continuation_message_id,
+                        "work_task_id": analysis_work_task_id,
+                        "error_code": error_code,
+                        "record_attempt": int(record_attempt),
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError(
+                    "analysis_outbox_claim_lost",
+                    "分析续接 claim 已过期或被其他 Worker 取代。本次结果没有提交。",
+                )
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": claim.intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(row)
+
+    def requeue_analysis_outbox(
+        self, intent_task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> AnalysisProposalOutbox | None:
+        if not recoverable_error_codes:
+            raise ValueError("manual requeue requires at least one recoverable error code")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            current = self._outbox_from_row(row)
+            if current.status is AnalysisOutboxStatus.READY and current.retry_generation > 0:
+                return current
+            if (
+                current.status is not AnalysisOutboxStatus.WAITING_USER
+                or current.last_error_code not in recoverable_error_codes
+            ):
+                return None
+            error_parameters = {
+                f"error_{index}": code for index, code in enumerate(recoverable_error_codes)
+            }
+            error_placeholders = ", ".join(
+                f":error_{index}" for index in range(len(recoverable_error_codes))
+            )
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        f"""UPDATE analysis_proposal_outbox
+                           SET status='ready', attempt_count=0,
+                               retry_generation=retry_generation+1,
+                               fencing_token=fencing_token+1, next_attempt_at=NULL,
+                               lease_owner=NULL, lease_expires_at=NULL,
+                               continuation_message_id=NULL, analysis_work_task_id=NULL,
+                               last_error_code=NULL
+                           WHERE intent_task_id=:intent_id AND status='waiting_user'
+                             AND last_error_code IN ({error_placeholders})"""
+                    ),
+                    {
+                        "intent_id": intent_task_id,
+                        **error_parameters,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            updated = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(updated)
+
     @staticmethod
     def _outbox_from_row(row: Any) -> AnalysisProposalOutbox:
         return AnalysisProposalOutbox(
@@ -347,6 +550,12 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             lease_owner=row["lease_owner"],
             lease_expires_at=row["lease_expires_at"],
             fencing_token=row["fencing_token"],
+            attempt_count=row["attempt_count"],
+            retry_generation=row["retry_generation"],
+            next_attempt_at=row["next_attempt_at"],
+            last_error_code=row["last_error_code"],
+            continuation_message_id=row["continuation_message_id"],
+            analysis_work_task_id=row["analysis_work_task_id"],
         )
 
     def save_task(

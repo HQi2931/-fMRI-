@@ -10,6 +10,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 
 def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
@@ -282,6 +283,163 @@ def test_agent_tool_loop_migration_adds_audit_columns_and_round_trips(tmp_path: 
     finally:
         engine.dispose()
     assert {"step_index", "risk_tier", "provider_call_id", "duration_ms"}.issubset(restored)
+
+
+def test_analysis_outbox_consumer_migration_preserves_ready_rows_and_message_sequences(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "analysis-outbox-consumer.sqlite"
+    url = f"sqlite:///{database_path.as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0025_analysis_proposal_outbox")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO projects "
+                    "(project_id,name,source_roots_json,work_root,version,created_at) "
+                    "VALUES ('consumer-project','synthetic','[]','fixture',1,CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO conversations "
+                    "(conversation_id,mode,title,project_id,foreground_agent_role,"
+                    "work_tasks_json,version,created_at,updated_at) "
+                    "VALUES ('consumer-conversation','work','fixture','consumer-project',"
+                    "'preprocessing','{}',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+            for sequence, role, content in (
+                (1, "user", "原始分析请求"),
+                (2, "assistant", "等待预处理完成"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO conversation_messages "
+                        "(message_id,conversation_id,sequence,role,content,payload_json,"
+                        "created_at) "
+                        "VALUES (:message_id,'consumer-conversation',:sequence,:role,:content,'{}',"
+                        "CURRENT_TIMESTAMP)"
+                    ),
+                    {
+                        "message_id": f"legacy-message-{sequence}",
+                        "sequence": sequence,
+                        "role": role,
+                        "content": content,
+                    },
+                )
+            connection.execute(
+                text(
+                    "INSERT INTO analysis_proposal_outbox "
+                    "(intent_task_id,conversation_id,project_id,preprocessing_task_id,"
+                    "plan_revision_id,manifest_hash,run_id,analysis_request_hash,artifact_ids_json,"
+                    "status,fencing_token) VALUES ('legacy-intent','consumer-conversation',"
+                    "'consumer-project','prep-task','plan-rev',:manifest,'run-1',:request,'[]',"
+                    "'ready',1)"
+                ),
+                {"manifest": "a" * 64, "request": "b" * 64},
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            messages = connection.execute(
+                text(
+                    "SELECT sequence,role,continuation_key FROM conversation_messages "
+                    "WHERE conversation_id='consumer-conversation' ORDER BY sequence"
+                )
+            ).all()
+            outbox = connection.execute(
+                text(
+                    "SELECT status,attempt_count,retry_generation,next_attempt_at,"
+                    "continuation_message_id FROM analysis_proposal_outbox "
+                    "WHERE intent_task_id='legacy-intent'"
+                )
+            ).one()
+        assert [(row.sequence, row.role, row.continuation_key) for row in messages] == [
+            (1, "user", None),
+            (2, "assistant", None),
+        ]
+        assert tuple(outbox) == ("ready", 0, 0, None, None)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE analysis_proposal_outbox SET status='waiting_user' "
+                        "WHERE intent_task_id='legacy-intent'"
+                    )
+                )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError("terminal outbox status must reference an assistant message")
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE analysis_proposal_outbox SET status='waiting_user', "
+                        "continuation_message_id='legacy-message-1' "
+                        "WHERE intent_task_id='legacy-intent'"
+                    )
+                )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError("a user message cannot be an outbox assistant continuation")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO conversation_messages "
+                    "(message_id,conversation_id,sequence,role,content,payload_json,created_at) "
+                    "VALUES ('continuation-message','consumer-conversation',3,'assistant',"
+                    "'analysis draft','{}',CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE analysis_proposal_outbox SET status='waiting_user', "
+                    "continuation_message_id='continuation-message' "
+                    "WHERE intent_task_id='legacy-intent'"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE analysis_proposal_outbox SET status='ready', "
+                    "continuation_message_id=NULL WHERE intent_task_id='legacy-intent'"
+                )
+            )
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("PRAGMA foreign_keys=ON"))
+                connection.commit()
+                with connection.begin():
+                    connection.execute(
+                        text(
+                            "DELETE FROM conversations "
+                            "WHERE conversation_id='consumer-conversation'"
+                        )
+                    )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError("outbox evidence must prevent deleting its conversation")
+        command.downgrade(config, "0025_analysis_proposal_outbox")
+        with engine.connect() as connection:
+            columns = {
+                item["name"] for item in inspect(engine).get_columns("analysis_proposal_outbox")
+            }
+            restored = connection.execute(
+                text(
+                    "SELECT status,artifact_ids_json FROM analysis_proposal_outbox "
+                    "WHERE intent_task_id='legacy-intent'"
+                )
+            ).one()
+        assert "attempt_count" not in columns
+        assert tuple(restored) == ("ready", "[]")
+        command.upgrade(config, "head")
+    finally:
+        engine.dispose()
 
 
 def test_two_processes_can_initialize_the_same_new_sqlite_database(tmp_path: Path) -> None:

@@ -20,6 +20,8 @@ Plan/Workflow 状态值由 `neuroagent.domain.lifecycle` 定义，Worker 领取�
 
 本层不选择 Skill、不解释科研参数、不执行模型推理，也不接受任意命令。入队负载采用严格校验的 `JobEnvelope v1`，以 `JobKind` 注册执行能力，并分离 command、审批绑定、执行策略和追踪 ID；历史 SQLite 负载中的 `executor_type` 由读取适配器转换，未知版本或未注册类型失败关闭。组合根把 `MockJobExecutor` 和受控 MATLAB Executor 注入 Worker。Mock 工作流会通过 `WorkflowFactory`/`ToolRuntime` 遍历已批准的 `SkillPlan` DAG，MATLAB 统计路径会从已批准统计设计编译类型化 `MatlabJobSpec`；预处理路径从冻结 SkillPlan/manifest 编译 DPARSFA JobSpec，使用独立 attempt 工作目录并登记实际产物元数据。
 
+模型驱动的 READY 分析 outbox 由单独的 daemon worker 和独立服务实例消费，与 job 领取和 WorkTask reconciliation 的循环分离。该 consumer 只准备统计草稿；模型调用在数据库事务外，fenced 收口不能提交过期结果。`--once` 在完成原有 job/reconciliation 单轮后最多消费一个 outbox，消费中的模型调用会完成后再退出。
+
 MATLAB 路径由 registry 内的 `MatlabJobExecutor` 校验 `WorkflowFactory` 冻结计划并编译分段 DPARSFA 作业，并非逐个 DAG 节点经过 `ToolRuntime`。公共状态机、冻结计划与审批要求保持一致，不应将两种内部执行方式写为完全相同。
 
 2026-09-04 已用仓库外合成 4D 输入验证公共预处理 Worker 到 QC 的通路（删除 4 个初始 volume、保留 120 个、detrend，原始文件 SHA-256 不变）及组合 ALFF/fALFF/ReHo 通路。单会话 4D、metric-only 单主体以及阶段掩膜限制见 [验证文档](../../docs/development/mvp-verification.md)。

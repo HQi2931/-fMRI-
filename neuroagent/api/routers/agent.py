@@ -123,6 +123,28 @@ def get_conversation(conversation_id: str, request: Request) -> ConversationView
     )
 
 
+@router.post(
+    "/conversations/{conversation_id}/analysis-outbox/{intent_task_id}/retry",
+    response_model=ConversationView,
+    tags=["agent"],
+)
+def retry_analysis_outbox(
+    conversation_id: str,
+    intent_task_id: str,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationView:
+    return cast(
+        ConversationView,
+        to_http_response(
+            capability_from(request, "conversations").retry_analysis_outbox(
+                conversation_id, intent_task_id, idempotency_key
+            ),
+            ConversationView,
+        ),
+    )
+
+
 @router.patch(
     "/conversations/{conversation_id}/work-agent", response_model=ConversationView, tags=["agent"]
 )

@@ -986,6 +986,7 @@ class StatisticsMixin(BaseServiceMixin):
         draft: StatisticsDraft,
         covariate_values: Mapping[str, Mapping[str, float | None]] | None = None,
         label_values: Mapping[str, Mapping[str, str | None]] | None = None,
+        allowed_artifact_ids: frozenset[str] | None = None,
     ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
         """Assemble a reviewable design from a run's frozen QC decision.
 
@@ -1018,15 +1019,61 @@ class StatisticsMixin(BaseServiceMixin):
         artifacts_by_id = {
             item.artifact_id: item for item in self.artifact_repository.list_artifacts(run_id)
         }
+        if allowed_artifact_ids is not None:
+            for artifact_id in allowed_artifact_ids - artifacts_by_id.keys():
+                try:
+                    artifact = self.artifact_repository.get_artifact(artifact_id)
+                except ApplicationError:
+                    return None, (
+                        _design_issue(
+                            "analysis_artifact_allowlist_stale",
+                            "已核验的来源 Artifact 清单与当前登记内容不一致。",
+                        ),
+                    )
+                if (
+                    artifact.project_id != run.project_id
+                    or artifact.artifact_type != _BRAIN_MASK_TYPE
+                ):
+                    return None, (
+                        _design_issue(
+                            "analysis_artifact_allowlist_invalid",
+                            "续接允许清单中的跨运行 Artifact 只能是同项目的已核验 mask。",
+                        ),
+                    )
+                artifacts_by_id[artifact_id] = artifact
         refs: list[ArtifactRef] = []
         for artifact_id, artifact in artifacts_by_id.items():
+            if allowed_artifact_ids is not None and artifact_id not in allowed_artifact_ids:
+                continue
             if allowed_metric_ids is not None and artifact_id not in allowed_metric_ids:
                 continue
             refs.append(_artifact_ref(artifact))
+        referenced_mask_ids: set[str] = set()
+        for artifact_id, artifact in artifacts_by_id.items():
+            if allowed_artifact_ids is not None and artifact_id not in allowed_artifact_ids:
+                continue
+            if allowed_metric_ids is not None and artifact_id not in allowed_metric_ids:
+                continue
+            raw_lineage = artifact.provenance.get("lineage")
+            if isinstance(raw_lineage, dict) and isinstance(
+                raw_lineage.get("mask_artifact_id"), str
+            ):
+                referenced_mask_ids.add(str(raw_lineage["mask_artifact_id"]))
+        if allowed_artifact_ids is not None and not referenced_mask_ids.issubset(
+            allowed_artifact_ids
+        ):
+            return None, (
+                _design_issue(
+                    "analysis_mask_not_allowlisted",
+                    "来源指标引用的 mask 不在续接前核验的 Artifact 清单中。",
+                ),
+            )
         mask_refs = [
-            _artifact_ref(artifact)
-            for artifact in artifacts_by_id.values()
-            if artifact.artifact_type == (draft.mask_artifact_type or _BRAIN_MASK_TYPE)
+            _artifact_ref(artifacts_by_id[artifact_id])
+            for artifact_id in sorted(referenced_mask_ids)
+            if artifact_id in artifacts_by_id
+            and artifacts_by_id[artifact_id].artifact_type
+            == (draft.mask_artifact_type or _BRAIN_MASK_TYPE)
         ]
 
         sources, source_issues = collect_design_sources(
@@ -1043,6 +1090,17 @@ class StatisticsMixin(BaseServiceMixin):
         )
         if sources is None:
             return None, source_issues
+
+        selected_mask = artifacts_by_id.get(sources.mask_artifact_id)
+        if selected_mask is not None and selected_mask.run_id != run_id:
+            return None, (
+                _design_issue(
+                    "statistics_mask_run_mismatch",
+                    "该预处理指标使用了另一运行登记的 mask。"
+                    "当前统计方案要求 mask 与指标同属来源 Run；"
+                    "请在预处理方案中使用该 Run 的兼容 mask 后再继续。",
+                ),
+            )
 
         design, design_issues = assemble_statistical_design(
             choices=_choices_from_draft(draft),
@@ -1087,6 +1145,7 @@ class StatisticsMixin(BaseServiceMixin):
         draft: StatisticsDraft,
         external_import_id: str | None = None,
         project_id: str | None = None,
+        allowed_artifact_ids: frozenset[str] | None = None,
     ) -> tuple[StatisticalDesignProposal | None, tuple[DesignIssue, ...]]:
         """Bind a Work statistics draft to registered run and demographics evidence."""
 
@@ -1195,6 +1254,7 @@ class StatisticsMixin(BaseServiceMixin):
             draft=draft,
             label_values=label_values,
             covariate_values=covariate_values,
+            allowed_artifact_ids=allowed_artifact_ids,
         )
         if proposal is not None:
             proposal = proposal.model_copy(

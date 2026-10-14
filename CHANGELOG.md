@@ -6,7 +6,11 @@
 
 - 修复复合分析 intent 的跨轮绑定：intent ID 现在按会话和 HTTP 幂等键作用域化，沿 active 预处理草稿、WorkTask/TaskStep 精确传递；Run 启动仅按任务引用及 conversation/project/request hash 恢复原请求。普通新预处理不再继承历史 intent；同项目不同会话的相同请求可独立建立 outbox。每个 preprocessing WorkTask 当前仍只支持一个 intent/outbox。
 
-- 显式 `preprocess_then_analyze` 目标会创建持久 proposal-only 分析续接 outbox；预处理目标产物全部核验通过后，预处理任务完成和 outbox READY 在同一事务提交，并绑定确切 Artifact IDs。请求正文不复制进 outbox，而由 intent ID/hash 指向会话记录；READY 领取提供短租约与 fencing token。此切片不调用模型或创建/批准统计 Plan、Run，也不运行 MATLAB。
+- READY 分析提案 outbox 现在由独立 Worker 消费：调用现有分析 Agent 准备 proposal-only 草稿，模型调用在 SQLite 事务外。消费前重核精确会话/项目/intent、WorkTask/Plan/manifest/Run/QC、目标 Artifact 与 lineage，统计 assembler 只可读取 outbox 目标 ID 和逐项核验的 mask 依赖 ID。assistant-only continuation、分析 WorkTask/提案与 outbox 终态使用同一 Unit of Work 及 fencing token 原子提交；重复消费幂等，证据变化或 fencing 失效会丢弃模型结果。需要科研决策时进入 `WAITING_USER`；暂态错误采用有界退避并提供人工重试。页面在运行终态刷新会话；成功运行仍有待续接 intent 时立即读取并按指数间隔补读（1 秒起步、间隔上限 60 秒），最多 16 次查询，覆盖至少 10 分钟后停止或在 continuation 到达时立即停止。消费者独立于 workflow job/reconciliation；不创建或批准统计 Plan/Run，不运行 MATLAB。
+
+- 分析续接模型上下文现在只包含有界来源摘要，不再携带逐 Artifact ID、路径、校验和或完整 lineage；服务端保留完整证据并负责精确 allowlist。页面按 retry generation 追踪续接状态，人工重试会恢复轮询并隐藏上一代已过期的重试入口。
+
+- 显式 `preprocess_then_analyze` 目标会创建持久 proposal-only 分析续接 outbox；预处理目标产物全部核验通过后，预处理任务完成和 outbox READY 在同一事务提交，并绑定确切 Artifact IDs。请求正文不复制进 outbox，而由 intent ID/hash 指向会话记录；READY 领取提供短租约与 fencing token。该持久合同现已由上方的独立 Worker 消费实现扩展；统计 Plan/Run 仍需用户授权，不会自动运行 MATLAB。
 
 - 执行编译器与持久 WorkTask 共用 DPABI 预处理目标产物合同；Run 成功且 QC 已批准或显式跳过后，按冻结 Plan、manifest、精确 Artifact 类型/路径、subject/metric/scaling lineage 和兼容 mask 核验。所有目标匹配时完成预处理步骤和任务；产物缺失或来源矛盾时阻断。Worker 恢复旧的、绑定有效预处理步骤的 `downstream:<run_id>` 等待，普通 dependency 不会被领取。
 

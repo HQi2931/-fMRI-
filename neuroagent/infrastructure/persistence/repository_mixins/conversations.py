@@ -77,7 +77,7 @@ class ConversationMixin(RepositoryBaseMixin):
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         proposal_hash: str,
         plan_revision_id: str,
         run_id: str | None = None,
@@ -87,6 +87,8 @@ class ConversationMixin(RepositoryBaseMixin):
             row = session.get(ConversationRow, conversation_id)
             if row is None:
                 raise NotFoundError("conversation", conversation_id)
+            if project_id is None:
+                raise ConflictError("statistics_work_project_mismatch", "方案不属于此会话项目。")
             task = require_analysis_task(
                 self._conversation_view(session, row),
                 project_id=project_id,
@@ -142,7 +144,7 @@ class ConversationMixin(RepositoryBaseMixin):
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         plan_revision_id: str,
         plan_hash: str,
         qc_mode: Any,
@@ -455,6 +457,120 @@ class ConversationMixin(RepositoryBaseMixin):
                 self._message(assistant_row),
                 self._tool_call(tool_row) if tool_row is not None else None,
             )
+
+    def append_assistant_continuation(
+        self,
+        conversation_id: str,
+        *,
+        continuation_key: str,
+        assistant_content: str,
+        assistant_payload: dict[str, Any],
+        project_id: str | None,
+        work_task_id: str | None,
+        update_work_state: bool = True,
+    ) -> tuple[ConversationView, ConversationMessageView]:
+        """Append one idempotent assistant-only continuation inside the caller UoW."""
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if update_work_state and project_id is None:
+                raise ConflictError(
+                    "analysis_continuation_conversation_changed",
+                    "分析续接会话已切换模式或项目。",
+                )
+            if row.project_id != project_id or (
+                update_work_state and row.mode != ConversationMode.WORK.value
+            ):
+                raise ConflictError(
+                    "analysis_continuation_conversation_changed",
+                    "分析续接会话已切换模式或项目。",
+                )
+            existing = session.scalar(
+                select(ConversationMessageRow).where(
+                    ConversationMessageRow.continuation_key == continuation_key
+                )
+            )
+            if existing is not None:
+                existing_payload = _load(existing.payload_json, {})
+                existing_outbox = existing_payload.get("analysis_outbox_continuation")
+                requested_outbox = assistant_payload.get("analysis_outbox_continuation")
+                if (
+                    existing.conversation_id != conversation_id
+                    or existing.role != ConversationRole.ASSISTANT.value
+                    or not isinstance(existing_outbox, dict)
+                    or not isinstance(requested_outbox, dict)
+                    or existing_outbox.get("intent_task_id")
+                    != requested_outbox.get("intent_task_id")
+                ):
+                    raise ConflictError(
+                        "analysis_continuation_key_conflict",
+                        "续接幂等键已绑定到其他会话消息。",
+                    )
+                return self._conversation_view(session, row), self._message(existing)
+
+            last_sequence = session.scalar(
+                select(func.max(ConversationMessageRow.sequence)).where(
+                    ConversationMessageRow.conversation_id == conversation_id
+                )
+            )
+            assistant_row = ConversationMessageRow(
+                message_id=_id(),
+                conversation_id=conversation_id,
+                sequence=int(last_sequence or 0) + 1,
+                role=ConversationRole.ASSISTANT.value,
+                content=assistant_content,
+                payload_json=canonical_json(assistant_payload),
+                continuation_key=continuation_key,
+            )
+            session.add(assistant_row)
+            session.flush()
+
+            if update_work_state:
+                tasks = _load(row.work_tasks_json, {})
+                role = WorkAgentRole.ANALYSIS
+                task = ConversationWorkTaskView.model_validate(
+                    tasks.get(role.value, {"agent_role": role.value})
+                )
+                snapshot = assistant_payload.get("analysis_draft")
+                if (
+                    isinstance(snapshot, dict)
+                    and isinstance(snapshot.get("hash"), str)
+                    and snapshot["hash"] != task.draft_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "draft_hash": snapshot["hash"],
+                            "proposal_hash": None,
+                            "proposal_message_id": None,
+                            "plan_revision_id": None,
+                            "work_task_id": None,
+                            "run_id": None,
+                        }
+                    )
+                proposal = assistant_payload.get("statistical_design_proposal")
+                if isinstance(proposal, dict):
+                    task = task.model_copy(
+                        update={
+                            "proposal_hash": proposal.get("proposal_hash"),
+                            "proposal_message_id": assistant_row.message_id,
+                            "plan_revision_id": None,
+                            "run_id": None,
+                            "work_task_id": work_task_id,
+                        }
+                    )
+                elif work_task_id is not None:
+                    raise ConflictError(
+                        "analysis_continuation_task_without_proposal",
+                        "只有完整统计提案可以绑定分析 WorkTask。",
+                    )
+                row.foreground_agent_role = role.value
+                tasks[role.value] = task.model_dump(mode="json")
+                row.work_tasks_json = canonical_json(tasks)
+                row.active_run_id = task.run_id
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row), self._message(assistant_row)
 
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
         with self._read_session() as session:

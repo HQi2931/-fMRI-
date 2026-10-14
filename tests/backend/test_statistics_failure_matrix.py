@@ -626,9 +626,12 @@ def test_internal_statistics_rejects_mixed_or_misaligned_registered_lineage(
     if change != "missing_lineage":
         fields["provenance"] = {**fields["provenance"], "lineage": lineage}
     altered = type(target).model_validate(fields)
-    original_get = service.repository.get_artifact
+    # StatisticsMixin reads the narrow artifact catalog port. The legacy
+    # aggregate repository is a separate adapter and patching it would leave
+    # the registered lineage read below untouched.
+    original_get = service.artifact_repository.get_artifact
     monkeypatch.setattr(
-        service.repository,
+        service.artifact_repository,
         "get_artifact",
         lambda artifact_id: (
             altered if artifact_id == target.artifact_id else original_get(artifact_id)

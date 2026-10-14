@@ -7,6 +7,7 @@ from typing import Protocol
 
 from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxClaim,
+    AnalysisOutboxStatus,
     AnalysisProposalOutbox,
 )
 from neuroagent.application.automation.models import (
@@ -78,5 +79,32 @@ class WorkTaskRepositoryPort(Protocol):
     ) -> AnalysisOutboxClaim | None: ...
 
     def validate_analysis_outbox_claim(self, claim: AnalysisOutboxClaim) -> bool: ...
+
+    def renew_analysis_outbox_claim(
+        self, claim: AnalysisOutboxClaim, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None: ...
+
+    def defer_analysis_outbox_claim(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool: ...
+
+    def complete_analysis_outbox(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        status: AnalysisOutboxStatus,
+        continuation_message_id: str,
+        analysis_work_task_id: str | None,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> AnalysisProposalOutbox: ...
+
+    def requeue_analysis_outbox(
+        self, intent_task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> AnalysisProposalOutbox | None: ...
 
     def atomic(self) -> AbstractContextManager[None]: ...

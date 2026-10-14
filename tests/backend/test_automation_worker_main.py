@@ -30,6 +30,11 @@ def test_worker_main_runs_one_deterministic_task_reconciliation_on_startup(monke
 
     monkeypatch.setattr(worker_main, "build_service", lambda: FakeService())
     monkeypatch.setattr(worker_main, "build_worker", lambda _service: FakeWorker())
+    monkeypatch.setattr(
+        worker_main,
+        "process_one_analysis_outbox",
+        lambda _service, _worker_id: calls.append(("analysis-outbox",)) or "deferred",
+    )
     monkeypatch.setattr(sys, "argv", ["rsfmri-worker", "--once"])
 
     worker_main.main()
@@ -41,5 +46,6 @@ def test_worker_main_runs_one_deterministic_task_reconciliation_on_startup(monke
             "worker-for-automation",
             {"lease_seconds": 17, "cooldown_seconds": 0.5},
         ),
+        ("analysis-outbox",),
         ("close",),
     ]

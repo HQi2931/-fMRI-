@@ -3,12 +3,52 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
+import threading
 import time
+from uuid import uuid4
 
+from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_service, build_worker
 
 logger = logging.getLogger(__name__)
+
+
+def process_one_analysis_outbox(service: ApplicationServices, worker_id: str) -> str | None:
+    """Wait for at most one READY continuation attempt, including its model call."""
+    return asyncio.run(
+        service.conversations.consume_next_analysis_outbox(
+            worker_id,
+            lease_seconds=service.settings.automation_claim_lease_seconds,
+        )
+    )
+
+
+def _analysis_outbox_worker(stop: threading.Event, poll_seconds: float) -> None:
+    """Run model-backed continuations in an isolated worker thread/service."""
+    service = build_service()
+    worker_id = f"analysis-outbox-{uuid4().hex}"
+
+    async def run() -> None:
+        while not stop.is_set():
+            try:
+                outcome = await service.conversations.consume_next_analysis_outbox(
+                    worker_id,
+                    lease_seconds=service.settings.automation_claim_lease_seconds,
+                )
+                if outcome is not None:
+                    logger.info("Analysis outbox attempt finished: outcome=%s", outcome)
+            except Exception:
+                logger.exception("Analysis outbox worker pass failed; it will be retried")
+                outcome = None
+            if outcome is None:
+                await asyncio.to_thread(stop.wait, poll_seconds)
+
+    try:
+        asyncio.run(run())
+    finally:
+        service.close()
 
 
 def main() -> None:
@@ -16,12 +56,25 @@ def main() -> None:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="claim at most one Workflow job and reconcile at most one WorkTask",
+        help=(
+            "claim at most one Workflow job, reconcile at most one WorkTask, and attempt at most "
+            "one READY analysis outbox (awaiting its model call if claimed)"
+        ),
     )
     parser.add_argument("--poll-seconds", type=float, default=0.5)
     args = parser.parse_args()
     service = build_service()
     worker = build_worker(service)
+    stop_outbox = threading.Event()
+    outbox_thread: threading.Thread | None = None
+    if not args.once:
+        outbox_thread = threading.Thread(
+            target=_analysis_outbox_worker,
+            args=(stop_outbox, max(args.poll_seconds, 0.05)),
+            name="analysis-outbox-worker",
+            daemon=True,
+        )
+        outbox_thread.start()
     try:
         while True:
             handled = worker.run_once()
@@ -41,12 +94,20 @@ def main() -> None:
             except Exception:
                 logger.exception("WorkTask reconciliation pass failed; it will be retried")
             if args.once:
+                outcome = process_one_analysis_outbox(
+                    service, f"analysis-outbox-once-{uuid4().hex}"
+                )
+                if outcome is not None:
+                    logger.info("Analysis outbox one-shot attempt finished: outcome=%s", outcome)
                 return
             if not handled:
                 time.sleep(max(args.poll_seconds, 0.05))
     except KeyboardInterrupt:
         return
     finally:
+        stop_outbox.set()
+        if outbox_thread is not None:
+            outbox_thread.join(timeout=1)
         service.close()
 
 
