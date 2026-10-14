@@ -46,6 +46,38 @@
 
 主要代码入口：`neuroagent/agent/loop.py`、`neuroagent/application/service_mixins/conversations.py`、`neuroagent/application/work_dialogue.py`、`neuroagent/application/work_tasks.py`、`neuroagent/application/work_handoffs.py`、`neuroagent/skills/resolver.py`、`neuroagent/skills/models.py`、`neuroagent/domain/fmri/artifacts.py`、`neuroagent/execution/preprocessing.py`、`matlab/templates/run_preprocessing.m.tmpl` 和 `neuroagent/infrastructure/matlab_executor.py`。验收事实以验证文档最新记录为准。
 
+## 架构优化决策与落地顺序
+
+本计划的核心诊断是：当前体验的主要断点不是一次模型请求里缺少更多推理轮数，而是没有一条完整、持久的应用流程把用户目标、预处理/分析角色、方案审批、Workflow Run、QC、Artifact 和报告连接起来。请求内有界工具循环已经能解决局部“读取—提案—校验—修订”；它不能单独承担 MATLAB 长时间等待、用户离开页面、服务重启、跨角色交接和下游依赖恢复。若缺少持久的目标协调，用户就会被迫用“继续”消息手动充当调度器。
+
+因此采用现有本地优先模块化单体，沿当前目录边界逐步补齐职责，不整体重写 Agent 框架，不先拆微服务，也不把更多决策塞进提示词。职责与改造落点如下：
+
+| 边界 | 负责的工作 | 本计划中的落点与约束 |
+| --- | --- | --- |
+| API / Work 交互 | 接收目标、工作区和用户决定；展示方案、等待原因、状态与结果 | `neuroagent/api/` 与 Work 前端只转换和呈现应用命令/查询，不直接调用模型、拼接 MATLAB 命令或修改科研状态 |
+| Agent 与对话 | 解析意图、选择预处理/分析角色、读取允许的上下文、生成结构化草稿和解释 | `application/work_*` 与 Agent runtime 保持 READ/PROPOSE；模型输出必须进入 schema 和确定性预检，不能成为运行时事实 |
+| 用例与目标编排 | 组织单次交互、WorkTask/TaskStep、预算、用户等待、事件恢复及跨能力协作 | `application/automation/` 持有目标推进；`WorkTask` 保存状态引用与等待条件，不复制 Plan、Run、QC 或 Artifact 的权威状态 |
+| fMRI 领域与 Skill | 输入身份、指标顺序、方法学限制、适用条件、参数/产物/lineage 合同和校验 | `domain/fmri/` 与 `skills/` 提供确定性规则和不可变计划；不依赖 Provider、SQLite、HTTP 或进程执行 |
+| Workflow 与执行 | 执行已批准的冻结方案，跟踪 attempt/超时/取消并登记产物 | `workflow/`、`execution/` 与固定 MATLAB 模板继续独立于对话编排；运行重试复用同一 Run/Worker 语义，不由目标控制器擅自创建新 Run |
+| 基础设施与组合根 | 实现数据库、文件、模型、事件和执行端口，并装配应用 | `infrastructure/` 实现窄端口；`bootstrap.py` 只负责依赖装配，不承载科学或任务推进规则 |
+
+两个循环必须分开实现并共享结构化合同：
+
+1. **请求内反馈循环**在一次前台交互内受步数、token、墙钟和无进展熔断约束，负责调查可读取事实、提出/修订未批准草稿、运行确定性预检，并以“待用户决定、待审批、能力阻断或已形成草稿”结束。修订不改变科研语义；事实相同且问题未变化时停止，不反复调用模型。
+2. **跨请求持久循环**由 WorkTask 与 Worker 恢复协调器驱动，只在用户输入、运行事件或到期重查时醒来。事件只是唤醒信号；恢复后重读 Run、QC、输入 revision 和 Artifact 等权威记录，再判断下一步。它不能持有旧的一次性授权，也不在等待长作业时持续调用模型。
+
+跨循环的模型工作应采用“先验证、后生成、再 fenced 提交”的边界：应用服务先核验任务绑定和冻结输入，再在数据库事务外调用相应 Agent；最终提交前重新检查任务版本、claim/fencing token 和输入 hash。续接结果只产生可审查的 assistant 草稿或报告草稿；Plan 审批、统计运行、QC 决定仍走现有用户授权入口。任何失去租约、版本过期或证据不一致的生成结果都不得落库。此规则是阶段 B 下游续接实现的验收约束，细节与已接受 ADR 以 ADR 为准。
+
+落地顺序按依赖从低到高推进：
+
+1. 先统一结构化预检问题、证据来源、可安全修订范围和停止原因，让预处理与分析角色共享一致反馈合同。
+2. 补全 WorkTask 的持久生命周期、事件去重/周期恢复、租约 fencing 和目标 Artifact 完成判定；将模型续接限定为证据核验后的提案生成，不让协调器代替审批或启动运行。
+3. 再改善输入身份和外部指标映射，覆盖单组、表驱动分组与 session/run 配对；候选推断必须保持候选身份，不能提升为已验证事实。
+4. 将 Skill 逻辑 DAG 映射为已核验的物理执行单元，标明 DPABI 调用、输入/输出、调用前后检查、重试范围及可物化 checkpoint；不把单次 `DPARSFA_run` 内部步骤描述成可暂停点。
+5. 最后逐项扩展 FC、多 session/run 和统计方法。每项能力必须贯通输入、设计、执行、Artifact lineage、解释与失败恢复后才能进入可自动编排范围。
+
+本计划明确不以“任意自然语言→自由 MATLAB 脚本”、自动替用户选检验/阈值/协变量/样本、任意 DAG 搜索、增加第三个协调模型或目录级大搬迁来提高自动化率。架构职责和数据流的稳定说明见[Agent 通用自动化运行架构方案](../architecture/agent-automation-runtime.md)；本节只约束计划 0014 的实现顺序与评审边界。
+
 ## 目标流程
 
 ```mermaid
