@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 from neuroagent.application.automation.analysis_outbox import (
@@ -24,6 +27,10 @@ from neuroagent.application.automation.models import (
 from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
+)
+from neuroagent.application.automation.step_preparation import (
+    StepPreparationClaim,
+    resolve_step_preparation_target,
 )
 from neuroagent.application.errors import ConflictError
 from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
@@ -56,6 +63,65 @@ def make_task() -> WorkTask:
             max_tokens=6000,
             max_elapsed_seconds=1800,
         ),
+    )
+
+
+def make_step_preparation_task(
+    *, task_id: str = "task-step-prepare", target_kind: str = "statistical_run"
+) -> WorkTask:
+    return WorkTask(
+        task_id=task_id,
+        goal=WorkGoal(
+            description="Prepare and review a follow-up fMRI analysis",
+            completion_conditions=("all planned analysis steps are verified",),
+        ),
+        status=TaskStatus.RUNNING,
+        authority_refs=AuthorityReferences(
+            conversation_id="conversation-3",
+        ),
+        steps=(
+            TaskStep(
+                step_id="preprocessing",
+                sequence=0,
+                kind="preprocessing_run",
+                status=TaskStepStatus.SUCCEEDED,
+                input_version="preprocessing-input-v1",
+                authority_refs=AuthorityReferences(
+                    plan_revision_id="preprocessing-plan",
+                    workflow_run_id="preprocessing-run",
+                    input_revision="manifest-v1",
+                    artifact_ids=("metric-alff", "mask-common"),
+                ),
+                version=2,
+            ),
+            TaskStep(
+                step_id="analysis",
+                sequence=1,
+                kind=target_kind,
+                status=TaskStepStatus.READY,
+                input_version="analysis-request-v1",
+                authority_refs=AuthorityReferences(
+                    conversation_id="conversation-3",
+                    analysis_intent_task_id="intent-1",
+                    analysis_request_hash="a" * 64,
+                    input_revision="analysis-input-v1",
+                ),
+                version=3,
+            ),
+            TaskStep(
+                step_id="report",
+                sequence=2,
+                kind="statistical_run",
+                status=TaskStepStatus.PENDING,
+            ),
+        ),
+        budget=TaskBudget(
+            max_steps=12,
+            max_model_calls=5,
+            max_tokens=6000,
+            max_elapsed_seconds=1800,
+        ),
+        version=7,
     )
 
 
@@ -158,6 +224,280 @@ def test_reconciliation_claim_is_exclusive_and_respects_cooldown(tmp_path, monke
     )
     assert second is not None
     assert second.worker_id == "worker-b"
+    database.dispose()
+
+
+def test_step_preparation_target_fingerprint_binds_goal_step_and_successful_inputs() -> None:
+    task = make_step_preparation_task()
+    target = resolve_step_preparation_target(task)
+    assert target is not None
+
+    changed_goal = task.model_copy(
+        update={"goal": task.goal.model_copy(update={"description": "Changed goal"})}
+    )
+    assert (
+        resolve_step_preparation_target(changed_goal).input_fingerprint != target.input_fingerprint
+    )
+
+    changed_step = task.model_copy(
+        update={
+            "steps": (
+                task.steps[0],
+                task.steps[1].model_copy(update={"version": task.steps[1].version + 1}),
+                task.steps[2],
+            )
+        }
+    )
+    assert (
+        resolve_step_preparation_target(changed_step).input_fingerprint != target.input_fingerprint
+    )
+
+    changed_predecessor = task.model_copy(
+        update={
+            "steps": (
+                task.steps[0].model_copy(
+                    update={
+                        "authority_refs": task.steps[0].authority_refs.model_copy(
+                            update={"artifact_ids": ("different-metric",)}
+                        )
+                    }
+                ),
+                task.steps[1],
+                task.steps[2],
+            )
+        }
+    )
+    assert (
+        resolve_step_preparation_target(changed_predecessor).input_fingerprint
+        != target.input_fingerprint
+    )
+
+
+def test_step_preparation_claim_returns_exact_ready_target_and_persists_across_restart(
+    tmp_path,
+) -> None:
+    path = tmp_path / "step-preparation-restart.sqlite"
+    database, repository = open_repository(path)
+    task = make_step_preparation_task()
+    repository.create_task(task)
+    expected = resolve_step_preparation_target(task)
+    assert expected is not None
+    database.dispose()
+
+    restarted_db, restarted_repo = open_repository(path)
+    claim = restarted_repo.claim_next_step_preparation(
+        "prepare-worker", lease_seconds=30, cooldown_seconds=0
+    )
+    assert claim is not None
+    assert claim.task_id == expected.task_id
+    assert claim.task_version == expected.task_version
+    assert claim.step_id == expected.step_id
+    assert claim.step_kind == expected.step_kind
+    assert claim.step_version == expected.step_version
+    assert claim.input_fingerprint == expected.input_fingerprint
+    assert claim.claim_token
+    assert claim.lease_expires_at > 0
+    assert (
+        restarted_repo.claim_next_step_preparation(
+            "other-worker", lease_seconds=30, cooldown_seconds=0
+        )
+        is None
+    )
+    assert restarted_repo.release_step_preparation_claim(claim)
+    restarted_db.dispose()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("predecessor_pending", "multiple_active", "unknown_kind", "single_step", "legacy"),
+)
+def test_invalid_or_unsupported_step_preparation_targets_are_not_claimed(tmp_path, case) -> None:
+    task = make_step_preparation_task(task_id=f"task-step-prepare-{case}")
+    if case == "predecessor_pending":
+        task = task.model_copy(
+            update={
+                "steps": (
+                    task.steps[0].model_copy(update={"status": TaskStepStatus.PENDING}),
+                    task.steps[1],
+                    task.steps[2],
+                )
+            }
+        )
+    elif case == "multiple_active":
+        task = task.model_copy(
+            update={
+                "steps": (
+                    task.steps[0],
+                    task.steps[1],
+                    task.steps[2].model_copy(update={"status": TaskStepStatus.READY}),
+                )
+            }
+        )
+    elif case == "unknown_kind":
+        task = make_step_preparation_task(
+            task_id=f"task-step-prepare-{case}", target_kind="unknown_step_kind"
+        )
+    elif case == "single_step":
+        task = task.model_copy(update={"steps": (task.steps[1],)})
+    elif case == "legacy":
+        task = task.model_copy(update={"steps": ()})
+
+    database, repository = open_repository(tmp_path / f"step-preparation-{case}.sqlite")
+    repository.create_task(task)
+    assert (
+        repository.claim_next_step_preparation(
+            "prepare-worker", lease_seconds=30, cooldown_seconds=0
+        )
+        is None
+    )
+    database.dispose()
+
+
+@pytest.mark.parametrize("change", ("step_version", "predecessor_artifacts"))
+def test_step_preparation_claim_fails_after_step_or_input_fingerprint_changes(
+    tmp_path, change
+) -> None:
+    database, repository = open_repository(tmp_path / f"step-preparation-stale-{change}.sqlite")
+    task = make_step_preparation_task()
+    repository.create_task(task)
+    claim = repository.claim_next_step_preparation(
+        "prepare-worker", lease_seconds=30, cooldown_seconds=0
+    )
+    assert claim is not None
+
+    if change == "step_version":
+        first = task.steps[0]
+        target_step = task.steps[1].model_copy(update={"version": task.steps[1].version + 1})
+    else:
+        first = task.steps[0].model_copy(
+            update={
+                "authority_refs": task.steps[0].authority_refs.model_copy(
+                    update={"artifact_ids": ("replacement-artifact",)}
+                )
+            }
+        )
+        target_step = task.steps[1]
+    changed = task.model_copy(
+        update={
+            "steps": (first, target_step, task.steps[2]),
+            "version": task.version + 1,
+        }
+    )
+    repository.save_task(changed, expected_version=task.version)
+    assert resolve_step_preparation_target(changed).input_fingerprint != claim.input_fingerprint
+
+    current_step = changed.steps[1]
+    preparing = changed.model_copy(
+        update={
+            "steps": (
+                changed.steps[0],
+                current_step.model_copy(
+                    update={"status": TaskStepStatus.RUNNING, "version": current_step.version + 1}
+                ),
+                changed.steps[2],
+            ),
+            "version": changed.version + 1,
+        }
+    )
+    with pytest.raises(ConflictError) as error:
+        repository.save_task(
+            preparing,
+            expected_version=changed.version,
+            step_preparation_claim=claim.model_copy(update={"task_version": changed.version}),
+        )
+    assert error.value.code == "step_preparation_claim_lost"
+    database.dispose()
+
+
+def test_step_preparation_claim_expiry_replaces_token_and_fences_old_worker(
+    tmp_path, monkeypatch
+) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    path = tmp_path / "step-preparation-expiry.sqlite"
+    database, repository = open_repository(path)
+    task = make_step_preparation_task()
+    repository.create_task(task)
+    barrier = Barrier(2)
+
+    def claim(worker_id: str) -> StepPreparationClaim | None:
+        barrier.wait()
+        return repository.claim_next_step_preparation(
+            worker_id, lease_seconds=5, cooldown_seconds=0
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        simultaneous = tuple(executor.map(claim, ("worker-a", "worker-b")))
+    first = next(item for item in simultaneous if item is not None)
+    assert first is not None
+    assert sum(item is not None for item in simultaneous) == 1
+    database.dispose()
+
+    database, repository = open_repository(path)
+    assert (
+        repository.claim_next_step_preparation(
+            "worker-after-restart", lease_seconds=5, cooldown_seconds=0
+        )
+        is None
+    )
+
+    now[0] += 5
+    second = repository.claim_next_step_preparation("worker-b", lease_seconds=5, cooldown_seconds=0)
+    assert second is not None
+    assert second.claim_token != first.claim_token
+    next_step = task.steps[1]
+    preparing = task.model_copy(
+        update={
+            "steps": (
+                task.steps[0],
+                next_step.model_copy(
+                    update={"status": TaskStepStatus.RUNNING, "version": next_step.version + 1}
+                ),
+                task.steps[2],
+            ),
+            "version": task.version + 1,
+        }
+    )
+    with pytest.raises(ConflictError) as error:
+        repository.save_task(
+            preparing,
+            expected_version=task.version,
+            step_preparation_claim=first,
+        )
+    assert error.value.code == "step_preparation_claim_lost"
+    repository.save_task(
+        preparing,
+        expected_version=task.version,
+        step_preparation_claim=second,
+    )
+    assert repository.get_task(task.task_id).steps[1].status is TaskStepStatus.RUNNING
+    assert not repository.release_step_preparation_claim(first)
+    database.dispose()
+
+
+def test_step_preparation_release_preserves_cooldown(tmp_path, monkeypatch) -> None:
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+    database, repository = open_repository(tmp_path / "step-preparation-cooldown.sqlite")
+    repository.create_task(make_step_preparation_task())
+    claim = repository.claim_next_step_preparation(
+        "prepare-worker", lease_seconds=30, cooldown_seconds=10
+    )
+    assert claim is not None
+    assert repository.release_step_preparation_claim(claim)
+    assert (
+        repository.claim_next_step_preparation("other-worker", lease_seconds=30, cooldown_seconds=0)
+        is None
+    )
+    now[0] += 10
+    assert (
+        repository.claim_next_step_preparation("other-worker", lease_seconds=30, cooldown_seconds=0)
+        is not None
+    )
     database.dispose()
 
 

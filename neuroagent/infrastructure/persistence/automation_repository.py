@@ -40,6 +40,11 @@ from neuroagent.application.automation.result_interpretation import (
     StatisticalResultInterpretationOutbox,
 )
 from neuroagent.application.automation.step_lifecycle import resolve_routed_workflow_run
+from neuroagent.application.automation.step_preparation import (
+    StepPreparationClaim,
+    StepPreparationTarget,
+    resolve_step_preparation_target,
+)
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
@@ -1907,18 +1912,154 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         *,
         expected_version: int,
         claim_token: str | None = None,
+        step_preparation_claim: StepPreparationClaim | None = None,
     ) -> WorkTask:
         if task.version != expected_version + 1:
             raise ValueError("saved WorkTask version must equal expected_version + 1")
+        if claim_token is not None and step_preparation_claim is not None:
+            raise ValueError("a task save cannot use both reconciliation and preparation claims")
         with self.unit_of_work.atomic(), self._write_session() as session:
             if claim_token is not None:
                 self._require_reconciliation_claim(session, task.task_id, claim_token)
+            if step_preparation_claim is not None:
+                self._require_step_preparation_claim(
+                    session,
+                    task.task_id,
+                    expected_version,
+                    step_preparation_claim,
+                )
             changed = self._update_task_row(session, task, expected_version)
             if changed != 1:
                 self._raise_version_conflict(session, task.task_id, expected_version)
             self._replace_children(session, task)
             self._sync_preprocessing_composite_goal(session, task)
         return task
+
+    def claim_next_step_preparation(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> StepPreparationClaim | None:
+        """Claim one persisted READY successor with a step/input-scoped fence."""
+
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200:
+            raise ValueError("worker_id must contain 1 to 200 characters")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be at least 1")
+        if cooldown_seconds < 0:
+            raise ValueError("cooldown_seconds must be nonnegative")
+        now = time.time()
+        claim_token = uuid4().hex
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT target.task_id, target.task_version, target.step_id,
+                                  target.step_kind, target.step_version,
+                                  target.input_fingerprint
+                           FROM work_task_step_preparation_targets AS target
+                           JOIN work_tasks AS task ON task.task_id = target.task_id
+                           JOIN work_task_steps AS step
+                             ON step.task_id = target.task_id AND step.step_id = target.step_id
+                           LEFT JOIN work_task_step_preparation_claims AS claim
+                             ON claim.task_id = target.task_id
+                           WHERE task.status = 'running'
+                             AND task.version = target.task_version
+                             AND step.status = 'ready'
+                             AND step.version = target.step_version
+                             AND (claim.task_id IS NULL OR (
+                                  claim.available_at <= :now
+                                  AND (claim.lease_expires_at IS NULL
+                                       OR claim.lease_expires_at <= :now)
+                             ))
+                           ORDER BY COALESCE(claim.available_at, 0), target.task_id
+                           LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            target = StepPreparationTarget(
+                task_id=row["task_id"],
+                task_version=row["task_version"],
+                step_id=row["step_id"],
+                step_kind=row["step_kind"],
+                step_version=row["step_version"],
+                input_fingerprint=row["input_fingerprint"],
+            )
+            current = self._task_from_session(session, target.task_id)
+            try:
+                current_target = resolve_step_preparation_target(current)
+            except ValueError:
+                current_target = None
+            if current_target != target:
+                # The target is a derived index; rebuild it if persisted data no
+                # longer agrees before issuing any work to a background handler.
+                self._replace_step_preparation_target(session, current)
+                return None
+            lease_expires_at = now + lease_seconds
+            inserted = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """INSERT INTO work_task_step_preparation_claims
+                           (task_id, lease_owner, claim_token, lease_expires_at, available_at)
+                           VALUES (:task_id, :owner, :token, :expires, :available)
+                           ON CONFLICT(task_id) DO UPDATE SET
+                             lease_owner = excluded.lease_owner,
+                             claim_token = excluded.claim_token,
+                             lease_expires_at = excluded.lease_expires_at,
+                             available_at = excluded.available_at
+                           WHERE work_task_step_preparation_claims.available_at <= :now
+                             AND (work_task_step_preparation_claims.lease_expires_at IS NULL
+                                  OR work_task_step_preparation_claims.lease_expires_at <= :now)"""
+                    ),
+                    {
+                        "task_id": target.task_id,
+                        "owner": owner,
+                        "token": claim_token,
+                        "expires": lease_expires_at,
+                        "available": now + cooldown_seconds,
+                        "now": now,
+                    },
+                ),
+            )
+            if inserted.rowcount != 1:
+                return None
+        return StepPreparationClaim(
+            **target.model_dump(),
+            worker_id=owner,
+            claim_token=claim_token,
+            lease_expires_at=lease_expires_at,
+        )
+
+    def release_step_preparation_claim(self, claim: StepPreparationClaim) -> bool:
+        """Release only the current exact worker/token, preserving its cooldown."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE work_task_step_preparation_claims
+                           SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL
+                           WHERE task_id = :task_id AND lease_owner = :worker_id
+                             AND claim_token = :claim_token"""
+                    ),
+                    {
+                        "task_id": claim.task_id,
+                        "worker_id": claim.worker_id,
+                        "claim_token": claim.claim_token,
+                    },
+                ),
+            )
+        return changed.rowcount == 1
 
     def claim_next_reconciliation_task(
         self,
@@ -2143,6 +2284,68 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 },
             )
         self._replace_reconciliation_target(session, task)
+        self._replace_step_preparation_target(session, task)
+
+    @staticmethod
+    def _replace_step_preparation_target(session: Session, task: WorkTask) -> None:
+        """Atomically rebuild the indexed prepare target from the saved TaskSteps."""
+
+        existing = (
+            session.execute(
+                text(
+                    """SELECT task_version, step_id, step_kind, step_version,
+                              input_fingerprint
+                       FROM work_task_step_preparation_targets WHERE task_id = :task_id"""
+                ),
+                {"task_id": task.task_id},
+            )
+            .mappings()
+            .first()
+        )
+        try:
+            target = resolve_step_preparation_target(task)
+        except ValueError:
+            target = None
+        existing_target = (
+            StepPreparationTarget(task_id=task.task_id, **dict(existing))
+            if existing is not None
+            else None
+        )
+        if existing_target == target:
+            return
+
+        # Changing or removing a target revokes any in-flight token before a
+        # later version can be claimed, even if its lease has not expired.
+        session.execute(
+            text(
+                """UPDATE work_task_step_preparation_claims
+                   SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL,
+                       available_at = 0
+                   WHERE task_id = :task_id"""
+            ),
+            {"task_id": task.task_id},
+        )
+        if target is None:
+            session.execute(
+                text("DELETE FROM work_task_step_preparation_targets WHERE task_id = :task_id"),
+                {"task_id": task.task_id},
+            )
+            return
+        session.execute(
+            text(
+                """INSERT INTO work_task_step_preparation_targets
+                   (task_id, task_version, step_id, step_kind, step_version, input_fingerprint)
+                   VALUES (:task_id, :task_version, :step_id, :step_kind, :step_version,
+                           :input_fingerprint)
+                   ON CONFLICT(task_id) DO UPDATE SET
+                     task_version = excluded.task_version,
+                     step_id = excluded.step_id,
+                     step_kind = excluded.step_kind,
+                     step_version = excluded.step_version,
+                     input_fingerprint = excluded.input_fingerprint"""
+            ),
+            target.model_dump(),
+        )
 
     @staticmethod
     def _replace_reconciliation_target(session: Session, task: WorkTask) -> None:
@@ -2251,6 +2454,64 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 "work_task_claim_lost",
                 "自动化任务领取已过期或已转交。本次恢复结果未写入。",
                 task_id=task_id,
+            )
+
+    @staticmethod
+    def _require_step_preparation_claim(
+        session: Session,
+        task_id: str,
+        expected_version: int,
+        claim: StepPreparationClaim,
+    ) -> None:
+        row = (
+            session.execute(
+                text(
+                    """SELECT target.task_version, target.step_id, target.step_kind,
+                              target.step_version, target.input_fingerprint,
+                              claim.lease_owner, claim.claim_token, claim.lease_expires_at
+                       FROM work_task_step_preparation_targets AS target
+                       JOIN work_task_step_preparation_claims AS claim
+                         ON claim.task_id = target.task_id
+                       WHERE target.task_id = :task_id"""
+                ),
+                {"task_id": task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            task_id != claim.task_id
+            or row is None
+            or row["task_version"] != claim.task_version
+            or row["step_id"] != claim.step_id
+            or row["step_kind"] != claim.step_kind
+            or row["step_version"] != claim.step_version
+            or row["input_fingerprint"] != claim.input_fingerprint
+            or row["lease_owner"] != claim.worker_id
+            or row["claim_token"] != claim.claim_token
+            or row["lease_expires_at"] is None
+            or float(row["lease_expires_at"]) <= time.time()
+            or claim.task_version != expected_version
+        ):
+            raise ConflictError(
+                "step_preparation_claim_lost",
+                "步骤准备领取已过期、输入已变化或已转交；本次结果未写入。",
+                task_id=task_id,
+                step_id=claim.step_id,
+            )
+        current = SqliteWorkTaskRepository._task_from_session(session, task_id)
+        try:
+            current_target = resolve_step_preparation_target(current)
+        except ValueError:
+            current_target = None
+        if current_target is None or current_target.model_dump() != claim.model_dump(
+            exclude={"worker_id", "claim_token", "lease_expires_at"}
+        ):
+            raise ConflictError(
+                "step_preparation_claim_lost",
+                "步骤或其前驱证据已变化；本次准备结果未写入。",
+                task_id=task_id,
+                step_id=claim.step_id,
             )
 
     @staticmethod

@@ -25,6 +25,7 @@ from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
 )
+from neuroagent.application.automation.step_preparation import StepPreparationClaim
 
 
 class WorkTaskRepositoryPort(Protocol):
@@ -57,7 +58,18 @@ class WorkTaskRepositoryPort(Protocol):
         *,
         expected_version: int,
         claim_token: str | None = None,
+        step_preparation_claim: StepPreparationClaim | None = None,
     ) -> WorkTask: ...
+
+    def claim_next_step_preparation(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> StepPreparationClaim | None: ...
+
+    def release_step_preparation_claim(self, claim: StepPreparationClaim) -> bool: ...
 
     def claim_next_reconciliation_task(
         self,

@@ -179,6 +179,14 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 本切片的 service/persistence 定向回归 71 项通过；Ruff check、相关文件格式检查、全量 Mypy 与差异空白检查通过。`automation_repository.py` 的整文件格式检查仍报告本切片之前已有的格式差异，本次未重排整文件。未运行 MATLAB/DPABI。
 
+### 阶段 B READY 后继步骤持久准备领取基础（2026-10-15）
+
+新增步骤准备目标解析和 SQLite 持久领取基础：只有 `RUNNING` 的合法线性多步骤任务，且前驱全部 `SUCCEEDED`、唯一受支持后继为 `READY`、剩余步骤均为 `PENDING` 时才建立准备目标。目标指纹绑定 WorkGoal、Task/Step 版本、当前步骤输入引用及所有成功前驱的版本和 Artifact 引用。保存任务时在同一 Unit of Work 重建目标；租约 claim 持有精确 task/step/version/fingerprint 与 fencing token，提交保存必须同时满足该 claim、Task CAS 和当前指纹，输入或步骤变化会撤销旧 claim。迁移 0029 仅新增派生目标索引和领取表，不改变科研数据或 Run 状态。
+
+此切片只提供可靠领取与写入围栏，还没有连接后台消费者或类型化 prepare handler；它不会生成草稿/冻结 Plan、进入用户审查、绑定后继 Run 或推进任务。因此下一步仍需把 READY 步骤接到现有预处理/统计方案准备和审批入口，并在事务外准备、提交前重新验证 claim 与科学输入。单步骤及无步骤历史任务继续使用现有路径；计划 0014 的跨步骤自动化仍未完成。
+
+本切片验证：持久化测试 28 项、Automation core/service 测试 84 项通过；全量 Mypy（297 个源文件）、Ruff check 和差异空白检查通过。`automation_repository.py` 整文件格式检查存在本切片之前已有的差异，本次未重排无关格式。未运行 MATLAB/DPABI。
+
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。

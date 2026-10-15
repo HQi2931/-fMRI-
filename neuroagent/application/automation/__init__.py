@@ -30,6 +30,11 @@ from neuroagent.application.automation.models import (
 from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.automation.service import WorkTaskApplicationService
 from neuroagent.application.automation.step_lifecycle import resolve_linear_step_sequence
+from neuroagent.application.automation.step_preparation import (
+    StepPreparationClaim,
+    StepPreparationTarget,
+    resolve_step_preparation_target,
+)
 from neuroagent.application.automation.step_readiness import (
     StepReadinessAssessment,
     StepReadinessEvidenceSummary,
@@ -50,6 +55,8 @@ __all__ = [
     "EventCursor",
     "EventReconciliationReceipt",
     "RunReadiness",
+    "StepPreparationClaim",
+    "StepPreparationTarget",
     "StepReadinessAssessment",
     "StepReadinessEvidenceSummary",
     "StepReadinessHandler",
@@ -72,6 +79,7 @@ __all__ = [
     "advance_event_cursor",
     "decide_event_consumption",
     "resolve_linear_step_sequence",
+    "resolve_step_preparation_target",
     "transition_task",
     "transition_task_step",
 ]
