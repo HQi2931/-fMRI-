@@ -165,6 +165,12 @@ flowchart TD
 
 当前 TaskStep 虽有 `sequence`，但运行绑定、readiness 与完成转换仍严格限定单步骤。新增 [ADR 0045（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)，规定先扩展为有界线性序列：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。阶段一必须保持单步骤和无步骤历史任务兼容，并先解决步骤级 Run 事件路由、CAS/fencing 与事务收口，再接入下一步 prepare handler。该设计仍需评审，现有单步骤 fail-closed 行为继续有效；它没有宣称多步骤调度已经实现。
 
+### 阶段 B 线性步骤纯生命周期首切片（2026-10-15）
+
+`step_lifecycle.py` 新增纯序列解析，按 `sequence` 排序并验证从 0 连续编号、至多一个活动步骤、成功前缀/待处理后缀及终态形状；空 `steps` 仍明确表示历史兼容任务。多步骤完成转换在类型专属证据已由调用者核验的前提下，只完成当前唯一活动步骤并提升其直接后继为 `READY`，WorkTask 留在 `RUNNING` 且清除根级旧 Plan/Run/输入版本投影；只有最后一步完成才关闭任务。重复完成已成功的前驱不会改写后续进度。单步骤转换保持原行为。
+
+此切片只建立纯状态转换底座。`bind_step_to_run`、readiness registry、事件解析、恢复领取和类型专属 finalizer 仍拒绝多步骤任务，因而尚未形成可运行的多步骤自动化路径。后续必须先实现每步 Run 身份与事件路由、对 `RUNNING + READY` 的持久 prepare 领取、输入变更重核及 fenced 写入，再接通下一步草稿准备。本切片的 core/service/persistence 定向回归共 94 项通过；Ruff check/format、全量 Mypy（295 个源文件）与 `git diff --check` 通过。未运行 MATLAB/DPABI。
+
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。

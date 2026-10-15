@@ -23,6 +23,7 @@ from neuroagent.application.automation.models import (
 from neuroagent.application.automation.step_lifecycle import (
     bind_step_to_run,
     complete_step,
+    resolve_linear_step_sequence,
     resolve_single_bound_run_step,
 )
 
@@ -125,12 +126,15 @@ def test_shared_step_binding_transition_is_versioned_and_idempotent() -> None:
     assert waiting.steps[0].version == step.version + 2
     assert waiting.steps[0].authority_refs.workflow_run_id == "run-1"
     assert waiting.authority_refs.workflow_run_id == "run-1"
-    assert bind_step_to_run(
-        waiting,
-        waiting.steps[0],
-        run_id="run-1",
-        waiting_reason="ignored on an idempotent replay",
-    ) is waiting
+    assert (
+        bind_step_to_run(
+            waiting,
+            waiting.steps[0],
+            run_id="run-1",
+            waiting_reason="ignored on an idempotent replay",
+        )
+        is waiting
+    )
 
 
 def test_single_bound_run_step_resolver_keeps_legacy_tasks_and_rejects_mismatch() -> None:
@@ -158,9 +162,7 @@ def test_single_bound_run_step_resolver_keeps_legacy_tasks_and_rejects_mismatch(
 
     mismatched_step = step.model_copy(
         update={
-            "authority_refs": step.authority_refs.model_copy(
-                update={"workflow_run_id": "run-2"}
-            )
+            "authority_refs": step.authority_refs.model_copy(update={"workflow_run_id": "run-2"})
         }
     )
     mismatched = WorkTask.model_validate(
@@ -171,7 +173,7 @@ def test_single_bound_run_step_resolver_keeps_legacy_tasks_and_rejects_mismatch(
 
 
 @pytest.mark.parametrize("sibling_kind", ["preprocessing_run", "unregistered_run"])
-def test_shared_run_step_lifecycle_rejects_sibling_steps(sibling_kind: str) -> None:
+def test_shared_run_binding_still_rejects_sibling_steps(sibling_kind: str) -> None:
     ready = TaskStep(
         step_id="analysis",
         sequence=0,
@@ -192,32 +194,288 @@ def test_shared_run_step_lifecycle_rejects_sibling_steps(sibling_kind: str) -> N
     with pytest.raises(ValueError, match="exactly one TaskStep"):
         bind_step_to_run(task, ready, run_id="run-1", waiting_reason="wait")
 
-    bound = bind_step_to_run(
-        make_task(
-            status=TaskStatus.WAITING_USER,
-            waiting_condition=WaitingCondition(
-                kind=WaitingKind.USER_DECISION,
-                reference="proposal:proposal-1",
-                reason="review the proposal",
-            ),
-            steps=(ready,),
-        ),
-        ready,
-        run_id="run-1",
-        waiting_reason="wait",
+
+def _make_waiting_linear_task(
+    *,
+    first_status: TaskStepStatus = TaskStepStatus.WAITING,
+    second_status: TaskStepStatus = TaskStepStatus.PENDING,
+    first_kind: str = "preprocessing_run",
+    second_kind: str = "statistical_run",
+) -> WorkTask:
+    first = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind=first_kind,
+        status=first_status,
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
     )
-    task_with_sibling = WorkTask.model_validate(
-        {
-            **bound.model_dump(),
-            "steps": (*bound.model_dump()["steps"], sibling.model_dump()),
+    second = TaskStep(
+        step_id="analysis",
+        sequence=1,
+        kind=second_kind,
+        status=second_status,
+    )
+    return make_task(
+        status=TaskStatus.WAITING_RUN,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.WORKFLOW_RUN,
+            reference="run-1",
+            reason="waiting for the current linear step",
+        ),
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
+        steps=(first, second),
+    )
+
+
+def test_linear_sequence_resolver_preserves_legacy_empty_steps() -> None:
+    legacy = make_task(authority_refs=AuthorityReferences(workflow_run_id="run-1"))
+
+    assert resolve_linear_step_sequence(legacy) == ()
+    assert resolve_single_bound_run_step(legacy, "run-1") is None
+
+
+def test_linear_sequence_resolver_orders_steps_and_accepts_success_prefix() -> None:
+    task = _make_waiting_linear_task()
+    reversed_task = WorkTask.model_validate(
+        {**task.model_dump(), "steps": tuple(reversed(task.steps))}
+    )
+    completed_prefix = task.steps[0].model_copy(
+        update={
+            "status": TaskStepStatus.SUCCEEDED,
+            "authority_refs": task.steps[0].authority_refs.model_copy(
+                update={"artifact_ids": ("artifact-preprocessed",)}
+            ),
         }
     )
-    with pytest.raises(ValueError, match="exactly one TaskStep"):
+    second_active = task.steps[1].model_copy(update={"status": TaskStepStatus.READY})
+    advanced = WorkTask.model_validate(
+        {
+            **task.model_dump(),
+            "status": TaskStatus.RUNNING,
+            "waiting_condition": None,
+            "authority_refs": task.authority_refs.model_copy(
+                update={"workflow_run_id": None}
+            ).model_dump(),
+            "steps": (completed_prefix, second_active),
+        }
+    )
+
+    assert resolve_linear_step_sequence(reversed_task) == task.steps
+    assert resolve_linear_step_sequence(advanced) == (completed_prefix, second_active)
+
+
+def test_linear_sequence_resolver_rejects_gaps_and_multiple_active_steps() -> None:
+    task = _make_waiting_linear_task()
+    gapped = WorkTask.model_validate(
+        {
+            **task.model_dump(),
+            "steps": tuple(
+                step.model_copy(update={"sequence": step.sequence + 1}) for step in task.steps
+            ),
+        }
+    )
+    multiple_active = _make_waiting_linear_task(second_status=TaskStepStatus.READY)
+
+    with pytest.raises(ValueError, match="contiguous starting at zero"):
+        resolve_linear_step_sequence(gapped)
+    with pytest.raises(ValueError, match="multiple active steps"):
+        resolve_linear_step_sequence(multiple_active)
+
+
+def test_linear_sequence_rejects_successor_before_predecessor_succeeds() -> None:
+    task = _make_waiting_linear_task(first_status=TaskStepStatus.PENDING)
+    out_of_order = WorkTask.model_validate(
+        {
+            **task.model_dump(),
+            "steps": (
+                task.steps[0],
+                task.steps[1].model_copy(update={"status": TaskStepStatus.WAITING}),
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="before the active step must have succeeded"):
+        resolve_linear_step_sequence(out_of_order)
+
+
+def test_linear_sequence_cannot_report_task_completed_before_all_steps_succeed() -> None:
+    task = _make_waiting_linear_task()
+    incorrectly_completed = WorkTask.model_validate(
+        {
+            **task.model_dump(),
+            "status": TaskStatus.COMPLETED,
+            "waiting_condition": None,
+        }
+    )
+
+    with pytest.raises(ValueError, match="completed WorkTask must have all TaskSteps succeeded"):
+        resolve_linear_step_sequence(incorrectly_completed)
+
+
+def test_linear_sequence_can_be_step_complete_while_goal_closeout_is_pending() -> None:
+    first = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.SUCCEEDED,
+        authority_refs=AuthorityReferences(
+            workflow_run_id="run-1", artifact_ids=("artifact-preprocessed",)
+        ),
+    )
+    second = TaskStep(
+        step_id="analysis",
+        sequence=1,
+        kind="statistical_run",
+        status=TaskStepStatus.SUCCEEDED,
+        authority_refs=AuthorityReferences(
+            workflow_run_id="run-2", artifact_ids=("artifact-result",)
+        ),
+    )
+    task = make_task(status=TaskStatus.RUNNING, steps=(first, second))
+
+    assert resolve_linear_step_sequence(task) == (first, second)
+
+
+def test_linear_complete_step_promotes_only_next_step_and_is_idempotent() -> None:
+    task = _make_waiting_linear_task()
+
+    advanced = complete_step(task, task.steps[0], artifact_ids=("artifact-b", "artifact-a"))
+
+    assert advanced.status is TaskStatus.RUNNING
+    assert advanced.waiting_condition is None
+    assert advanced.version == task.version + 1
+    assert advanced.authority_refs.workflow_run_id is None
+    assert advanced.authority_refs.plan_revision_id is None
+    assert advanced.authority_refs.input_revision is None
+    assert advanced.authority_refs.artifact_ids == ()
+    assert advanced.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert advanced.steps[0].authority_refs.artifact_ids == ("artifact-a", "artifact-b")
+    assert advanced.steps[1].status is TaskStepStatus.READY
+    assert advanced.steps[1].version == task.steps[1].version + 1
+    assert (
+        complete_step(advanced, advanced.steps[0], artifact_ids=("artifact-a", "artifact-b"))
+        is advanced
+    )
+
+
+def test_linear_completion_promotes_only_the_direct_successor_in_longer_chain() -> None:
+    waiting = _make_waiting_linear_task()
+    third = TaskStep(step_id="report", sequence=2, kind="statistical_run")
+    task = WorkTask.model_validate({**waiting.model_dump(), "steps": (*waiting.steps, third)})
+
+    first_advanced = complete_step(task, task.steps[0], artifact_ids=("artifact-preprocessed",))
+
+    assert first_advanced.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert first_advanced.steps[1].status is TaskStepStatus.READY
+    assert first_advanced.steps[2].status is TaskStepStatus.PENDING
+
+    second_waiting = first_advanced.steps[1].model_copy(
+        update={
+            "status": TaskStepStatus.WAITING,
+            "authority_refs": AuthorityReferences(workflow_run_id="run-2"),
+        }
+    )
+    active_task = WorkTask.model_validate(
+        {
+            **first_advanced.model_dump(),
+            "status": TaskStatus.WAITING_RUN,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="run-2",
+                reason="waiting for the second step",
+            ),
+            "authority_refs": first_advanced.authority_refs.model_copy(
+                update={"workflow_run_id": "run-2"}
+            ).model_dump(),
+            "steps": (first_advanced.steps[0], second_waiting, first_advanced.steps[2]),
+        }
+    )
+
+    assert (
         complete_step(
-            task_with_sibling,
-            task_with_sibling.steps[0],
-            artifact_ids=("artifact-1",),
+            active_task,
+            active_task.steps[0],
+            artifact_ids=("artifact-preprocessed",),
         )
+        is active_task
+    )
+
+    second_advanced = complete_step(
+        active_task, active_task.steps[1], artifact_ids=("artifact-statistical",)
+    )
+    assert second_advanced.status is TaskStatus.RUNNING
+    assert second_advanced.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert second_advanced.steps[1].status is TaskStepStatus.SUCCEEDED
+    assert second_advanced.steps[2].status is TaskStepStatus.READY
+
+
+def test_linear_complete_step_rejects_out_of_order_and_does_not_mutate_input() -> None:
+    task = _make_waiting_linear_task()
+    before = task.model_dump()
+
+    with pytest.raises(ValueError):
+        complete_step(task, task.steps[1], artifact_ids=("analysis-result",))
+
+    assert task.model_dump() == before
+    assert task.steps[1].status is TaskStepStatus.PENDING
+
+
+def test_linear_complete_step_rejects_unknown_successor_without_advancing() -> None:
+    task = _make_waiting_linear_task(second_kind="unregistered_run")
+
+    with pytest.raises(ValueError, match="unsupported next Run step kind"):
+        complete_step(task, task.steps[0], artifact_ids=("artifact-1",))
+    assert task.steps[0].status is TaskStepStatus.WAITING
+    assert task.steps[1].status is TaskStepStatus.PENDING
+
+
+@pytest.mark.parametrize(
+    "stopped_status",
+    [TaskStepStatus.FAILED, TaskStepStatus.BLOCKED, TaskStepStatus.SKIPPED],
+)
+def test_stopped_linear_step_never_promotes_its_successor(stopped_status) -> None:
+    task = _make_waiting_linear_task(first_status=stopped_status)
+
+    assert resolve_linear_step_sequence(task) == task.steps
+    with pytest.raises(ValueError, match="unique active TaskStep"):
+        complete_step(task, task.steps[0], artifact_ids=("artifact-1",))
+    assert task.steps[1].status is TaskStepStatus.PENDING
+
+
+def test_linear_final_step_completion_is_the_only_multi_step_task_completion() -> None:
+    first = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.SUCCEEDED,
+        authority_refs=AuthorityReferences(
+            workflow_run_id="run-1", artifact_ids=("artifact-preprocessed",)
+        ),
+    )
+    final = TaskStep(
+        step_id="analysis",
+        sequence=1,
+        kind="statistical_run",
+        status=TaskStepStatus.WAITING,
+        authority_refs=AuthorityReferences(workflow_run_id="run-2"),
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_RUN,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.WORKFLOW_RUN,
+            reference="run-2",
+            reason="waiting for the final step",
+        ),
+        authority_refs=AuthorityReferences(workflow_run_id="run-2"),
+        steps=(first, final),
+    )
+
+    completed = complete_step(task, final, artifact_ids=("artifact-report",))
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert completed.steps[1].status is TaskStepStatus.SUCCEEDED
+    assert completed.authority_refs.artifact_ids == ("artifact-report",)
 
 
 @pytest.mark.parametrize("wrong_run_id", ["run-2", ""])
@@ -243,11 +501,7 @@ def test_shared_step_binding_rejects_wrong_or_missing_run(wrong_run_id: str) -> 
         bind_step_to_run(bound, bound.steps[0], run_id=wrong_run_id, waiting_reason="wait")
 
     partially_bound = bound.model_copy(
-        update={
-            "authority_refs": bound.authority_refs.model_copy(
-                update={"workflow_run_id": None}
-            )
-        }
+        update={"authority_refs": bound.authority_refs.model_copy(update={"workflow_run_id": None})}
     )
     with pytest.raises(ValueError, match="already bound to a different or invalid Run state"):
         bind_step_to_run(
@@ -301,9 +555,7 @@ def test_shared_step_completion_transition_is_idempotent_and_keeps_task_graph() 
     )
     waiting = bind_step_to_run(task, step, run_id="run-1", waiting_reason="wait")
 
-    completed = complete_step(
-        waiting, waiting.steps[0], artifact_ids=("artifact-b", "artifact-a")
-    )
+    completed = complete_step(waiting, waiting.steps[0], artifact_ids=("artifact-b", "artifact-a"))
 
     assert completed.status is TaskStatus.COMPLETED
     assert completed.version == waiting.version + 1
@@ -311,9 +563,7 @@ def test_shared_step_completion_transition_is_idempotent_and_keeps_task_graph() 
     assert completed.steps[0].authority_refs.artifact_ids == ("artifact-a", "artifact-b")
     assert completed.authority_refs.artifact_ids == ("artifact-a", "artifact-b")
     assert (
-        complete_step(
-            completed, completed.steps[0], artifact_ids=("artifact-a", "artifact-b")
-        )
+        complete_step(completed, completed.steps[0], artifact_ids=("artifact-a", "artifact-b"))
         is completed
     )
     with pytest.raises(ValueError, match="Artifact references differ"):

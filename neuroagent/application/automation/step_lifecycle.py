@@ -19,6 +19,71 @@ from neuroagent.application.automation.models import (
 )
 
 _SUPPORTED_RUN_STEP_KINDS = frozenset({"preprocessing_run", "statistical_run"})
+_ACTIVE_STEP_STATUSES = frozenset(
+    {TaskStepStatus.READY, TaskStepStatus.RUNNING, TaskStepStatus.WAITING}
+)
+_STOPPED_STEP_STATUSES = frozenset(
+    {TaskStepStatus.FAILED, TaskStepStatus.BLOCKED, TaskStepStatus.SKIPPED}
+)
+
+
+def resolve_linear_step_sequence(task: WorkTask) -> tuple[TaskStep, ...]:
+    """Return a validated, sequence-ordered view of an explicit linear task.
+
+    Empty ``steps`` remains the legacy task shape and resolves to an empty
+    tuple. Explicit sequences must be contiguous from zero and may represent
+    only an unstarted suffix, a successful prefix followed by one active step
+    and a pending suffix, a stopped step followed by a pending suffix, or a
+    fully successful sequence. A successful prefix with no active successor is
+    rejected because completion and successor promotion are one transition.
+    A fully successful sequence may still await goal-level artifact checks.
+    """
+
+    if not task.steps:
+        return ()
+
+    ordered = tuple(sorted(task.steps, key=lambda item: item.sequence))
+    if tuple(step.sequence for step in ordered) != tuple(range(len(ordered))):
+        raise ValueError("linear TaskStep sequences must be contiguous starting at zero")
+    if task.status is TaskStatus.COMPLETED and any(
+        step.status is not TaskStepStatus.SUCCEEDED for step in ordered
+    ):
+        raise ValueError("a completed WorkTask must have all TaskSteps succeeded")
+
+    active_indexes = tuple(
+        index for index, step in enumerate(ordered) if step.status in _ACTIVE_STEP_STATUSES
+    )
+    stopped_indexes = tuple(
+        index for index, step in enumerate(ordered) if step.status in _STOPPED_STEP_STATUSES
+    )
+    if len(active_indexes) > 1:
+        raise ValueError("linear task cannot have multiple active steps")
+    if len(stopped_indexes) > 1:
+        raise ValueError("linear task cannot have multiple stopped steps")
+
+    if active_indexes:
+        active_index = active_indexes[0]
+        if any(step.status is not TaskStepStatus.SUCCEEDED for step in ordered[:active_index]):
+            raise ValueError("all steps before the active step must have succeeded")
+        if any(step.status is not TaskStepStatus.PENDING for step in ordered[active_index + 1 :]):
+            raise ValueError("all steps after the active step must be pending")
+        return ordered
+
+    if stopped_indexes:
+        stopped_index = stopped_indexes[0]
+        if any(step.status is not TaskStepStatus.SUCCEEDED for step in ordered[:stopped_index]):
+            raise ValueError("all steps before a stopped step must have succeeded")
+        if any(step.status is not TaskStepStatus.PENDING for step in ordered[stopped_index + 1 :]):
+            raise ValueError("all steps after a stopped step must be pending")
+        return ordered
+
+    all_succeeded = all(step.status is TaskStepStatus.SUCCEEDED for step in ordered)
+    if all_succeeded:
+        return ordered
+    if all(step.status is TaskStepStatus.PENDING for step in ordered):
+        return ordered
+
+    raise ValueError("TaskStep statuses do not form a valid linear sequence")
 
 
 def resolve_single_bound_run_step(task: WorkTask, run_id: str) -> TaskStep | None:
@@ -69,8 +134,10 @@ def bind_step_to_run(
     task_run_id = task.authority_refs.workflow_run_id
     step_run_id = step.authority_refs.workflow_run_id
     if task_run_id is not None or step_run_id is not None:
-        if task_run_id != run_id or step_run_id != run_id or not _is_idempotent_run_binding(
-            task, step, run_id
+        if (
+            task_run_id != run_id
+            or step_run_id != run_id
+            or not _is_idempotent_run_binding(task, step, run_id)
         ):
             raise ValueError("task or step is already bound to a different or invalid Run state")
         return task
@@ -96,9 +163,7 @@ def bind_step_to_run(
         ),
     ).model_copy(
         update={
-            "authority_refs": task.authority_refs.model_copy(
-                update={"workflow_run_id": run_id}
-            ),
+            "authority_refs": task.authority_refs.model_copy(update={"workflow_run_id": run_id}),
             "steps": tuple(
                 waiting_step if item.step_id == step.step_id else item for item in task.steps
             ),
@@ -120,13 +185,37 @@ def complete_step(
     callers must first verify the authoritative QC decision and step evidence.
     """
 
-    _require_task_step(task, step)
+    ordered_steps = resolve_linear_step_sequence(task)
+    is_linear_multi_step = len(ordered_steps) > 1
+    if is_linear_multi_step:
+        _require_linear_task_step(task, step, ordered_steps)
+    else:
+        # Keep the existing single-step and no-steps legacy behavior unchanged.
+        _require_task_step(task, step)
     if not artifact_ids or any(not item for item in artifact_ids):
         raise ValueError("completion requires non-empty Artifact IDs")
     if len(artifact_ids) != len(set(artifact_ids)):
         raise ValueError("completion Artifact IDs must be unique")
 
     normalized_ids = tuple(sorted(artifact_ids))
+
+    if is_linear_multi_step and step.status is TaskStepStatus.SUCCEEDED:
+        if step.authority_refs.artifact_ids != normalized_ids:
+            raise ValueError("completed step Artifact references differ from verified evidence")
+        index = next(i for i, item in enumerate(ordered_steps) if item.step_id == step.step_id)
+        if index == len(ordered_steps) - 1 and (
+            task.status is not TaskStatus.COMPLETED
+            or task.authority_refs.artifact_ids != normalized_ids
+        ):
+            raise ValueError("completed final step does not match completed task evidence")
+        # The original step may be replayed after its successor has already
+        # progressed. Sequence validation above ensures it remains a valid
+        # successful prefix; the replay must not alter that later progress.
+        return task
+
+    if is_linear_multi_step:
+        _require_active_linear_task_step(step, ordered_steps)
+
     run_id = task.authority_refs.workflow_run_id
     if run_id is None or step.authority_refs.workflow_run_id != run_id:
         raise ValueError("completed task and step must reference the same Run")
@@ -144,6 +233,14 @@ def complete_step(
 
     if not _is_ready_for_verified_completion(task, step, run_id):
         raise ValueError("task is not waiting for this verified Run or QC decision")
+
+    if is_linear_multi_step:
+        return _complete_linear_step(
+            task,
+            step,
+            ordered_steps=ordered_steps,
+            artifact_ids=normalized_ids,
+        )
 
     succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED).model_copy(
         update={
@@ -174,6 +271,76 @@ def complete_step(
             "steps": tuple(
                 succeeded_step if item.step_id == step.step_id else item for item in task.steps
             ),
+        }
+    )
+    return WorkTask.model_validate(completed.model_dump())
+
+
+def _complete_linear_step(
+    task: WorkTask,
+    step: TaskStep,
+    *,
+    ordered_steps: tuple[TaskStep, ...],
+    artifact_ids: tuple[str, ...],
+) -> WorkTask:
+    """Complete one verified step and promote only its direct successor."""
+
+    index = next(i for i, item in enumerate(ordered_steps) if item.step_id == step.step_id)
+    successor = ordered_steps[index + 1] if index + 1 < len(ordered_steps) else None
+    if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
+        raise ValueError(f"unsupported Run step kind: {step.kind}")
+    if successor is not None:
+        if successor.kind not in _SUPPORTED_RUN_STEP_KINDS:
+            raise ValueError(f"unsupported next Run step kind: {successor.kind}")
+        if successor.authority_refs.workflow_run_id is not None:
+            raise ValueError("next TaskStep must not already be bound to a Run")
+
+    succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED).model_copy(
+        update={
+            "authority_refs": step.authority_refs.model_copy(update={"artifact_ids": artifact_ids})
+        }
+    )
+    steps = {item.step_id: item for item in ordered_steps}
+    steps[step.step_id] = succeeded_step
+
+    if successor is not None:
+        ready_successor = transition_task_step(successor, TaskStepStatus.READY)
+        steps[successor.step_id] = ready_successor
+        running = transition_task(task, TaskStatus.RUNNING)
+        advanced = running.model_copy(
+            update={
+                # The previous Run remains on its completed TaskStep. The task
+                # root is only the active step projection, so clear its Plan,
+                # Run, and input revision while the next step is being prepared.
+                "authority_refs": task.authority_refs.model_copy(
+                    update={
+                        "plan_revision_id": None,
+                        "workflow_run_id": None,
+                        "input_revision": None,
+                    }
+                ),
+                "steps": tuple(steps[item.step_id] for item in ordered_steps),
+            }
+        )
+        return WorkTask.model_validate(advanced.model_dump())
+
+    if task.status is TaskStatus.WAITING_USER:
+        # A resolved QC gate is the only user-wait exception that may finish a
+        # step. Its type-specific readiness handler has already checked it.
+        completed = WorkTask.model_validate(
+            {
+                **task.model_dump(),
+                "status": TaskStatus.COMPLETED,
+                "waiting_condition": None,
+                "version": task.version + 1,
+            }
+        )
+    else:
+        completed = transition_task(task, TaskStatus.COMPLETED)
+    completed = completed.model_copy(
+        update={
+            "authority_refs": task.authority_refs.model_copy(update={"artifact_ids": artifact_ids}),
+            "steps": tuple(steps[item.step_id] for item in ordered_steps),
         }
     )
     return WorkTask.model_validate(completed.model_dump())
@@ -212,6 +379,27 @@ def _require_task_step(task: WorkTask, step: TaskStep) -> None:
         raise ValueError("step does not identify the current persisted task step")
 
 
+def _require_linear_task_step(
+    task: WorkTask,
+    step: TaskStep,
+    ordered_steps: tuple[TaskStep, ...],
+) -> None:
+    if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
+        raise ValueError(f"unsupported Run step kind: {step.kind}")
+    matches = tuple(item for item in ordered_steps if item.step_id == step.step_id)
+    if len(matches) != 1 or matches[0] != step:
+        raise ValueError("step does not identify the current persisted task step")
+
+
+def _require_active_linear_task_step(
+    step: TaskStep,
+    ordered_steps: tuple[TaskStep, ...],
+) -> None:
+    active_steps = tuple(item for item in ordered_steps if item.status in _ACTIVE_STEP_STATUSES)
+    if len(active_steps) != 1 or active_steps[0] != step:
+        raise ValueError("only the unique active TaskStep can be completed")
+
+
 def _is_idempotent_run_binding(task: WorkTask, step: TaskStep, run_id: str) -> bool:
     if step.status is TaskStepStatus.WAITING:
         if task.status is TaskStatus.WAITING_RUN:
@@ -232,8 +420,7 @@ def _is_idempotent_run_binding(task: WorkTask, step: TaskStep, run_id: str) -> b
             if condition is None or condition.kind is not WaitingKind.DEPENDENCY:
                 return False
             return (
-                condition.reference == f"downstream:{run_id}"
-                and step.kind == "preprocessing_run"
+                condition.reference == f"downstream:{run_id}" and step.kind == "preprocessing_run"
             ) or (
                 condition.reference == f"statistical-result:{run_id}"
                 and step.kind == "statistical_run"
