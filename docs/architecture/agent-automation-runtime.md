@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-12
 - 更新日期：2026-10-15
-- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
+- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
 
@@ -127,6 +127,8 @@ flowchart TD
 一条可恢复路径必须满足三个条件：问题被分类为瞬时工程故障、重试对象和最大次数明确、重试仍使用原有 Run/Worker 语义。达到相同草稿哈希和相同问题指纹时立即停止模型重试；禁止用新 Run 掩盖旧 Run 的失败。每轮跨请求恢复都重新读取权威记录，事件只作为唤醒信号。
 
 任何状态转换都必须以以下一种方式收口：推进到可验证的下一步、明确等待用户/运行、以有界条件等待重试，或携带可解释原因进入阻断/不确定状态。不能留下“Agent 还在想”的隐式状态，也不能把超时、预算耗尽或证据变化报告成成功。用户恢复任务时，续接输入必须绑定当前目标和待办决定；模糊的“继续”不得自动选择另一个角色或旧任务。
+
+对于绑定 Run 的 `TaskStep`，readiness 检查与持久收口分开：按精确步骤类型选择唯一的只读检查器，由它重读领域权威记录并返回绑定 Task、Step、Run 版本的不可变 Assessment；应用协调器负责把判断映射到现有等待/阻断状态。只有类型专属 finalizer 可以完成步骤、Task 和对应 outbox，并在写入前重核 Assessment 证据，沿用 CAS、claim fencing 和既有 Unit of Work。未知或歧义步骤、版本变化及暂不可读证据返回 `indeterminate`，不让默认检查器猜测。预处理与统计检查器继续分别核验各自的 QC/Artifact lineage、冻结设计和真实统计结果；此扩展不表示任意步骤类型或 DAG 已经支持。实现合同见 [ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)。
 
 ## 权威状态与任务记录
 
