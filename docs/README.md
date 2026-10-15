@@ -141,6 +141,7 @@
 - [ADR 0041：复合任务的提案专用分析续接 outbox](adr/0041-proposal-only-analysis-continuation-outbox.md)
 - [ADR 0042：真实统计结果的提案专用解释续接](adr/0042-statistical-result-interpretation-outbox.md)
 - [ADR 0043：WorkTask 步骤生命周期共用转换合同](adr/0043-shared-worktask-step-lifecycle.md)
+- [ADR 0044：WorkTask 步骤 readiness 检查器与收口边界](adr/0044-worktask-step-readiness-handlers.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录
