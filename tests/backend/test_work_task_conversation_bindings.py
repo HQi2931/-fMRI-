@@ -247,8 +247,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             retained_task = service.automation.get_task(task_id)
             assert (
-                retained_task.authority_refs.analysis_intent_task_id
-                == analysis_intent["task_id"]
+                retained_task.authority_refs.analysis_intent_task_id == analysis_intent["task_id"]
             )
             assert all(
                 step.authority_refs.analysis_intent_task_id == analysis_intent["task_id"]
@@ -378,9 +377,13 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert unchanged_view.plan_revision_id == plan_id
             assert unchanged_view.run_id == run_id
             assert service.automation.get_task(task_id).status is TaskStatus.WAITING_RUN
-            pending_outbox = (
-                service.automation._repository.get_analysis_outbox_for_preprocessing_task(task_id)
+            pending_outboxes = (
+                service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
+                    task_id
+                )
             )
+            assert len(pending_outboxes) == 1
+            pending_outbox = pending_outboxes[0]
             assert pending_outbox is not None
             assert pending_outbox.intent_task_id == analysis_intent["task_id"]
             assert pending_outbox.run_id == run_id
@@ -437,9 +440,10 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             linked_identity = service.automation.get_composite_goal(
                 conversation.conversation_id, analysis_intent["task_id"]
             )
-            assert linked_identity.analysis_proposal_outbox_intent_task_id == analysis_intent[
-                "task_id"
-            ]
+            assert (
+                linked_identity.analysis_proposal_outbox_intent_task_id
+                == analysis_intent["task_id"]
+            )
             assert linked_identity.analysis_work_task_id == first_analysis_task.task_id
 
             second_proposal_hash = "3" * 64
@@ -522,9 +526,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                     ),
                 }
             )
-            repository.save_task(
-                finished_task, expected_version=second_analysis_task.version
-            )
+            repository.save_task(finished_task, expected_version=second_analysis_task.version)
             result_outbox = service.automation.ensure_result_interpretation_outbox(
                 StatisticalResultInterpretationOutbox(
                     task_id=finished_task.task_id,
@@ -539,9 +541,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 )
             )
             assert result_outbox.task_id == finished_task.task_id
-            result_snapshot = repository.get_composite_goal_snapshot(
-                analysis_intent["task_id"]
-            )
+            result_snapshot = repository.get_composite_goal_snapshot(analysis_intent["task_id"])
             assert result_snapshot.goal.analysis_work_task_id == finished_task.task_id
             assert result_snapshot.goal.result_interpretation_outbox_task_id == (
                 finished_task.task_id
@@ -702,10 +702,10 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 step.authority_refs.analysis_intent_task_id is None for step in ordinary_task.steps
             )
             assert (
-                service.automation._repository.get_analysis_outbox_for_preprocessing_task(
+                service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
                     target_task_id
                 )
-                is None
+                == ()
             )
             target_plan_data = target_body["assistant_message"]["payload"]["plan_revision"]
             service.plans.approve_plan(
@@ -743,10 +743,10 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert target_started.status_code == 200, target_started.text
             assert service.automation.get_task(target_task_id).authority_refs.workflow_run_id
             assert (
-                service.automation._repository.get_analysis_outbox_for_preprocessing_task(
+                service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
                     target_task_id
                 )
-                is None
+                == ()
             )
             historical_task_id = service.automation.preprocessing_task_id(
                 target_conversation.conversation_id, plan_id
@@ -1013,9 +1013,12 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert progress.status.value == "completed"
             assert progress.continuation_message_id == result_message.message_id
-            assert service.automation.claim_next_result_interpretation_outbox(
-                "composite-result-test", lease_seconds=30
-            ) is None
+            assert (
+                service.automation.claim_next_result_interpretation_outbox(
+                    "composite-result-test", lease_seconds=30
+                )
+                is None
+            )
             ready_outbox = service.automation._repository.get_analysis_outbox(
                 str(analysis_intent["task_id"])
             )

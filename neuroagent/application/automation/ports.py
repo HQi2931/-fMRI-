@@ -97,9 +97,9 @@ class WorkTaskRepositoryPort(Protocol):
 
     def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox: ...
 
-    def get_analysis_outbox_for_preprocessing_task(
+    def list_analysis_outboxes_for_preprocessing_task(
         self, preprocessing_task_id: str
-    ) -> AnalysisProposalOutbox | None: ...
+    ) -> tuple[AnalysisProposalOutbox, ...]: ...
 
     def mark_analysis_outbox_ready(
         self,

@@ -42,6 +42,7 @@ from neuroagent.application.contracts.statistics import (
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.reporting import build_statistical_reproducibility_report
+from neuroagent.application.work_agents import analysis_dependency_for_request
 from neuroagent.bootstrap import build_service
 from neuroagent.domain.execution import QcExecutionMode
 from neuroagent.domain.fmri import (
@@ -61,6 +62,13 @@ from neuroagent.domain.fmri import (
 )
 from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.infrastructure.persistence.models import (
+    AnalysisProposalOutboxRow,
+    ConversationRow,
+    PlanRevisionRow,
+    ProjectRow,
+    WorkflowRunRow,
+)
 from neuroagent.skills.models import EnvironmentSnapshot, SkillPlan
 
 
@@ -1268,8 +1276,8 @@ def test_preprocessing_readiness_is_read_only_and_finalizes_exact_lineage(
     assert assessment.completion_evidence.qc_decision_identity == decision_identity
     assert service.automation.get_task(task.task_id) == task
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
 
     result = service.automation.reconcile_waiting_run(task.task_id)
@@ -1354,8 +1362,8 @@ def test_preprocessing_readiness_blocks_missing_or_mismatched_artifact_lineage(
     assert result.task.steps[0].status is TaskStepStatus.BLOCKED
     assert "lineage" not in result.reason.lower()
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
 
 
@@ -1399,8 +1407,8 @@ def test_preprocessing_readiness_fails_closed_on_missing_or_misbound_assessment(
     assert result.task == task
     assert service.automation.get_task(task.task_id) == task
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
 
 
@@ -1422,8 +1430,8 @@ def test_preprocessing_readiness_returns_indeterminate_on_authority_identity_err
     assert service.automation.get_task(task.task_id) == task
     assert "The run read port" not in result.reason
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
 
 
@@ -1449,8 +1457,8 @@ def test_preprocessing_finalizer_rejects_lineage_drift_without_writing_task_or_o
     assert result.task == task
     assert service.automation.get_task(task.task_id) == task
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
 
 
@@ -1477,9 +1485,209 @@ def test_preprocessing_finalizer_rejects_run_version_drift_without_writing_task_
     assert result.task == task
     assert service.automation.get_task(task.task_id) == task
     assert (
-        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-        is None
+        service.automation._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+        == ()
     )
+
+
+def test_preprocessing_finalizer_fans_out_exact_intents_in_one_unit_of_work(
+    service, monkeypatch
+) -> None:
+    task, _target, _artifact, reads = _bind_preprocessing_readiness_case(service)
+    plan = service.automation._plan_repository.get_plan("prep-plan-1")
+    run = reads.run
+    conversation_id = "conversation-preprocessing"
+    project_id = "project-1"
+
+    with service.database.session_factory.begin() as session:
+        session.add(
+            ProjectRow(
+                project_id=project_id,
+                name="Synthetic fanout project",
+                source_roots_json="[]",
+                work_root="/tmp/fanout-project",
+                version=1,
+            )
+        )
+        session.flush()
+        session.add(
+            ConversationRow(
+                conversation_id=conversation_id,
+                mode=ConversationMode.WORK.value,
+                title="Synthetic fanout conversation",
+                project_id=project_id,
+                version=1,
+            )
+        )
+        session.add(
+            PlanRevisionRow(
+                plan_revision_id=plan.plan_revision_id,
+                project_id=project_id,
+                revision=1,
+                state="approved",
+                plan_hash=plan.plan_hash,
+                manifest_hash=plan.manifest_hash,
+                environment_hash="c" * 64,
+                plan_json=json.dumps(plan.plan),
+            )
+        )
+        session.flush()
+        session.add(
+            WorkflowRunRow(
+                run_id=run.run_id,
+                project_id=project_id,
+                plan_revision_id=plan.plan_revision_id,
+                state="succeeded",
+                version=run.version,
+                attempt=run.attempt,
+                qc_mode="require",
+                qc_status="approved",
+            )
+        )
+
+    requests = (
+        "先预处理这批静息态 fMRI 数据, 然后对 ALFF 做两组统计比较。",
+        "先预处理这批静息态 fMRI 数据, 然后对 ReHo 做两组统计比较。",
+    )
+    intents = tuple(
+        analysis_dependency_for_request(
+            request,
+            project_id,
+            conversation_id,
+            f"fanout-intent-{index}",
+        )
+        for index, request in enumerate(requests, start=1)
+    )
+    assert all(intent is not None for intent in intents)
+    for request, intent in zip(requests, intents, strict=True):
+        service.repository.append_conversation_exchange(
+            conversation_id,
+            user_content=request,
+            assistant_content="已记录这条独立分析意图。",
+            assistant_payload={"analysis_dependency": intent},
+            tool=None,
+            workspace_path=None,
+            preferred_profile_id=None,
+            project_id=project_id,
+            active_run_id=None,
+        )
+
+    primary_intent = intents[0]
+    assert primary_intent is not None
+    primary_hash = content_hash(requests[0].strip())
+    task_refs = task.authority_refs.model_copy(
+        update={
+            "analysis_intent_task_id": primary_intent["task_id"],
+            "analysis_request_hash": primary_hash,
+        }
+    )
+    bound_task = task.model_copy(
+        update={
+            "version": task.version + 1,
+            "authority_refs": task_refs,
+            "steps": tuple(
+                step.model_copy(
+                    update={
+                        "authority_refs": step.authority_refs.model_copy(
+                            update={
+                                "analysis_intent_task_id": primary_intent["task_id"],
+                                "analysis_request_hash": primary_hash,
+                            }
+                        )
+                    }
+                )
+                for step in task.steps
+            ),
+        }
+    )
+    repository = service.automation._repository
+    repository.save_task(bound_task, expected_version=task.version)
+    service.automation._conversation_repository = service.conversations
+
+    for _request, intent in zip(requests, intents, strict=True):
+        assert intent is not None
+        service.automation.ensure_analysis_proposal_outbox(
+            intent=intent,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            preprocessing_task_id=task.task_id,
+        )
+
+    malformed_request = "先预处理这批静息态 fMRI 数据, 然后对 FC 做两组统计比较。"
+    malformed_intent = analysis_dependency_for_request(
+        malformed_request, project_id, conversation_id, "fanout-malformed-intent"
+    )
+    assert malformed_intent is not None
+    service.repository.append_conversation_exchange(
+        conversation_id,
+        user_content=malformed_request,
+        assistant_content="已记录这条分析意图。",
+        assistant_payload={"analysis_dependency": malformed_intent},
+        tool=None,
+        workspace_path=None,
+        preferred_profile_id=None,
+        project_id=project_id,
+        active_run_id=None,
+    )
+    with service.database.session_factory.begin() as session:
+        session.add(
+            AnalysisProposalOutboxRow(
+                intent_task_id=str(malformed_intent["task_id"]),
+                conversation_id=conversation_id,
+                project_id=project_id,
+                preprocessing_task_id=task.task_id,
+                plan_revision_id=plan.plan_revision_id,
+                manifest_hash=plan.manifest_hash,
+                run_id=run.run_id,
+                analysis_request_hash="0" * 64,
+                artifact_ids_json="[]",
+                status="pending",
+                lease_owner=None,
+                lease_expires_at=None,
+                fencing_token=0,
+                attempt_count=0,
+                retry_generation=0,
+                next_attempt_at=None,
+                last_error_code=None,
+                continuation_message_id=None,
+                analysis_work_task_id=None,
+            )
+        )
+
+    listed = repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+    listed_ids = tuple(outbox.intent_task_id for outbox in listed)
+    assert listed_ids == tuple(sorted(listed_ids))
+    expected_ids = {str(intent["task_id"]) for intent in intents if intent is not None}
+    assert expected_ids.issubset(set(listed_ids))
+    assert len(expected_ids) == 2
+
+    mark_sessions = []
+    original_mark = repository.mark_analysis_outbox_ready
+
+    def capture_transaction(intent_task_id, **kwargs):
+        active_session = repository.unit_of_work.current_session()
+        assert active_session is not None
+        mark_sessions.append(active_session)
+        return original_mark(intent_task_id, **kwargs)
+
+    monkeypatch.setattr(repository, "mark_analysis_outbox_ready", capture_transaction)
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.COMPLETED
+    assert result.task.status is TaskStatus.COMPLETED
+    assert len(mark_sessions) == 2
+    assert mark_sessions[0] is mark_sessions[1]
+    for intent in intents:
+        assert intent is not None
+        outbox = repository.get_analysis_outbox(str(intent["task_id"]))
+        assert outbox.status.value == "ready"
+        assert outbox.artifact_ids == ("artifact-timeseries",)
+        progress = service.automation.get_composite_goal_progress(
+            conversation_id, str(intent["task_id"])
+        )
+        assert progress.preprocessing_status == TaskStatus.COMPLETED.value
+    malformed = repository.get_analysis_outbox(str(malformed_intent["task_id"]))
+    assert malformed.status.value == "pending"
 
 
 def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_significance(

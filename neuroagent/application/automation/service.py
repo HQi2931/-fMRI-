@@ -814,10 +814,11 @@ class WorkTaskApplicationService:
         task = self._repository.get_task(preprocessing_task_id)
         plan_id = task.authority_refs.plan_revision_id
         run_id = task.authority_refs.workflow_run_id
+        prep_intent_id = task.authority_refs.analysis_intent_task_id
+        prep_request_hash = task.authority_refs.analysis_request_hash
         if (
             task.authority_refs.conversation_id != conversation_id
-            or task.authority_refs.analysis_intent_task_id != intent_id
-            or task.authority_refs.analysis_request_hash != content_hash(request.strip())
+            or (prep_intent_id is None) != (prep_request_hash is None)
             or plan_id is None
             or run_id is None
         ):
@@ -849,6 +850,11 @@ class WorkTaskApplicationService:
             run_id=run_id,
             analysis_request_hash=content_hash(request.strip()),
         )
+        if not self._outbox_intent_matches(record):
+            raise ConflictError(
+                "analysis_outbox_intent_mismatch",
+                "分析 outbox 必须绑定会话中具有精确身份的单条分析意图。",
+            )
         return self._repository.ensure_analysis_outbox(record)
 
     def get_task(self, task_id: str) -> WorkTask:
@@ -1110,6 +1116,25 @@ class WorkTaskApplicationService:
     ) -> None:
         goal = snapshot.goal
         task = snapshot.preprocessing_task
+        refs = task.authority_refs if task is not None else None
+        preprocessing_root_matches = bool(
+            refs is not None
+            and refs.analysis_intent_task_id == goal.intent_task_id
+            and refs.analysis_request_hash == goal.analysis_request_hash
+        )
+        outbox = snapshot.analysis_proposal_outbox
+        outbox_root_matches = bool(
+            outbox is not None
+            and refs is not None
+            and outbox.intent_task_id == goal.intent_task_id
+            and outbox.conversation_id == goal.conversation_id
+            and outbox.project_id == goal.project_id
+            and outbox.preprocessing_task_id == goal.preprocessing_task_id
+            and outbox.analysis_request_hash == goal.analysis_request_hash
+            and outbox.plan_revision_id == refs.plan_revision_id
+            and outbox.manifest_hash == refs.input_revision
+            and outbox.run_id == refs.workflow_run_id
+        )
         if (
             snapshot.conversation_mode != ConversationMode.WORK.value
             or snapshot.conversation_project_id not in {None, goal.project_id}
@@ -1120,9 +1145,10 @@ class WorkTaskApplicationService:
             or goal.conversation_id != conversation_id
             or task.task_id != goal.preprocessing_task_id
             or task.authority_refs.conversation_id != goal.conversation_id
-            or task.authority_refs.analysis_intent_task_id != goal.intent_task_id
-            or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
             or task.authority_refs.plan_revision_id is None
+            or (task.authority_refs.analysis_intent_task_id is None)
+            != (task.authority_refs.analysis_request_hash is None)
+            or (not preprocessing_root_matches and not outbox_root_matches)
         ):
             raise NotFoundError("复合自动化目标", f"{conversation_id}:{intent_task_id}")
 
@@ -3329,8 +3355,25 @@ class WorkTaskApplicationService:
                 expected_version=task.version,
                 claim_token=claim_token,
             )
-            outbox = self._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
-            if outbox is not None and self._outbox_intent_matches(outbox):
+            outboxes = self._repository.list_analysis_outboxes_for_preprocessing_task(task.task_id)
+            for outbox in outboxes:
+                if outbox.status not in {
+                    AnalysisOutboxStatus.PENDING,
+                    AnalysisOutboxStatus.READY,
+                }:
+                    continue
+                if (
+                    not self._outbox_matches_preprocessing_completion(
+                        outbox,
+                        task=task,
+                        plan_revision_id=completion.plan_revision_id,
+                        manifest_hash=completion.manifest_hash,
+                        run_id=run_id,
+                    )
+                    or outbox.project_id != authority.project_id
+                    or not self._outbox_intent_matches(outbox)
+                ):
+                    continue
                 self._repository.mark_analysis_outbox_ready(
                     outbox.intent_task_id,
                     preprocessing_task_id=task.task_id,
@@ -3356,19 +3399,45 @@ class WorkTaskApplicationService:
             return False
         if conversation.project_id != outbox.project_id:
             return False
-        for message in reversed(conversation.messages):
+        matches: list[Mapping[str, Any]] = []
+        for message in conversation.messages:
             intent = message.payload.get("analysis_dependency")
-            if not isinstance(intent, dict) or intent.get("task_id") != outbox.intent_task_id:
-                continue
+            if isinstance(intent, dict) and intent.get("task_id") == outbox.intent_task_id:
+                matches.append(intent)
+        if not matches:
+            return False
+        for intent in matches:
             request = intent.get("analysis_request")
-            return (
+            if not (
                 intent.get("task_kind") == "preprocess_then_analyze"
                 and intent.get("conversation_id") == outbox.conversation_id
                 and intent.get("project_id") == outbox.project_id
                 and isinstance(request, str)
                 and content_hash(request.strip()) == outbox.analysis_request_hash
-            )
-        return False
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _outbox_matches_preprocessing_completion(
+        outbox: AnalysisProposalOutbox,
+        *,
+        task: WorkTask,
+        plan_revision_id: str,
+        manifest_hash: str,
+        run_id: str,
+    ) -> bool:
+        refs = task.authority_refs
+        return (
+            outbox.preprocessing_task_id == task.task_id
+            and outbox.conversation_id == refs.conversation_id
+            and outbox.plan_revision_id == plan_revision_id
+            and outbox.manifest_hash == manifest_hash
+            and outbox.run_id == run_id
+            and refs.plan_revision_id == plan_revision_id
+            and refs.input_revision == manifest_hash
+            and refs.workflow_run_id == run_id
+        )
 
     def _block_preprocessing_task(
         self,

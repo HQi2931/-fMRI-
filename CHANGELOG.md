@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 计划 0014 的多分析目标持久化/完成基础已扩展为 fanout：一个预处理 WorkTask 可被多个独立 CompositeGoal 和 proposal outbox 引用；完成时在同一事务内按 intent、会话、项目、冻结 Plan、manifest、Run 与请求 hash 核验并激活所有有效 outbox。迁移保留旧数据，并在无法无损表示多重关联时拒绝降级。当前 conversation 绑定仍只登记一个 canonical intent，多意图上游发现、派发和 intent 隔离的分析 WorkTask ID 尚未接通。
+
 - 外部指标导入现在将文件名受试者编号与一级目录组/条件标为带来源的扫描候选；纳入前需在界面逐项复核，服务端将用户声明单独冻结并绑定候选映射哈希。session/run 保持 unknown，映射变化要求重新检查，外部导入不会将用户声明冒充为执行器 verified。
 
 - Work 预处理反馈问题的指纹现在同时绑定当前草稿修订和对应事实值；同一证据下用户修改草稿后不会被历史指纹误判为无进展，重复的同稿同证据问题仍会停止。反馈循环仍受本轮预算限制，不自动更改科学选择。

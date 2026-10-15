@@ -141,6 +141,16 @@ flowchart TD
 
 本切片验证：相关后端 8 个模块 100 项通过，Agent 页面 45 项通过，Ruff、Mypy、TypeScript、全站 ESLint、生产构建、OpenAPI exporter 与文档标准检查通过；未运行 MATLAB/DPABI。全量前端 Vitest 为 174 项通过、50 项失败，失败集中在其他既有页面/组件测试的相对 `/api/...` URL 被 Node fetch 解析失败；该全量门禁仍需单独修复，不能以本切片定向通过替代。
 
+### 阶段 B 多意图共享预处理来源的 fanout 基础（2026-10-15）
+
+迁移 0030 移除了每个预处理 WorkTask 只能关联一个 CompositeGoal、以及每个预处理来源只能有一条 analysis proposal outbox 的唯一约束，保留 intent ID 和每个目标 outbox 的唯一性，并增加来源查询索引。迁移保留既有根、outbox、分析 attempt、索引与触发器；如果降级时已有多个目标共用来源则拒绝降级，避免丢失无法由旧 schema 表达的数据。0028 的历史保守回填未改变。
+
+应用层现按稳定的 intent ID 顺序读取某一预处理 WorkTask 的 outbox。预处理目标产物通过类型化 readiness 核验后，在既有完成 Unit of Work 中逐条核对 Task、会话、项目、冻结 Plan、manifest、Run 与原始 intent hash，只把仍为 pending/ready 且完全匹配的记录置为 READY；缺失或错误来源单独跳过，不阻断其他有效目标。同一预处理 WorkTask 可被多个 identity-only CompositeGoal 引用，进度投影仍读取共享 WorkTask 的权威状态，不复制任务生命周期。
+
+此切片提供持久化与完成时 fanout 基础，尚未接通新的上游注册路径：当前 conversation 预处理绑定流程仍只为任务上的单个 canonical intent 创建 outbox；系统还不能把同一自然语言请求自动拆分成多个独立分析目标。多意图发现、显式注册/派发、以及相同 proposal hash 下按 intent 隔离分析 WorkTask 身份仍待实现。因此这不是已完成的多指标自动分析体验，也不放宽用户对统计方案审查和 Run 授权的决定权。
+
+本切片相关后端定向验证 77 项通过；Mypy 300 个源文件、Ruff check/format 与 `git diff --check` 通过。没有运行 MATLAB/DPABI。
+
 ### 阶段 B WorkTask 步骤生命周期共用转换（2026-10-15）
 
 预处理与统计 Run 的用户确认绑定现在共用纯 `TaskStep` 生命周期转换：只有精确等待用户且步骤就绪的任务才能绑定 Run；同一 Run 的重放在 Task/Step 状态及引用一致时幂等，另一 Run 或部分绑定失败关闭。两类步骤通过各自现有的预处理产物/lineage、统计设计/真实结果检查后，再共用完成状态构造；事务、CAS、Worker fencing 和两类 outbox 仍由应用服务持有。状态转换不访问数据库或 Provider，也不替代类型专属证据核验。具体决策见 [ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)。

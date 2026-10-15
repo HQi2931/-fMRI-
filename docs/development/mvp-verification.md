@@ -3,8 +3,14 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-10
+- 更新日期：2026-10-15
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-10-15 多分析意图共享预处理来源的持久化基础
+
+新增 SQLite 迁移 0030，允许多个 identity-only CompositeGoal 根和 analysis proposal outbox 引用同一预处理 WorkTask；仍以各自的 intent ID、会话、项目和原始请求 hash 隔离目标。迁移保留既有根、outbox、attempt、索引和触发器，并在无法无损表示多重来源关联时拒绝降级。预处理完成事务按稳定顺序读取 outbox，重核精确 Task、conversation、project、Plan、manifest、Run 与 intent 来源，仅激活仍待处理且证据匹配的目标；多个有效记录在同一个 Unit of Work 中 READY。错误 hash 的记录保持 PENDING，不阻断其他目标。
+
+相关后端回归 77 项通过；Mypy 检查 300 个源文件，Ruff check/format、迁移测试及 `git diff --check` 通过。该验证覆盖持久化和应用层 fanout 基础，不覆盖前台多 intent 注册入口：当前 conversation 预处理绑定仍只创建单个 canonical intent/outbox，自然语言目标拆分和按 intent 隔离的统计 WorkTask ID 仍未接通。未运行 MATLAB/DPABI。
 
 ## 2026-10-14 Work 统计候选只读 dry-run
 

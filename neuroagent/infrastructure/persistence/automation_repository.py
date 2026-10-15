@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, cast
 from uuid import uuid4
@@ -46,6 +46,7 @@ from neuroagent.application.automation.step_preparation import (
     resolve_step_preparation_target,
 )
 from neuroagent.application.errors import ConflictError, NotFoundError
+from neuroagent.application.hashing import content_hash
 from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
 from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
@@ -128,8 +129,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             raise NotFoundError("自动化任务", task_id)
         step_rows = session.execute(
             text(
-                "SELECT step_json FROM work_task_steps WHERE task_id = :task_id "
-                "ORDER BY sequence"
+                "SELECT step_json FROM work_task_steps WHERE task_id = :task_id ORDER BY sequence"
             ),
             {"task_id": task_id},
         ).mappings()
@@ -248,8 +248,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 .first()
             )
             if run is None or (
-                run["project_id"] != project_id
-                or run["plan_revision_id"] != refs.plan_revision_id
+                run["project_id"] != project_id or run["plan_revision_id"] != refs.plan_revision_id
             ):
                 raise ConflictError(
                     "composite_goal_preprocessing_run_mismatch",
@@ -308,25 +307,82 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
     def _sync_preprocessing_composite_goal(session: Session, task: WorkTask) -> None:
         if not any(step.kind == "preprocessing_run" for step in task.steps):
             return
-        existing = (
+        refs = task.authority_refs
+        if (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "预处理任务中的复合分析 intent ID 与请求摘要必须同时存在。",
+            )
+        if refs.analysis_intent_task_id is not None:
+            SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+        linked_rows = (
             session.execute(
                 text(
-                    "SELECT * FROM composite_goal_links WHERE preprocessing_task_id=:task_id"
+                    "SELECT * FROM composite_goal_links WHERE preprocessing_task_id=:task_id "
+                    "ORDER BY intent_task_id"
                 ),
                 {"task_id": task.task_id},
             )
             .mappings()
-            .first()
+            .all()
         )
-        refs = task.authority_refs
-        if refs.analysis_intent_task_id is None and refs.analysis_request_hash is None:
-            if existing is not None:
+        if not linked_rows:
+            return
+        plan_id = refs.plan_revision_id
+        plan = (
+            session.execute(
+                text("SELECT project_id FROM plan_revisions WHERE plan_revision_id=:plan_id"),
+                {"plan_id": plan_id},
+            )
+            .mappings()
+            .first()
+            if plan_id is not None
+            else None
+        )
+        if plan is None:
+            raise ConflictError(
+                "composite_goal_preprocessing_authority_mismatch",
+                "共享预处理目标的冻结 Plan 不存在。",
+            )
+        project_id = str(plan["project_id"])
+        for row in linked_rows:
+            goal = SqliteWorkTaskRepository._composite_goal_from_row(row)
+            if (
+                goal.preprocessing_task_id != task.task_id
+                or goal.conversation_id != refs.conversation_id
+                or goal.project_id != project_id
+            ):
+                raise ConflictError(
+                    "composite_goal_preprocessing_binding_mismatch",
+                    "复合目标根与共享预处理任务的会话、项目或任务引用不一致。",
+                )
+            is_preprocessing_root = (
+                goal.intent_task_id == refs.analysis_intent_task_id
+                and goal.analysis_request_hash == refs.analysis_request_hash
+            )
+            if is_preprocessing_root and goal.analysis_proposal_outbox_intent_task_id is None:
+                continue
+            outbox_row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                outbox_row is None
+                or goal.analysis_proposal_outbox_intent_task_id != goal.intent_task_id
+                or not SqliteWorkTaskRepository._outbox_matches_goal(outbox_row, goal)
+            ):
                 raise ConflictError(
                     "composite_goal_preprocessing_detached",
-                    "持久复合目标不能通过清除预处理任务引用而解除关联。",
+                    "共享预处理目标不能解除或改变其精确分析 intent 来源。",
                 )
-            return
-        SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+            if not SqliteWorkTaskRepository._analysis_outbox_source_matches(session, outbox_row):
+                # A malformed child is excluded independently; it must not block
+                # completion/readiness for other exact roots sharing this task.
+                continue
 
     @staticmethod
     def _composite_goal_from_row(row: Any) -> CompositeGoalIdentity:
@@ -340,9 +396,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 row["analysis_proposal_outbox_intent_task_id"]
             ),
             analysis_work_task_id=row["analysis_work_task_id"],
-            result_interpretation_outbox_task_id=row[
-                "result_interpretation_outbox_task_id"
-            ],
+            result_interpretation_outbox_task_id=row["result_interpretation_outbox_task_id"],
         )
 
     def find_composite_goal_for_analysis_task(
@@ -436,11 +490,13 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     .first()
                 )
                 if outbox_row is not None:
-                    outbox = self._outbox_from_row(outbox_row)
-                    if outbox.analysis_work_task_id is not None:
-                        proposal_analysis_task = self._task_from_session(
-                            session, outbox.analysis_work_task_id
-                        )
+                    candidate_outbox = self._outbox_from_row(outbox_row)
+                    if self._analysis_outbox_source_matches(session, candidate_outbox):
+                        outbox = candidate_outbox
+                        if outbox.analysis_work_task_id is not None:
+                            proposal_analysis_task = self._task_from_session(
+                                session, outbox.analysis_work_task_id
+                            )
             attempt_rows = session.execute(
                 text(
                     "SELECT attempt_number, work_task_id, proposal_hash "
@@ -709,6 +765,67 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             and row["analysis_request_hash"] == goal.analysis_request_hash
         )
 
+    @staticmethod
+    def _analysis_outbox_source_matches(
+        session: Session,
+        outbox: AnalysisProposalOutbox | Mapping[Any, Any],
+    ) -> bool:
+        values: Mapping[Any, Any] = (
+            outbox.model_dump(mode="python")
+            if isinstance(outbox, AnalysisProposalOutbox)
+            else outbox
+        )
+        conversation_id = values.get("conversation_id")
+        intent_task_id = values.get("intent_task_id")
+        project_id = values.get("project_id")
+        request_hash = values.get("analysis_request_hash")
+        if not all(
+            isinstance(value, str) and value
+            for value in (conversation_id, intent_task_id, project_id)
+        ):
+            return False
+        if (
+            not isinstance(request_hash, str)
+            or len(request_hash) != 64
+            or any(char not in "0123456789abcdef" for char in request_hash)
+        ):
+            return False
+        rows = (
+            session.execute(
+                text(
+                    "SELECT payload_json FROM conversation_messages "
+                    "WHERE conversation_id=:conversation_id ORDER BY sequence"
+                ),
+                {"conversation_id": conversation_id},
+            )
+            .mappings()
+            .all()
+        )
+        matching_intents: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if not isinstance(payload, dict):
+                continue
+            candidate = payload.get("analysis_dependency")
+            if isinstance(candidate, dict) and candidate.get("task_id") == intent_task_id:
+                matching_intents.append(candidate)
+        if not matching_intents:
+            return False
+        for intent in matching_intents:
+            request = intent.get("analysis_request")
+            if not (
+                intent.get("task_kind") == "preprocess_then_analyze"
+                and intent.get("conversation_id") == conversation_id
+                and intent.get("project_id") == project_id
+                and isinstance(request, str)
+                and content_hash(request.strip()) == request_hash
+            ):
+                return False
+        return True
+
     def ensure_analysis_outbox(self, record: AnalysisProposalOutbox) -> AnalysisProposalOutbox:
         with self.unit_of_work.atomic(), self._write_session() as session:
             existing = (
@@ -761,9 +878,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         return record
 
     @staticmethod
-    def _link_analysis_outbox_to_goal(
-        session: Session, record: AnalysisProposalOutbox
-    ) -> None:
+    def _link_analysis_outbox_to_goal(session: Session, record: AnalysisProposalOutbox) -> None:
         try:
             task = SqliteWorkTaskRepository._task_from_session(
                 session, record.preprocessing_task_id
@@ -773,27 +888,72 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             # task and therefore is not a composite-goal child.
             return
         refs = task.authority_refs
-        if refs.analysis_intent_task_id is None and refs.analysis_request_hash is None:
-            return
-        identity = SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+        if (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "预处理任务中的复合分析 intent ID 与请求摘要必须同时存在。",
+            )
+        prep_steps = tuple(step for step in task.steps if step.kind == "preprocessing_run")
+        if len(prep_steps) != 1 or refs.plan_revision_id is None:
+            raise ConflictError(
+                "composite_goal_preprocessing_binding_invalid",
+                "分析 outbox 必须绑定唯一的持久预处理步骤和冻结 Plan。",
+            )
+        prep_step_refs = prep_steps[0].authority_refs
         if (
-            identity.intent_task_id != record.intent_task_id
-            or identity.conversation_id != record.conversation_id
-            or identity.project_id != record.project_id
-            or identity.analysis_request_hash != record.analysis_request_hash
-            or identity.preprocessing_task_id != record.preprocessing_task_id
+            refs.conversation_id != record.conversation_id
             or refs.plan_revision_id != record.plan_revision_id
             or refs.input_revision != record.manifest_hash
+            or refs.workflow_run_id != record.run_id
+            or prep_step_refs.conversation_id != refs.conversation_id
+            or prep_step_refs.plan_revision_id != refs.plan_revision_id
+            or prep_step_refs.input_revision != record.manifest_hash
+            or prep_step_refs.workflow_run_id != record.run_id
+            or (prep_step_refs.analysis_intent_task_id is None)
+            != (prep_step_refs.analysis_request_hash is None)
+            or prep_step_refs.analysis_intent_task_id != refs.analysis_intent_task_id
+            or prep_step_refs.analysis_request_hash != refs.analysis_request_hash
         ):
             raise ConflictError(
                 "composite_goal_outbox_binding_mismatch",
-                "分析提案 outbox 与精确的预处理任务或原始请求不匹配。",
+                "分析 outbox 与共享预处理任务的会话、Plan、manifest 或 Run 不匹配。",
+            )
+        if refs.analysis_intent_task_id is not None:
+            SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+        if not SqliteWorkTaskRepository._analysis_outbox_source_matches(session, record):
+            raise ConflictError(
+                "composite_goal_outbox_intent_mismatch",
+                "分析 outbox 未绑定会话中与请求摘要完全匹配的 intent 根。",
+            )
+        plan = (
+            session.execute(
+                text("SELECT project_id FROM plan_revisions WHERE plan_revision_id=:plan_id"),
+                {"plan_id": record.plan_revision_id},
+            )
+            .mappings()
+            .first()
+        )
+        conversation = (
+            session.execute(
+                text("SELECT project_id FROM conversations WHERE conversation_id=:conversation_id"),
+                {"conversation_id": record.conversation_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            plan is None
+            or plan["project_id"] != record.project_id
+            or conversation is None
+            or conversation["project_id"] not in {None, record.project_id}
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_project_mismatch",
+                "分析 outbox 会话与冻结 Plan 不属于同一项目。",
             )
         run = (
             session.execute(
-                text(
-                    "SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"
-                ),
+                text("SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"),
                 {"run_id": record.run_id},
             )
             .mappings()
@@ -808,22 +968,53 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 "composite_goal_outbox_run_mismatch",
                 "分析提案 outbox 未绑定预处理任务的精确项目、Plan 和 Run。",
             )
-        if refs.conversation_id != record.conversation_id:
-            raise ConflictError(
-                "composite_goal_outbox_conversation_mismatch",
-                "分析提案 outbox 会话与预处理任务不一致。",
-            )
-        existing = (
+        root_row = (
             session.execute(
-                text(
-                    "SELECT analysis_proposal_outbox_intent_task_id FROM composite_goal_links "
-                    "WHERE intent_task_id=:intent_id"
-                ),
+                text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
                 {"intent_id": record.intent_task_id},
             )
             .mappings()
-            .one()
-        )["analysis_proposal_outbox_intent_task_id"]
+            .first()
+        )
+        if root_row is None:
+            session.execute(
+                text(
+                    """INSERT INTO composite_goal_links
+                    (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                     preprocessing_task_id, analysis_proposal_outbox_intent_task_id,
+                     analysis_work_task_id, result_interpretation_outbox_task_id)
+                    VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                            :preprocessing_task_id, NULL, NULL, NULL)"""
+                ),
+                {
+                    "intent_id": record.intent_task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "request_hash": record.analysis_request_hash,
+                    "preprocessing_task_id": record.preprocessing_task_id,
+                },
+            )
+            root_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": record.intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+        identity = SqliteWorkTaskRepository._composite_goal_from_row(root_row)
+        if (
+            identity.intent_task_id != record.intent_task_id
+            or identity.conversation_id != record.conversation_id
+            or identity.project_id != record.project_id
+            or identity.analysis_request_hash != record.analysis_request_hash
+            or identity.preprocessing_task_id != record.preprocessing_task_id
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_binding_mismatch",
+                "分析 outbox 根身份与共享预处理来源不一致。",
+            )
+        existing = identity.analysis_proposal_outbox_intent_task_id
         if existing not in {None, record.intent_task_id}:
             raise ConflictError(
                 "composite_goal_outbox_already_bound",
@@ -853,22 +1044,24 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 raise NotFoundError("分析续接 outbox", intent_task_id)
             return self._outbox_from_row(row)
 
-    def get_analysis_outbox_for_preprocessing_task(
+    def list_analysis_outboxes_for_preprocessing_task(
         self, preprocessing_task_id: str
-    ) -> AnalysisProposalOutbox | None:
+    ) -> tuple[AnalysisProposalOutbox, ...]:
+        """List fanout children in stable identity order for one prep WorkTask."""
+
         with self._read_session() as session:
-            row = (
+            rows = (
                 session.execute(
                     text(
                         "SELECT * FROM analysis_proposal_outbox "
-                        "WHERE preprocessing_task_id=:task_id"
+                        "WHERE preprocessing_task_id=:task_id ORDER BY intent_task_id"
                     ),
                     {"task_id": preprocessing_task_id},
                 )
                 .mappings()
-                .first()
+                .all()
             )
-            return self._outbox_from_row(row) if row is not None else None
+            return tuple(self._outbox_from_row(row) for row in rows)
 
     def mark_analysis_outbox_ready(
         self,
@@ -1117,8 +1310,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 outbox = (
                     session.execute(
                         text(
-                            "SELECT * FROM analysis_proposal_outbox "
-                            "WHERE intent_task_id=:intent_id"
+                            "SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"
                         ),
                         {"intent_id": claim.intent_task_id},
                     )
@@ -1454,9 +1646,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         )
         run = (
             session.execute(
-                text(
-                    "SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"
-                ),
+                text("SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"),
                 {"run_id": record.run_id},
             )
             .mappings()

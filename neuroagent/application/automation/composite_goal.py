@@ -141,16 +141,21 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     prep_refs = prep.authority_refs
     if (
         prep_refs.conversation_id != goal.conversation_id
-        or prep_refs.analysis_intent_task_id != goal.intent_task_id
-        or prep_refs.analysis_request_hash != goal.analysis_request_hash
+        or (prep_refs.analysis_intent_task_id is None) != (prep_refs.analysis_request_hash is None)
         or prep_refs.plan_revision_id != snapshot.preprocessing_plan_revision_id
         or prep_refs.input_revision != snapshot.preprocessing_plan_manifest_hash
         or snapshot.preprocessing_plan_project_id != goal.project_id
     ):
         return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_binding_mismatch")
+    preprocessing_root_matches = (
+        prep_refs.analysis_intent_task_id == goal.intent_task_id
+        and prep_refs.analysis_request_hash == goal.analysis_request_hash
+    )
 
     outbox = snapshot.analysis_proposal_outbox
     if goal.analysis_proposal_outbox_intent_task_id is None:
+        if not preprocessing_root_matches:
+            return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_binding_mismatch")
         if outbox is not None or prep_refs.workflow_run_id is not None:
             return result(CompositeGoalStatus.INDETERMINATE, "proposal_outbox_binding_missing")
         if prep.status is TaskStatus.WAITING_USER:
@@ -378,4 +383,3 @@ def _analysis_task_matches(task: WorkTask, goal: CompositeGoalIdentity) -> bool:
 def _analysis_task_has_proposal(task: WorkTask, proposal_hash: str) -> bool:
     statistical_steps = tuple(step for step in task.steps if step.kind == "statistical_run")
     return len(statistical_steps) == 1 and statistical_steps[0].input_version == proposal_hash
-
