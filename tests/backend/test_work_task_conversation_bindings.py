@@ -46,7 +46,7 @@ from neuroagent.bootstrap import build_service
 from neuroagent.domain.execution import QcExecutionMode
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.lifecycle import WorkflowState
-from neuroagent.infrastructure.persistence.models import PlanRevisionRow
+from neuroagent.infrastructure.persistence.models import ConversationRow, PlanRevisionRow
 from tests.backend.conftest import make_approved_plan
 from tests.backend.test_environment import _fake_stack
 from tests.backend.test_work_draft import complete_draft
@@ -186,6 +186,59 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert identity.preprocessing_task_id == task_id
             assert identity.analysis_proposal_outbox_intent_task_id is None
+
+            listed = client.get(
+                f"/api/v1/conversations/{conversation.conversation_id}/composite-goals"
+            )
+            assert listed.status_code == 200, listed.text
+            listed_goals = listed.json()
+            assert len(listed_goals) == 1
+            listed_goal = listed_goals[0]
+            assert listed_goal["intent_task_id"] == analysis_intent["task_id"]
+            assert listed_goal["conversation_id"] == conversation.conversation_id
+            assert listed_goal["project_id"] == project.project_id
+            assert listed_goal["analysis_request_hash"] == content_hash(user_goal.strip())
+            assert listed_goal["preprocessing_task_id"] == task_id
+            assert listed_goal["analysis_proposal_outbox_intent_task_id"] is None
+            assert listed_goal["analysis_work_task_id"] is None
+            assert listed_goal["status"] == "waiting_user"
+            assert listed_goal["reason_code"] == "preprocessing_user_decision"
+
+            other_conversation = service.conversations.create_conversation(
+                ConversationCreate(
+                    mode=ConversationMode.WORK,
+                    project_id=project.project_id,
+                    workspace_path=str(source),
+                ),
+                "composite-goal-isolated-conversation",
+            )
+            isolated = client.get(
+                f"/api/v1/conversations/{other_conversation.conversation_id}/composite-goals"
+            )
+            assert isolated.status_code == 200
+            assert isolated.json() == []
+
+            other_project = service.projects.create_project(
+                ProjectCreate(
+                    name="Other project",
+                    source_roots=[str(source)],
+                    work_root=str(work / "other-project"),
+                ),
+                "composite-goal-other-project",
+            )
+            with service.database.session_factory.begin() as session:
+                row = session.get(ConversationRow, conversation.conversation_id)
+                assert row is not None
+                row.project_id = other_project.project_id
+            crossed_project = client.get(
+                f"/api/v1/conversations/{conversation.conversation_id}/composite-goals"
+            )
+            assert crossed_project.status_code == 404
+            with service.database.session_factory.begin() as session:
+                row = session.get(ConversationRow, conversation.conversation_id)
+                assert row is not None
+                row.project_id = project.project_id
+
             service.automation.ensure_preprocessing_plan_task(
                 conversation_id=conversation.conversation_id,
                 project_id=project.project_id,

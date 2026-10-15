@@ -16,6 +16,7 @@ from neuroagent.api.responses.agent import (
     RsFmriAnswerView,
 )
 from neuroagent.api.responses.conversations import (
+    CompositeGoalProgressView,
     ConversationContextView,
     ConversationTurnView,
     ConversationView,
@@ -119,6 +120,32 @@ def get_conversation(conversation_id: str, request: Request) -> ConversationView
         to_http_response(
             capability_from(request, "conversations").get_conversation(conversation_id),
             ConversationView,
+        ),
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/composite-goals",
+    response_model=list[CompositeGoalProgressView],
+    tags=["agent"],
+)
+def list_composite_goal_progress(
+    conversation_id: str, request: Request
+) -> list[CompositeGoalProgressView]:
+    progress = capability_from(request, "conversations").automation.list_composite_goal_progress(
+        conversation_id
+    )
+    return cast(
+        list[CompositeGoalProgressView],
+        to_http_response(
+            [
+                {
+                    **item.goal.model_dump(mode="python"),
+                    **item.model_dump(mode="python", exclude={"goal"}),
+                }
+                for item in progress
+            ],
+            list[CompositeGoalProgressView],
         ),
     )
 

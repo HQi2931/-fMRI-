@@ -224,6 +224,20 @@ class WorkTaskApplicationService:
         self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
         return project_composite_goal(snapshot)
 
+    def list_composite_goal_progress(
+        self, conversation_id: str
+    ) -> list[CompositeGoalProgress]:
+        """List freshly projected composite goals visible to one Work conversation."""
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        if conversation.mode is not ConversationMode.WORK:
+            raise NotFoundError("Work 会话复合目标", conversation_id)
+        intent_task_ids = self._repository.list_composite_goal_intent_ids(conversation_id)
+        return [
+            self.get_composite_goal_progress(conversation_id, intent_task_id)
+            for intent_task_id in intent_task_ids
+        ]
+
     def get_composite_goal(
         self, conversation_id: str, intent_task_id: str
     ) -> CompositeGoalIdentity:

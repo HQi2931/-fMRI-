@@ -37,6 +37,36 @@ class ConversationRole(StrEnum):
     TOOL = "tool"
 
 
+class CompositeGoalProgressStatus(StrEnum):
+    WAITING_PREPROCESSING = "waiting_preprocessing"
+    WAITING_ANALYSIS = "waiting_analysis"
+    WAITING_RESULT_INTERPRETATION = "waiting_result_interpretation"
+    WAITING_USER = "waiting_user"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    INDETERMINATE = "indeterminate"
+
+
+class CompositeGoalProgressView(StrictModel):
+    """Conversation-scoped stable identity and current composite-goal projection."""
+
+    intent_task_id: str
+    conversation_id: str
+    project_id: str
+    analysis_request_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    preprocessing_task_id: str
+    analysis_proposal_outbox_intent_task_id: str | None = None
+    analysis_work_task_id: str | None = None
+    result_interpretation_outbox_task_id: str | None = None
+    status: CompositeGoalProgressStatus
+    preprocessing_status: str | None = None
+    analysis_proposal_status: str | None = None
+    analysis_status: str | None = None
+    result_interpretation_status: str | None = None
+    continuation_message_id: str | None = None
+    reason_code: str | None = None
+
+
 class WorkspaceFileEntryResponse(StrictModel):
     path: str
     name: str

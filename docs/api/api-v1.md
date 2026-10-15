@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-10
+- 更新日期：2026-10-15
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
@@ -90,10 +90,13 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `POST` | `/conversations` | 创建 `chat` 或 `work` 对话并持久化欢迎消息 |
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
+| `GET` | `/conversations/{conversation_id}/composite-goals` | 列出该 Work 会话内复合预处理→分析目标的稳定身份与当前进度 |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
 | `POST` | `/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry` | 对当前会话中可恢复的统计结果解释续接进行幂等重试，返回更新后的对话 |
 
 结果解释重试使用 `Idempotency-Key` 请求头，不需要请求正文。服务端要求 task 属于该 conversation，且 outbox 为可恢复的 `waiting_user`；不支持的错误类别返回 `result_interpretation_not_recoverable`。重试只将原 outbox 的新 generation 重新排队并追加 assistant 状态消息，不创建或批准统计设计，也不创建或启动 Run。续接状态通过会话 assistant message payload 的 `statistical_result_interpretation` 或 `statistical_result_interpretation_retry` discriminator 呈现；该状态独立于 `analysis_outbox_*`。仅 `retry_available=true` 的当前 generation 显示重试操作。完整证据边界见 [ADR 0042](../adr/0042-statistical-result-interpretation-outbox.md)。
+
+`GET /conversations/{conversation_id}/composite-goals` 仅适用于 Work 会话；其他模式、缺失会话或与目标冻结 Plan 不一致的项目均返回安全的 404。成功返回按 `intent_task_id` 排序的数组，空 Work 会话返回 `[]`。每项平铺稳定身份字段（`intent_task_id`、`conversation_id`、`project_id`、`analysis_request_hash`、`preprocessing_task_id`、`analysis_proposal_outbox_intent_task_id`、`analysis_work_task_id`、`result_interpretation_outbox_task_id`）和最新投影字段（`status`、`preprocessing_status`、`analysis_proposal_status`、`analysis_status`、`result_interpretation_status`、`continuation_message_id`、`reason_code`）。阶段状态来自对应 Task/outbox/assistant continuation 的权威记录；该只读 API 不接受 intent ID 参数，也不创建或推进任务。
 
 Work 回合请求可带 `agent_role: "preprocessing" | "analysis" | null`。省略或传 `null` 时由服务端根据当前任务和最近交接记录路由；显式角色用于界面手动切换。响应的 assistant payload 保存 `agent_role`、角色显示名和该角色独立草稿，工具审计行也记录角色。旧的预处理草稿默认归属 `preprocessing`。
 

@@ -135,9 +135,11 @@ flowchart TD
 
 当前垂直切片为明确的 `preprocess_then_analyze` intent 建立 identity-only 根记录，并与预处理 WorkTask 创建/保存共用 Unit of Work，因此目标可早于分析 proposal outbox 存在。根只保留 conversation/project、原始请求 hash、预处理 task、可选 proposal/result outbox 和当前分析 task 的稳定引用；proposal hash 修订通过仅含 attempt 序号、task ID 和 proposal hash 的尝试表保留历史，不复制 WorkTask 或 outbox 状态。首个 proposal outbox 继续指向首次自动提案任务；用户修订后可有不同 active task，迟到的旧 task 不能重新激活或绑定结果 outbox。
 
-只读 snapshot 在同一 SQLite read transaction 读取根、会话/Plan project 证据、两类 outbox、所有分析尝试、WorkTask 和结果解释 assistant continuation。只有 active task、结果 outbox、completed assistant 消息，以及消息 payload 中的 task/status/result ID/version 完全一致，投影才返回 `completed`。应用服务提供按 conversation ID + intent ID 取单个 identity/progress 的查询并验证 WORK 会话和 Plan 项目；尚未增加 HTTP 查询端点、当前会话 role-slot 投影或前端展示。本切片仅支持一个显式复合目标，不是通用调度器或多目标 fanout。
+只读 snapshot 在同一 SQLite read transaction 读取根、会话/Plan project 证据、两类 outbox、所有分析尝试、WorkTask 和结果解释 assistant continuation。只有 active task、结果 outbox、completed assistant 消息，以及消息 payload 中的 task/status/result ID/version 完全一致，投影才返回 `completed`。应用服务按 conversation ID 列出目标并复用单目标投影，验证 WORK 会话、Task 与 Plan 项目；`GET /api/v1/conversations/{conversation_id}/composite-goals` 不接受裸 intent ID，对 Chat、缺失会话或越项目关联失败关闭。Work 页面以中文呈现预处理、分析方案、统计分析、结果解释四个环节；切换会话时取消旧请求并丢弃迟到响应，活动目标每 10 秒刷新、终态停止，查询错误单独提示并可手动重试。页面不展示内部 ID，也不推断科研方案。目标列表暂不包含用户原始意图标题，多条目标仅按顺序编号。本切片仅支持单个显式复合目标，不是通用调度器或多目标 fanout。
 
-迁移 0028 对历史任务仅在 Task/Step、WORK conversation、project/Plan/manifest，以及存在时的 proposal outbox/首个 analysis task 精确匹配时回填；歧义或相互矛盾的旧关联不导入，等待显式恢复。定向测试覆盖预处理任务建立时 root 已持久化且 outbox 为空、首个 outbox/task、修订 attempts、迟到旧尝试、精确结果 outbox 绑定、assistant continuation 错配 fail-closed 和迁移歧义跳过。阶段 B 整体仍未完成；HTTP/前端读取、用户可见进度以及通用多步骤恢复不在此切片内。
+迁移 0028 对历史任务仅在 Task/Step、WORK conversation、project/Plan/manifest，以及存在时的 proposal outbox/首个 analysis task 精确匹配时回填；歧义或相互矛盾的旧关联不导入，等待显式恢复。定向测试覆盖预处理任务建立时 root 已持久化且 outbox 为空、首个 outbox/task、修订 attempts、迟到旧尝试、精确结果 outbox 绑定、assistant continuation 错配 fail-closed、迁移歧义跳过，以及 API 空列表/会话隔离/非 Work 和跨项目拒绝。前端测试覆盖状态呈现、独立错误、会话切换竞态、取消与人工刷新。阶段 B 整体仍未完成；当前仅提供单会话显式复合目标进度读取，通用多步骤恢复、多目标 fanout 与用户意图标题呈现仍待实现。
+
+本切片验证：相关后端 8 个模块 100 项通过，Agent 页面 45 项通过，Ruff、Mypy、TypeScript、全站 ESLint、生产构建、OpenAPI exporter 与文档标准检查通过；未运行 MATLAB/DPABI。全量前端 Vitest 为 174 项通过、50 项失败，失败集中在其他既有页面/组件测试的相对 `/api/...` URL 被 Node fetch 解析失败；该全量门禁仍需单独修复，不能以本切片定向通过替代。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 

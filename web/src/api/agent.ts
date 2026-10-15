@@ -1,6 +1,6 @@
 import { request, post, patch, streamConversationTurn } from "./transport";
 import type { components } from "./schema.generated";
-import type { AgentTask, Conversation, ConversationContext, ConversationMemory, ConversationMode, ConversationTurn, ConversationTurnBody, ModelProfile, RsFmriAnswer } from "./types";
+import type { AgentTask, CompositeGoalProgress, Conversation, ConversationContext, ConversationMemory, ConversationMode, ConversationTurn, ConversationTurnBody, ModelProfile, RsFmriAnswer } from "./types";
 
 type Schemas = components["schemas"];
 
@@ -33,6 +33,8 @@ export const agentApi = {
   ) => post<Conversation>("/conversations", body, signal),
   conversation: (conversationId: string, signal?: AbortSignal) =>
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
+  compositeGoals: (conversationId: string, signal?: AbortSignal) =>
+    request<CompositeGoalProgress[]>(`/conversations/${encodeURIComponent(conversationId)}/composite-goals`, { signal }),
   selectWorkAgent: (conversationId: string, body: Schemas["WorkAgentSelection"], signal?: AbortSignal) =>
     patch<Conversation>(`/conversations/${conversationId}/work-agent`, body, signal),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>

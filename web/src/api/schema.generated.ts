@@ -175,6 +175,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/composite-goals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Composite Goal Progress */
+        get: operations["list_composite_goal_progress_api_v1_conversations__conversation_id__composite_goals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/context": {
         parameters: {
             query?: never;
@@ -1846,6 +1863,46 @@ export interface components {
             statistic?: number | null;
             /** Voxel Count */
             voxel_count?: number | null;
+        };
+        /**
+         * CompositeGoalProgressStatus
+         * @enum {string}
+         */
+        CompositeGoalProgressStatus: "waiting_preprocessing" | "waiting_analysis" | "waiting_result_interpretation" | "waiting_user" | "blocked" | "completed" | "indeterminate";
+        /**
+         * CompositeGoalProgressView
+         * @description Conversation-scoped stable identity and current composite-goal projection.
+         */
+        CompositeGoalProgressView: {
+            /** Analysis Proposal Outbox Intent Task Id */
+            analysis_proposal_outbox_intent_task_id?: string | null;
+            /** Analysis Proposal Status */
+            analysis_proposal_status?: string | null;
+            /** Analysis Request Hash */
+            analysis_request_hash: string;
+            /** Analysis Status */
+            analysis_status?: string | null;
+            /** Analysis Work Task Id */
+            analysis_work_task_id?: string | null;
+            /** Continuation Message Id */
+            continuation_message_id?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Intent Task Id */
+            intent_task_id: string;
+            /** Preprocessing Status */
+            preprocessing_status?: string | null;
+            /** Preprocessing Task Id */
+            preprocessing_task_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Result Interpretation Outbox Task Id */
+            result_interpretation_outbox_task_id?: string | null;
+            /** Result Interpretation Status */
+            result_interpretation_status?: string | null;
+            status: components["schemas"]["CompositeGoalProgressStatus"];
         };
         /** ContextSummaryView */
         ContextSummaryView: {
@@ -6221,6 +6278,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_composite_goal_progress_api_v1_conversations__conversation_id__composite_goals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompositeGoalProgressView"][];
                 };
             };
             /** @description Bad Request */

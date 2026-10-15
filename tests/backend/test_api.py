@@ -41,6 +41,30 @@ def test_health_openapi_and_error_envelope(service: ApplicationServices) -> None
         assert client.get("/api/v1/health").json() == {"status": "ok", "database": "ok"}
         schema = client.get("/api/v1/openapi.json").json()
         assert "/api/v1/runs/{run_id}/events" in schema["paths"]
+        composite_goals = schema["paths"][
+            "/api/v1/conversations/{conversation_id}/composite-goals"
+        ]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert composite_goals["items"]["$ref"].endswith("/CompositeGoalProgressView")
+        composite_fields = schema["components"]["schemas"]["CompositeGoalProgressView"][
+            "properties"
+        ]
+        assert {
+            "intent_task_id",
+            "conversation_id",
+            "project_id",
+            "analysis_request_hash",
+            "preprocessing_task_id",
+            "analysis_proposal_outbox_intent_task_id",
+            "analysis_work_task_id",
+            "result_interpretation_outbox_task_id",
+            "status",
+            "preprocessing_status",
+            "analysis_proposal_status",
+            "analysis_status",
+            "result_interpretation_status",
+            "continuation_message_id",
+            "reason_code",
+        } == set(composite_fields)
         contracts = schema["components"]["schemas"]
         assert "environment" not in contracts["SkillPlanResolveRequest"]["properties"]
         assert "input_artifact" not in contracts["SkillPlanIntent"]["properties"]
@@ -94,6 +118,34 @@ def test_workspace_check_reports_format_risks_without_blocking(
     payload = response.json()
     assert payload["issues"]
     assert payload["input_stage"] is None
+
+
+def test_composite_goal_list_is_conversation_scoped_and_requires_work_mode(
+    service: ApplicationServices,
+) -> None:
+    with TestClient(create_app(service=service)) as client:
+        work = client.post(
+            "/api/v1/conversations",
+            json={"mode": "work"},
+            headers={"Idempotency-Key": "composite-empty-work"},
+        )
+        chat = client.post(
+            "/api/v1/conversations",
+            json={"mode": "chat"},
+            headers={"Idempotency-Key": "composite-empty-chat"},
+        )
+        assert work.status_code == 201
+        assert chat.status_code == 201
+        work_id = work.json()["conversation_id"]
+        chat_id = chat.json()["conversation_id"]
+
+        empty = client.get(f"/api/v1/conversations/{work_id}/composite-goals")
+        rejected_chat = client.get(f"/api/v1/conversations/{chat_id}/composite-goals")
+
+    assert empty.status_code == 200
+    assert empty.json() == []
+    assert rejected_chat.status_code == 404
+    assert rejected_chat.json()["error"]["code"] == "not_found"
 
 
 def test_chat_conversation_persists_turns_and_rag_tool_calls(

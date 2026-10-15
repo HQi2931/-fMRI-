@@ -6,6 +6,7 @@ import {
 } from "../../api/transport";
 import type {
   Conversation,
+  CompositeGoalProgress,
   ConversationMode,
   Run,
   WorkspaceConsent,
@@ -33,6 +34,127 @@ export { AnalysisProposalActions } from "./AnalysisProposalActions";
 const RUN_TERMINAL_STATES = new Set(["succeeded", "failed_retryable", "failed_terminal", "timed_out", "cancelled", "qc_review"]);
 const OUTBOX_REFRESH_MAX_INTERVAL_MS = 60_000;
 const MAX_OUTBOX_CONVERSATION_REFRESHES = 16;
+const COMPOSITE_GOAL_REFRESH_INTERVAL_MS = 10_000;
+const COMPOSITE_GOAL_REFRESH_MAX_INTERVAL_MS = 30_000;
+
+type CompositeGoalTone = "good" | "warn" | "danger" | "info" | "neutral";
+
+function compositeGoalStatusView(status: string): { label: string; tone: CompositeGoalTone; detail: string } {
+  switch (status) {
+    case "waiting_preprocessing": return { label: "等待预处理", tone: "info", detail: "预处理尚未完成，后续分析会在条件满足后继续。" };
+    case "waiting_analysis": return { label: "等待分析", tone: "info", detail: "统计分析方案或计算正在推进。" };
+    case "waiting_result_interpretation": return { label: "等待结果解释", tone: "info", detail: "统计结果已生成，正在整理结果说明。" };
+    case "waiting_user": return { label: "需要你处理", tone: "warn", detail: "流程需要你的确认或补充后才能继续。" };
+    case "blocked": return { label: "已阻断", tone: "danger", detail: "当前流程无法继续，请查看阻断原因并处理。" };
+    case "completed": return { label: "已完成", tone: "good", detail: "结果解释已送达当前会话。" };
+    case "indeterminate": return { label: "状态待核验", tone: "warn", detail: "流程关联信息需要核验，页面不会推断当前阶段。" };
+    default: return { label: "状态待核验", tone: "neutral", detail: "收到尚未识别的进度状态，请刷新会话后核对。" };
+  }
+}
+
+function compositeGoalStageView(status: string | null | undefined): string {
+  if (!status) return "尚未进入";
+  switch (status) {
+    case "queued": return "排队中";
+    case "running": return "进行中";
+    case "waiting_user": return "需要你处理";
+    case "waiting_run": return "等待计算";
+    case "waiting_dependency": return "等待前置环节";
+    case "pending": return "等待开始";
+    case "ready": return "已就绪";
+    case "proposal_ready": return "方案已准备";
+    case "completed": return "已完成";
+    case "blocked": return "已阻断";
+    case "cancelled": return "已取消";
+    case "failed": return "未通过";
+    default: return "状态待核验";
+  }
+}
+
+function compositeGoalReasonView(reasonCode: string | null | undefined): string | null {
+  if (!reasonCode) return null;
+  const labels: Record<string, string> = {
+    preprocessing_not_started: "预处理尚未开始。",
+    preprocessing_in_progress: "预处理仍在进行。",
+    preprocessing_user_decision: "预处理需要你的决定。",
+    preprocessing_terminal_block: "预处理已停止，需检查后再继续。",
+    preprocessing_task_missing: "找不到对应的预处理任务。",
+    preprocessing_binding_mismatch: "预处理任务与当前目标的关联需要核验。",
+    proposal_outbox_missing: "找不到对应的分析准备任务。",
+    proposal_outbox_binding_missing: "分析准备任务的关联信息需要核验。",
+    proposal_outbox_authority_mismatch: "分析准备任务的来源信息不一致。",
+    analysis_proposal_blocked: "准备分析方案时遇到阻断。",
+    analysis_proposal_pending: "正在准备分析方案。",
+    proposal_analysis_task_missing: "找不到对应的分析方案任务。",
+    proposal_analysis_task_mismatch: "分析方案任务的来源需要核验。",
+    proposal_analysis_attempt_missing: "分析方案的记录不完整。",
+    proposal_analysis_attempt_mismatch: "当前分析方案与任务记录不一致。",
+    analysis_decision_required: "分析方案需要你的确认。",
+    analysis_task_link_missing: "找不到对应的统计分析任务。",
+    analysis_task_mismatch: "统计分析任务与当前目标的关联需要核验。",
+    analysis_task_reference_mismatch: "统计分析任务的版本关联需要核验。",
+    analysis_terminal_block: "统计分析已停止，需检查后再继续。",
+    analysis_user_decision: "统计分析需要你的决定。",
+    analysis_in_progress: "统计分析仍在进行。",
+    result_interpretation_binding_missing: "结果解释任务的关联信息需要核验。",
+    result_interpretation_blocked: "生成结果解释时遇到阻断。",
+    result_interpretation_user_decision: "结果解释需要你的决定。",
+    result_interpretation_pending: "正在整理统计结果说明。",
+    result_continuation_mismatch: "结果说明与当前任务的关联需要核验。",
+    result_interpretation_incomplete: "结果说明状态尚未完整，需要核验。",
+    result_interpretation_delivered: "结果说明已送达当前会话。",
+  };
+  return labels[reasonCode] ?? "详细状态原因需要核验。";
+}
+
+function compositeGoalIsActive(goal: CompositeGoalProgress): boolean {
+  return ["waiting_preprocessing", "waiting_analysis", "waiting_result_interpretation"].includes(goal.status);
+}
+
+function CompositeGoalProgressPanel({
+  view,
+  refreshingAutomatically,
+  onRefresh,
+}: {
+  view: { conversationId: string; goals: CompositeGoalProgress[]; loading: boolean; error: string };
+  refreshingAutomatically: boolean;
+  onRefresh: () => void;
+}) {
+  return <section className="panel composite-goal-progress" aria-label="自动化流程进度">
+    <div className="panel-heading">
+      <div>
+        <span className="eyebrow">Work 自动化</span>
+        <h2>流程进度</h2>
+        <p>这里只显示当前会话记录的处理阶段，不推断科研方案或统计结论。</p>
+      </div>
+      <div>
+        <button className="button button-secondary" type="button" disabled={view.loading} onClick={onRefresh}>刷新进度</button>
+      </div>
+    </div>
+    {refreshingAutomatically && <p className="chat-technical" role="status">进行中的任务每 10 秒自动更新。</p>}
+    {view.error && <p className="composite-goal-error" role="status">{view.error}</p>}
+    {view.loading && view.goals.length === 0 && <p role="status">正在读取本会话的自动化进度…</p>}
+    {!view.loading && view.goals.length === 0 && !view.error && <p>当前会话还没有需要跟踪的完整自动化流程。</p>}
+    {view.goals.length > 0 && <ol className="composite-goal-list">
+      {view.goals.map((goal, index) => {
+        const status = compositeGoalStatusView(goal.status);
+        const reason = compositeGoalReasonView(goal.reason_code);
+        return <li key={goal.intent_task_id}>
+          <article className="composite-goal-card">
+            <h3>自动化流程 {index + 1} <span className={`status-pill status-${status.tone}`}>{status.label}</span></h3>
+            <p>{reason ?? status.detail}</p>
+            <ol aria-label={`自动化流程 ${index + 1} 的处理阶段`}>
+              <li><strong>预处理：</strong>{compositeGoalStageView(goal.preprocessing_status)}</li>
+              <li><strong>分析方案：</strong>{compositeGoalStageView(goal.analysis_proposal_status)}</li>
+              <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
+              <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
+            </ol>
+          </article>
+        </li>;
+      })}
+    </ol>}
+  </section>;
+}
 
 function pendingAnalysisOutboxIntentId(conversation?: Conversation): string | null {
   if (!conversation?.project_id) return null;
@@ -103,6 +225,13 @@ export function AgentPage() {
   const [agentRole, setAgentRole] = useState<WorkAgentRole>("auto");
   const [externalSource, setExternalSource] = useState<{ projectId: string; conversationId: string | null; importId: string | null } | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [compositeGoalView, setCompositeGoalView] = useState<{
+    conversationId: string;
+    goals: CompositeGoalProgress[];
+    loading: boolean;
+    error: string;
+  } | null>(null);
+  const [compositeGoalRefreshNonce, setCompositeGoalRefreshNonce] = useState(0);
   const [activeIds, setActiveIds] = useState<Partial<Record<ConversationMode, string>>>({});
   const [workspacePath, setWorkspacePath] = useState(initialWorkspace);
   const [choices, setChoices] = useState<ModelChoice[]>([]);
@@ -134,6 +263,9 @@ export function AgentPage() {
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
   const currentConversationId = useRef(activeConversation?.conversation_id);
   currentConversationId.current = activeConversation?.conversation_id;
+  const activeCompositeGoalView = mode === "work" && activeConversation
+    && compositeGoalView?.conversationId === activeConversation.conversation_id ? compositeGoalView : null;
+  const hasActiveCompositeGoal = activeCompositeGoalView?.goals.some(compositeGoalIsActive) ?? false;
   const boundToSelectedWorkspace = activeConversation?.workspace_path === workspacePath;
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
   const latestAnalysisPayload = [...(activeConversation?.messages ?? [])].reverse()
@@ -204,6 +336,54 @@ export function AgentPage() {
     ? "先选择一个具体模型，自动选择不能授予文件授权"
     : "模型配置未声明工具调用；请在设置中确认并启用 tool_use";
   const canSearch = selectedModel?.capabilities.includes("web_search") ?? choices.some((item) => item.capabilities.includes("web_search"));
+
+  useEffect(() => {
+    const conversationId = mode === "work" ? activeConversation?.conversation_id : undefined;
+    if (!conversationId) {
+      setCompositeGoalView(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let failures = 0;
+    setCompositeGoalView((existing) => existing?.conversationId === conversationId
+      ? existing
+      : { conversationId, goals: [], loading: true, error: "" });
+
+    const refresh = async () => {
+      try {
+        const goals = await agentApi.compositeGoals(conversationId, controller.signal);
+        if (!current || controller.signal.aborted || currentConversationId.current !== conversationId) return;
+        failures = 0;
+        setCompositeGoalView({ conversationId, goals, loading: false, error: "" });
+        if (goals.some(compositeGoalIsActive)) {
+          timer = setTimeout(() => void refresh(), COMPOSITE_GOAL_REFRESH_INTERVAL_MS);
+        }
+      } catch {
+        if (!current || controller.signal.aborted || currentConversationId.current !== conversationId) return;
+        failures += 1;
+        setCompositeGoalView((existing) => ({
+          conversationId,
+          goals: existing?.conversationId === conversationId ? existing.goals : [],
+          loading: false,
+          error: "自动化进度暂时无法更新。对话仍可继续使用，请稍后重试。",
+        }));
+        timer = setTimeout(
+          () => void refresh(),
+          Math.min(COMPOSITE_GOAL_REFRESH_INTERVAL_MS * 2 ** Math.min(failures - 1, 2), COMPOSITE_GOAL_REFRESH_MAX_INTERVAL_MS),
+        );
+      }
+    };
+
+    void refresh();
+    return () => {
+      current = false;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeConversation?.conversation_id, activeConversation?.version, compositeGoalRefreshNonce, mode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -310,7 +490,7 @@ export function AgentPage() {
     };
     void refresh();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, activeConversation?.version, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
+  }, [activeConversation?.conversation_id, activeConversation?.version, activeConversation?.work_tasks, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
@@ -654,6 +834,11 @@ export function AgentPage() {
       >
         {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
       </WorkspacePanel>}
+      {activeCompositeGoalView && (activeCompositeGoalView.loading || activeCompositeGoalView.error || activeCompositeGoalView.goals.length > 0) && <CompositeGoalProgressPanel
+        view={activeCompositeGoalView}
+        refreshingAutomatically={hasActiveCompositeGoal}
+        onRefresh={() => setCompositeGoalRefreshNonce((value) => value + 1)}
+      />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
       {mode === "work" && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}

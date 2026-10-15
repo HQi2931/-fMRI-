@@ -315,6 +315,18 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
                     {"task_id": analysis_task_id},
                 ).scalar_one()
             )
+            composite_link_foreign_keys = {
+                (row["table"], row["from"], row["to"])
+                for row in connection.exec_driver_sql(
+                    "PRAGMA foreign_key_list(composite_goal_links)"
+                ).mappings()
+            }
+            composite_attempt_foreign_keys = {
+                (row["table"], row["from"], row["to"])
+                for row in connection.exec_driver_sql(
+                    "PRAGMA foreign_key_list(composite_goal_analysis_attempts)"
+                ).mappings()
+            }
         assert tuple(linked) == ("legacy-composite-intent", analysis_task_id)
         assert tuple(attempt) == (1, analysis_task_id, proposal_hash)
         assert ambiguous_count == 0
@@ -330,6 +342,15 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
             "legacy-composite-intent"
         )
         assert migrated_step["authority_refs"]["analysis_request_hash"] == request_hash
+        assert (
+            "work_tasks",
+            "preprocessing_task_id",
+            "task_id",
+        ) in composite_link_foreign_keys
+        assert ("work_tasks", "analysis_work_task_id", "task_id") in (
+            composite_link_foreign_keys
+        )
+        assert ("work_tasks", "work_task_id", "task_id") in composite_attempt_foreign_keys
     finally:
         engine.dispose()
 

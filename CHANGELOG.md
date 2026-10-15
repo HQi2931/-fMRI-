@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- 为单个显式 `preprocess_then_analyze` 目标新增 identity-only 根关联与只读进度投影。根记录随预处理 WorkTask 同一 Unit of Work 建立，即使 proposal outbox 尚未生成；统计草稿修订追加仅含身份的尝试引用，保持 outbox 首次提案 task 与当前分析 task 可不同，并拒绝迟到的旧尝试完成目标。进度 snapshot 在一致 SQLite read transaction 中复核 conversation/Plan/project、Task、proposal/result outbox 和 assistant continuation payload 的 task/status/result ID/version；应用服务查询按 conversation 与 intent 限定，并允许尚未绑定 project 的 WORK 会话但仍要求冻结 Plan 属于目标项目。迁移 0028 只回填精确旧关联，歧义记录留待显式恢复。当前没有 HTTP progress endpoint 或前端显示；多目标 fanout 与通用调度不在此切片。
+- 为单个显式 `preprocess_then_analyze` 目标新增 identity-only 根关联与只读进度投影，并通过 conversation-scoped `GET /conversations/{conversation_id}/composite-goals` 和 Work 页面呈现。根记录随预处理 WorkTask 同一 Unit of Work 建立，即使 proposal outbox 尚未生成；统计草稿修订追加仅含身份的尝试引用，保持 outbox 首次提案 task 与当前分析 task 可不同，并拒绝迟到的旧尝试完成目标。进度 snapshot 在一致 SQLite read transaction 中复核 conversation/Plan/project、Task、proposal/result outbox 和 assistant continuation payload 的 task/status/result ID/version；API 拒绝 Chat 或跨项目关联。页面只显示服务端状态，切换会话取消旧请求，活动目标每 10 秒刷新，终态停止轮询。迁移 0028 只回填精确旧关联，歧义记录留待显式恢复。目标列表不包含原始意图标题；多目标 fanout 与通用调度不在此切片。
 
 - Work 分析草稿现在在保存/确认前执行只读统计设计 dry-run：复用正式 proposal assembler、来源绑定、完整 lineage、源文件哈希、校正/设计矩阵及 Skill 参数 schema 校验，并在长文件核验后重读来源修订。该预检不探测 MATLAB/SPM/DPABI，不证明实际统计可执行，也不创建 Plan/Approval/Run/事件/授权/任务。tail、缺失值策略、校正（包括显式 `none`）和协变量中心化必须明确选定；来源冲突与未决科研选择进入 `ASK_USER`，反馈环不会自动替用户决定。无法证明旧草稿中心化来源时要求重新确认。
 - Work 预处理草稿在首次候选和反馈校验中通过真实 SkillResolver、SkillValidator 与 SkillCompiler 执行只读 dry-run，并在校验前后重核项目版本及冻结 manifest。dry-run 仅验证登记的 Skill 合同，不探测 MATLAB/SPM/DPABI 或真实影像，不写 Plan/Approval/Run/事件/授权；科研选择及输入冲突转交用户，编译能力与 Skill 审核治理缺口明确停止。当前预处理模型修订 allowlist 为空。

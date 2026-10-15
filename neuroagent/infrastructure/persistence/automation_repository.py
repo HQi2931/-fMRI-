@@ -358,6 +358,19 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             )
             return self._composite_goal_from_row(row) if row is not None else None
 
+    def list_composite_goal_intent_ids(self, conversation_id: str) -> tuple[str, ...]:
+        """List only stable goal IDs owned by the requested conversation."""
+
+        with self._read_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT intent_task_id FROM composite_goal_links "
+                    "WHERE conversation_id=:conversation_id ORDER BY intent_task_id"
+                ),
+                {"conversation_id": conversation_id},
+            ).scalars()
+            return tuple(str(intent_task_id) for intent_task_id in rows)
+
     def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot:
         """Read the root, attempt identities and authoritative children consistently."""
 

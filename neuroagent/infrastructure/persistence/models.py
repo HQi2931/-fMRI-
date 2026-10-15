@@ -225,9 +225,10 @@ class CompositeGoalLinkRow(Base):
         String(36), ForeignKey("projects.project_id", ondelete="RESTRICT")
     )
     analysis_request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    preprocessing_task_id: Mapped[str] = mapped_column(
-        String(100), ForeignKey("work_tasks.task_id", ondelete="RESTRICT"), unique=True
-    )
+    # ``work_tasks`` is created by Alembic SQL and is intentionally absent
+    # from Base.metadata. The durable FK lives in migration 0028; keeping an
+    # ORM FK here breaks the in-memory metadata.create_all() used by OpenAPI.
+    preprocessing_task_id: Mapped[str] = mapped_column(String(100), unique=True)
     analysis_proposal_outbox_intent_task_id: Mapped[str | None] = mapped_column(
         String(100),
         ForeignKey("analysis_proposal_outbox.intent_task_id", ondelete="RESTRICT"),
@@ -244,10 +245,6 @@ class CompositeGoalLinkRow(Base):
         unique=True,
     )
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["analysis_work_task_id"], ["work_tasks.task_id"], ondelete="RESTRICT",
-            name="fk_composite_goal_analysis_task",
-        ),
         CheckConstraint(
             "length(analysis_request_hash) = 64",
             name="ck_composite_goal_request_hash_length",
@@ -265,9 +262,7 @@ class CompositeGoalAnalysisAttemptRow(Base):
         primary_key=True,
     )
     attempt_number: Mapped[int] = mapped_column(Integer, primary_key=True)
-    work_task_id: Mapped[str] = mapped_column(
-        String(100), ForeignKey("work_tasks.task_id", ondelete="RESTRICT"), unique=True
-    )
+    work_task_id: Mapped[str] = mapped_column(String(100), unique=True)
     proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     __table_args__ = (
         CheckConstraint("attempt_number >= 1", name="ck_composite_goal_attempt_positive"),

@@ -40,6 +40,26 @@ function conversation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function compositeGoal(status: string, intentTaskId: string, reasonCode: string | null = null) {
+  return {
+    intent_task_id: intentTaskId,
+    conversation_id: "work-1",
+    project_id: "project-1",
+    analysis_request_hash: "a".repeat(64),
+    preprocessing_task_id: `prep-${intentTaskId}`,
+    analysis_proposal_outbox_intent_task_id: intentTaskId,
+    analysis_work_task_id: `analysis-${intentTaskId}`,
+    result_interpretation_outbox_task_id: `analysis-${intentTaskId}`,
+    status,
+    preprocessing_status: "completed",
+    analysis_proposal_status: "proposal_ready",
+    analysis_status: "running",
+    result_interpretation_status: null,
+    continuation_message_id: null,
+    reason_code: reasonCode,
+  };
+}
+
 function message(id: string, role: "user" | "assistant", content: string, payload = {}) {
   return {
     message_id: id,
@@ -111,6 +131,7 @@ type Options = {
   confirmation?: (init?: RequestInit) => Promise<Response>;
   review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
+  compositeGoals?: (conversationId: string, signal?: AbortSignal | null) => Promise<Response>;
   retryOutbox?: (init?: RequestInit) => Promise<Response>;
   retryResultInterpretation?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
@@ -137,6 +158,10 @@ function installFetch(options: Options = {}) {
     }
     if (path.endsWith("/conversations")) {
       return (options.conversations ?? (() => json([conversation()])))();
+    }
+    if (path.endsWith("/composite-goals")) {
+      const encodedConversationId = path.match(/\/conversations\/([^/]+)\/composite-goals$/)?.[1] ?? "";
+      return options.compositeGoals?.(decodeURIComponent(encodedConversationId), init?.signal) ?? json([]);
     }
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();
@@ -178,8 +203,96 @@ describe("agent workbench page", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: initialWindowWidth });
     vi.restoreAllMocks();
+  });
+
+  it("shows the conversation-scoped composite goal stages and refreshes on request", async () => {
+    const goals = [
+      { ...compositeGoal("waiting_preprocessing", "goal-prep", "preprocessing_in_progress"), preprocessing_status: "running", analysis_proposal_status: null, analysis_status: null },
+      { ...compositeGoal("waiting_analysis", "goal-analysis", "analysis_proposal_pending"), analysis_proposal_status: "pending", analysis_status: null },
+      { ...compositeGoal("waiting_result_interpretation", "goal-result", "result_interpretation_pending"), analysis_status: "completed", result_interpretation_status: "ready" },
+      { ...compositeGoal("waiting_user", "goal-user", "analysis_decision_required"), analysis_status: "waiting_user" },
+      { ...compositeGoal("blocked", "goal-blocked", "analysis_terminal_block"), analysis_status: "blocked" },
+      { ...compositeGoal("completed", "goal-complete", "result_interpretation_delivered"), analysis_status: "completed", result_interpretation_status: "completed", continuation_message_id: "assistant-result" },
+      { ...compositeGoal("indeterminate", "goal-check", "result_continuation_mismatch") },
+    ];
+    const loadGoals = vi.fn(() => json(goals));
+    installFetch({ compositeGoals: loadGoals });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByRole("region", { name: "自动化流程进度" })).toBeInTheDocument();
+    expect(screen.getAllByRole("article")).toHaveLength(7);
+    for (const label of ["等待预处理", "等待分析", "等待结果解释", "需要你处理", "已阻断", "已完成", "状态待核验"]) {
+      expect(screen.getByText(label, { selector: "span" })).toBeInTheDocument();
+    }
+    expect(within(screen.getAllByRole("article")[2]).getByText("已就绪")).toBeInTheDocument();
+    expect(within(screen.getAllByRole("article")[5]).getAllByText("已完成")).toHaveLength(4);
+    expect(screen.getByText("结果说明与当前任务的关联需要核验。")).toBeInTheDocument();
+    expect(screen.queryByText("goal-prep")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
+    await waitFor(() => expect(loadGoals).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps progress API errors separate from the conversation error and lets the user retry", async () => {
+    const loadGoals = vi.fn(() => json({ error: { code: "unavailable", message: "backend error", details: {}, trace_id: null } }, 503));
+    installFetch({ compositeGoals: loadGoals });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByText("自动化进度暂时无法更新。对话仍可继续使用，请稍后重试。")).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
+    await waitFor(() => expect(loadGoals).toHaveBeenCalledTimes(2));
+  });
+
+  it("aborts a previous conversation progress request and ignores its late response", async () => {
+    let finishFirstRequest!: (response: Response) => void;
+    let firstSignal: AbortSignal | null = null;
+    const firstResponse = new Promise<Response>((resolve) => { finishFirstRequest = resolve; });
+    const loadGoals = vi.fn((conversationId: string, signal?: AbortSignal | null) => {
+      if (conversationId === "work-1") {
+        firstSignal = signal ?? null;
+        return firstResponse;
+      }
+      return json([compositeGoal("completed", "current-goal", "result_interpretation_delivered")]);
+    });
+    installFetch({
+      conversations: () => json([conversation(), conversation({ conversation_id: "work-2", title: "第二个 Work 会话" })]),
+      compositeGoals: loadGoals,
+    });
+
+    render(<AgentPage />);
+    await waitFor(() => expect(loadGoals).toHaveBeenCalledWith("work-1", expect.any(AbortSignal)));
+    fireEvent.change(screen.getByLabelText("当前会话"), { target: { value: "work-2" } });
+
+    expect(await screen.findByRole("heading", { name: "自动化流程 1 已完成" })).toBeInTheDocument();
+    await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+    await act(async () => {
+      finishFirstRequest(await json([compositeGoal("waiting_user", "old-goal", "analysis_decision_required")]));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("需要你处理", { selector: "span" })).not.toBeInTheDocument();
+    expect(loadGoals).toHaveBeenCalledWith("work-2", expect.any(AbortSignal));
+  });
+
+  it("periodically refreshes only while the composite goal is active", async () => {
+    const loadGoals = vi.fn(() => json([compositeGoal("waiting_preprocessing", "goal-active", "preprocessing_in_progress")]));
+    installFetch({ compositeGoals: loadGoals });
+    render(<AgentPage />);
+
+    expect(await screen.findByText("等待预处理", { selector: "span" })).toBeInTheDocument();
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(loadGoals).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(loadGoals).toHaveBeenCalledTimes(3);
   });
 
   it("switches the responsible Agent on the server while retaining drafts and hiding the other role's confirmation", async () => {
@@ -610,7 +723,10 @@ describe("agent workbench page", () => {
       if (conversationReads++ === 0) return json(original);
       return new Promise<Response>((resolve) => { deliverResponse = resolve; });
     });
-    const retry = vi.fn(() => json(queued));
+    const retry = vi.fn((init?: RequestInit) => {
+      expect(init?.body).toBe("{}");
+      return json(queued);
+    });
     const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
     installFetch({ conversations: () => json([original]), conversation: refresh, retryOutbox: retry, run });
 
@@ -739,7 +855,7 @@ describe("agent workbench page", () => {
       })],
     });
     const refresh = vi.fn(() => json(delivered));
-    const retry = vi.fn((_init?: RequestInit) => json(queued));
+    const retry = vi.fn(() => json(queued));
     const run = () => json({ run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-1", state: "succeeded", version: 4, attempt: 1, cancel_requested: false, error: null, qc_mode: "require", qc_status: "approved", stage: "completed", stage_progress: 1, created_at: now, updated_at: now });
     installFetch({ conversations: () => json([original]), conversation: refresh, retryResultInterpretation: retry, run });
 
@@ -748,7 +864,6 @@ describe("agent workbench page", () => {
     await waitFor(() => expect(retry).toHaveBeenCalledOnce());
     expect(await screen.findByText("模型仍不可用，请检查配置。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新生成结果解读草稿" })).toBeInTheDocument();
-    expect(retry.mock.calls[0]?.[0]?.body).toBe("{}");
     expect(refresh).toHaveBeenCalled();
   });
 

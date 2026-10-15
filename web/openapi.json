@@ -783,6 +783,158 @@
         "title": "ClusterRecord",
         "type": "object"
       },
+      "CompositeGoalProgressStatus": {
+        "enum": [
+          "waiting_preprocessing",
+          "waiting_analysis",
+          "waiting_result_interpretation",
+          "waiting_user",
+          "blocked",
+          "completed",
+          "indeterminate"
+        ],
+        "title": "CompositeGoalProgressStatus",
+        "type": "string"
+      },
+      "CompositeGoalProgressView": {
+        "additionalProperties": false,
+        "description": "Conversation-scoped stable identity and current composite-goal projection.",
+        "properties": {
+          "analysis_proposal_outbox_intent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Proposal Outbox Intent Task Id"
+          },
+          "analysis_proposal_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Proposal Status"
+          },
+          "analysis_request_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Analysis Request Hash",
+            "type": "string"
+          },
+          "analysis_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Status"
+          },
+          "analysis_work_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Work Task Id"
+          },
+          "continuation_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Message Id"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "intent_task_id": {
+            "title": "Intent Task Id",
+            "type": "string"
+          },
+          "preprocessing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preprocessing Status"
+          },
+          "preprocessing_task_id": {
+            "title": "Preprocessing Task Id",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "result_interpretation_outbox_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Interpretation Outbox Task Id"
+          },
+          "result_interpretation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Interpretation Status"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CompositeGoalProgressStatus"
+          }
+        },
+        "required": [
+          "intent_task_id",
+          "conversation_id",
+          "project_id",
+          "analysis_request_hash",
+          "preprocessing_task_id",
+          "status"
+        ],
+        "title": "CompositeGoalProgressView",
+        "type": "object"
+      },
       "ContextSummaryView": {
         "additionalProperties": false,
         "properties": {
@@ -12049,6 +12201,102 @@
           }
         },
         "summary": "Retry Analysis Outbox",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/composite-goals": {
+      "get": {
+        "operationId": "list_composite_goal_progress_api_v1_conversations__conversation_id__composite_goals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CompositeGoalProgressView"
+                  },
+                  "title": "Response List Composite Goal Progress Api V1 Conversations  Conversation Id  Composite Goals Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Composite Goal Progress",
         "tags": [
           "agent"
         ]

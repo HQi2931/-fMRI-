@@ -46,6 +46,7 @@ export type ConversationTurn = Omit<Schemas["ConversationTurnView"], "conversati
   & { conversation: Conversation; user_message: ConversationMessage; assistant_message: ConversationMessage; tool_call: ConversationToolCall | null; tool_calls: ConversationToolCall[] };
 export type ConversationContext = Schemas["ConversationContextView"];
 export type ConversationMemory = Schemas["MemoryView"];
+export type CompositeGoalProgress = Schemas["CompositeGoalProgressView"];
 type ConversationTurnDefaults = "action" | "allow_remote_search" | "paper_ids" | "real_execution_confirmed" | "stream";
 export type ConversationTurnBody = Omit<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>
   & Partial<Pick<Schemas["ConversationTurnCreate"], ConversationTurnDefaults>>
