@@ -201,9 +201,9 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 实现审查发现，当前生产代码创建预处理或统计 WorkTask 时仍各自只创建一个 `sequence=0` 步骤；因此没有生产任务会产生 READY 后继供步骤准备 claim 领取。已提交的持久 claim 与 Plan-for-review 绑定仍是可由持久化测试验证的底座，还没有消费者或实际 Work 页面入口。
 
-显式 `preprocess_then_analyze` 目前由 `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示，不能把它直接视为一个多步骤 WorkTask。下一阶段将复用现有预处理 WorkTask 作为该明确复合目标的唯一目标任务：预处理步骤保存精确 Plan/manifest/Run/Artifact 引用；统计步骤从 `pending` 转为唯一 `READY` 后，仍由现有 proposal outbox 在事务外生成统计草稿。复合目标的 outbox consumer 必须同时领取精确统计步骤 claim 和 outbox lease，并在提交时一并验证 fencing token、任务/步骤版本和来源证据；成功后将 proposal/draft 身份及 assistant-only continuation 绑定回同一个统计步骤和 WorkTask，进入用户审查等待，不再创建第二个统计 WorkTask。独立分析请求保留当前按 proposal hash 建立单步骤 WorkTask 的路径。
+显式 `preprocess_then_analyze` 目前由 identity-only `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示。应继续保留这一阶段边界：预处理 WorkTask 只负责其 Run/QC/目标 Artifact 完成合同；分析 WorkTask 只在 outbox 基于已核验证据生成具体 proposal 后建立，并负责该 proposal 的 Plan/Run/结果合同。阶段之间通过精确绑定来源的 outbox 交接，不把统计草稿步骤再复制到预处理 WorkTask 的 TaskStep 中。步骤级 READY successor 仅用于同一个 WorkTask 生命周期内的线性步骤，不充当跨 WorkTask 调度器。
 
-该接线不得把 Plan、Approval/QC、Run、StatisticalResult 或 Artifact 状态复制到 WorkTask；步骤状态只表达目标推进位置，读写前仍要重读并核验对应领域权威。复合目标快照、proposal source verifier 与统计 Plan/Run selector 必须从精确 `TaskStep` 取来源身份，不能依赖被清空的 root 当前步骤投影，也不能按会话最新角色/消息猜测。统计 Plan 仍需 APPROVED，并由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户。执行此切片之前先完成 WorkTask/步骤身份合同与 outbox 双重 fencing 的定向设计审查，避免让两个统计步骤同时拥有同一 Plan/Run。
+当前显式复合目标的 prep→proposal 和统计结果→解释两个专用 outbox 已经能处理单目标异步续接；计划缺口是把这种受约束的阶段交接推广为可注册、可判定、可恢复的目标级编排，并补齐多意图 fanout、统一等待/停止原因与跨阶段完成判定。后续应先建立不复制 child/outbox 状态的 CompositeGoal dispatch 合同，再接通声明支持的阶段组合；每个 dispatcher 只能在重新读取并核验前驱权威后创建唯一后继阶段，复用现有 fencing、重试和幂等 continuation。统计 Plan 仍需 APPROVED 且由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户，不能从 `WorkGoal.description` 推导科学参数。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
