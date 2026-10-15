@@ -38,7 +38,7 @@
 
 - Agent loop 在一次模型请求内迭代读取；Work 对预处理/分析草稿提案动作提供有限的同轮预检修订。预处理 Skill 编译与 Work 统计设计装配已分别接入只读 dry-run，但执行前校验尚未统一成通用“反馈—补查—重验”应用服务；分析中的科研缺项继续等待用户决定。
 - `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 已开始承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。现有 Worker 已接入带独立租约和 fencing token 的启动/周期扫描，可重核 Run、QC 决策和统计结果等待；目标预算累计、完整步骤恢复和下游自动准备仍未完成。
-- 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。已能对已绑定运行、QC 决策、冻结预处理目标产物和统计结果做自动重核；显式复合请求可经持久 outbox 自动准备统计草稿。真实统计结果的解释草稿现可由独立 outbox 自动续接；多意图/多分析目标和更广范围的完整目标恢复仍待实现。
+- 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。已能对已绑定运行、QC 决策、冻结预处理目标产物和统计结果做自动重核；显式复合请求可经持久 outbox 自动准备统计草稿。用户现在可以明确选择一个预处理 WorkTask/Run，为同一来源登记多个独立分析目标；真实统计结果解释也可由独立 outbox 自动续接。把单条自然语言自动拆成多个目标及更广范围的完整目标恢复仍待实现。
 - `SkillResolver` 以有限指标组合选择 Skill。数据扫描能够看到的实体、session/run 和已有中间阶段与执行器实际支持范围仍有差距。例如主预处理单 session，metric-only checkpoint 目前限单主体。
 - 外部指标目录仍以显式组/条件导入为主；单组目录现可登记为一个纳入组并进入单样本候选，但多 session/run、人口学表驱动纳入和复杂重复测量结构仍未覆盖。
 - Skill 的逻辑步骤不能自动推导出 DPABI 的物理暂停点。当前主模板为一次 `DPARSFA_run` 调用，并在执行后检查实际产物；已有受控 checkpoint 输入复用不等于任意失败节点都能断点续跑。
@@ -147,9 +147,19 @@ flowchart TD
 
 应用层现按稳定的 intent ID 顺序读取某一预处理 WorkTask 的 outbox。预处理目标产物通过类型化 readiness 核验后，在既有完成 Unit of Work 中逐条核对 Task、会话、项目、冻结 Plan、manifest、Run 与原始 intent hash，只把仍为 pending/ready 且完全匹配的记录置为 READY；缺失或错误来源单独跳过，不阻断其他有效目标。同一预处理 WorkTask 可被多个 identity-only CompositeGoal 引用，进度投影仍读取共享 WorkTask 的权威状态，不复制任务生命周期。
 
-此切片提供持久化与完成时 fanout 基础，尚未接通新的上游注册路径：当前 conversation 预处理绑定流程仍只为任务上的单个 canonical intent 创建 outbox；系统还不能把同一自然语言请求自动拆分成多个独立分析目标。多意图发现、显式注册/派发、以及相同 proposal hash 下按 intent 隔离分析 WorkTask 身份仍待实现。因此这不是已完成的多指标自动分析体验，也不放宽用户对统计方案审查和 Run 授权的决定权。
+在下面的“显式来源注册与前端接线”切片完成前，上游仍没有面向用户的共享来源注册入口，也不能把同一自然语言请求自动拆分成多个独立分析目标。该基础切片本身不构成多指标自动分析体验，也不放宽用户对统计方案审查和 Run 授权的决定权。
 
 本切片相关后端定向验证 77 项通过；Mypy 300 个源文件、Ruff check/format 与 `git diff --check` 通过。没有运行 MATLAB/DPABI。
+
+### 阶段 B 显式来源注册与前端接线（2026-10-15）
+
+Work 页面现在只在会话绑定到当前工作区/项目，且存在带精确 `work_task_id` 与 `run_id` 的预处理目标时，显示“以指定的预处理结果新建分析目标”选项。用户必须主动勾选并从空选择器中明确选定来源；页面不默认使用活动或最新 Run。提交会携带 `preprocessing_task_id`、匹配的 `target_run_id` 和分析角色；普通分析交互不发送预处理任务身份。
+
+后端只接受 Work 会话中的 `ANALYSIS + AUTO` 请求，并核验会话、项目、唯一预处理步骤、Task/Step、冻结 Plan、manifest 和精确 Run。该入口不调用普通对话模型来猜来源；它将用户原始分析请求持久化为独立 intent，并在同一 SQLite Unit of Work 中追加会话消息、创建 CompositeGoal root 和 proposal outbox。共享来源上的每个 intent 均有独立 outbox 和身份；完成时复用已有 fanout，统计 WorkTask 身份按 intent 隔离。
+
+运行中的预处理来源登记为 PENDING，完成时由既有收口流程核验后置为 READY。已完成来源仅在稳定 Run/QC/Artifact 快照及 completion evidence 通过后直接 READY；finalize 会再次核对来源版本、Artifact IDs 与 lineage fingerprint。来源在准备与提交间变化时，事务回滚消息和 outbox。outbox consumer 仍会在模型调用前后复核来源，且只生成可审查的统计方案草稿；统计 Plan 审批和 Run 启动仍要求原有用户决定。若 Run 已成功但 WorkTask 尚未由 reconciler 收口，当前仍等待其 completion fanout。
+
+这条路径支持用户显式注册多个独立分析请求，不会自动拆分一条自然语言中的多个指标/统计目标，也不是通用 CompositeGoal 调度器。验证覆盖了来源绑定与证据失败、prepare/finalize 间 Artifact 变化和事务回滚、幂等重放、共享来源 fanout，以及前端显式选择/普通请求隔离。后端相关测试 23 项通过，Agent 页面测试 48 项通过；Ruff check、Mypy（6 个变更源文件）、前端类型检查、ESLint 与生产构建通过。宽范围后端回归另有 5 项失败，涉及 handoff 限额和 stream 测试，需独立调查；未运行 MATLAB/DPABI。
 
 ### 阶段 B WorkTask 步骤生命周期共用转换（2026-10-15）
 
@@ -213,9 +223,9 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 显式 `preprocess_then_analyze` 目前由 identity-only `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示。应继续保留这一阶段边界：预处理 WorkTask 只负责其 Run/QC/目标 Artifact 完成合同；分析 WorkTask 只在 outbox 基于已核验证据生成具体 proposal 后建立，并负责该 proposal 的 Plan/Run/结果合同。阶段之间通过精确绑定来源的 outbox 交接，不把统计草稿步骤再复制到预处理 WorkTask 的 TaskStep 中。步骤级 READY successor 仅用于同一个 WorkTask 生命周期内的线性步骤，不充当跨 WorkTask 调度器。
 
-当前显式复合目标的 prep→proposal 和统计结果→解释两个专用 outbox 已经能处理单目标异步续接；计划缺口是把这种受约束的阶段交接推广为可注册、可判定、可恢复的目标级编排，并补齐多意图 fanout、统一等待/停止原因与跨阶段完成判定。后续应先建立不复制 child/outbox 状态的 CompositeGoal dispatch 合同，再接通声明支持的阶段组合；每个 dispatcher 只能在重新读取并核验前驱权威后创建唯一后继阶段，复用现有 fencing、重试和幂等 continuation。统计 Plan 仍需 APPROVED 且由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户，不能从 `WorkGoal.description` 推导科学参数。
+当前显式复合目标的 prep→proposal 和统计结果→解释两个专用 outbox 已能处理异步续接；用户也可明确注册多个分析 intent，共享一个精确的预处理来源并在完成时 fanout。剩余缺口是把这些受约束的阶段交接推广为可注册、可判定、可恢复的目标级编排，并提供统一等待/停止原因与跨阶段完成判定。后续应先建立不复制 child/outbox 状态的 CompositeGoal dispatch 合同，再接通声明支持的阶段组合；每个 dispatcher 只能在重新读取并核验前驱权威后创建唯一后继阶段，复用现有 fencing、重试和幂等 continuation。统计 Plan 仍需 APPROVED 且由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户，不能从 `WorkGoal.description` 推导科学参数。
 
-阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
+阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。该切片当时仍只支持一个分析 intent/outbox；后续显式来源注册切片已允许多个独立 intent 共享来源。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。
 

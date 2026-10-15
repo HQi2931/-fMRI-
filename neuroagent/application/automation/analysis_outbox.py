@@ -59,6 +59,28 @@ class AnalysisOutboxClaim(BaseModel):
     fencing_token: int
 
 
+class AnalysisOutboxRegistrationSource(BaseModel):
+    """Versioned preprocessing authority captured before an intent is committed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preprocessing_task_id: str = Field(min_length=1, max_length=100)
+    task_version: int = Field(ge=1)
+    preprocessing_step_id: str = Field(min_length=1, max_length=100)
+    step_version: int = Field(ge=1)
+    task_status: str = Field(min_length=1, max_length=32)
+    step_status: str = Field(min_length=1, max_length=32)
+    run_id: str = Field(min_length=1, max_length=100)
+    run_version: int = Field(ge=1)
+    run_state: str = Field(min_length=1, max_length=32)
+    plan_revision_id: str = Field(min_length=1, max_length=100)
+    plan_version: int = Field(ge=1)
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ready_artifact_ids: tuple[str, ...] = Field(default=(), max_length=20_000)
+    completion_evidence_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class AnalysisSourceModelFacts(BaseModel):
     """Small, identifier-free source summary that is safe to put in model context."""
 

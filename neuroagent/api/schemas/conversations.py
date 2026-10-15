@@ -106,6 +106,7 @@ class ConversationTurnCreate(StrictHttpModel):
     preferred_profile_id: str | None = Field(default=None, max_length=63)
     project_id: str | None = None
     target_run_id: str | None = None
+    preprocessing_task_id: str | None = Field(default=None, min_length=1, max_length=100)
     external_analysis_import_id: str | None = Field(default=None, min_length=1, max_length=64)
     qc_review_id: str | None = None
     workspace_setup: WorkspaceSetupIntent | None = None
@@ -126,6 +127,15 @@ class ConversationTurnCreate(StrictHttpModel):
             self.target_run_id is not None or self.agent_role is WorkAgentRole.PREPROCESSING
         ):
             raise ValueError("external analysis input cannot select a run or preprocessing role")
+        if self.preprocessing_task_id is not None and (
+            self.target_run_id is None
+            or self.agent_role is not WorkAgentRole.ANALYSIS
+            or self.action is not ConversationAction.AUTO
+            or self.external_analysis_import_id is not None
+        ):
+            raise ValueError(
+                "explicit preprocessing sources require an analysis AUTO turn and target_run_id"
+            )
         return self
 
 

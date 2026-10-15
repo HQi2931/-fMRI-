@@ -13,6 +13,7 @@ from typing import Any
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxRegistrationSource,
     AnalysisOutboxRetryRequest,
     AnalysisOutboxStatus,
 )
@@ -64,7 +65,7 @@ from neuroagent.application.errors import ApplicationError, ConflictError, Input
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.application.work_agents import work_agent_role_for_turn
+from neuroagent.application.work_agents import handoff_identity, work_agent_role_for_turn
 from neuroagent.application.work_dialogue import (
     STAGE_CONFIRMATION_PATTERN,
     WorkDialogue,
@@ -1477,6 +1478,14 @@ class ConversationMixin(BaseServiceMixin):
         _confirmation: WorkConfirmationCreate | None = None,
     ) -> ConversationTurnView:
         conversation = self.repository.get_conversation(conversation_id)
+        if (
+            request.preprocessing_task_id is not None
+            and conversation.mode is not ConversationMode.WORK
+        ):
+            raise InputValidationError(
+                "analysis_outbox_work_conversation_required",
+                "指定预处理任务的分析目标只能登记在 Work 会话中。",
+            )
         if conversation.mode is ConversationMode.CHAT and _confirmation is None:
             return await self._send_chat_turn(
                 conversation_id,
@@ -1493,6 +1502,7 @@ class ConversationMixin(BaseServiceMixin):
             list[str],
             str | None,
             dict[str, Any] | None,
+            AnalysisOutboxRegistrationSource | None,
         ]:
             conversation = self.repository.get_conversation(conversation_id)
             if _confirmation is not None:
@@ -1504,6 +1514,104 @@ class ConversationMixin(BaseServiceMixin):
                 else conversation.preferred_profile_id
             )
             project_id = request.project_id or conversation.project_id
+            if request.preprocessing_task_id is not None:
+                if _confirmation is not None:
+                    raise InputValidationError(
+                        "analysis_outbox_confirmation_not_supported",
+                        "工作确认请求不能登记新的分析目标。",
+                    )
+                if project_id is None or request.target_run_id is None:
+                    raise InputValidationError(
+                        "analysis_outbox_source_required",
+                        "登记分析目标必须提供当前项目、预处理任务和明确选中的 Run。",
+                    )
+                source = self.automation.inspect_analysis_outbox_registration_source(
+                    conversation_id=conversation_id,
+                    project_id=project_id,
+                    preprocessing_task_id=request.preprocessing_task_id,
+                    run_id=request.target_run_id,
+                )
+                analysis_request = request.content.strip()
+                analysis_request_hash = content_hash(analysis_request)
+                intent_id = handoff_identity(
+                    {
+                        "task_kind": "preprocess_then_analyze",
+                        "conversation_id": conversation_id,
+                        "project_id": project_id,
+                        "preprocessing_task_id": source.preprocessing_task_id,
+                        "source_run_id": source.run_id,
+                        "analysis_request_hash": analysis_request_hash,
+                        "idempotency_key": idempotency_key,
+                    }
+                )[:24]
+                references = {
+                    "project_id": project_id,
+                    "source_preprocessing_task_id": source.preprocessing_task_id,
+                    "source_run_id": source.run_id,
+                    "source_plan_revision_id": source.plan_revision_id,
+                    "source_plan_hash": source.plan_hash,
+                    "input_manifest_hash": source.manifest_hash,
+                }
+                intent = {
+                    "task_kind": "preprocess_then_analyze",
+                    "task_id": intent_id,
+                    "conversation_id": conversation_id,
+                    "project_id": project_id,
+                    "analysis_request": analysis_request,
+                    "status": (
+                        "analysis_ready"
+                        if source.ready_artifact_ids
+                        else "waiting_for_preprocessing"
+                    ),
+                    "data_references": references,
+                    "evidence_hash": handoff_identity(
+                        {
+                            "intent_task_id": intent_id,
+                            "data_references": references,
+                            "task_version": source.task_version,
+                            "step_version": source.step_version,
+                            "run_version": source.run_version,
+                            "plan_version": source.plan_version,
+                            "verified_artifact_ids": source.ready_artifact_ids,
+                        }
+                    ),
+                }
+                action_result = WorkActionResult(
+                    assistant_content=(
+                        "已将这项分析请求绑定到你选中的预处理运行。"
+                        "来源完成并通过核验后，系统会准备可审查的统计方案；不会自动启动统计运行。"
+                    ),
+                    payload={
+                        "agent_role": WorkAgentRole.ANALYSIS.value,
+                        "agent_name": "数据分析 Agent",
+                        "analysis_dependency": intent,
+                        "analysis_intent_envelope": {
+                            "status": "active",
+                            "task_id": intent_id,
+                            "conversation_id": conversation_id,
+                            "project_id": project_id,
+                            "analysis_request_hash": analysis_request_hash,
+                        },
+                        "analysis_intent_registration": {
+                            "status": "ready" if source.ready_artifact_ids else "pending",
+                            "source_run_id": source.run_id,
+                        },
+                    },
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=source.run_id,
+                )
+                return (
+                    conversation.version,
+                    action_result,
+                    {},
+                    (),
+                    None,
+                    [],
+                    preferred_profile_id,
+                    None,
+                    source,
+                )
             selected_role = work_agent_role_for_turn(
                 request.content,
                 requested=WorkAgentRole.ANALYSIS
@@ -1610,6 +1718,7 @@ class ConversationMixin(BaseServiceMixin):
                 [item.memory_id for item in context_state.memories if item.pinned],
                 preferred_profile_id,
                 model_metadata,
+                None,
             )
 
         def finalize(
@@ -1622,6 +1731,7 @@ class ConversationMixin(BaseServiceMixin):
                 list[str],
                 str | None,
                 dict[str, Any] | None,
+                AnalysisOutboxRegistrationSource | None,
             ],
         ) -> ConversationTurnView:
             (
@@ -1633,6 +1743,7 @@ class ConversationMixin(BaseServiceMixin):
                 pinned_memory_ids,
                 preferred_profile_id,
                 model_metadata,
+                registration_source,
             ) = prepared
             conversation = self.repository.get_conversation(conversation_id)
             if conversation.version != expected_conversation_version:
@@ -1671,6 +1782,7 @@ class ConversationMixin(BaseServiceMixin):
                 )
             elif (
                 conversation.mode is ConversationMode.WORK
+                and registration_source is None
                 and payload.get("agent_role", conversation.foreground_agent_role.value)
                 == WorkAgentRole.ANALYSIS.value
             ):
@@ -1710,6 +1822,19 @@ class ConversationMixin(BaseServiceMixin):
                     work_task_id=work_task_id,
                 )
             )
+            if registration_source is not None:
+                intent = payload.get("analysis_dependency")
+                if not isinstance(intent, dict) or project_id is None:
+                    raise ConflictError(
+                        "analysis_outbox_intent_missing",
+                        "显式分析目标没有持久化其原始意图。",
+                    )
+                self.automation.register_analysis_proposal_outbox(
+                    intent=intent,
+                    conversation_id=conversation_id,
+                    project_id=project_id,
+                    source=registration_source,
+                )
             candidate_ids = self.conversation_context.persist_memory_candidates(
                 conversation_id,
                 memory_candidates,
@@ -1999,10 +2124,13 @@ class ConversationMixin(BaseServiceMixin):
         ):
             return None
         if (
-            (draft_intent_id is not None and continuation_intent_id is not None
-             and draft_intent_id != continuation_intent_id)
-            or (draft_request_hash is not None and continuation_request_hash is not None
-                and draft_request_hash != continuation_request_hash)
+            draft_intent_id is not None
+            and continuation_intent_id is not None
+            and draft_intent_id != continuation_intent_id
+        ) or (
+            draft_request_hash is not None
+            and continuation_request_hash is not None
+            and draft_request_hash != continuation_request_hash
         ):
             raise ConflictError(
                 "work_task_composite_goal_conflict",
@@ -2013,9 +2141,7 @@ class ConversationMixin(BaseServiceMixin):
         # an ID is not sufficient authority to associate a WorkTask. If a
         # composite root exists, the repository's terminal outbox transaction
         # below requires the complete identity and rolls back this task bind.
-        has_composite_hash = (
-            draft_request_hash is not None or continuation_request_hash is not None
-        )
+        has_composite_hash = draft_request_hash is not None or continuation_request_hash is not None
         if has_composite_hash and (
             analysis_intent_task_id is None or analysis_request_hash is None
         ):

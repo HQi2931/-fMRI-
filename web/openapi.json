@@ -1465,6 +1465,19 @@
             ],
             "title": "Target Run Id"
           },
+          "preprocessing_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preprocessing Task Id"
+          },
           "workspace_file_scope": {
             "anyOf": [
               {

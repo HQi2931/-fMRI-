@@ -313,6 +313,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 "composite_goal_intent_incomplete",
                 "预处理任务中的复合分析 intent ID 与请求摘要必须同时存在。",
             )
+        # These task refs preserve the first composite intent for the legacy
+        # preprocessing path. The outbox being linked below has its own root
+        # identity and may be another explicit intent over this shared source.
         if refs.analysis_intent_task_id is not None:
             SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
         linked_rows = (

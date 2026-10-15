@@ -218,6 +218,18 @@ import {
   type WorkAgentRole,
 } from "./conversation-model";
 
+type PreprocessingAnalysisSource = { key: string; taskId: string; runId: string };
+
+function preprocessingAnalysisSources(conversation: Conversation | undefined): PreprocessingAnalysisSource[] {
+  const sources = new Map<string, PreprocessingAnalysisSource>();
+  for (const task of conversation?.work_tasks ?? []) {
+    if (task.agent_role !== "preprocessing" || !task.work_task_id || !task.run_id) continue;
+    const key = JSON.stringify([task.work_task_id, task.run_id]);
+    sources.set(key, { key, taskId: task.work_task_id, runId: task.run_id });
+  }
+  return [...sources.values()];
+}
+
 export function AgentPage() {
   const workspace = useWorkspace();
   const initialWorkspace = useRef(workspace.workspacePath ?? "").current;
@@ -258,6 +270,11 @@ export function AgentPage() {
   const [workspaceChecking, setWorkspaceChecking] = useState(false);
   const [workspaceCheckError, setWorkspaceCheckError] = useState("");
   const [selectedInputStage, setSelectedInputStage] = useState<string>("");
+  const [analysisSourceSelection, setAnalysisSourceSelection] = useState<{
+    context: string;
+    enabled: boolean;
+    sourceKey: string;
+  } | null>(null);
 
   const modeConversations = useMemo(() => conversations.filter((item) => item.mode === mode), [conversations, mode]);
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
@@ -268,16 +285,35 @@ export function AgentPage() {
   const hasActiveCompositeGoal = activeCompositeGoalView?.goals.some(compositeGoalIsActive) ?? false;
   const boundToSelectedWorkspace = activeConversation?.workspace_path === workspacePath;
   const boundProjectId = boundToSelectedWorkspace ? activeConversation?.project_id ?? null : null;
+  const preprocessingSources = preprocessingAnalysisSources(activeConversation);
+  const preprocessingSourceContext = JSON.stringify([
+    mode,
+    activeConversation?.conversation_id ?? null,
+    workspacePath,
+    workspace.projectId ?? null,
+    boundProjectId,
+    preprocessingSources.map((source) => source.key),
+  ]);
+  const canRegisterAnalysisFromPreprocessing = mode === "work" && boundToSelectedWorkspace
+    && Boolean(boundProjectId) && workspace.projectId === boundProjectId && preprocessingSources.length > 0;
+  const registerAnalysisFromPreprocessing = canRegisterAnalysisFromPreprocessing
+    && analysisSourceSelection?.context === preprocessingSourceContext && analysisSourceSelection.enabled;
+  const selectedPreprocessingSource = registerAnalysisFromPreprocessing
+    ? preprocessingSources.find((source) => source.key === analysisSourceSelection.sourceKey) ?? null
+    : null;
+  useEffect(() => {
+    setAnalysisSourceSelection((current) => current?.context === preprocessingSourceContext ? current : null);
+  }, [preprocessingSourceContext]);
   const latestAnalysisPayload = [...(activeConversation?.messages ?? [])].reverse()
     .find((message) => message.role === "assistant" && message.payload.agent_role === "analysis" && message.payload.analysis_draft)?.payload.analysis_draft;
   const savedAnalysisDraft = latestAnalysisPayload && typeof latestAnalysisPayload === "object" && "draft" in latestAnalysisPayload ? latestAnalysisPayload.draft : null;
   const savedExternalImportId = savedAnalysisDraft && typeof savedAnalysisDraft === "object" && "external_import_id" in savedAnalysisDraft && typeof savedAnalysisDraft.external_import_id === "string" ? savedAnalysisDraft.external_import_id : null;
-  const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId ? null
+  const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId || selectedPreprocessingSource ? null
     : externalSource?.projectId === boundProjectId && externalSource?.conversationId === (activeConversation?.conversation_id ?? null) ? externalSource.importId : savedExternalImportId;
   const routedRole = [...(activeConversation?.messages ?? [])].reverse()
     .find((message) => message.role === "assistant" && (message.payload.agent_role === "analysis" || message.payload.agent_role === "preprocessing"))
     ?.payload.agent_role;
-  const effectiveAgentRole = agentRole === "auto" ? (activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
+  const effectiveAgentRole = selectedPreprocessingSource ? "analysis" : agentRole === "auto" ? (activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
   const offeredConfirmation = mode === "work" && effectiveAgentRole === "preprocessing" && boundToSelectedWorkspace
     ? currentConfirmation(activeConversation?.messages ?? [], workspacePath) : null;
   const confirmation = offeredConfirmation?.request ?? null;
@@ -655,6 +691,10 @@ export function AgentPage() {
   async function send(confirmationCommand?: string): Promise<void> {
     const content = (confirmationCommand ?? prompt).trim();
     if (!content || busy) return;
+    if (registerAnalysisFromPreprocessing && !selectedPreprocessingSource) {
+      setError("请先明确选择要用于分析的预处理任务和运行。");
+      return;
+    }
     const controller = new AbortController();
     turnController.current = controller;
     const deadline = window.setTimeout(() => {
@@ -684,11 +724,12 @@ export function AgentPage() {
         model: selectedModel?.model ?? null,
         allow_remote_search: mode === "chat" && allowRemoteSearch,
         project_id: mode === "work" ? boundProjectId : null,
-        agent_role: mode === "work" && agentRole !== "auto" ? agentRole : null,
-        external_analysis_import_id: mode === "work" ? selectedExternalImportId : null,
-        target_run_id: mode === "work" && boundToSelectedWorkspace && !selectedExternalImportId ? workspace.runId ?? null : null,
-        plan_revision_id: mode === "work" && boundToSelectedWorkspace ? workspace.planRevisionId ?? null : null,
-        expected_plan_hash: mode === "work" && boundToSelectedWorkspace ? workspace.planHash ?? null : null,
+        agent_role: selectedPreprocessingSource ? "analysis" : mode === "work" && agentRole !== "auto" ? agentRole : null,
+        preprocessing_task_id: selectedPreprocessingSource?.taskId,
+        external_analysis_import_id: mode === "work" && !selectedPreprocessingSource ? selectedExternalImportId : null,
+        target_run_id: selectedPreprocessingSource?.runId ?? (mode === "work" && boundToSelectedWorkspace && !selectedExternalImportId ? workspace.runId ?? null : null),
+        plan_revision_id: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource ? workspace.planRevisionId ?? null : null,
+        expected_plan_hash: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource ? workspace.planHash ?? null : null,
         workspace_file_scope: mode === "work" && selectedScope.length ? { paths: selectedScope } : null,
         selected_input_stage: mode === "work" && selectedInputStage ? selectedInputStage : null,
         real_execution_confirmed: false,
@@ -841,20 +882,39 @@ export function AgentPage() {
       />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
-      {mode === "work" && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
+      {mode === "work" && !registerAnalysisFromPreprocessing && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
       <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} onRetryResultInterpretation={(taskId) => void retryResultInterpretation(taskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
       <div className="chat-composer">
         {confirmation && openedConfirmation !== confirmationKey && <button className="button button-secondary confirmation-reopen" type="button" disabled={busy || draftDirty} onClick={() => { setError(""); setOpenedConfirmation(confirmationKey); }}>待确认 · {confirmation.title}</button>}
         {draftDirty && <small role="status">请先保存或放弃参数修改，再继续对话或切换会话。</small>}
+        {canRegisterAnalysisFromPreprocessing && <div className="preprocessing-analysis-source">
+          <label><input
+            type="checkbox"
+            checked={Boolean(registerAnalysisFromPreprocessing)}
+            disabled={busy || draftDirty}
+            onChange={(event) => setAnalysisSourceSelection(event.target.checked
+              ? { context: preprocessingSourceContext, enabled: true, sourceKey: "" }
+              : null)}
+          />以指定的预处理结果新建分析目标</label>
+          {registerAnalysisFromPreprocessing && <label>预处理来源<select
+            aria-label="预处理来源"
+            value={selectedPreprocessingSource?.key ?? ""}
+            disabled={busy || draftDirty}
+            onChange={(event) => setAnalysisSourceSelection({ context: preprocessingSourceContext, enabled: true, sourceKey: event.target.value })}
+          >
+            <option value="">请明确选择任务和运行</option>
+            {preprocessingSources.map((source) => <option key={source.key} value={source.key}>任务 {source.taskId} · 运行 {source.runId}</option>)}
+          </select></label>}
+        </div>}
         <textarea ref={composer} disabled={busy || draftDirty} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }
         }} />
         <div className="chat-actions">
           {mode === "chat" && <label><input type="checkbox" checked={allowRemoteSearch} disabled={busy || !canSearch} onChange={(event) => setAllowRemoteSearch(event.target.checked)} />联网搜索</label>}
           <label>模型<select disabled={busy} value={selectedModelKey} onChange={(event) => { setSelectedModelKey(event.target.value); try { window.sessionStorage.setItem(MODEL_SELECTION_KEY, event.target.value); } catch { /* Selection still works when browser storage is unavailable. */ } }}><option value="">自动选择</option>{choices.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-          <button className="button button-primary" type="button" disabled={busy || draftDirty || !prompt.trim()} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
+          <button className="button button-primary" type="button" disabled={busy || draftDirty || !prompt.trim() || (registerAnalysisFromPreprocessing && !selectedPreprocessingSource)} onClick={() => void send()}>{busy ? "处理中…" : "发送"}</button>
           {busy && pendingTurn && <button className="button button-secondary" type="button" onClick={stopWaiting}>停止等待</button>}
         </div>
       </div>

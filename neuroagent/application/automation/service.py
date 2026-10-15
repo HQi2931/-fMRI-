@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxClaim,
+    AnalysisOutboxRegistrationSource,
     AnalysisOutboxStatus,
     AnalysisProposalOutbox,
     AnalysisSourceModelFacts,
@@ -857,6 +858,261 @@ class WorkTaskApplicationService:
             )
         return self._repository.ensure_analysis_outbox(record)
 
+    def inspect_analysis_outbox_registration_source(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        preprocessing_task_id: str,
+        run_id: str,
+    ) -> AnalysisOutboxRegistrationSource:
+        """Capture an exact, read-only source for an explicitly selected analysis intent."""
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        task = self._repository.get_task(preprocessing_task_id)
+        refs = task.authority_refs
+        step = self._preprocessing_step(task)
+        plan_id = refs.plan_revision_id
+        if (
+            step is None
+            or plan_id is None
+            or refs.conversation_id != conversation_id
+            or refs.workflow_run_id != run_id
+            or (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None)
+            or task.task_id != self.preprocessing_task_id(conversation_id, plan_id)
+            or step.authority_refs.conversation_id != conversation_id
+            or step.authority_refs.plan_revision_id != plan_id
+            or step.authority_refs.workflow_run_id != run_id
+            or step.authority_refs.input_revision != refs.input_revision
+        ):
+            raise ConflictError(
+                "analysis_outbox_preprocessing_binding_mismatch",
+                "所选预处理任务没有绑定当前会话中的精确 Run、Plan 与 manifest。",
+            )
+        plan = self._plan_repository.get_plan(plan_id)
+        run = self._run_repository.get_run(run_id)
+        if (
+            plan.plan_revision_id != plan_id
+            or plan.project_id != project_id
+            or plan.state is not PlanState.APPROVED
+            or plan.manifest_hash != refs.input_revision
+            or plan.plan_hash != step.input_version
+            or run.run_id != run_id
+            or run.project_id != project_id
+            or run.plan_revision_id != plan_id
+        ):
+            raise ConflictError(
+                "analysis_outbox_authority_mismatch",
+                "所选 Run 与预处理任务绑定的项目、冻结 Plan 或 manifest 不一致。",
+            )
+
+        completion_evidence_hash: str | None = None
+        if run.state in {
+            WorkflowState.QUEUED,
+            WorkflowState.RUNNING,
+            WorkflowState.QC_REVIEW,
+        }:
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
+                raise ConflictError(
+                    "analysis_outbox_preprocessing_state_mismatch",
+                    "预处理任务已终止，但其绑定 Run 仍处于活动状态。",
+                )
+            ready_artifact_ids: tuple[str, ...] = ()
+        elif run.state is WorkflowState.SUCCEEDED:
+            if task.status is TaskStatus.COMPLETED:
+                if step.status is not TaskStepStatus.SUCCEEDED:
+                    raise ConflictError(
+                        "analysis_outbox_preprocessing_state_mismatch",
+                        "已完成的预处理任务没有成功的唯一执行步骤。",
+                    )
+                authority = self._read_stable_authoritative_snapshot(task, run_id)
+                if (
+                    authority is None
+                    or authority.snapshot.run_version != run.version
+                    or authority.snapshot.unresolved_referenced_artifact_ids
+                    or authority.project_id != project_id
+                    or authority.plan_revision_id != plan_id
+                ):
+                    raise ConflictError(
+                        "analysis_outbox_authority_indeterminate",
+                        "预处理 Run、QC 或 Artifact 在读取期间变化或无法解析，请稍后重试。",
+                    )
+                try:
+                    evidence = self._read_preprocessing_completion_evidence(task, run_id, authority)
+                except (
+                    ConflictError,
+                    InputValidationError,
+                    NotFoundError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    AttributeError,
+                    ValidationError,
+                ) as exc:
+                    raise ConflictError(
+                        "analysis_outbox_preprocessing_evidence_invalid",
+                        "已完成的预处理来源未通过 QC、目标 Artifact 或 lineage 核验。",
+                    ) from exc
+                ready_artifact_ids = evidence.verified_artifact_ids
+                completion_evidence_hash = evidence.lineage_fingerprint
+                if tuple(sorted(refs.artifact_ids)) != tuple(sorted(ready_artifact_ids)) or tuple(
+                    sorted(step.authority_refs.artifact_ids)
+                ) != tuple(sorted(ready_artifact_ids)):
+                    raise ConflictError(
+                        "analysis_outbox_preprocessing_artifacts_mismatch",
+                        "已完成任务引用的 Artifact IDs 与当前完整核验结果不一致。",
+                    )
+            elif task.status not in {TaskStatus.WAITING_RUN, TaskStatus.WAITING_USER}:
+                raise ConflictError(
+                    "analysis_outbox_preprocessing_state_mismatch",
+                    "Run 已成功，但预处理任务不处于可等待完成收口的状态。",
+                )
+            else:
+                ready_artifact_ids = ()
+        else:
+            raise ConflictError(
+                "analysis_outbox_preprocessing_run_not_usable",
+                "失败或已取消的预处理 Run 不能作为新分析目标来源。",
+            )
+
+        return AnalysisOutboxRegistrationSource(
+            preprocessing_task_id=task.task_id,
+            task_version=task.version,
+            preprocessing_step_id=step.step_id,
+            step_version=step.version,
+            task_status=task.status.value,
+            step_status=step.status.value,
+            run_id=run.run_id,
+            run_version=run.version,
+            run_state=run.state.value,
+            plan_revision_id=plan.plan_revision_id,
+            plan_version=plan.version,
+            plan_hash=plan.plan_hash,
+            manifest_hash=plan.manifest_hash,
+            ready_artifact_ids=ready_artifact_ids,
+            completion_evidence_hash=completion_evidence_hash,
+        )
+
+    def register_analysis_proposal_outbox(
+        self,
+        *,
+        intent: Mapping[str, Any],
+        conversation_id: str,
+        project_id: str,
+        source: AnalysisOutboxRegistrationSource,
+    ) -> AnalysisProposalOutbox:
+        """Commit one explicit intent against the source captured in prepare."""
+
+        task = self._repository.get_task(source.preprocessing_task_id)
+        step = self._preprocessing_step(task)
+        plan = self._plan_repository.get_plan(source.plan_revision_id)
+        run = self._run_repository.get_run(source.run_id)
+        if (
+            step is None
+            or task.task_id != source.preprocessing_task_id
+            or task.version != source.task_version
+            or step.step_id != source.preprocessing_step_id
+            or step.version != source.step_version
+            or task.status.value != source.task_status
+            or step.status.value != source.step_status
+            or task.authority_refs.conversation_id != conversation_id
+            or task.authority_refs.workflow_run_id != source.run_id
+            or task.authority_refs.plan_revision_id != source.plan_revision_id
+            or task.authority_refs.input_revision != source.manifest_hash
+            or step.authority_refs.conversation_id != conversation_id
+            or step.authority_refs.workflow_run_id != source.run_id
+            or step.authority_refs.plan_revision_id != source.plan_revision_id
+            or step.authority_refs.input_revision != source.manifest_hash
+            or plan.version != source.plan_version
+            or plan.plan_revision_id != source.plan_revision_id
+            or plan.project_id != project_id
+            or plan.plan_hash != source.plan_hash
+            or plan.manifest_hash != source.manifest_hash
+            or run.version != source.run_version
+            or run.run_id != source.run_id
+            or run.project_id != project_id
+            or run.plan_revision_id != source.plan_revision_id
+            or run.state.value != source.run_state
+        ):
+            raise ConflictError(
+                "analysis_outbox_source_changed",
+                "显式分析来源在请求准备期间发生变化；没有登记续接任务，请刷新后重试。",
+            )
+        if source.ready_artifact_ids:
+            if (
+                task.status is not TaskStatus.COMPLETED
+                or step.status is not TaskStepStatus.SUCCEEDED
+                or tuple(sorted(task.authority_refs.artifact_ids))
+                != tuple(sorted(source.ready_artifact_ids))
+                or tuple(sorted(step.authority_refs.artifact_ids))
+                != tuple(sorted(source.ready_artifact_ids))
+                or source.completion_evidence_hash is None
+            ):
+                raise ConflictError(
+                    "analysis_outbox_preprocessing_artifacts_mismatch",
+                    "预处理任务的目标 Artifact 引用已变化；没有登记续接任务。",
+                )
+            authority = self._read_stable_authoritative_snapshot(task, source.run_id)
+            if (
+                authority is None
+                or authority.snapshot.run_version != source.run_version
+                or authority.snapshot.unresolved_referenced_artifact_ids
+                or authority.project_id != project_id
+                or authority.plan_revision_id != source.plan_revision_id
+            ):
+                raise ConflictError(
+                    "analysis_outbox_authority_indeterminate",
+                    "预处理 Run、QC 或 Artifact 在最终登记前变化或无法解析。",
+                )
+            try:
+                evidence = self._read_preprocessing_completion_evidence(
+                    task, source.run_id, authority
+                )
+            except (
+                ConflictError,
+                InputValidationError,
+                NotFoundError,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+                ValidationError,
+            ) as exc:
+                raise ConflictError(
+                    "analysis_outbox_preprocessing_evidence_invalid",
+                    "已完成的预处理来源未通过最终 QC、目标 Artifact 或 lineage 复核。",
+                ) from exc
+            if (
+                tuple(sorted(evidence.verified_artifact_ids))
+                != tuple(sorted(source.ready_artifact_ids))
+                or evidence.lineage_fingerprint != source.completion_evidence_hash
+            ):
+                raise ConflictError(
+                    "analysis_outbox_preprocessing_evidence_changed",
+                    "预处理完成证据在请求准备期间发生变化；没有登记续接任务。",
+                )
+        outbox = self.ensure_analysis_proposal_outbox(
+            intent=intent,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            preprocessing_task_id=source.preprocessing_task_id,
+        )
+        if outbox is None:
+            raise ConflictError(
+                "analysis_outbox_intent_invalid", "显式分析意图没有创建 proposal outbox。"
+            )
+        if source.ready_artifact_ids:
+            return self._repository.mark_analysis_outbox_ready(
+                outbox.intent_task_id,
+                preprocessing_task_id=source.preprocessing_task_id,
+                plan_revision_id=source.plan_revision_id,
+                manifest_hash=source.manifest_hash,
+                run_id=source.run_id,
+                artifact_ids=source.ready_artifact_ids,
+            )
+        return outbox
+
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
 
@@ -1459,6 +1715,28 @@ class WorkTaskApplicationService:
                 "analysis_outbox_intent_mismatch", "续接记录无法绑定到精确的原始分析请求。"
             )
 
+        try:
+            composite = self._repository.get_composite_goal_snapshot(outbox.intent_task_id)
+        except NotFoundError as exc:
+            raise ConflictError(
+                "analysis_outbox_goal_missing", "分析续接没有精确绑定的复合目标 root。"
+            ) from exc
+        self._require_composite_goal_scope(composite, outbox.conversation_id, outbox.intent_task_id)
+        goal = composite.goal
+        if (
+            goal.intent_task_id != outbox.intent_task_id
+            or goal.conversation_id != outbox.conversation_id
+            or goal.project_id != outbox.project_id
+            or goal.preprocessing_task_id != outbox.preprocessing_task_id
+            or goal.analysis_request_hash != outbox.analysis_request_hash
+            or goal.analysis_proposal_outbox_intent_task_id != outbox.intent_task_id
+            or composite.analysis_proposal_outbox != outbox
+        ):
+            raise ConflictError(
+                "analysis_outbox_goal_mismatch",
+                "分析续接的 root 与其精确来源或 outbox 不一致。",
+            )
+
         task = self._repository.get_task(outbox.preprocessing_task_id)
         refs = task.authority_refs
         step = self._preprocessing_step(task)
@@ -1467,8 +1745,10 @@ class WorkTaskApplicationService:
             or step is None
             or step.status is not TaskStepStatus.SUCCEEDED
             or refs.conversation_id != outbox.conversation_id
-            or refs.analysis_intent_task_id != outbox.intent_task_id
-            or refs.analysis_request_hash != outbox.analysis_request_hash
+            or (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None)
+            or step.authority_refs.conversation_id != refs.conversation_id
+            or step.authority_refs.analysis_intent_task_id != refs.analysis_intent_task_id
+            or step.authority_refs.analysis_request_hash != refs.analysis_request_hash
             or refs.plan_revision_id != outbox.plan_revision_id
             or refs.workflow_run_id != outbox.run_id
             or refs.input_revision != outbox.manifest_hash

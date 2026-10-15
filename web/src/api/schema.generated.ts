@@ -2090,6 +2090,8 @@ export interface components {
             stream: boolean;
             /** Target Run Id */
             target_run_id?: string | null;
+            /** Preprocessing Task Id */
+            preprocessing_task_id?: string | null;
             workspace_file_scope?: components["schemas"]["WorkspaceFileScope"] | null;
             /** Workspace Path */
             workspace_path?: string | null;

@@ -208,6 +208,91 @@ describe("agent workbench page", () => {
     vi.restoreAllMocks();
   });
 
+  it("hides preprocessing-source registration when no exact preprocessing task and Run pair is available", async () => {
+    installFetch({ conversations: () => json([conversation({
+      project_id: "project-1",
+      work_tasks: [
+        { agent_role: "preprocessing", work_task_id: "prep-without-run", run_id: null },
+        { agent_role: "analysis", work_task_id: "analysis-1", run_id: "run-analysis" },
+      ],
+    })]) });
+
+    render(<AgentPage />);
+
+    await screen.findByRole("option", { name: "DemoData ALFF" });
+    expect(screen.queryByRole("checkbox", { name: "以指定的预处理结果新建分析目标" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("预处理来源")).not.toBeInTheDocument();
+  });
+
+  it("sends the explicitly selected preprocessing task and Run only when opted in", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const responseTurn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      const current = conversation({ project_id: "project-1" });
+      const userMessage = message("u1", "user", "分析这个预处理结果");
+      const assistantMessage = message("a1", "assistant", "已登记分析目标");
+      return json({ conversation: current, user_message: userMessage, assistant_message: assistantMessage, tool_call: null });
+    });
+    installFetch({
+      conversations: () => json([conversation({
+        project_id: "project-1",
+        foreground_agent_role: "analysis",
+        work_tasks: [
+          { agent_role: "preprocessing", work_task_id: "prep-first", run_id: "run-first" },
+          { agent_role: "preprocessing", work_task_id: "prep-selected", run_id: "run-selected" },
+        ],
+      })]),
+      turn: responseTurn,
+    });
+
+    render(<AgentPage />);
+    const user = userEvent.setup();
+    const registration = await screen.findByRole("checkbox", { name: "以指定的预处理结果新建分析目标" });
+    await user.click(registration);
+    const sourceSelect = screen.getByLabelText("预处理来源");
+    await user.selectOptions(sourceSelect, "[\"prep-selected\",\"run-selected\"]");
+    await user.type(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), "分析这个预处理结果");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(responseTurn).toHaveBeenCalledOnce());
+    expect(requestBody).toMatchObject({
+      agent_role: "analysis",
+      project_id: "project-1",
+      preprocessing_task_id: "prep-selected",
+      target_run_id: "run-selected",
+      external_analysis_import_id: null,
+      plan_revision_id: null,
+      expected_plan_hash: null,
+    });
+  });
+
+  it("leaves preprocessing-source identifiers out of ordinary analysis turns", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const responseTurn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      const current = conversation({ project_id: "project-1" });
+      return json({ conversation: current, user_message: message("u1", "user", "准备分析"), assistant_message: message("a1", "assistant", "继续"), tool_call: null });
+    });
+    installFetch({
+      conversations: () => json([conversation({
+        project_id: "project-1",
+        foreground_agent_role: "analysis",
+        work_tasks: [{ agent_role: "preprocessing", work_task_id: "prep-1", run_id: "run-1" }],
+      })]),
+      turn: responseTurn,
+    });
+
+    render(<AgentPage />);
+    const user = userEvent.setup();
+    await screen.findByRole("checkbox", { name: "以指定的预处理结果新建分析目标" });
+    await user.type(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), "准备分析");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(responseTurn).toHaveBeenCalledOnce());
+    expect(requestBody).not.toHaveProperty("preprocessing_task_id");
+    expect(requestBody).not.toHaveProperty("target_run_id", "run-1");
+  });
+
   it("shows the conversation-scoped composite goal stages and refreshes on request", async () => {
     const goals = [
       { ...compositeGoal("waiting_preprocessing", "goal-prep", "preprocessing_in_progress"), preprocessing_status: "running", analysis_proposal_status: null, analysis_status: null },

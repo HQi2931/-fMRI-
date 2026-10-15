@@ -377,18 +377,115 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert unchanged_view.plan_revision_id == plan_id
             assert unchanged_view.run_id == run_id
             assert service.automation.get_task(task_id).status is TaskStatus.WAITING_RUN
+            original_respond = service.work_dialogue.respond
+            no_model_call = AsyncMock(side_effect=AssertionError("explicit registration used LLM"))
+            monkeypatch.setattr(service.work_dialogue, "respond", no_model_call)
+            explicit_turn = {
+                "content": "请对这批预处理结果做 ALFF 两组比较",
+                "action": "auto",
+                "agent_role": "analysis",
+                "project_id": project.project_id,
+                "target_run_id": run_id,
+                "preprocessing_task_id": task_id,
+            }
+            explicit_url = f"/api/v1/conversations/{conversation.conversation_id}/turns"
+            explicit = client.post(
+                explicit_url,
+                json=explicit_turn,
+                headers={"Idempotency-Key": "work-task-binding-explicit-analysis"},
+            )
+            assert explicit.status_code == 201, explicit.text
+            explicit_replay = client.post(
+                explicit_url,
+                json=explicit_turn,
+                headers={"Idempotency-Key": "work-task-binding-explicit-analysis"},
+            )
+            assert explicit_replay.status_code == 201, explicit_replay.text
+            assert explicit_replay.json() == explicit.json()
+            explicit_payload = explicit.json()["assistant_message"]["payload"]
+            explicit_intent = explicit_payload["analysis_dependency"]
+            explicit_intent_id = explicit_intent["task_id"]
+            assert explicit_intent_id != analysis_intent["task_id"]
+            assert explicit_payload["analysis_intent_registration"]["status"] == "pending"
+            assert explicit_payload["analysis_dependency"]["status"] == (
+                "waiting_for_preprocessing"
+            )
+            explicit_outbox = service.automation._repository.get_analysis_outbox(explicit_intent_id)
+            assert explicit_outbox.preprocessing_task_id == task_id
+            assert explicit_outbox.run_id == run_id
+            assert explicit_outbox.status is AnalysisOutboxStatus.PENDING
+            explicit_root = service.automation.get_composite_goal(
+                conversation.conversation_id, explicit_intent_id
+            )
+            assert explicit_root.preprocessing_task_id == task_id
+            assert explicit_root.analysis_proposal_outbox_intent_task_id == explicit_intent_id
+            assert (
+                service.automation.get_task(task_id).authority_refs.analysis_intent_task_id
+                == analysis_intent["task_id"]
+            )
+
+            missing_run = client.post(
+                explicit_url,
+                json={key: value for key, value in explicit_turn.items() if key != "target_run_id"},
+                headers={"Idempotency-Key": "work-task-binding-explicit-missing-run"},
+            )
+            assert missing_run.status_code == 422
+            wrong_action = client.post(
+                explicit_url,
+                json={**explicit_turn, "action": "get_progress"},
+                headers={"Idempotency-Key": "work-task-binding-explicit-wrong-action"},
+            )
+            assert wrong_action.status_code == 422
+            wrong_role = client.post(
+                explicit_url,
+                json={**explicit_turn, "agent_role": "preprocessing"},
+                headers={"Idempotency-Key": "work-task-binding-explicit-wrong-role"},
+            )
+            assert wrong_role.status_code == 422
+
+            cross_conversation = service.conversations.create_conversation(
+                ConversationCreate(
+                    mode=ConversationMode.WORK,
+                    project_id=project.project_id,
+                    workspace_path=str(source),
+                ),
+                "work-task-binding-cross-conversation",
+            )
+            cross_conversation_response = client.post(
+                f"/api/v1/conversations/{cross_conversation.conversation_id}/turns",
+                json=explicit_turn,
+                headers={"Idempotency-Key": "work-task-binding-cross-conversation"},
+            )
+            assert cross_conversation_response.status_code == 409
+            wrong_project_response = client.post(
+                explicit_url,
+                json={**explicit_turn, "project_id": "wrong-project"},
+                headers={"Idempotency-Key": "work-task-binding-wrong-project"},
+            )
+            assert wrong_project_response.status_code == 409
+            wrong_run_response = client.post(
+                explicit_url,
+                json={**explicit_turn, "target_run_id": "not-the-selected-run"},
+                headers={"Idempotency-Key": "work-task-binding-wrong-run"},
+            )
+            assert wrong_run_response.status_code == 409
+            assert no_model_call.await_count == 0
+            monkeypatch.setattr(service.work_dialogue, "respond", original_respond)
+
             pending_outboxes = (
                 service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
                     task_id
                 )
             )
-            assert len(pending_outboxes) == 1
-            pending_outbox = pending_outboxes[0]
+            assert len(pending_outboxes) == 2
+            pending_by_intent = {item.intent_task_id: item for item in pending_outboxes}
+            pending_outbox = pending_by_intent[analysis_intent["task_id"]]
             assert pending_outbox is not None
             assert pending_outbox.intent_task_id == analysis_intent["task_id"]
             assert pending_outbox.run_id == run_id
             assert pending_outbox.plan_revision_id == plan_id
             assert pending_outbox.artifact_ids == ()
+            assert pending_by_intent[explicit_intent_id].status is AnalysisOutboxStatus.PENDING
             repository = service.automation._repository
             ready_outbox = repository.mark_analysis_outbox_ready(
                 analysis_intent["task_id"],
@@ -962,8 +1059,10 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             service.automation._artifact_repository = SimpleNamespace(
                 list_artifacts=lambda _run_id: [artifact],
-                get_artifact=lambda artifact_id: (_ for _ in ()).throw(
-                    NotFoundError("artifact", artifact_id)
+                get_artifact=lambda artifact_id: (
+                    artifact
+                    if artifact_id == artifact.artifact_id
+                    else (_ for _ in ()).throw(NotFoundError("artifact", artifact_id))
                 ),
             )
             service.automation._event_repository = SimpleNamespace(list_events=lambda **_kwargs: [])
@@ -974,6 +1073,175 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert completed.task.steps[0].status.value == "succeeded"
             assert completed.task.steps[0].authority_refs.artifact_ids == ("verified-timeseries",)
             assert completed.task.authority_refs.artifact_ids == ("verified-timeseries",)
+            fanned_out = service.automation._repository.get_analysis_outbox(explicit_intent_id)
+            assert fanned_out.status is AnalysisOutboxStatus.READY
+            assert fanned_out.artifact_ids == ("verified-timeseries",)
+            completed_no_model_call = AsyncMock(
+                side_effect=AssertionError("completed registration used LLM")
+            )
+            monkeypatch.setattr(service.work_dialogue, "respond", completed_no_model_call)
+            with TestClient(create_app(service=service)) as completed_client:
+                completed_registration = completed_client.post(
+                    f"/api/v1/conversations/{conversation.conversation_id}/turns",
+                    json={
+                        **explicit_turn,
+                        "content": "请再核验一次 ALFF 指标并提出比较方案",
+                    },
+                    headers={"Idempotency-Key": "work-task-binding-completed-analysis"},
+                )
+            assert completed_registration.status_code == 201, completed_registration.text
+            completed_payload = completed_registration.json()["assistant_message"]["payload"]
+            completed_intent = completed_payload["analysis_dependency"]
+            assert completed_payload["analysis_intent_registration"]["status"] == "ready"
+            assert completed_intent["status"] == "analysis_ready"
+            assert completed_no_model_call.await_count == 0
+            completed_outbox = service.automation._repository.get_analysis_outbox(
+                completed_intent["task_id"]
+            )
+            assert completed_outbox.status is AnalysisOutboxStatus.READY
+            assert completed_outbox.artifact_ids == ("verified-timeseries",)
+            assert no_model_call.await_count == 0
+            assert completed_no_model_call.await_count == 0
+
+            completed_url = f"/api/v1/conversations/{conversation.conversation_id}/turns"
+            outbox_count_before_rejections = len(
+                service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
+                    task_id
+                )
+            )
+            message_count_before_stale_finalize = len(
+                service.conversations.get_conversation(conversation.conversation_id).messages
+            )
+            register_outbox = service.automation.register_analysis_proposal_outbox
+
+            def remove_artifact_before_finalize(**kwargs):
+                current_artifact_repository = service.automation._artifact_repository
+                service.automation._artifact_repository = SimpleNamespace(
+                    list_artifacts=lambda _run_id: [],
+                    get_artifact=lambda artifact_id: (_ for _ in ()).throw(
+                        NotFoundError("artifact", artifact_id)
+                    ),
+                )
+                try:
+                    return register_outbox(**kwargs)
+                finally:
+                    service.automation._artifact_repository = current_artifact_repository
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    service.automation,
+                    "register_analysis_proposal_outbox",
+                    remove_artifact_before_finalize,
+                )
+                with TestClient(create_app(service=service)) as stale_finalize_client:
+                    stale_finalize = stale_finalize_client.post(
+                        completed_url,
+                        json={
+                            **explicit_turn,
+                            "content": "最终登记前来源产物发生变化",
+                        },
+                        headers={"Idempotency-Key": "work-task-binding-stale-finalize"},
+                    )
+            assert stale_finalize.status_code == 409, stale_finalize.text
+            assert stale_finalize.json()["error"]["code"] == (
+                "analysis_outbox_preprocessing_evidence_invalid"
+            )
+            assert (
+                len(service.conversations.get_conversation(conversation.conversation_id).messages)
+                == message_count_before_stale_finalize
+            )
+            assert (
+                len(
+                    service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
+                        task_id
+                    )
+                )
+                == outbox_count_before_rejections
+            )
+
+            qc_repository = service.automation._qc_repository
+            rejected_review = SimpleNamespace(
+                run_id=run_id,
+                state=QcReviewState.REJECTED,
+                review=SimpleNamespace(review_revision_id="rejected-qc-review"),
+            )
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    service.automation,
+                    "_qc_repository",
+                    SimpleNamespace(
+                        get_latest_qc_review_for_run=lambda _run_id: rejected_review,
+                        get_qc_skip_for_run=lambda _run_id: None,
+                    ),
+                )
+                with TestClient(create_app(service=service)) as rejected_qc_client:
+                    bad_qc = rejected_qc_client.post(
+                        completed_url,
+                        json={
+                            **explicit_turn,
+                            "content": "QC 拒绝后不应登记分析",
+                        },
+                        headers={"Idempotency-Key": "work-task-binding-rejected-qc"},
+                    )
+            assert bad_qc.status_code == 409, bad_qc.text
+            monkeypatch.setattr(service.automation, "_qc_repository", qc_repository)
+
+            plan_repository = service.automation._plan_repository
+            frozen_plan = service.plans.get_plan(plan_id)
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    service.automation,
+                    "_plan_repository",
+                    SimpleNamespace(
+                        get_plan=lambda _plan_id: frozen_plan.model_copy(
+                            update={"manifest_hash": "0" * 64}
+                        )
+                    ),
+                )
+                with TestClient(create_app(service=service)) as manifest_client:
+                    bad_manifest = manifest_client.post(
+                        completed_url,
+                        json={
+                            **explicit_turn,
+                            "content": "manifest 不匹配时不应登记分析",
+                        },
+                        headers={"Idempotency-Key": "work-task-binding-wrong-manifest"},
+                    )
+            assert bad_manifest.status_code == 409, bad_manifest.text
+            monkeypatch.setattr(service.automation, "_plan_repository", plan_repository)
+
+            artifact_repository = service.automation._artifact_repository
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    service.automation,
+                    "_artifact_repository",
+                    SimpleNamespace(
+                        list_artifacts=lambda _run_id: [],
+                        get_artifact=lambda artifact_id: (_ for _ in ()).throw(
+                            NotFoundError("artifact", artifact_id)
+                        ),
+                    ),
+                )
+                with TestClient(create_app(service=service)) as artifact_client:
+                    missing_artifact = artifact_client.post(
+                        completed_url,
+                        json={
+                            **explicit_turn,
+                            "content": "目标 Artifact 缺失时不应登记分析",
+                        },
+                        headers={"Idempotency-Key": "work-task-binding-missing-artifact"},
+                    )
+            assert missing_artifact.status_code == 409, missing_artifact.text
+            monkeypatch.setattr(service.automation, "_artifact_repository", artifact_repository)
+            assert (
+                len(
+                    service.automation._repository.list_analysis_outboxes_for_preprocessing_task(
+                        task_id
+                    )
+                )
+                == outbox_count_before_rejections
+            )
+            monkeypatch.setattr(service.work_dialogue, "respond", original_respond)
             result_claim = service.automation.claim_next_result_interpretation_outbox(
                 "composite-result-test", lease_seconds=30
             )
