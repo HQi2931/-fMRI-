@@ -295,7 +295,7 @@ describe("agent workbench page", () => {
 
   it("shows the conversation-scoped composite goal stages and refreshes on request", async () => {
     const goals = [
-      { ...compositeGoal("waiting_preprocessing", "goal-prep", "preprocessing_in_progress"), preprocessing_status: "running", analysis_proposal_status: null, analysis_status: null },
+      { ...compositeGoal("waiting_preprocessing", "goal-prep", "preprocessing_in_progress"), analysis_summary: "对 ALFF 做两组比较", preprocessing_status: "running", analysis_proposal_status: null, analysis_status: null },
       { ...compositeGoal("waiting_analysis", "goal-analysis", "analysis_proposal_pending"), analysis_proposal_status: "pending", analysis_status: null },
       { ...compositeGoal("waiting_result_interpretation", "goal-result", "result_interpretation_pending"), analysis_status: "completed", result_interpretation_status: "ready" },
       { ...compositeGoal("waiting_user", "goal-user", "analysis_decision_required"), analysis_status: "waiting_user" },
@@ -310,6 +310,7 @@ describe("agent workbench page", () => {
 
     expect(await screen.findByRole("region", { name: "自动化流程进度" })).toBeInTheDocument();
     expect(screen.getAllByRole("article")).toHaveLength(7);
+    expect(within(screen.getAllByRole("article")[0]).getByText("对 ALFF 做两组比较")).toBeInTheDocument();
     for (const label of ["等待预处理", "等待分析", "等待结果解释", "需要你处理", "已阻断", "已完成", "状态待核验"]) {
       expect(screen.getByText(label, { selector: "span" })).toBeInTheDocument();
     }

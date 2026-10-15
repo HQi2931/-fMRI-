@@ -181,6 +181,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert progress.status.value == "waiting_user"
             assert progress.reason_code == "preprocessing_user_decision"
+            assert progress.analysis_summary == user_goal
             identity = service.automation.get_composite_goal(
                 conversation.conversation_id, analysis_intent["task_id"]
             )
@@ -198,6 +199,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert listed_goal["conversation_id"] == conversation.conversation_id
             assert listed_goal["project_id"] == project.project_id
             assert listed_goal["analysis_request_hash"] == content_hash(user_goal.strip())
+            assert listed_goal["analysis_summary"] == user_goal
             assert listed_goal["preprocessing_task_id"] == task_id
             assert listed_goal["analysis_proposal_outbox_intent_task_id"] is None
             assert listed_goal["analysis_work_task_id"] is None

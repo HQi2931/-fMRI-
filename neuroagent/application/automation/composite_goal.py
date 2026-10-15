@@ -11,6 +11,7 @@ from neuroagent.application.automation.models import TaskStatus, WorkTask
 from neuroagent.application.automation.result_interpretation import (
     StatisticalResultInterpretationOutbox,
 )
+from neuroagent.application.hashing import content_hash
 
 
 class CompositeGoalStatus(StrEnum):
@@ -75,12 +76,25 @@ class CompositeGoalContinuationMessage(BaseModel):
     payload: dict[str, object]
 
 
+class CompositeGoalIntentMessage(BaseModel):
+    """Persisted assistant evidence that may name this goal's original request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    conversation_id: str = Field(min_length=1, max_length=100)
+    role: str = Field(min_length=1, max_length=20)
+    payload: dict[str, object]
+
+
 class CompositeGoalSnapshot(BaseModel):
     """One consistent database read of the root and its authoritative children."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     goal: CompositeGoalIdentity
+    analysis_intent_messages: tuple[CompositeGoalIntentMessage, ...] = Field(
+        default=(), max_length=2
+    )
     conversation_mode: str | None = None
     conversation_project_id: str | None = None
     preprocessing_plan_revision_id: str | None = None
@@ -101,6 +115,7 @@ class CompositeGoalProgress(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     goal: CompositeGoalIdentity
+    analysis_summary: str | None = Field(default=None, max_length=160)
     status: CompositeGoalStatus
     preprocessing_status: str | None = None
     analysis_proposal_status: str | None = None
@@ -115,6 +130,7 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
 
     goal = snapshot.goal
     prep = snapshot.preprocessing_task
+    analysis_summary = _verified_analysis_summary(goal, snapshot.analysis_intent_messages)
 
     def result(
         status: CompositeGoalStatus,
@@ -127,6 +143,7 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     ) -> CompositeGoalProgress:
         return CompositeGoalProgress(
             goal=goal,
+            analysis_summary=analysis_summary,
             status=status,
             preprocessing_status=prep.status.value if prep is not None else None,
             analysis_proposal_status=proposal_status,
@@ -378,6 +395,40 @@ def _analysis_task_matches(task: WorkTask, goal: CompositeGoalIdentity) -> bool:
         and task.authority_refs.analysis_intent_task_id == goal.intent_task_id
         and task.authority_refs.analysis_request_hash == goal.analysis_request_hash
     )
+
+
+def _verified_analysis_summary(
+    goal: CompositeGoalIdentity,
+    messages: tuple[CompositeGoalIntentMessage, ...],
+) -> str | None:
+    """Return bounded human text only from the exact persisted intent message."""
+
+    matches: list[str] = []
+    for message in messages:
+        if message.conversation_id != goal.conversation_id or message.role != "assistant":
+            continue
+        dependency = message.payload.get("analysis_dependency")
+        if not isinstance(dependency, dict):
+            continue
+        request = dependency.get("analysis_request")
+        if (
+            dependency.get("task_kind") != "preprocess_then_analyze"
+            or dependency.get("task_id") != goal.intent_task_id
+            or dependency.get("conversation_id") != goal.conversation_id
+            or dependency.get("project_id") != goal.project_id
+            or not isinstance(request, str)
+            or content_hash(request) != goal.analysis_request_hash
+        ):
+            continue
+        matches.append(request)
+    if len(matches) != 1:
+        return None
+    summary = " ".join(matches[0].split())
+    if not summary:
+        return None
+    if len(summary) > 160:
+        summary = summary[:157].rstrip() + "…"
+    return summary
 
 
 def _analysis_task_has_proposal(task: WorkTask, proposal_hash: str) -> bool:

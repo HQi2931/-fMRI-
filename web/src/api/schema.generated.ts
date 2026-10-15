@@ -1899,6 +1899,11 @@ export interface components {
             analysis_request_hash: string;
             /** Analysis Status */
             analysis_status?: string | null;
+            /**
+             * Analysis Summary
+             * @description Bounded summary from the exact persisted analysis intent message; null when its conversation, project, intent ID, or request hash cannot be verified.
+             */
+            analysis_summary?: string | null;
             /** Analysis Work Task Id */
             analysis_work_task_id?: string | null;
             /** Continuation Message Id */
@@ -2070,6 +2075,8 @@ export interface components {
             plan_revision_id?: string | null;
             /** Preferred Profile Id */
             preferred_profile_id?: string | null;
+            /** Preprocessing Task Id */
+            preprocessing_task_id?: string | null;
             /** Project Id */
             project_id?: string | null;
             qc_mode?: components["schemas"]["QcExecutionMode"] | null;
@@ -2090,8 +2097,6 @@ export interface components {
             stream: boolean;
             /** Target Run Id */
             target_run_id?: string | null;
-            /** Preprocessing Task Id */
-            preprocessing_task_id?: string | null;
             workspace_file_scope?: components["schemas"]["WorkspaceFileScope"] | null;
             /** Workspace Path */
             workspace_path?: string | null;

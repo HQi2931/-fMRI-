@@ -838,6 +838,19 @@
             ],
             "title": "Analysis Status"
           },
+          "analysis_summary": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bounded summary from the exact persisted analysis intent message; null when its conversation, project, intent ID, or request hash cannot be verified.",
+            "title": "Analysis Summary"
+          },
           "analysis_work_task_id": {
             "anyOf": [
               {
@@ -1389,6 +1402,19 @@
             ],
             "title": "Preferred Profile Id"
           },
+          "preprocessing_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preprocessing Task Id"
+          },
           "project_id": {
             "anyOf": [
               {
@@ -1464,19 +1490,6 @@
               }
             ],
             "title": "Target Run Id"
-          },
-          "preprocessing_task_id": {
-            "anyOf": [
-              {
-                "maxLength": 100,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Preprocessing Task Id"
           },
           "workspace_file_scope": {
             "anyOf": [

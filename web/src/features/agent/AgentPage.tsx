@@ -142,6 +142,7 @@ function CompositeGoalProgressPanel({
         return <li key={goal.intent_task_id}>
           <article className="composite-goal-card">
             <h3>自动化流程 {index + 1} <span className={`status-pill status-${status.tone}`}>{status.label}</span></h3>
+            {goal.analysis_summary && <p className="composite-goal-summary"><strong>分析目标：</strong>{goal.analysis_summary}</p>}
             <p>{reason ?? status.detail}</p>
             <ol aria-label={`自动化流程 ${index + 1} 的处理阶段`}>
               <li><strong>预处理：</strong>{compositeGoalStageView(goal.preprocessing_status)}</li>

@@ -24,6 +24,7 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalAnalysisAttempt,
     CompositeGoalContinuationMessage,
     CompositeGoalIdentity,
+    CompositeGoalIntentMessage,
     CompositeGoalSnapshot,
 )
 from neuroagent.application.automation.models import (
@@ -460,6 +461,36 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 .mappings()
                 .first()
             )
+            intent_messages: list[CompositeGoalIntentMessage] = []
+            message_rows = session.execute(
+                text(
+                    "SELECT conversation_id, role, payload_json FROM conversation_messages "
+                    "WHERE conversation_id=:conversation_id AND role='assistant' "
+                    "ORDER BY sequence"
+                ),
+                {"conversation_id": goal.conversation_id},
+            ).mappings()
+            for intent_message_row in message_rows:
+                try:
+                    payload = json.loads(intent_message_row["payload_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                dependency = (
+                    payload.get("analysis_dependency") if isinstance(payload, dict) else None
+                )
+                if (
+                    isinstance(dependency, dict)
+                    and dependency.get("task_id") == goal.intent_task_id
+                ):
+                    intent_messages.append(
+                        CompositeGoalIntentMessage(
+                            conversation_id=intent_message_row["conversation_id"],
+                            role=intent_message_row["role"],
+                            payload=payload,
+                        )
+                    )
+                    if len(intent_messages) == 2:
+                        break
             preprocessing_task = self._task_from_session(session, goal.preprocessing_task_id)
             preprocessing_plan_project_id = None
             preprocessing_plan_manifest_hash = None
@@ -564,6 +595,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                             )
             return CompositeGoalSnapshot(
                 goal=goal,
+                analysis_intent_messages=tuple(intent_messages),
                 conversation_mode=(conversation_row["mode"] if conversation_row else None),
                 conversation_project_id=(
                     conversation_row["project_id"] if conversation_row else None

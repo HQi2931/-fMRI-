@@ -50,6 +50,14 @@ class CompositeGoalProgressStatus(StrEnum):
 class CompositeGoalProgressView(StrictModel):
     """Conversation-scoped stable identity and current composite-goal projection."""
 
+    analysis_summary: str | None = Field(
+        default=None,
+        max_length=160,
+        description=(
+            "Bounded summary from the exact persisted analysis intent message; null when its "
+            "conversation, project, intent ID, or request hash cannot be verified."
+        ),
+    )
     intent_task_id: str
     conversation_id: str
     project_id: str
