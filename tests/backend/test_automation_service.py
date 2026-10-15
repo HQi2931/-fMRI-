@@ -1689,6 +1689,135 @@ def test_preprocessing_finalizer_fans_out_exact_intents_in_one_unit_of_work(
     malformed = repository.get_analysis_outbox(str(malformed_intent["task_id"]))
     assert malformed.status.value == "pending"
 
+    first_intent, second_intent = intents
+    assert first_intent is not None
+    assert second_intent is not None
+    proposal_hash = "e" * 64
+    draft_hash = "f" * 64
+    goal_description = "Compare the selected resting-state metric across groups"
+
+    # Simulate a composite task persisted before intent-scoped task IDs were
+    # introduced. The historical ID remains reusable for its exact root.
+    historical_task = service.automation.ensure_analysis_proposal_task(
+        conversation_id,
+        project_id,
+        proposal_hash,
+        goal_description,
+        draft_hash,
+    )
+    historical_refs = historical_task.authority_refs.model_copy(
+        update={
+            "analysis_intent_task_id": first_intent["task_id"],
+            "analysis_request_hash": content_hash(str(first_intent["analysis_request"]).strip()),
+        }
+    )
+    historical_task = historical_task.model_copy(
+        update={
+            "version": historical_task.version + 1,
+            "authority_refs": historical_refs,
+            "steps": tuple(
+                step.model_copy(
+                    update={
+                        "authority_refs": step.authority_refs.model_copy(
+                            update={
+                                "analysis_intent_task_id": first_intent["task_id"],
+                                "analysis_request_hash": content_hash(
+                                    str(first_intent["analysis_request"]).strip()
+                                ),
+                            }
+                        )
+                    }
+                )
+                for step in historical_task.steps
+            ),
+        }
+    )
+    repository.save_task(historical_task, expected_version=historical_task.version - 1)
+
+    first_task = service.automation.ensure_analysis_proposal_task(
+        conversation_id,
+        project_id,
+        proposal_hash,
+        goal_description,
+        draft_hash,
+        analysis_intent_task_id=str(first_intent["task_id"]),
+        analysis_request_hash=content_hash(str(first_intent["analysis_request"]).strip()),
+        source_run_id=run.run_id,
+        input_manifest_hash=plan.manifest_hash,
+    )
+    second_task = service.automation.ensure_analysis_proposal_task(
+        conversation_id,
+        project_id,
+        proposal_hash,
+        goal_description,
+        draft_hash,
+        analysis_intent_task_id=str(second_intent["task_id"]),
+        analysis_request_hash=content_hash(str(second_intent["analysis_request"]).strip()),
+        source_run_id=run.run_id,
+        input_manifest_hash=plan.manifest_hash,
+    )
+    assert first_task.task_id == WorkTaskApplicationService.analysis_proposal_task_id(
+        conversation_id, proposal_hash
+    )
+    assert second_task.task_id == WorkTaskApplicationService.composite_analysis_proposal_task_id(
+        conversation_id, proposal_hash, str(second_intent["task_id"])
+    )
+    assert second_task.task_id != first_task.task_id
+
+    # The conversation keeps one current analysis-role pointer. A later intent
+    # may replace it even though an older intent still needs an idempotent
+    # replay, so that pointer must not redirect or reject the older root.
+    service.repository.append_assistant_continuation(
+        conversation_id,
+        continuation_key="fanout-analysis-role-pointer",
+        assistant_content="统计提案已记录。",
+        assistant_payload={
+            "analysis_draft": {"hash": draft_hash},
+            "statistical_design_proposal": {"proposal_hash": proposal_hash},
+        },
+        project_id=project_id,
+        work_task_id=second_task.task_id,
+    )
+
+    first_replay = service.automation.ensure_analysis_proposal_task(
+        conversation_id,
+        project_id,
+        proposal_hash,
+        goal_description,
+        draft_hash,
+        analysis_intent_task_id=str(first_intent["task_id"]),
+        analysis_request_hash=content_hash(str(first_intent["analysis_request"]).strip()),
+        source_run_id=run.run_id,
+        input_manifest_hash=plan.manifest_hash,
+    )
+    second_replay = service.automation.ensure_analysis_proposal_task(
+        conversation_id,
+        project_id,
+        proposal_hash,
+        goal_description,
+        draft_hash,
+        analysis_intent_task_id=str(second_intent["task_id"]),
+        analysis_request_hash=content_hash(str(second_intent["analysis_request"]).strip()),
+        source_run_id=run.run_id,
+        input_manifest_hash=plan.manifest_hash,
+    )
+    assert first_replay.task_id == first_task.task_id
+    assert first_replay.version == first_task.version
+    assert second_replay.task_id == second_task.task_id
+    assert second_replay.version == second_task.version
+    for intent, expected_task in (
+        (first_intent, first_task),
+        (second_intent, second_task),
+    ):
+        snapshot = repository.get_composite_goal_snapshot(str(intent["task_id"]))
+        assert snapshot.goal.analysis_work_task_id == expected_task.task_id
+        assert snapshot.analysis_task is not None
+        assert snapshot.analysis_task.task_id == expected_task.task_id
+        assert len(snapshot.analysis_attempts) == 1
+        assert snapshot.analysis_attempts[0].attempt_number == 1
+        assert snapshot.analysis_attempts[0].work_task_id == expected_task.task_id
+        assert snapshot.analysis_attempts[0].proposal_hash == proposal_hash
+
 
 def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_significance(
     service,
@@ -2048,6 +2177,9 @@ def test_statistical_proposal_plan_and_authorized_run_bind_idempotently(service)
         "c" * 64,
         "Analyze ALFF values across groups",
         "d" * 64,
+    )
+    assert task.task_id == WorkTaskApplicationService.analysis_proposal_task_id(
+        "conversation-statistics", "c" * 64
     )
     reused_task = service.automation.ensure_analysis_proposal_task(
         "conversation-statistics",

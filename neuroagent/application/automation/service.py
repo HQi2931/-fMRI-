@@ -1322,8 +1322,8 @@ class WorkTaskApplicationService:
                     "result_interpretation_draft_binding_mismatch",
                     "统计任务草稿修订与冻结 Plan 不一致。",
                 )
-            if task.task_id != self.analysis_proposal_task_id(
-                outbox.conversation_id, context["proposal_hash"]
+            if not self._analysis_proposal_task_identity_matches(
+                task, outbox.conversation_id, context["proposal_hash"]
             ):
                 raise ConflictError(
                     "result_interpretation_task_identity_mismatch",
@@ -1702,8 +1702,80 @@ class WorkTaskApplicationService:
 
     @staticmethod
     def analysis_proposal_task_id(conversation_id: str, proposal_hash: str) -> str:
+        """Return the historical standalone/single-target task identity."""
+
         binding = f"{conversation_id}\0analysis\0{proposal_hash}".encode()
         return f"work-analysis-{hashlib.sha256(binding).hexdigest()[:32]}"
+
+    @staticmethod
+    def composite_analysis_proposal_task_id(
+        conversation_id: str, proposal_hash: str, intent_task_id: str
+    ) -> str:
+        """Return a stable task identity scoped to one exact composite intent."""
+
+        binding = (
+            f"{conversation_id}\0analysis-composite\0{intent_task_id}\0{proposal_hash}"
+        ).encode()
+        return f"work-analysis-{hashlib.sha256(binding).hexdigest()[:32]}"
+
+    @classmethod
+    def _analysis_proposal_task_identity_matches(
+        cls, task: WorkTask, conversation_id: str, proposal_hash: str
+    ) -> bool:
+        if task.task_id == cls.analysis_proposal_task_id(conversation_id, proposal_hash):
+            # The legacy identity remains valid for standalone work and for
+            # composite tasks persisted before intent-scoped IDs were added.
+            return True
+        intent_task_id = task.authority_refs.analysis_intent_task_id
+        return bool(
+            intent_task_id is not None
+            and task.task_id
+            == cls.composite_analysis_proposal_task_id(
+                conversation_id, proposal_hash, intent_task_id
+            )
+        )
+
+    def _conversation_bound_analysis_task(
+        self, conversation: Any, proposal_hash: str
+    ) -> WorkTask | None:
+        """Resolve only the durable analysis role binding, never a guessed intent."""
+
+        candidates = tuple(
+            item
+            for item in getattr(conversation, "work_tasks", ())
+            if getattr(getattr(item, "agent_role", None), "value", None) == "analysis"
+            and getattr(item, "proposal_hash", None) == proposal_hash
+            and isinstance(getattr(item, "work_task_id", None), str)
+        )
+        if len(candidates) > 1:
+            raise ConflictError(
+                "work_task_analysis_binding_ambiguous",
+                "会话中存在多个匹配该提案哈希的统计任务绑定。",
+            )
+        if not candidates:
+            return None
+        task_id = candidates[0].work_task_id
+        try:
+            task = self._repository.get_task(task_id)
+        except NotFoundError as exc:
+            raise ConflictError(
+                "work_task_analysis_binding_missing",
+                "会话引用的统计 WorkTask 不存在，不能另建重复任务。",
+            ) from exc
+        step = self._statistical_step(task)
+        if (
+            task.authority_refs.conversation_id != conversation.conversation_id
+            or step is None
+            or step.input_version != proposal_hash
+            or not self._analysis_proposal_task_identity_matches(
+                task, conversation.conversation_id, proposal_hash
+            )
+        ):
+            raise ConflictError(
+                "work_task_analysis_binding_mismatch",
+                "会话统计任务引用与持久 WorkTask 的会话或提案身份不一致。",
+            )
+        return task
 
     def bind_ready_step_plan_for_review(
         self,
@@ -1895,14 +1967,16 @@ class WorkTaskApplicationService:
         if not description:
             raise InputValidationError("work_task_goal_required", "持久任务缺少用户目标描述。")
 
-        task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
+        legacy_task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
         try:
-            current = self._repository.get_task(task_id)
+            legacy_current = self._repository.get_task(legacy_task_id)
         except NotFoundError:
-            current = None
+            legacy_current = None
+        bound_current = self._conversation_bound_analysis_task(conversation, proposal_hash)
+        current = bound_current or legacy_current
         if current is not None and analysis_intent_task_id is None:
-            # Reuse the exact persisted association for plan binding; never
-            # infer a parent from a conversation's latest message or role slot.
+            # Reuse the exact persisted association; the role slot above is a
+            # durable task pointer, not an inference from recent conversation text.
             analysis_intent_task_id = current.authority_refs.analysis_intent_task_id
             analysis_request_hash = current.authority_refs.analysis_request_hash
         if (analysis_intent_task_id is None) != (analysis_request_hash is None):
@@ -1940,11 +2014,51 @@ class WorkTaskApplicationService:
                     "composite_goal_proposal_manifest_mismatch",
                     "统计提案使用的 manifest 与复合目标冻结输入不一致。",
                 )
+            legacy_matches_intent = bool(
+                legacy_current is not None
+                and legacy_current.authority_refs.conversation_id == conversation_id
+                and legacy_current.authority_refs.analysis_intent_task_id == analysis_intent_task_id
+                and legacy_current.authority_refs.analysis_request_hash == analysis_request_hash
+            )
+            bound_matches_intent = bool(
+                bound_current is not None
+                and bound_current.authority_refs.analysis_intent_task_id == analysis_intent_task_id
+                and bound_current.authority_refs.analysis_request_hash == analysis_request_hash
+            )
+            if bound_current is not None and bound_matches_intent:
+                current = bound_current
+                task_id = bound_current.task_id
+            elif legacy_current is not None and legacy_matches_intent:
+                current = legacy_current
+                task_id = legacy_task_id
+            else:
+                task_id = self.composite_analysis_proposal_task_id(
+                    conversation_id, proposal_hash, analysis_intent_task_id
+                )
+                try:
+                    current = self._repository.get_task(task_id)
+                except NotFoundError:
+                    current = None
+                if current is not None and (
+                    current.authority_refs.conversation_id != conversation_id
+                    or current.authority_refs.analysis_intent_task_id != analysis_intent_task_id
+                    or current.authority_refs.analysis_request_hash != analysis_request_hash
+                ):
+                    raise ConflictError(
+                        "work_task_composite_goal_conflict",
+                        "intent-scoped 统计任务 ID 已绑定到不同复合目标。",
+                    )
             if current is None and (source_run_id is None or input_manifest_hash is None):
                 raise ConflictError(
                     "composite_goal_proposal_source_missing",
                     "新的统计尝试必须显式绑定预处理 Run 和 manifest。",
                 )
+        else:
+            task_id = (
+                current.task_id
+                if bound_current is not None and current is bound_current
+                else legacy_task_id
+            )
         task = WorkTask(
             task_id=task_id,
             goal=WorkGoal(
@@ -2027,9 +2141,6 @@ class WorkTaskApplicationService:
     ) -> WorkTask:
         """Bind the exact frozen statistical Plan while keeping the user gate."""
 
-        expected_task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
-        if task_id != expected_task_id:
-            raise ConflictError("work_task_binding_mismatch", "统计任务 ID 与提案绑定不一致。")
         conversation = self._conversation_repository.get_conversation(conversation_id)
         self._require_work_conversation(conversation, conversation_id, project_id)
         plan = self._plan_repository.get_plan(plan_revision_id)
@@ -2051,7 +2162,9 @@ class WorkTaskApplicationService:
         current = self._repository.get_task(task_id)
         step = self._statistical_step(current)
         if (
-            current.task_id != expected_task_id
+            not self._analysis_proposal_task_identity_matches(
+                current, conversation_id, proposal_hash
+            )
             or current.authority_refs.conversation_id != conversation_id
             or current.authority_refs.input_revision != context["draft_hash"]
             or step is None
@@ -2130,7 +2243,7 @@ class WorkTaskApplicationService:
                 "work_task_plan_not_approved", "只能将已批准并授权执行的统计方案绑定到 Run。"
             )
         if (
-            task.task_id != self.analysis_proposal_task_id(conversation_id, proposal_hash)
+            not self._analysis_proposal_task_identity_matches(task, conversation_id, proposal_hash)
             or task.authority_refs.input_revision != context["draft_hash"]
             or task.authority_refs.plan_revision_id != plan_revision_id
             or step.authority_refs.conversation_id != conversation_id
@@ -4071,8 +4184,8 @@ class WorkTaskApplicationService:
                     raise _InvalidStatisticalAuthority(
                         "统计步骤的 Plan/Run 权威引用不完整或不一致；任务已阻断。"
                     )
-                if task.task_id != self.analysis_proposal_task_id(
-                    conversation.conversation_id, context["proposal_hash"]
+                if not self._analysis_proposal_task_identity_matches(
+                    task, conversation.conversation_id, context["proposal_hash"]
                 ):
                     raise _InvalidStatisticalAuthority(
                         "统计 WorkTask ID 与 conversation/proposal 绑定不一致；任务已阻断。"
@@ -4531,8 +4644,9 @@ class WorkTaskApplicationService:
             proposal_hash=step.input_version or "",
         )
         if (
-            task.task_id
-            != self.analysis_proposal_task_id(conversation_id, context["proposal_hash"])
+            not self._analysis_proposal_task_identity_matches(
+                task, conversation_id, context["proposal_hash"]
+            )
             or task.authority_refs.input_revision != context["draft_hash"]
         ):
             raise ConflictError(
