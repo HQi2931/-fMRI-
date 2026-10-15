@@ -4,8 +4,8 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-14
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)
+- 更新日期：2026-10-15
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)
 
 ## 目标里程碑
 
@@ -140,6 +140,14 @@ flowchart TD
 迁移 0028 对历史任务仅在 Task/Step、WORK conversation、project/Plan/manifest，以及存在时的 proposal outbox/首个 analysis task 精确匹配时回填；歧义或相互矛盾的旧关联不导入，等待显式恢复。定向测试覆盖预处理任务建立时 root 已持久化且 outbox 为空、首个 outbox/task、修订 attempts、迟到旧尝试、精确结果 outbox 绑定、assistant continuation 错配 fail-closed、迁移歧义跳过，以及 API 空列表/会话隔离/非 Work 和跨项目拒绝。前端测试覆盖状态呈现、独立错误、会话切换竞态、取消与人工刷新。阶段 B 整体仍未完成；当前仅提供单会话显式复合目标进度读取，通用多步骤恢复、多目标 fanout 与用户意图标题呈现仍待实现。
 
 本切片验证：相关后端 8 个模块 100 项通过，Agent 页面 45 项通过，Ruff、Mypy、TypeScript、全站 ESLint、生产构建、OpenAPI exporter 与文档标准检查通过；未运行 MATLAB/DPABI。全量前端 Vitest 为 174 项通过、50 项失败，失败集中在其他既有页面/组件测试的相对 `/api/...` URL 被 Node fetch 解析失败；该全量门禁仍需单独修复，不能以本切片定向通过替代。
+
+### 阶段 B WorkTask 步骤生命周期共用转换（2026-10-15）
+
+预处理与统计 Run 的用户确认绑定现在共用纯 `TaskStep` 生命周期转换：只有精确等待用户且步骤就绪的任务才能绑定 Run；同一 Run 的重放在 Task/Step 状态及引用一致时幂等，另一 Run 或部分绑定失败关闭。两类步骤通过各自现有的预处理产物/lineage、统计设计/真实结果检查后，再共用完成状态构造；事务、CAS、Worker fencing 和两类 outbox 仍由应用服务持有。状态转换不访问数据库或 Provider，也不替代类型专属证据核验。具体决策见 [ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)。
+
+此切片收敛了两类步骤的状态机重复，但尚未提供通用 Step handler 注册表、跨步骤就绪调度、共享任务预算或多分析目标 fanout；这些仍是阶段 B 后续工作。
+
+本切片的后端定向回归为 9 个模块、113 项通过；Ruff、Mypy、文档标准检查和 `git diff --check` 通过。没有运行 MATLAB/DPABI。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 

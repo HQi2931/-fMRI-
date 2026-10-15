@@ -20,6 +20,7 @@ from neuroagent.application.automation.models import (
     transition_task,
     transition_task_step,
 )
+from neuroagent.application.automation.step_lifecycle import bind_step_to_run, complete_step
 
 
 def make_task(**overrides: object) -> WorkTask:
@@ -91,6 +92,234 @@ def test_task_step_transitions_are_versioned_and_terminal_step_cannot_reopen() -
     assert done.version == 4
     with pytest.raises(ValueError, match="invalid task step transition"):
         transition_task_step(done, TaskStepStatus.READY)
+
+
+def test_shared_step_binding_transition_is_versioned_and_idempotent() -> None:
+    step = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.READY,
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="plan:plan-1",
+            reason="review the frozen plan",
+        ),
+        steps=(step,),
+    )
+
+    waiting = bind_step_to_run(
+        task, step, run_id="run-1", waiting_reason="waiting for the same Run"
+    )
+
+    assert waiting.status is TaskStatus.WAITING_RUN
+    assert waiting.version == task.version + 1
+    assert waiting.steps[0].status is TaskStepStatus.WAITING
+    assert waiting.steps[0].version == step.version + 2
+    assert waiting.steps[0].authority_refs.workflow_run_id == "run-1"
+    assert waiting.authority_refs.workflow_run_id == "run-1"
+    assert bind_step_to_run(
+        waiting,
+        waiting.steps[0],
+        run_id="run-1",
+        waiting_reason="ignored on an idempotent replay",
+    ) is waiting
+
+
+@pytest.mark.parametrize("wrong_run_id", ["run-2", ""])
+def test_shared_step_binding_rejects_wrong_or_missing_run(wrong_run_id: str) -> None:
+    step = TaskStep(
+        step_id="analysis",
+        sequence=0,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="proposal:proposal-1",
+            reason="review the proposal",
+        ),
+        steps=(step,),
+    )
+    bound = bind_step_to_run(task, step, run_id="run-1", waiting_reason="wait")
+
+    with pytest.raises(ValueError):
+        bind_step_to_run(bound, bound.steps[0], run_id=wrong_run_id, waiting_reason="wait")
+
+    partially_bound = bound.model_copy(
+        update={
+            "authority_refs": bound.authority_refs.model_copy(
+                update={"workflow_run_id": None}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="already bound to a different or invalid Run state"):
+        bind_step_to_run(
+            partially_bound,
+            partially_bound.steps[0],
+            run_id="run-1",
+            waiting_reason="wait",
+        )
+
+
+def test_shared_step_binding_rejects_wrong_task_state_and_stale_step() -> None:
+    ready = TaskStep(
+        step_id="analysis",
+        sequence=0,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+    )
+    queued_task = make_task(steps=(ready,))
+    with pytest.raises(ValueError, match="waiting-user task"):
+        bind_step_to_run(queued_task, ready, run_id="run-1", waiting_reason="wait")
+
+    waiting_user_task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="proposal:proposal-1",
+            reason="review the proposal",
+        ),
+        steps=(ready,),
+    )
+    stale_step = ready.model_copy(update={"version": ready.version + 1})
+    with pytest.raises(ValueError, match="current persisted task step"):
+        bind_step_to_run(waiting_user_task, stale_step, run_id="run-1", waiting_reason="wait")
+
+
+def test_shared_step_completion_transition_is_idempotent_and_keeps_task_graph() -> None:
+    step = TaskStep(
+        step_id="analysis",
+        sequence=0,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="proposal:proposal-1",
+            reason="review the proposal",
+        ),
+        steps=(step,),
+    )
+    waiting = bind_step_to_run(task, step, run_id="run-1", waiting_reason="wait")
+
+    completed = complete_step(
+        waiting, waiting.steps[0], artifact_ids=("artifact-b", "artifact-a")
+    )
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.version == waiting.version + 1
+    assert completed.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert completed.steps[0].authority_refs.artifact_ids == ("artifact-a", "artifact-b")
+    assert completed.authority_refs.artifact_ids == ("artifact-a", "artifact-b")
+    assert (
+        complete_step(
+            completed, completed.steps[0], artifact_ids=("artifact-a", "artifact-b")
+        )
+        is completed
+    )
+    with pytest.raises(ValueError, match="Artifact references differ"):
+        complete_step(completed, completed.steps[0], artifact_ids=("different",))
+
+
+def test_shared_step_completion_does_not_allow_waiting_user_to_skip_decision() -> None:
+    step = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.WAITING,
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="plan:plan-1",
+            reason="The statistical plan still requires review",
+        ),
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
+        steps=(step,),
+    )
+
+    with pytest.raises(ValueError, match="not waiting for this verified Run"):
+        complete_step(task, step, artifact_ids=("artifact-1",))
+
+
+def test_shared_step_completion_can_close_only_the_matching_resolved_qc_wait() -> None:
+    ready_step = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.READY,
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="plan:plan-1",
+            reason="review the frozen plan",
+        ),
+        steps=(ready_step,),
+    )
+    waiting = bind_step_to_run(task, ready_step, run_id="run-1", waiting_reason="wait")
+    qc_waiting = WorkTask.model_validate(
+        {
+            **waiting.model_dump(),
+            "status": TaskStatus.WAITING_USER,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.USER_DECISION,
+                reference="qc:run-1",
+                reason="the user must review QC",
+            ).model_dump(),
+            "version": waiting.version + 1,
+        }
+    )
+
+    completed = complete_step(
+        qc_waiting,
+        qc_waiting.steps[0],
+        artifact_ids=("artifact-1",),
+    )
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.waiting_condition is None
+    assert completed.version == qc_waiting.version + 1
+    assert completed.steps[0].status is TaskStepStatus.SUCCEEDED
+
+    statistical_step = qc_waiting.steps[0].model_copy(update={"kind": "statistical_run"})
+    wrong_kind_wait = WorkTask.model_validate(
+        {**qc_waiting.model_dump(), "steps": (statistical_step.model_dump(),)}
+    )
+    with pytest.raises(ValueError, match="not waiting for this verified Run"):
+        complete_step(wrong_kind_wait, wrong_kind_wait.steps[0], artifact_ids=("artifact-1",))
+
+
+def test_shared_run_step_lifecycle_rejects_unregistered_step_kind() -> None:
+    step = TaskStep(
+        step_id="unknown",
+        sequence=0,
+        kind="unregistered_run",
+        status=TaskStepStatus.READY,
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="approval:plan-1",
+            reason="waiting for approval",
+        ),
+        steps=(step,),
+    )
+
+    with pytest.raises(ValueError, match="unsupported Run step kind"):
+        bind_step_to_run(task, step, run_id="run-1", waiting_reason="wait")
 
 
 def test_event_consumer_distinguishes_dedupe_and_old_cursor_events() -> None:

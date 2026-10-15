@@ -362,6 +362,7 @@ def test_statistical_task_completion_and_result_outbox_insert_share_rollback(
                 sequence=0,
                 kind="statistical_run",
                 status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id=outbox.run_id),
             ),
         ),
         budget=TaskBudget(

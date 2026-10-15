@@ -350,6 +350,15 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 headers={"Idempotency-Key": "work-task-binding-start"},
             )
             run_id = started.json()["assistant_message"]["payload"]["run"]["run_id"]
+            bound_task = service.automation.get_task(task_id)
+            replayed_binding = service.automation.bind_preprocessing_run(
+                task_id=task_id,
+                conversation_id=conversation.conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=plan_id,
+                run_id=run_id,
+            )
+            assert replayed_binding == bound_task
             consumed_draft = started.json()["assistant_message"]["payload"]["work_draft"]
             consumed_patch = client.patch(
                 f"/api/v1/conversations/{conversation.conversation_id}/work-draft",
@@ -883,18 +892,28 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 goal_description="wrong plan attempt",
             )
 
-            # A successful Run plus the user's explicit QC skip is insufficient
-            # until every frozen target Artifact has matching typed lineage.
+            # A resolved QC review still leaves the TaskStep waiting until every
+            # frozen target Artifact has matching typed lineage.
             frozen_task = service.automation.get_task(task_id)
             assert len(frozen_task.steps[0].expected_artifacts) == 1
             target = frozen_task.steps[0].expected_artifacts[0]
             assert target.artifact_type == "preprocessing.functional_timeseries"
             assert target.relative_path == "output/sub-01/timeseries.nii"
+            qc_waiting_task = service.automation.transition_task(
+                task_id,
+                expected_version=frozen_task.version,
+                target=TaskStatus.WAITING_USER,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.USER_DECISION,
+                    reference=f"qc:{run_id}",
+                    reason="user must review preprocessing QC",
+                ),
+            )
             run_view = service.runs.get_run(run_id)
             successful_run = run_view.model_copy(
                 update={
                     "state": WorkflowState.SUCCEEDED,
-                    "qc_status": "skipped",
+                    "qc_status": "approved",
                     "version": run_view.version + 1,
                 }
             )
@@ -932,11 +951,14 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             service.automation._run_repository = SimpleNamespace(
                 get_run=lambda _run_id: successful_run
             )
+            approved_review = SimpleNamespace(
+                run_id=run_id,
+                state=QcReviewState.APPROVED,
+                review=SimpleNamespace(review_revision_id="approved-qc-review"),
+            )
             service.automation._qc_repository = SimpleNamespace(
-                get_latest_qc_review_for_run=lambda _run_id: None,
-                get_qc_skip_for_run=lambda _run_id: SimpleNamespace(
-                    run_id=run_id, qc_skip_id="explicit-qc-skip"
-                ),
+                get_latest_qc_review_for_run=lambda _run_id: approved_review,
+                get_qc_skip_for_run=lambda _run_id: None,
             )
             service.automation._artifact_repository = SimpleNamespace(
                 list_artifacts=lambda _run_id: [artifact],
@@ -946,6 +968,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             service.automation._event_repository = SimpleNamespace(list_events=lambda **_kwargs: [])
             completed = service.automation.reconcile_waiting_run(task_id)
+            assert qc_waiting_task.status is TaskStatus.WAITING_USER
             assert completed.readiness.value == "completed"
             assert completed.task.status is TaskStatus.COMPLETED
             assert completed.task.steps[0].status.value == "succeeded"

@@ -49,6 +49,7 @@ from neuroagent.application.automation.result_interpretation import (
     VerifiedResultInterpretationSource,
     project_result_model_facts,
 )
+from neuroagent.application.automation.step_lifecycle import bind_step_to_run, complete_step
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
@@ -1099,57 +1100,27 @@ class WorkTaskApplicationService:
         if run.project_id != project_id or run.plan_revision_id != plan_revision_id:
             raise ConflictError("work_task_run_plan_mismatch", "统计 Run 与冻结方案或项目不匹配。")
         if task.authority_refs.workflow_run_id is not None:
-            if (
-                task.authority_refs.workflow_run_id == run_id
-                and step.authority_refs.workflow_run_id == run_id
-                and (
-                    (
-                        task.status is TaskStatus.WAITING_RUN
-                        and step.status is TaskStepStatus.WAITING
-                    )
-                    or (
-                        task.status is TaskStatus.WAITING_DEPENDENCY
-                        and step.status is TaskStepStatus.WAITING
-                    )
-                    or (
-                        task.status is TaskStatus.COMPLETED
-                        and step.status is TaskStepStatus.SUCCEEDED
-                    )
+            try:
+                return bind_step_to_run(
+                    task,
+                    step,
+                    run_id=run_id,
+                    waiting_reason="用户已确认启动统计分析；等待该统计 Workflow Run 和结果登记。",
                 )
-            ):
-                return task
-            raise ConflictError("work_task_run_already_bound", "统计任务已绑定另一 Run。")
+            except ValueError as exc:
+                raise ConflictError(
+                    "work_task_run_already_bound", "统计任务已绑定另一 Run 或绑定状态不一致。"
+                ) from exc
         if task.status is not TaskStatus.WAITING_USER or step.status is not TaskStepStatus.READY:
             raise ConflictError("work_task_not_waiting_for_start", "统计任务当前不在等待启动状态。")
-        started = transition_task_step(step, TaskStepStatus.RUNNING)
-        waiting_step = TaskStep.model_validate(
-            {
-                **transition_task_step(started, TaskStepStatus.WAITING).model_dump(),
-                "authority_refs": started.authority_refs.model_copy(
-                    update={"workflow_run_id": run_id}
-                ).model_dump(),
-            }
-        )
-        updated = transition_task(
+        updated = bind_step_to_run(
             task,
-            TaskStatus.WAITING_RUN,
-            waiting_condition=WaitingCondition(
-                kind=WaitingKind.WORKFLOW_RUN,
-                reference=run_id,
-                reason="用户已确认启动统计分析；等待该统计 Workflow Run 和结果登记。",
-            ),
-        ).model_copy(
-            update={
-                "authority_refs": task.authority_refs.model_copy(
-                    update={"workflow_run_id": run_id}
-                ),
-                "steps": tuple(
-                    waiting_step if item.step_id == step.step_id else item for item in task.steps
-                ),
-            }
+            step,
+            run_id=run_id,
+            waiting_reason="用户已确认启动统计分析；等待该统计 Workflow Run 和结果登记。",
         )
         return self._repository.save_task(
-            WorkTask.model_validate(updated.model_dump()), expected_version=task.version
+            updated, expected_version=task.version
         )
 
     @staticmethod
@@ -1550,17 +1521,6 @@ class WorkTaskApplicationService:
         expected_id = self.preprocessing_task_id(conversation_id, plan_revision_id)
         if task_id != expected_id:
             raise ConflictError("work_task_binding_mismatch", "持久任务 ID 与权威绑定不匹配。")
-        if task.authority_refs.workflow_run_id is not None:
-            if task.authority_refs.workflow_run_id == run_id:
-                return task
-            raise ConflictError(
-                "work_task_run_already_bound", "该预处理任务已经绑定另一 Workflow Run。"
-            )
-        if task.status is not TaskStatus.WAITING_USER:
-            raise ConflictError(
-                "work_task_not_waiting_for_start", "持久任务当前不在等待用户启动的状态。"
-            )
-
         step = next(
             (
                 item
@@ -1570,33 +1530,34 @@ class WorkTaskApplicationService:
             ),
             None,
         )
-        if step is None or step.status is not TaskStepStatus.READY:
+        if step is None:
             raise ConflictError("work_task_step_not_ready", "预处理任务步骤尚未准备启动。")
-        running_step = transition_task_step(step, TaskStepStatus.RUNNING)
-        waiting_step = TaskStep.model_validate(
-            {
-                **transition_task_step(running_step, TaskStepStatus.WAITING).model_dump(),
-                "authority_refs": running_step.authority_refs.model_copy(
-                    update={"workflow_run_id": run_id}
-                ).model_dump(),
-            }
-        )
-        updated = transition_task(
+        if task.authority_refs.workflow_run_id is not None:
+            try:
+                return bind_step_to_run(
+                    task,
+                    step,
+                    run_id=run_id,
+                    waiting_reason="用户已确认启动；等待该预处理 Workflow Run 完成。",
+                )
+            except ValueError as exc:
+                raise ConflictError(
+                    "work_task_run_already_bound",
+                    "该预处理任务已绑定其他 Run 或绑定状态不一致。",
+                ) from exc
+        if task.status is not TaskStatus.WAITING_USER:
+            raise ConflictError(
+                "work_task_not_waiting_for_start", "持久任务当前不在等待用户启动的状态。"
+            )
+        if step.status is not TaskStepStatus.READY:
+            raise ConflictError("work_task_step_not_ready", "预处理任务步骤尚未准备启动。")
+        updated = bind_step_to_run(
             task,
-            TaskStatus.WAITING_RUN,
-            waiting_condition=WaitingCondition(
-                kind=WaitingKind.WORKFLOW_RUN,
-                reference=run_id,
-                reason="用户已确认启动；等待该预处理 Workflow Run 完成。",
-            ),
+            step,
+            run_id=run_id,
+            waiting_reason="用户已确认启动；等待该预处理 Workflow Run 完成。",
         ).model_copy(
             update={
-                "authority_refs": task.authority_refs.model_copy(
-                    update={"workflow_run_id": run_id}
-                ),
-                "steps": tuple(
-                    waiting_step if item.step_id == step.step_id else item for item in task.steps
-                ),
                 "goal": WorkGoal(
                     description=task.goal.description,
                     completion_conditions=(
@@ -2118,23 +2079,21 @@ class WorkTaskApplicationService:
             )
 
         assert step is not None
-        succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED).model_copy(
-            update={
-                "authority_refs": step.authority_refs.model_copy(
-                    update={"artifact_ids": verified_ids}
-                ),
-                "expected_artifacts": expected,
-            }
-        )
-        completed = transition_task(task, TaskStatus.COMPLETED).model_copy(
-            update={
-                "authority_refs": task.authority_refs.model_copy(
-                    update={"artifact_ids": verified_ids}
-                ),
-                "steps": tuple(
-                    succeeded_step if item.step_id == step.step_id else item for item in task.steps
-                ),
-            }
+        completed = complete_step(task, step, artifact_ids=verified_ids)
+        completed_step = self._preprocessing_step(completed)
+        if completed_step is None:
+            raise _InvalidPreprocessingAuthority("completed preprocessing step disappeared")
+        completed = WorkTask.model_validate(
+            completed.model_copy(
+                update={
+                    "steps": tuple(
+                        item.model_copy(update={"expected_artifacts": expected})
+                        if item.step_id == completed_step.step_id
+                        else item
+                        for item in completed.steps
+                    )
+                }
+            ).model_dump()
         )
         with self._repository.atomic():
             completed = self._save_task(
@@ -2872,25 +2831,8 @@ class WorkTaskApplicationService:
                 authoritative=snapshot,
                 claim_token=claim_token,
             )
-        succeeded_step = transition_task_step(step, TaskStepStatus.SUCCEEDED)
         result_artifact_ids = tuple(sorted(set(snapshot.result_artifact_ids)))
-        succeeded_step = succeeded_step.model_copy(
-            update={
-                "authority_refs": succeeded_step.authority_refs.model_copy(
-                    update={"artifact_ids": result_artifact_ids}
-                )
-            }
-        )
-        completed = transition_task(task, TaskStatus.COMPLETED).model_copy(
-            update={
-                "authority_refs": task.authority_refs.model_copy(
-                    update={"artifact_ids": result_artifact_ids}
-                ),
-                "steps": tuple(
-                    succeeded_step if item.step_id == step.step_id else item for item in task.steps
-                ),
-            }
-        )
+        completed = complete_step(task, step, artifact_ids=result_artifact_ids)
         try:
             outbox = self._statistical_result_interpretation_record(
                 task=task,
