@@ -197,6 +197,12 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 新增 lifecycle/service/persistence 覆盖 Plan 审查转换、前驱引用保留、精确 review wait、多步骤 Run 绑定重放/拒绝条件、权威项目/输入核验及过期 claim 写入拒绝。未运行 MATLAB/DPABI。
 
+### 阶段 B 多步骤准备链路接线审查（2026-10-15）
+
+实现审查发现，当前生产代码创建预处理或统计 WorkTask 时仍各自只创建一个 `sequence=0` 步骤；因此没有生产任务会产生 READY 后继供步骤准备 claim 领取。已提交的持久 claim 与 Plan-for-review 绑定仍是可由持久化测试验证的底座，还没有消费者或实际 Work 页面入口。
+
+显式 `preprocess_then_analyze` 目前由 `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示，不能把它直接视为一个多步骤 WorkTask。下一阶段应先明确目标级任务创建合同及每一步的精确 proposal/Plan/input 身份，并为已声明支持的组合建立唯一生产创建路径；保持现有分段 authority/outbox 链路，不复制或重解释其科研事实。随后接入任务级步骤审查读取与明确授权入口，再实现使用现有预处理/统计能力合同的有界 `prepare_step` 消费者。统计提案、预处理参数或输入事实不足时必须等待用户/阻断，不能从 `WorkGoal.description` 推导科学选择。
+
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。
