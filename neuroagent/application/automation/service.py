@@ -51,9 +51,14 @@ from neuroagent.application.automation.result_interpretation import (
     project_result_model_facts,
 )
 from neuroagent.application.automation.step_lifecycle import (
+    bind_prepared_step_plan_for_review,
     bind_step_to_run,
     complete_step,
     resolve_routed_workflow_run,
+)
+from neuroagent.application.automation.step_preparation import (
+    StepPreparationClaim,
+    resolve_step_preparation_target,
 )
 from neuroagent.application.automation.step_readiness import (
     StepReadinessAssessment,
@@ -1455,6 +1460,173 @@ class WorkTaskApplicationService:
     def analysis_proposal_task_id(conversation_id: str, proposal_hash: str) -> str:
         binding = f"{conversation_id}\0analysis\0{proposal_hash}".encode()
         return f"work-analysis-{hashlib.sha256(binding).hexdigest()[:32]}"
+
+    def bind_ready_step_plan_for_review(
+        self,
+        claim: StepPreparationClaim,
+        *,
+        project_id: str,
+        plan_revision_id: str,
+    ) -> WorkTask:
+        """Persist an authoritative Plan on the claimed READY step for review.
+
+        The Work conversation, exact Plan record, project and input lineage are
+        checked in the same Unit of Work as the task transition. Statistical
+        Plans also carry a verifiable conversation identity; preprocessing
+        PlanRevision has no conversation field, so its identity is established
+        by the exact selected revision plus project and frozen manifest checks.
+        The claim fences the exact Task/Step/input snapshot; this method never
+        approves the Plan or authorizes a Run.
+        """
+
+        if not project_id or not plan_revision_id:
+            raise InputValidationError(
+                "step_preparation_plan_identity_required",
+                "步骤方案绑定需要明确的项目和 Plan 修订 ID。",
+            )
+        with self.atomic():
+            task = self._repository.get_task(claim.task_id)
+            try:
+                target = resolve_step_preparation_target(task)
+            except ValueError as exc:
+                raise ConflictError(
+                    "step_preparation_sequence_invalid",
+                    "步骤顺序在准备期间变为无效；方案没有绑定。",
+                    task_id=claim.task_id,
+                ) from exc
+            if (
+                target is None
+                or target.task_id != claim.task_id
+                or target.task_version != claim.task_version
+                or target.step_id != claim.step_id
+                or target.step_kind != claim.step_kind
+                or target.step_version != claim.step_version
+                or target.input_fingerprint != claim.input_fingerprint
+            ):
+                raise ConflictError(
+                    "step_preparation_claim_lost",
+                    "步骤准备期间任务、步骤或输入已变化；方案没有绑定。",
+                    task_id=claim.task_id,
+                    step_id=claim.step_id,
+                )
+            step = next((item for item in task.steps if item.step_id == claim.step_id), None)
+            conversation_id = task.authority_refs.conversation_id
+            if step is None or step.kind != claim.step_kind or conversation_id is None:
+                raise ConflictError(
+                    "step_preparation_identity_mismatch",
+                    "步骤准备目标缺少可核验的会话或步骤身份。",
+                    task_id=claim.task_id,
+                    step_id=claim.step_id,
+                )
+            if step.authority_refs.conversation_id != conversation_id:
+                raise ConflictError(
+                    "step_preparation_conversation_mismatch",
+                    "步骤没有绑定到任务所属的 Work 会话。",
+                    task_id=claim.task_id,
+                    step_id=claim.step_id,
+                )
+
+            conversation = self._conversation_repository.get_conversation(conversation_id)
+            self._require_work_conversation(conversation, conversation_id, project_id)
+            plan = self._plan_repository.get_plan(plan_revision_id)
+            if plan.project_id != project_id:
+                raise ConflictError(
+                    "step_preparation_plan_project_mismatch",
+                    "步骤 Plan 不属于当前 Work 项目。",
+                    plan_revision_id=plan_revision_id,
+                )
+
+            expected_artifacts: tuple[DpabiPreprocessingOutput, ...] = ()
+            if step.kind == "preprocessing_run":
+                skill_plan = plan.plan.get("skill_plan")
+                if (
+                    plan.plan.get("kind") != "skill_plan"
+                    or not isinstance(skill_plan, dict)
+                    or not isinstance(skill_plan.get("preprocessing_parameters_hash"), str)
+                    or plan.state not in {PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+                ):
+                    raise ConflictError(
+                        "step_preparation_preprocessing_plan_invalid",
+                        "预处理步骤只能绑定可审查的冻结 SkillPlan。",
+                        plan_revision_id=plan_revision_id,
+                    )
+                try:
+                    expected_artifacts = self._derive_preprocessing_expectations(plan, project_id)
+                except (
+                    NotFoundError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    AttributeError,
+                    ValidationError,
+                ) as exc:
+                    raise ConflictError(
+                        "step_preparation_preprocessing_plan_invalid",
+                        "预处理 Plan 的冻结输入或目标产物无法核验。",
+                        plan_revision_id=plan_revision_id,
+                    ) from exc
+                input_revision = plan.manifest_hash
+                waiting_reason = (
+                    f"预处理步骤 {step.step_id} 的 SkillPlan 已准备；等待用户审查并明确批准与启动。"
+                )
+            elif step.kind == "statistical_run":
+                proposal_hash = step.input_version
+                if proposal_hash is None:
+                    raise ConflictError(
+                        "step_preparation_statistical_identity_missing",
+                        "统计步骤缺少与提案绑定的输入版本。",
+                        step_id=step.step_id,
+                    )
+                self._validate_hash(proposal_hash, "proposal_hash")
+                context, _design = self._statistical_plan_context(
+                    plan,
+                    conversation_id=conversation_id,
+                    project_id=project_id,
+                    proposal_hash=proposal_hash,
+                )
+                if plan.state not in {
+                    PlanState.DRAFT,
+                    PlanState.AWAITING_APPROVAL,
+                    PlanState.APPROVED,
+                }:
+                    raise ConflictError(
+                        "step_preparation_plan_not_reviewable",
+                        "统计 Plan 当前不能进入用户审查。",
+                        plan_revision_id=plan_revision_id,
+                    )
+                input_revision = context["draft_hash"]
+                waiting_reason = (
+                    f"统计步骤 {step.step_id} 的设计 Plan 已准备；等待用户审查并明确批准与启动。"
+                )
+            else:
+                raise ConflictError(
+                    "step_preparation_kind_unsupported",
+                    "该 TaskStep 类型没有已注册的 Plan 准备合同。",
+                    step_kind=step.kind,
+                )
+
+            try:
+                updated = bind_prepared_step_plan_for_review(
+                    task,
+                    step,
+                    plan_revision_id=plan_revision_id,
+                    input_revision=input_revision,
+                    waiting_reason=waiting_reason,
+                    expected_artifacts=expected_artifacts,
+                )
+            except ValueError as exc:
+                raise ConflictError(
+                    "step_preparation_plan_binding_invalid",
+                    "当前 READY 步骤不能绑定该 Plan；任务仍保持原状态。",
+                    task_id=task.task_id,
+                    step_id=step.step_id,
+                    reason=str(exc),
+                ) from exc
+            return self._repository.save_task(
+                updated,
+                expected_version=task.version,
+                step_preparation_claim=claim,
+            )
 
     def ensure_analysis_proposal_task(
         self,

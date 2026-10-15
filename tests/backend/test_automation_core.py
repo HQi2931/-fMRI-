@@ -21,10 +21,13 @@ from neuroagent.application.automation.models import (
     transition_task_step,
 )
 from neuroagent.application.automation.step_lifecycle import (
+    bind_prepared_step_plan_for_review,
     bind_step_to_run,
     complete_step,
     resolve_linear_step_sequence,
+    resolve_routed_workflow_run,
     resolve_single_bound_run_step,
+    step_plan_review_reference,
 )
 
 
@@ -191,8 +194,196 @@ def test_shared_run_binding_still_rejects_sibling_steps(sibling_kind: str) -> No
         steps=(ready, sibling),
     )
 
-    with pytest.raises(ValueError, match="exactly one TaskStep"):
+    with pytest.raises(ValueError, match="exact reviewed Plan"):
         bind_step_to_run(task, ready, run_id="run-1", waiting_reason="wait")
+
+
+def _make_ready_linear_successor() -> WorkTask:
+    previous = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.SUCCEEDED,
+        authority_refs=AuthorityReferences(
+            conversation_id="conversation-1",
+            plan_revision_id="prep-plan-1",
+            workflow_run_id="run-prep-1",
+            input_revision="a" * 64,
+            artifact_ids=("artifact-prep-1",),
+        ),
+    )
+    successor = TaskStep(
+        step_id="statistics",
+        sequence=1,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+        input_version="b" * 64,
+        authority_refs=AuthorityReferences(conversation_id="conversation-1"),
+    )
+    return make_task(
+        task_id="linear-task-1",
+        status=TaskStatus.RUNNING,
+        authority_refs=AuthorityReferences(conversation_id="conversation-1"),
+        steps=(previous, successor),
+    )
+
+
+def test_ready_linear_successor_binds_plan_and_waits_for_exact_user_review() -> None:
+    task = _make_ready_linear_successor()
+    previous, successor = task.steps
+
+    reviewed = bind_prepared_step_plan_for_review(
+        task,
+        successor,
+        plan_revision_id="stat-plan-1",
+        input_revision="c" * 64,
+        waiting_reason="Review the statistical design before starting.",
+    )
+
+    assert reviewed.status is TaskStatus.WAITING_USER
+    assert reviewed.version == task.version + 1
+    assert reviewed.waiting_condition is not None
+    assert reviewed.waiting_condition.kind is WaitingKind.USER_DECISION
+    assert reviewed.waiting_condition.reference == step_plan_review_reference(
+        task.task_id, successor.step_id, "stat-plan-1"
+    )
+    assert reviewed.steps[0] == previous
+    assert reviewed.steps[1].status is TaskStepStatus.READY
+    assert reviewed.steps[1].version == successor.version + 1
+    assert reviewed.steps[1].authority_refs.plan_revision_id == "stat-plan-1"
+    assert reviewed.steps[1].authority_refs.input_revision == "c" * 64
+    assert reviewed.steps[1].authority_refs.workflow_run_id is None
+    assert reviewed.authority_refs.plan_revision_id == "stat-plan-1"
+    assert reviewed.authority_refs.input_revision == "c" * 64
+    assert reviewed.authority_refs.workflow_run_id is None
+
+
+def test_multi_step_run_binding_requires_exact_review_and_preserves_predecessor() -> None:
+    task = _make_ready_linear_successor()
+    reviewed = bind_prepared_step_plan_for_review(
+        task,
+        task.steps[1],
+        plan_revision_id="stat-plan-1",
+        input_revision="c" * 64,
+        waiting_reason="Review before starting.",
+    )
+
+    bound = bind_step_to_run(
+        reviewed,
+        reviewed.steps[1],
+        run_id="run-stat-1",
+        waiting_reason="Waiting for the authorized statistics Run.",
+    )
+
+    assert bound.status is TaskStatus.WAITING_RUN
+    assert bound.steps[0] == reviewed.steps[0]
+    assert bound.steps[1].status is TaskStepStatus.WAITING
+    assert bound.steps[1].authority_refs.workflow_run_id == "run-stat-1"
+    assert bound.authority_refs.workflow_run_id == "run-stat-1"
+    assert resolve_routed_workflow_run(bound) == ("run-stat-1", bound.steps[1])
+    assert (
+        bind_step_to_run(
+            bound,
+            bound.steps[1],
+            run_id="run-stat-1",
+            waiting_reason="ignored on replay",
+        )
+        is bound
+    )
+
+
+def test_repeated_step_kind_uses_exact_active_step_and_rejects_reused_plan() -> None:
+    task = _make_ready_linear_successor()
+    previous = task.steps[0].model_copy(update={"kind": "statistical_run"})
+    same_kind_task = task.model_copy(update={"steps": (previous, task.steps[1])})
+
+    with pytest.raises(ValueError, match="already bound to another TaskStep"):
+        bind_prepared_step_plan_for_review(
+            same_kind_task,
+            same_kind_task.steps[1],
+            plan_revision_id="prep-plan-1",
+            input_revision="c" * 64,
+            waiting_reason="Review before starting.",
+        )
+
+    reviewed = bind_prepared_step_plan_for_review(
+        same_kind_task,
+        same_kind_task.steps[1],
+        plan_revision_id="stat-plan-2",
+        input_revision="c" * 64,
+        waiting_reason="Review before starting.",
+    )
+    bound = bind_step_to_run(
+        reviewed,
+        reviewed.steps[1],
+        run_id="run-stat-2",
+        waiting_reason="Waiting for the authorized statistics Run.",
+    )
+
+    assert bound.steps[0] == previous
+    assert bound.steps[0].authority_refs.plan_revision_id == "prep-plan-1"
+    assert bound.steps[0].authority_refs.workflow_run_id == "run-prep-1"
+    assert bound.steps[1].authority_refs.plan_revision_id == "stat-plan-2"
+    assert bound.steps[1].authority_refs.workflow_run_id == "run-stat-2"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong_wait", "root_run", "wrong_plan", "wrong_input"],
+)
+def test_multi_step_run_binding_rejects_stale_review_projection(mutation: str) -> None:
+    task = _make_ready_linear_successor()
+    reviewed = bind_prepared_step_plan_for_review(
+        task,
+        task.steps[1],
+        plan_revision_id="stat-plan-1",
+        input_revision="c" * 64,
+        waiting_reason="Review before starting.",
+    )
+    if mutation == "wrong_wait":
+        reviewed = reviewed.model_copy(
+            update={
+                "waiting_condition": WaitingCondition(
+                    kind=WaitingKind.USER_DECISION,
+                    reference="plan:stat-plan-1",
+                    reason="legacy plan wait",
+                )
+            }
+        )
+    elif mutation == "root_run":
+        reviewed = reviewed.model_copy(
+            update={
+                "authority_refs": reviewed.authority_refs.model_copy(
+                    update={"workflow_run_id": "old-run"}
+                )
+            }
+        )
+    elif mutation == "wrong_plan":
+        reviewed = reviewed.model_copy(
+            update={
+                "steps": (
+                    reviewed.steps[0],
+                    reviewed.steps[1].model_copy(
+                        update={
+                            "authority_refs": reviewed.steps[1].authority_refs.model_copy(
+                                update={"plan_revision_id": "other-plan"}
+                            )
+                        }
+                    ),
+                )
+            }
+        )
+    else:
+        reviewed = reviewed.model_copy(
+            update={
+                "authority_refs": reviewed.authority_refs.model_copy(
+                    update={"input_revision": "d" * 64}
+                )
+            }
+        )
+
+    with pytest.raises(ValueError):
+        bind_step_to_run(reviewed, reviewed.steps[1], run_id="run-stat-1", waiting_reason="wait")
 
 
 def _make_waiting_linear_task(

@@ -28,6 +28,7 @@ from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
 )
+from neuroagent.application.automation.step_lifecycle import bind_prepared_step_plan_for_review
 from neuroagent.application.automation.step_preparation import (
     StepPreparationClaim,
     resolve_step_preparation_target,
@@ -305,6 +306,53 @@ def test_step_preparation_claim_returns_exact_ready_target_and_persists_across_r
     )
     assert restarted_repo.release_step_preparation_claim(claim)
     restarted_db.dispose()
+
+
+def test_step_preparation_claim_fences_plan_review_transition_atomically(tmp_path) -> None:
+    database, repository = open_repository(tmp_path / "step-preparation-review.sqlite")
+    task = make_step_preparation_task()
+    repository.create_task(task)
+    claim = repository.claim_next_step_preparation(
+        "prepare-worker", lease_seconds=30, cooldown_seconds=0
+    )
+    assert claim is not None
+    successor = task.steps[1]
+    reviewed = bind_prepared_step_plan_for_review(
+        task,
+        successor,
+        plan_revision_id="statistical-plan-1",
+        input_revision="analysis-input-v1",
+        waiting_reason="Review the statistical analysis design.",
+    )
+
+    repository.save_task(
+        reviewed,
+        expected_version=task.version,
+        step_preparation_claim=claim,
+    )
+
+    stored = repository.get_task(task.task_id)
+    assert stored.status is TaskStatus.WAITING_USER
+    assert stored.steps[1].authority_refs.plan_revision_id == "statistical-plan-1"
+    assert (
+        repository.claim_next_step_preparation("other-worker", lease_seconds=30, cooldown_seconds=0)
+        is None
+    )
+    stale_followup = stored.model_copy(
+        update={
+            "status": TaskStatus.RUNNING,
+            "waiting_condition": None,
+            "version": stored.version + 1,
+        }
+    )
+    with pytest.raises(ConflictError) as error:
+        repository.save_task(
+            stale_followup,
+            expected_version=stored.version,
+            step_preparation_claim=claim,
+        )
+    assert error.value.code == "step_preparation_claim_lost"
+    database.dispose()
 
 
 @pytest.mark.parametrize(

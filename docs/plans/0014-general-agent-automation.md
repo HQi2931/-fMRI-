@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-11
 - 更新日期：2026-10-15
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)
 
 ## 目标里程碑
 
@@ -163,7 +163,7 @@ flowchart TD
 
 ### 阶段 B 后继步骤调度设计（2026-10-15）
 
-当前 TaskStep 虽有 `sequence`，但运行绑定、readiness 与完成转换仍严格限定单步骤。新增 [ADR 0045（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)，规定先扩展为有界线性序列：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。阶段一必须保持单步骤和无步骤历史任务兼容，并先解决步骤级 Run 事件路由、CAS/fencing 与事务收口，再接入下一步 prepare handler。该设计仍需评审，现有单步骤 fail-closed 行为继续有效；它没有宣称多步骤调度已经实现。
+当前 TaskStep 虽有 `sequence`，但 readiness、用户审查 API 与类型专属 finalizer 仍没有完整多步骤路径。[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md) 已接受有界线性序列决策：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。历史单步骤与无步骤任务保持兼容。已完成步骤级事件路由、fenced READY 准备领取、READY 后继绑定 Plan 并进入精确 `step-plan:<task>:<step>:<plan>` 用户等待状态，以及纯生命周期的严格多步骤 Run 绑定转换。当前 conversation/confirmation/Run API 仍以既有单步骤 task ID、角色指针和根级 Plan 身份寻址，不能消费此步骤级 review reference；所以本切片不会把多步骤任务接入已有界面，也不代表后继 Run 可以端到端启动。
 
 ### 阶段 B 线性步骤纯生命周期首切片（2026-10-15）
 
@@ -186,6 +186,16 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 此切片只提供可靠领取与写入围栏，还没有连接后台消费者或类型化 prepare handler；它不会生成草稿/冻结 Plan、进入用户审查、绑定后继 Run 或推进任务。因此下一步仍需把 READY 步骤接到现有预处理/统计方案准备和审批入口，并在事务外准备、提交前重新验证 claim 与科学输入。单步骤及无步骤历史任务继续使用现有路径；计划 0014 的跨步骤自动化仍未完成。
 
 本切片验证：持久化测试 28 项、Automation core/service 测试 84 项通过；全量 Mypy（297 个源文件）、Ruff check 和差异空白检查通过。`automation_repository.py` 整文件格式检查存在本切片之前已有的差异，本次未重排无关格式。未运行 MATLAB/DPABI。
+
+### 阶段 B READY 后继 Plan 审查绑定切片（2026-10-15）
+
+新增纯 lifecycle 转换：只接受合法线性多步任务中唯一 READY 的当前后继、空的任务级活动 Plan/Run/input 投影及未占用的 Plan ID；它保留所有成功前驱步骤的 Run/Artifact 引用，把 Plan 与 input revision 写入目标步骤和当前根投影，并将 `RUNNING` 转为 `WAITING_USER`，等待引用精确绑定 `task_id/step_id/plan_revision_id`。多步骤 `bind_step_to_run` 现在只接受唯一活动 READY 步骤及其相同的步骤/根 Plan、input 投影和确切 review wait；Run 必须不同于所有成功前驱 Run。单步骤和无步骤历史路径保持原契约。
+
+应用层通过 `StepPreparationClaim` 重新解析 task/step/version/input fingerprint，并核验 Work 会话、项目及类型专属 Plan/input 身份后，使用 `save_task(expected_version, step_preparation_claim=claim)` 原子提交。预处理只接受可审查的冻结 SkillPlan，并重新推导确切目标 Artifact 集；它按精确 Plan revision、项目和冻结 manifest/hash 验证输入。统计 Plan 校验 conversation、proposal hash、draft hash、design 和 Plan hash。当前 `PlanRevision` 没有 `conversation_id` 字段，因此预处理服务不能证明该 Plan 是由当前会话创建的；在接用户审查 API 前还需定义并执行该 Plan-to-conversation 身份合同。Plan 可以待审查，但本操作不会审批、创建 Run 或生成对话消息。
+
+现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务，没有按 `step-plan:<task>:<step>:<plan>` 解析任务/步骤的 API 或 UI。为避免误选同类型前驱或重复步骤，本切片不放宽这些入口；统计 Run 的现有 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。接通前还需增加精确步骤级 Plan review/confirmation route、Run 创建绑定与多步 readiness/finalizer 的任务身份传递。因此当前实现只是安全地到达该后端等待边界，不是多步骤用户可执行闭环。
+
+新增 lifecycle/service/persistence 覆盖 Plan 审查转换、前驱引用保留、精确 review wait、多步骤 Run 绑定重放/拒绝条件、权威项目/输入核验及过期 claim 写入拒绝。未运行 MATLAB/DPABI。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 

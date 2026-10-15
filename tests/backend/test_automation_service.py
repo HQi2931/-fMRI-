@@ -1933,3 +1933,136 @@ def test_statistical_plan_binding_accepts_draft_and_keeps_run_approval_gate(
             )
         assert error.value.code == "work_task_plan_not_approved"
         assert service.automation.get_task(task.task_id).status is TaskStatus.WAITING_USER
+
+
+def _ready_statistical_successor_task() -> WorkTask:
+    previous = TaskStep(
+        step_id="preprocessing",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.SUCCEEDED,
+        authority_refs=AuthorityReferences(
+            conversation_id="conversation-statistics",
+            plan_revision_id="prep-plan-1",
+            workflow_run_id="run-preprocessing-1",
+            input_revision="a" * 64,
+            artifact_ids=("preprocessed-artifact-1",),
+        ),
+    )
+    successor = TaskStep(
+        step_id="statistical",
+        sequence=1,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+        input_version="c" * 64,
+        authority_refs=AuthorityReferences(
+            conversation_id="conversation-statistics",
+        ),
+    )
+    return WorkTask(
+        task_id="linear-goal-statistics",
+        goal=WorkGoal(
+            description="Preprocess the data and analyze the declared ALFF outcome",
+            completion_conditions=("verify and explain the requested statistical result",),
+        ),
+        status=TaskStatus.RUNNING,
+        authority_refs=AuthorityReferences(conversation_id="conversation-statistics"),
+        steps=(previous, successor),
+        budget=TaskBudget(
+            max_steps=10,
+            max_model_calls=4,
+            max_tokens=5000,
+            max_elapsed_seconds=1200,
+        ),
+    )
+
+
+def _claim_ready_statistical_successor(service, *, project_id: str = "project-1"):
+    task = _ready_statistical_successor_task()
+    service.automation.create_task(task)
+    claim = service.automation._repository.claim_next_step_preparation(
+        "prepare-worker", lease_seconds=30, cooldown_seconds=0
+    )
+    assert claim is not None
+    plan = _statistical_plan(
+        design=_statistical_design(),
+        proposal_hash=task.steps[1].input_version,
+        draft_hash="d" * 64,
+        state=PlanState.AWAITING_APPROVAL,
+    )
+    plan.project_id = project_id
+    conversation = SimpleNamespace(
+        conversation_id="conversation-statistics",
+        mode=ConversationMode.WORK,
+        project_id="project-1",
+    )
+    service.automation._plan_repository = SimpleNamespace(get_plan=lambda _plan_id: plan)
+    service.automation._conversation_repository = SimpleNamespace(
+        get_conversation=lambda _conversation_id: conversation
+    )
+    return task, claim, plan
+
+
+def test_ready_successor_plan_is_fenced_and_waits_for_exact_review(service) -> None:
+    task, claim, plan = _claim_ready_statistical_successor(service)
+
+    prepared = service.automation.bind_ready_step_plan_for_review(
+        claim,
+        project_id="project-1",
+        plan_revision_id=plan.plan_revision_id,
+    )
+
+    assert prepared.task_id == task.task_id
+    assert prepared.status is TaskStatus.WAITING_USER
+    assert prepared.version == task.version + 1
+    assert prepared.waiting_condition is not None
+    assert prepared.waiting_condition.reference == (
+        f"step-plan:{task.task_id}:statistical:{plan.plan_revision_id}"
+    )
+    assert prepared.steps[0] == task.steps[0]
+    assert prepared.steps[1].status is TaskStepStatus.READY
+    assert prepared.steps[1].authority_refs.plan_revision_id == plan.plan_revision_id
+    assert prepared.steps[1].authority_refs.input_revision == "d" * 64
+    assert prepared.authority_refs.plan_revision_id == plan.plan_revision_id
+    assert prepared.authority_refs.input_revision == "d" * 64
+    assert prepared.authority_refs.workflow_run_id is None
+    assert (
+        service.automation._repository.claim_next_step_preparation(
+            "other-worker", lease_seconds=30, cooldown_seconds=0
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("failure", ["wrong_project", "stale_claim"])
+def test_ready_successor_plan_binding_fails_closed_on_project_or_claim_drift(
+    service, failure
+) -> None:
+    task, claim, plan = _claim_ready_statistical_successor(service)
+    project_id = "project-1"
+    if failure == "wrong_project":
+        plan.project_id = "project-2"
+    if failure == "stale_claim":
+        changed = task.model_copy(
+            update={
+                "version": task.version + 1,
+                "goal": task.goal.model_copy(update={"description": "Changed goal"}),
+            }
+        )
+        service.automation._repository.save_task(changed, expected_version=task.version)
+
+    with pytest.raises(ConflictError) as error:
+        service.automation.bind_ready_step_plan_for_review(
+            claim,
+            project_id=project_id,
+            plan_revision_id=plan.plan_revision_id,
+        )
+
+    assert error.value.code == (
+        "step_preparation_claim_lost"
+        if failure == "stale_claim"
+        else "step_preparation_plan_project_mismatch"
+    )
+    stored = service.automation.get_task(task.task_id)
+    assert stored.status is TaskStatus.RUNNING
+    assert stored.waiting_condition is None

@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 为有界线性 WorkTask 的唯一 READY 后继新增 fenced Plan-for-review 状态转换及严格多步 Run 绑定纯函数：统计 Plan 校验 conversation/proposal/draft/design，预处理 Plan 校验精确 revision、project 与冻结 manifest/input identity；PlanRevision 尚无 conversation 身份字段。转换仅绑定当前步骤、保留成功前驱 Run/Artifact 引用，并用精确步骤级 Plan wait 进入 `WAITING_USER`。现有 conversation review/confirmation 和 Run 创建 API 仍按单步任务 ID/根 Plan 寻址，暂不能推进该状态；统计 Run 的 APPROVED 门槛未放宽。此增量只建立后端待审查边界，不提供多步可执行闭环。
 - 为合法线性多步骤 WorkTask 中唯一 READY 后继步骤增加持久准备目标、冷却/租约领取和 Task/Step/输入指纹 fencing；保存任务会原子重建准备目标，过期或输入变化的 claim 不能提交。该切片只建立领取与写入围栏，尚未连接 prepare handler、方案审查或后继 Run 绑定，不改变单步骤兼容行为。
 - 含显式步骤的 WorkTask Run 重核现在要求唯一、已注册且与 Task 绑定同一 Run 的步骤；未知、混合或多步骤记录会在消费新事件前停为 `indeterminate`，共享绑定/完成转换拒绝 sibling 步骤。无显式步骤的历史任务保留只读兼容路径。
 - 预处理与统计 Run 的 WorkTask 启动绑定、完成状态构造现在共用纯步骤生命周期转换，并严格校验同一 Run 的重放与 Artifact 引用；科学证据仍由各自检查器核验，事务、CAS、Worker fencing 和 outbox 继续由应用服务管理。该切片没有开放任意 DAG、多分析分支或自动审批/启动。

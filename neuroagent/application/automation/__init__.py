@@ -29,7 +29,15 @@ from neuroagent.application.automation.models import (
 )
 from neuroagent.application.automation.ports import WorkTaskRepositoryPort
 from neuroagent.application.automation.service import WorkTaskApplicationService
-from neuroagent.application.automation.step_lifecycle import resolve_linear_step_sequence
+from neuroagent.application.automation.step_lifecycle import (
+    bind_prepared_step_plan_for_review,
+    bind_step_to_run,
+    complete_step,
+    resolve_linear_step_sequence,
+    resolve_routed_workflow_run,
+    resolve_single_bound_run_step,
+    step_plan_review_reference,
+)
 from neuroagent.application.automation.step_preparation import (
     StepPreparationClaim,
     StepPreparationTarget,
@@ -77,9 +85,15 @@ __all__ = [
     "WorkTaskRepositoryPort",
     "WorkflowRunReconciliation",
     "advance_event_cursor",
+    "bind_prepared_step_plan_for_review",
+    "bind_step_to_run",
+    "complete_step",
     "decide_event_consumption",
     "resolve_linear_step_sequence",
+    "resolve_routed_workflow_run",
+    "resolve_single_bound_run_step",
     "resolve_step_preparation_target",
+    "step_plan_review_reference",
     "transition_task",
     "transition_task_step",
 ]

@@ -1,6 +1,6 @@
 # ADR 0045：WorkTask 有界线性步骤调度
 
-- 状态：Proposed
+- 状态：Accepted
 - 文档类型：ADR
 - 维护者：system_architect
 - 创建日期：2026-10-15
@@ -13,7 +13,7 @@ WorkTask 已能保存多个带 `sequence` 的 TaskStep，但 Run 绑定、readin
 
 本项目需要从单步骤任务逐步走向可恢复的复合目标，同时保留本地 SQLite、双 Agent、确定性应用编排和现有审批/执行门禁。首个扩展应解决“前一步完成后，系统能否可靠识别唯一下一步”这一基础问题，而不是引入任意工作流 DSL 或把科学判断交给调度器。
 
-## 提议决策
+## 决策
 
 先支持**有界线性步骤序列**，不支持一般 DAG、并行 fanout 或运行时自由生成步骤。`TaskStep.sequence` 定义唯一总顺序；序列必须从 0 连续递增，步骤 ID 与序号唯一。步骤间依赖隐含为“前一项成功后，后一项才可就绪”，首版不增加可选依赖边或条件分支。
 
@@ -44,15 +44,22 @@ WorkTask 已能保存多个带 `sequence` 的 TaskStep，但 Run 绑定、readin
 ## 分阶段落地
 
 1. 新增纯线性调度解析器和状态转换，覆盖单步骤兼容、双步骤前驱门控、重复/乱序事件、多个活跃步骤与非法序号拒绝。
-2. 首个事件路由切片已复用现有目标索引：严格解析唯一等待步骤，校验事件 Run 和标准 stream，并幂等消费事件身份；消费事件不会改变科研或步骤状态。仍需扩展步骤级 Run binding、fenced prepare/claim 身份及迟到事件防护，确保已成功的前一步不会被后续 Run 绑定覆盖或重新打开。
-3. 注册有界 `prepare_step` 应用端口，完成事务外提案生成及 fenced 提交；复用现有审批、确认和类型专属 finalizer。
-4. 将复合目标 proposal/result outbox、目标级 Artifact 完成合同、共享任务预算接入序列推进；每项单独验证幂等和重启恢复。
+2. 事件路由切片复用现有目标索引：严格解析唯一等待步骤，校验事件 Run 和标准 stream，并幂等消费事件身份；消费事件不会改变科研或步骤状态。持久 READY 步骤准备领取现已用 task/step/version/input fingerprint 与 fencing token 建立写入边界。
+3. 已新增 fenced 的 READY 步骤 Plan 绑定生命周期：唯一 READY 后继可在权威 Plan、项目、会话及输入核验后，从 `RUNNING` 进入精确 `step-plan:<task>:<step>:<plan>` 的 `WAITING_USER`，并保留成功前驱的 Run/Artifact 引用。纯 Run 绑定转换只接受该准确 review wait；它不批准 Plan 或创建 Run。
+4. 注册有界 `prepare_step` 应用端口，完成事务外提案生成及 fenced 提交；复用现有审批、确认和类型专属 finalizer。
+5. 将复合目标 proposal/result outbox、目标级 Artifact 完成合同、共享任务预算接入序列推进；每项单独验证幂等和重启恢复。
 
 每一步均保持旧单步骤任务行为不变。第一阶段不是宣称预处理到统计可以无确认自动执行；它只建立安全、可观测、可恢复的后继步骤选择基础。
 
-## 不在本提议范围
+## 当前实现边界
 
-本提议不支持任意 DAG、并行步骤、多目标 fanout、自动审批 Plan/QC、自动创建或重试 Run、自由 MATLAB/Shell、运行时生成新能力、静默样本纳排或自动改变科学方法。FC、多 session/run、重复测量及复杂统计设计仍需各自贯通输入身份、设计、执行、结果和 Artifact lineage 合同后才能进入可调度范围。
+已实现纯 lifecycle 的 Plan-for-review 转换和多步骤 `bind_step_to_run` 约束，以及由 `StepPreparationClaim` 围栏的应用服务写入。应用服务核验 Work 会话、项目和输入身份；统计步骤还会从 Plan 的 `work_context` 核验 conversation、proposal/draft hash 和冻结设计上下文，预处理步骤会核验精确选择的 Plan revision、项目及冻结 manifest，并重新推导 DPABI Artifact 目标。当前 `PlanRevision` 没有 `conversation_id` 字段，因此服务不能证明预处理 Plan 是由该会话创建的；未来接入用户审查 API 前仍需明确这项 Plan-to-conversation 身份合同。Plan 进入 `WAITING_USER` 不等于审批或启动授权；统计 Run 仍须保持现有 APPROVED 门槛。
+
+当前对话确认与 Run 创建 API 仍按现有单步骤任务 ID、会话角色链接和根级 Plan 引用寻址，尚不能从 `step-plan:<task>:<step>:<plan>` wait 读取、展示或提交多步骤步骤级 Plan。为避免把现有单步骤任务或旧计划误绑定到另一个复合目标，本次没有放宽这些 API 的 task ID/步骤选择器。因而 READY 后继可以安全地持久化为待审查状态，但不能经现有用户界面完成审查、批准和 Run 启动；多步骤端到端路径尚未接通。
+
+## 不在本决策范围
+
+本决策不支持任意 DAG、并行步骤、多目标 fanout、自动审批 Plan/QC、自动创建或重试 Run、自由 MATLAB/Shell、运行时生成新能力、静默样本纳排或自动改变科学方法。FC、多 session/run、重复测量及复杂统计设计仍需各自贯通输入身份、设计、执行、结果和 Artifact lineage 合同后才能进入可调度范围。
 
 ## 验收场景
 
@@ -65,4 +72,4 @@ WorkTask 已能保存多个带 `sequence` 的 TaskStep，但 Run 绑定、readin
 
 ## 后果
 
-这项提议将 `TaskStep.sequence` 从展示顺序提升为明确、可验证的线性依赖合同，并给多步任务恢复提供渐进基础。代价是事件解析、完成收口和查询索引必须由 Task 级 Run 语义升级为 Step 级身份；在相关代码与迁移完成前，ADR 0043/0044 的单步骤 fail-closed 规则继续生效。
+本决策将 `TaskStep.sequence` 从展示顺序提升为明确、可验证的线性依赖合同，并给多步任务恢复提供渐进基础。代价是事件解析、完成收口和查询索引必须由 Task 级 Run 语义升级为 Step 级身份；在相关代码与迁移完成前，ADR 0043/0044 的单步骤 fail-closed 规则继续生效。

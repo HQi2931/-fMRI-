@@ -17,6 +17,7 @@ from neuroagent.application.automation.models import (
     transition_task,
     transition_task_step,
 )
+from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 
 _SUPPORTED_RUN_STEP_KINDS = frozenset({"preprocessing_run", "statistical_run"})
 _ACTIVE_STEP_STATUSES = frozenset(
@@ -190,6 +191,104 @@ def resolve_routed_workflow_run(task: WorkTask) -> tuple[str, TaskStep | None]:
     return run_id, step
 
 
+def step_plan_review_reference(task_id: str, step_id: str, plan_revision_id: str) -> str:
+    """Return the exact user-review identity for one prepared TaskStep Plan."""
+
+    if not task_id or not step_id or not plan_revision_id:
+        raise ValueError("task, step, and Plan identities are required")
+    reference = f"step-plan:{task_id}:{step_id}:{plan_revision_id}"
+    if len(reference) > 300:
+        raise ValueError("step Plan review reference exceeds the waiting-condition limit")
+    return reference
+
+
+def bind_prepared_step_plan_for_review(
+    task: WorkTask,
+    step: TaskStep,
+    *,
+    plan_revision_id: str,
+    input_revision: str,
+    waiting_reason: str,
+    expected_artifacts: tuple[DpabiPreprocessingOutput, ...] = (),
+) -> WorkTask:
+    """Attach a prepared Plan to the unique READY successor and request review.
+
+    Callers must validate the Plan, project, conversation and input authority,
+    then persist this result with the matching StepPreparationClaim. This pure
+    transition does not approve the Plan or authorize Run creation.
+    """
+
+    if len(task.steps) < 2:
+        raise ValueError("step-scoped Plan preparation requires a linear multi-step task")
+    if not plan_revision_id or not input_revision or not waiting_reason.strip():
+        raise ValueError("Plan, input revision, and review reason are required")
+    if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
+        raise ValueError(f"unsupported Run step kind: {step.kind}")
+    ordered = resolve_linear_step_sequence(task)
+    _require_linear_task_step(task, step, ordered)
+    _require_active_linear_task_step(step, ordered)
+    if task.status is not TaskStatus.RUNNING or step.status is not TaskStepStatus.READY:
+        raise ValueError("only a running task's unique READY successor can receive a Plan")
+    if task.authority_refs.workflow_run_id is not None:
+        raise ValueError("task root Run projection must be clear before preparing a successor")
+    if task.authority_refs.plan_revision_id is not None:
+        raise ValueError("task root Plan projection must be clear before preparing a successor")
+    if task.authority_refs.input_revision is not None:
+        raise ValueError("task root input projection must be clear before preparing a successor")
+    if step.authority_refs.workflow_run_id is not None:
+        raise ValueError("READY successor must not already reference a Run")
+    if step.authority_refs.plan_revision_id is not None:
+        raise ValueError("READY successor is already bound to a Plan")
+    if any(
+        item.authority_refs.plan_revision_id == plan_revision_id
+        for item in ordered
+        if item.step_id != step.step_id
+    ):
+        raise ValueError("Plan is already bound to another TaskStep")
+    if step.authority_refs.input_revision not in {None, input_revision}:
+        raise ValueError("prepared Plan input differs from the READY step input revision")
+    if step.kind == "statistical_run" and expected_artifacts:
+        raise ValueError("statistical steps cannot bind preprocessing Artifact expectations")
+    if step.kind == "preprocessing_run" and not expected_artifacts:
+        raise ValueError("preprocessing Plan must declare its exact expected Artifact set")
+
+    step_refs = step.authority_refs.model_copy(
+        update={
+            "plan_revision_id": plan_revision_id,
+            "input_revision": input_revision,
+        }
+    )
+    prepared_step = step.model_copy(
+        update={
+            "version": step.version + 1,
+            "authority_refs": step_refs,
+            "expected_artifacts": expected_artifacts,
+        }
+    )
+    waiting = transition_task(
+        task,
+        TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference=step_plan_review_reference(task.task_id, step.step_id, plan_revision_id),
+            reason=waiting_reason,
+        ),
+    ).model_copy(
+        update={
+            "authority_refs": task.authority_refs.model_copy(
+                update={
+                    "plan_revision_id": plan_revision_id,
+                    "input_revision": input_revision,
+                }
+            ),
+            "steps": tuple(
+                prepared_step if item.step_id == step.step_id else item for item in task.steps
+            ),
+        }
+    )
+    return WorkTask.model_validate(waiting.model_dump())
+
+
 def bind_step_to_run(
     task: WorkTask,
     step: TaskStep,
@@ -206,10 +305,34 @@ def bind_step_to_run(
 
     if not run_id:
         raise ValueError("run_id is required")
-    _require_task_step(task, step)
+    ordered_steps = resolve_linear_step_sequence(task)
+    is_linear_multi_step = len(ordered_steps) > 1
+    if is_linear_multi_step:
+        _require_linear_task_step(task, step, ordered_steps)
+        _require_active_linear_task_step(step, ordered_steps)
+    else:
+        # Keep the existing single-step and no-steps contract unchanged.
+        _require_task_step(task, step)
 
     task_run_id = task.authority_refs.workflow_run_id
     step_run_id = step.authority_refs.workflow_run_id
+    if is_linear_multi_step:
+        plan_revision_id = step.authority_refs.plan_revision_id
+        input_revision = step.authority_refs.input_revision
+        prior_run_ids = {
+            item.authority_refs.workflow_run_id
+            for item in ordered_steps
+            if item.status is TaskStepStatus.SUCCEEDED
+            and item.authority_refs.workflow_run_id is not None
+        }
+        if (
+            plan_revision_id is None
+            or input_revision is None
+            or task.authority_refs.plan_revision_id != plan_revision_id
+            or task.authority_refs.input_revision != input_revision
+            or run_id in prior_run_ids
+        ):
+            raise ValueError("multi-step Run requires an exact reviewed Plan and input projection")
     if task_run_id is not None or step_run_id is not None:
         if (
             task_run_id != run_id
@@ -221,6 +344,28 @@ def bind_step_to_run(
 
     if task.status is not TaskStatus.WAITING_USER or step.status is not TaskStepStatus.READY:
         raise ValueError("only a waiting-user task with a ready step can bind a Run")
+    if is_linear_multi_step:
+        review_wait = task.waiting_condition
+        plan_revision_id = step.authority_refs.plan_revision_id
+        input_revision = step.authority_refs.input_revision
+        if (
+            review_wait is None
+            or review_wait.kind is not WaitingKind.USER_DECISION
+            or plan_revision_id is None
+            or input_revision is None
+            or review_wait.reference
+            != step_plan_review_reference(task.task_id, step.step_id, plan_revision_id)
+            or step.authority_refs.workflow_run_id is not None
+        ):
+            raise ValueError("multi-step Run requires this READY step's exact reviewed Plan")
+        prior_run_ids = {
+            item.authority_refs.workflow_run_id
+            for item in ordered_steps
+            if item.status is TaskStepStatus.SUCCEEDED
+            and item.authority_refs.workflow_run_id is not None
+        }
+        if run_id in prior_run_ids:
+            raise ValueError("successor Run must be distinct from successful predecessor Runs")
 
     started_step = transition_task_step(step, TaskStepStatus.RUNNING)
     waiting_step = transition_task_step(started_step, TaskStepStatus.WAITING).model_copy(
