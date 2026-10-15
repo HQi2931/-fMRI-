@@ -6,11 +6,13 @@ import logging
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
 
@@ -55,12 +57,18 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
     request_hash = "d" * 64
     proposal_hash = "e" * 64
     unverified_proposal_hash = "0" * 64
-    analysis_task_id = "work-analysis-" + hashlib.sha256(
-        f"legacy-composite-conversation\0analysis\0{proposal_hash}".encode()
-    ).hexdigest()[:32]
-    unverified_analysis_task_id = "work-analysis-" + hashlib.sha256(
-        f"legacy-composite-conversation\0analysis\0{unverified_proposal_hash}".encode()
-    ).hexdigest()[:32]
+    analysis_task_id = (
+        "work-analysis-"
+        + hashlib.sha256(
+            f"legacy-composite-conversation\0analysis\0{proposal_hash}".encode()
+        ).hexdigest()[:32]
+    )
+    unverified_analysis_task_id = (
+        "work-analysis-"
+        + hashlib.sha256(
+            f"legacy-composite-conversation\0analysis\0{unverified_proposal_hash}".encode()
+        ).hexdigest()[:32]
+    )
     manifest_hash = "b" * 64
     try:
         with engine.begin() as connection:
@@ -347,10 +355,317 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
             "preprocessing_task_id",
             "task_id",
         ) in composite_link_foreign_keys
-        assert ("work_tasks", "analysis_work_task_id", "task_id") in (
-            composite_link_foreign_keys
-        )
+        assert ("work_tasks", "analysis_work_task_id", "task_id") in (composite_link_foreign_keys)
         assert ("work_tasks", "work_task_id", "task_id") in composite_attempt_foreign_keys
+    finally:
+        engine.dispose()
+
+
+def test_composite_goal_source_fanout_migration_preserves_identity_rows(
+    tmp_path: Path,
+) -> None:
+    from neuroagent.infrastructure.persistence.models import (
+        AnalysisProposalOutboxRow,
+        CompositeGoalAnalysisAttemptRow,
+        CompositeGoalLinkRow,
+        ConversationMessageRow,
+        ConversationRow,
+        ProjectRow,
+    )
+
+    database_path = tmp_path / "composite-goal-source-fanout.sqlite"
+    url = f"sqlite:///{database_path.as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    engine = create_engine(url)
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    def upgrade(revision: str) -> None:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            try:
+                command.upgrade(config, revision)
+            finally:
+                config.attributes.pop("connection", None)
+
+    def downgrade(revision: str) -> None:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            try:
+                command.downgrade(config, revision)
+            finally:
+                config.attributes.pop("connection", None)
+
+    request_hash = "a" * 64
+    proposal_hash = "b" * 64
+    try:
+        upgrade("0029_step_preparation_claims")
+        with engine.begin() as connection:
+            connection.execute(
+                ProjectRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    project_id="fanout-project",
+                    name="Fanout fixture",
+                    source_roots_json="[]",
+                    work_root="fixture",
+                )
+            )
+            connection.execute(
+                ConversationRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    conversation_id="fanout-conversation",
+                    mode="work",
+                    title="Fanout fixture",
+                    project_id="fanout-project",
+                )
+            )
+            for task_id in ("fanout-preprocessing", "fanout-analysis-legacy"):
+                connection.execute(
+                    text(
+                        "INSERT INTO work_tasks "
+                        "(task_id,status,version,goal_json,waiting_condition_json,"
+                        "authority_refs_json,recovery_steps_json,budget_json) "
+                        "VALUES (:task_id,'waiting_user',1,'{}',NULL,'{}','[]','{}')"
+                    ),
+                    {"task_id": task_id},
+                )
+            connection.execute(
+                AnalysisProposalOutboxRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-legacy",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    preprocessing_task_id="fanout-preprocessing",
+                    plan_revision_id="fanout-plan-legacy",
+                    manifest_hash="c" * 64,
+                    run_id="fanout-run-legacy",
+                    analysis_request_hash=request_hash,
+                    artifact_ids_json='["artifact-legacy"]',
+                    status="pending",
+                )
+            )
+            connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-legacy",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    analysis_request_hash=request_hash,
+                    preprocessing_task_id="fanout-preprocessing",
+                    analysis_proposal_outbox_intent_task_id="fanout-intent-legacy",
+                )
+            )
+            connection.execute(
+                CompositeGoalAnalysisAttemptRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-legacy",
+                    attempt_number=1,
+                    work_task_id="fanout-analysis-legacy",
+                    proposal_hash=proposal_hash,
+                )
+            )
+            connection.execute(
+                ConversationMessageRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    message_id="fanout-user-message",
+                    conversation_id="fanout-conversation",
+                    sequence=1,
+                    role="user",
+                    content="user message",
+                    payload_json="{}",
+                )
+            )
+
+        upgrade("head")
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.execute(
+                text(
+                    "SELECT preprocessing_task_id, analysis_request_hash, "
+                    "analysis_proposal_outbox_intent_task_id "
+                    "FROM composite_goal_links WHERE intent_task_id='fanout-intent-legacy'"
+                )
+            ).one() == ("fanout-preprocessing", request_hash, "fanout-intent-legacy")
+            assert connection.execute(
+                text(
+                    "SELECT preprocessing_task_id, artifact_ids_json "
+                    "FROM analysis_proposal_outbox "
+                    "WHERE intent_task_id='fanout-intent-legacy'"
+                )
+            ).one() == ("fanout-preprocessing", '["artifact-legacy"]')
+            assert connection.execute(
+                text(
+                    "SELECT attempt_number, work_task_id, proposal_hash "
+                    "FROM composite_goal_analysis_attempts "
+                    "WHERE intent_task_id='fanout-intent-legacy'"
+                )
+            ).one() == (1, "fanout-analysis-legacy", proposal_hash)
+            trigger_names = set(
+                connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='trigger' "
+                        "AND tbl_name='analysis_proposal_outbox'"
+                    )
+                ).scalars()
+            )
+            assert trigger_names == {
+                "trg_analysis_outbox_assistant_continuation_insert",
+                "trg_analysis_outbox_assistant_continuation_update",
+            }
+            outbox_indexes = {
+                index["name"]
+                for index in inspect(connection).get_indexes("analysis_proposal_outbox")
+            }
+            goal_indexes = {
+                index["name"] for index in inspect(connection).get_indexes("composite_goal_links")
+            }
+            assert {
+                "ix_analysis_outbox_ready_lease",
+                "ix_analysis_outbox_claim_due",
+                "ix_analysis_outbox_prep_binding",
+            }.issubset(outbox_indexes)
+            assert {
+                "ix_composite_goal_conversation_project",
+                "ix_composite_goal_preprocessing_task",
+            }.issubset(goal_indexes)
+            goal_foreign_keys = {
+                (item["table"], item["from"], item["to"])
+                for item in connection.exec_driver_sql(
+                    "PRAGMA foreign_key_list(composite_goal_links)"
+                ).mappings()
+            }
+            assert (
+                "work_tasks",
+                "preprocessing_task_id",
+                "task_id",
+            ) in goal_foreign_keys
+
+        with engine.begin() as connection:
+            connection.execute(
+                AnalysisProposalOutboxRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-second",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    preprocessing_task_id="fanout-preprocessing",
+                    plan_revision_id="fanout-plan-second",
+                    manifest_hash="d" * 64,
+                    run_id="fanout-run-second",
+                    analysis_request_hash="e" * 64,
+                    artifact_ids_json='["artifact-second"]',
+                    status="pending",
+                )
+            )
+            connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-second",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    analysis_request_hash="e" * 64,
+                    preprocessing_task_id="fanout-preprocessing",
+                    analysis_proposal_outbox_intent_task_id="fanout-intent-second",
+                )
+            )
+
+        duplicate_inserts: tuple[Callable[[Connection], object], ...] = (
+            lambda connection: connection.execute(
+                AnalysisProposalOutboxRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-legacy",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    preprocessing_task_id="fanout-preprocessing",
+                    plan_revision_id="duplicate-plan",
+                    manifest_hash="f" * 64,
+                    run_id="duplicate-run",
+                    analysis_request_hash="0" * 64,
+                    artifact_ids_json="[]",
+                    status="pending",
+                )
+            ),
+            lambda connection: connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(  # type: ignore[attr-defined]
+                    intent_task_id="fanout-intent-legacy",
+                    conversation_id="fanout-conversation",
+                    project_id="fanout-project",
+                    analysis_request_hash="0" * 64,
+                    preprocessing_task_id="fanout-preprocessing",
+                )
+            ),
+        )
+        for insert in duplicate_inserts:
+            try:
+                with engine.begin() as connection:
+                    insert(connection)
+            except IntegrityError:
+                pass
+            else:
+                raise AssertionError("intent identity must remain unique")
+
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    AnalysisProposalOutboxRow.__table__.insert().values(  # type: ignore[attr-defined]
+                        intent_task_id="fanout-invalid-continuation",
+                        conversation_id="fanout-conversation",
+                        project_id="fanout-project",
+                        preprocessing_task_id="fanout-preprocessing",
+                        plan_revision_id="fanout-invalid-plan",
+                        manifest_hash="1" * 64,
+                        run_id="fanout-invalid-run",
+                        analysis_request_hash="2" * 64,
+                        artifact_ids_json="[]",
+                        status="waiting_user",
+                        continuation_message_id="fanout-user-message",
+                    )
+                )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError("outbox assistant-message trigger must survive the migration")
+
+        with engine.connect() as connection:
+            roots = (
+                connection.execute(
+                    text(
+                        "SELECT intent_task_id FROM composite_goal_links "
+                        "WHERE preprocessing_task_id='fanout-preprocessing' "
+                        "ORDER BY intent_task_id"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            outboxes = (
+                connection.execute(
+                    text(
+                        "SELECT intent_task_id FROM analysis_proposal_outbox "
+                        "WHERE conversation_id='fanout-conversation' "
+                        "AND project_id='fanout-project' "
+                        "AND preprocessing_task_id='fanout-preprocessing' "
+                        "ORDER BY intent_task_id"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert roots == ["fanout-intent-legacy", "fanout-intent-second"]
+        assert outboxes == ["fanout-intent-legacy", "fanout-intent-second"]
+
+        try:
+            downgrade("0029_step_preparation_claims")
+        except RuntimeError as exc:
+            assert "multiple intents share a preprocessing task" in str(exc)
+        else:
+            raise AssertionError("downgrade must refuse to discard fanout identity rows")
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT COUNT(*) FROM composite_goal_links")).scalar_one()
+                == 2
+            )
+            assert (
+                connection.execute(
+                    text("SELECT COUNT(*) FROM analysis_proposal_outbox")
+                ).scalar_one()
+                == 2
+            )
     finally:
         engine.dispose()
 

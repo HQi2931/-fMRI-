@@ -155,11 +155,11 @@ class AnalysisProposalOutboxRow(Base):
             name="fk_analysis_outbox_conversation",
         ),
         UniqueConstraint("continuation_message_id", name="uq_analysis_outbox_continuation_message"),
-        UniqueConstraint(
+        Index(
+            "ix_analysis_outbox_prep_binding",
             "conversation_id",
             "project_id",
             "preprocessing_task_id",
-            name="uq_analysis_outbox_prep_binding",
         ),
     )
 
@@ -228,7 +228,7 @@ class CompositeGoalLinkRow(Base):
     # ``work_tasks`` is created by Alembic SQL and is intentionally absent
     # from Base.metadata. The durable FK lives in migration 0028; keeping an
     # ORM FK here breaks the in-memory metadata.create_all() used by OpenAPI.
-    preprocessing_task_id: Mapped[str] = mapped_column(String(100), unique=True)
+    preprocessing_task_id: Mapped[str] = mapped_column(String(100))
     analysis_proposal_outbox_intent_task_id: Mapped[str | None] = mapped_column(
         String(100),
         ForeignKey("analysis_proposal_outbox.intent_task_id", ondelete="RESTRICT"),
@@ -238,9 +238,7 @@ class CompositeGoalLinkRow(Base):
     analysis_work_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     result_interpretation_outbox_task_id: Mapped[str | None] = mapped_column(
         String(100),
-        ForeignKey(
-            "statistical_result_interpretation_outbox.task_id", ondelete="RESTRICT"
-        ),
+        ForeignKey("statistical_result_interpretation_outbox.task_id", ondelete="RESTRICT"),
         nullable=True,
         unique=True,
     )
@@ -249,6 +247,7 @@ class CompositeGoalLinkRow(Base):
             "length(analysis_request_hash) = 64",
             name="ck_composite_goal_request_hash_length",
         ),
+        Index("ix_composite_goal_preprocessing_task", "preprocessing_task_id"),
     )
 
 
