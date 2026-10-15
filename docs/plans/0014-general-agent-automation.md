@@ -151,7 +151,7 @@ flowchart TD
 
 ### 阶段 B 显式步骤集合 fail-closed（2026-10-15）
 
-在多步骤调度器实现之前，含显式 TaskStep 的 Run 生命周期仅接受一个已注册的 `preprocessing_run` 或 `statistical_run`，且 Task 与 Step 必须绑定同一个 Run、步骤必须处于等待状态。未知、混合、多步骤及 Run 引用冲突在重核入口返回 `indeterminate`，不消费该轮新事件，也不按“非统计即预处理”分派。共享绑定/完成转换拒绝 sibling 步骤，避免单个步骤完成时把其他 pending 步骤一起隐式关闭。无 TaskStep 的历史任务保留原只读重核兼容路径。
+这一阶段先将含显式 TaskStep 的 Run 生命周期限制为单一、已注册的 `preprocessing_run` 或 `statistical_run`，并让共享绑定/完成转换拒绝 sibling 步骤，避免一次完成错误地关闭整个目标。下方新增的活动步骤事件路由只放宽“如何定位和消费事件身份”；readiness、绑定下一步 Run 和最终收口仍保持多步骤 fail-closed。未知、歧义、多活动步骤及 Run 引用冲突仍不会被当作可执行步骤。
 
 本切片无需数据库迁移。9 个自动化相关后端模块 119 项通过；Ruff check、Mypy、文档规范与差异空白检查通过。`ruff format --check` 在这些既有文件中报告了本切片未触及的格式差异，未为此改写整文件。阶段 B 整体仍未完成。没有运行 MATLAB/DPABI。
 
@@ -169,7 +169,15 @@ flowchart TD
 
 `step_lifecycle.py` 新增纯序列解析，按 `sequence` 排序并验证从 0 连续编号、至多一个活动步骤、成功前缀/待处理后缀及终态形状；空 `steps` 仍明确表示历史兼容任务。多步骤完成转换在类型专属证据已由调用者核验的前提下，只完成当前唯一活动步骤并提升其直接后继为 `READY`，WorkTask 留在 `RUNNING` 且清除根级旧 Plan/Run/输入版本投影；只有最后一步完成才关闭任务。重复完成已成功的前驱不会改写后续进度。单步骤转换保持原行为。
 
-此切片只建立纯状态转换底座。`bind_step_to_run`、readiness registry、事件解析、恢复领取和类型专属 finalizer 仍拒绝多步骤任务，因而尚未形成可运行的多步骤自动化路径。后续必须先实现每步 Run 身份与事件路由、对 `RUNNING + READY` 的持久 prepare 领取、输入变更重核及 fenced 写入，再接通下一步草稿准备。本切片的 core/service/persistence 定向回归共 94 项通过；Ruff check/format、全量 Mypy（295 个源文件）与 `git diff --check` 通过。未运行 MATLAB/DPABI。
+该提交只建立纯状态转换底座；当时的绑定、readiness、事件解析、恢复领取和类型专属 finalizer 仍拒绝多步骤任务，尚未形成可运行路径。随后事件定位按下方独立切片扩展，但 `RUNNING + READY` 的持久 prepare 领取、输入变更重核、下一步草稿准备和多步骤 finalizer 仍待实现。本切片的 core/service/persistence 定向回归共 94 项通过；Ruff check/format、全量 Mypy（295 个源文件）与 `git diff --check` 通过。未运行 MATLAB/DPABI。
+
+### 阶段 B 活动步骤事件路由首切片（2026-10-15）
+
+自动事件路由现可从合法的有界线性 TaskStep 序列中解析唯一 `WAITING` 步骤，并以该步骤的 Run ID 校验标准 `workflow:<run_id>` stream。路由拒绝多活跃步骤、非连续序号、未知步骤类型、重复 Run 绑定、根引用冲突和等待条件不匹配；事件消费后重载任务并重新解析活动步骤。事件仍只产生去重回执/游标，不决定科研状态。单步骤与无步骤历史任务继续使用已有根级兼容路径。
+
+SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，因此在线性“最多一个等待步骤”约束下，本切片从 TaskStep 推导当前 Run 并复用既有表结构，没有新增 `step_id` 列或迁移。任务领取仍以 task 为粒度，worker 在处理时重新解析步骤，当前事件路由不承诺不可变 `(task, step, run)` claim 快照。多步骤事件被安全消费后，协调器明确返回 `indeterminate`，不推进步骤/任务；多步骤 readiness、下一步 Run 绑定、prepare handler、类型专属 finalizer 和完整恢复尚未接通。因此这只是事件定位切片，不代表跨步骤预处理/统计 E2E 自动化完成。
+
+本切片的 service/persistence 定向回归 71 项通过；Ruff check、相关文件格式检查、全量 Mypy 与差异空白检查通过。`automation_repository.py` 的整文件格式检查仍报告本切片之前已有的格式差异，本次未重排整文件。未运行 MATLAB/DPABI。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 

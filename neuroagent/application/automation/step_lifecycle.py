@@ -113,6 +113,83 @@ def resolve_single_bound_run_step(task: WorkTask, run_id: str) -> TaskStep | Non
     return step
 
 
+def resolve_routed_workflow_run(task: WorkTask) -> tuple[str, TaskStep | None]:
+    """Resolve the one Run that may receive workflow events for this task.
+
+    Legacy tasks without explicit steps continue to use the task-level Run
+    reference. Explicit single-step tasks retain their existing strict
+    task/step binding contract. A linear multi-step task may route only the
+    unique waiting step, and only while its waiting condition identifies that
+    step's Run. This resolves event identity; it does not authorize readiness
+    or completion of a multi-step task.
+    """
+
+    if not task.steps:
+        run_id = task.authority_refs.workflow_run_id
+        if run_id is None:
+            raise ValueError("legacy task has no bound Run")
+        return run_id, None
+
+    ordered = resolve_linear_step_sequence(task)
+    if len(ordered) == 1:
+        run_id = task.authority_refs.workflow_run_id
+        if run_id is None:
+            raise ValueError("single-step task has no bound Run")
+        step = resolve_single_bound_run_step(task, run_id)
+        if step is None:
+            raise ValueError("single-step Run binding is missing")
+        return run_id, step
+
+    waiting_steps = tuple(step for step in ordered if step.status is TaskStepStatus.WAITING)
+    if len(waiting_steps) != 1:
+        raise ValueError("linear multi-step task must have one waiting Run step")
+    step = waiting_steps[0]
+    if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
+        raise ValueError(f"unsupported Run step kind: {step.kind}")
+    run_id = step.authority_refs.workflow_run_id
+    if run_id is None:
+        raise ValueError("active Run step has no bound Run")
+    if task.authority_refs.workflow_run_id not in {None, run_id}:
+        raise ValueError("task root Run reference differs from the active step Run")
+    bound_run_ids = tuple(
+        item.authority_refs.workflow_run_id
+        for item in ordered
+        if item.authority_refs.workflow_run_id is not None
+    )
+    if len(bound_run_ids) != len(set(bound_run_ids)):
+        raise ValueError("linear TaskSteps cannot reuse a Run reference")
+
+    waiting = task.waiting_condition
+    if task.status is TaskStatus.WAITING_RUN:
+        is_matching_wait = (
+            waiting is not None
+            and waiting.kind is WaitingKind.WORKFLOW_RUN
+            and waiting.reference == run_id
+        )
+    elif task.status is TaskStatus.WAITING_USER:
+        is_matching_wait = (
+            waiting is not None
+            and waiting.kind is WaitingKind.USER_DECISION
+            and waiting.reference == f"qc:{run_id}"
+        )
+    elif task.status is TaskStatus.WAITING_DEPENDENCY:
+        expected_reference = (
+            f"statistical-result:{run_id}"
+            if step.kind == "statistical_run"
+            else f"downstream:{run_id}"
+        )
+        is_matching_wait = (
+            waiting is not None
+            and waiting.kind is WaitingKind.DEPENDENCY
+            and waiting.reference == expected_reference
+        )
+    else:
+        is_matching_wait = False
+    if not is_matching_wait:
+        raise ValueError("task waiting condition does not identify the active step Run")
+    return run_id, step
+
+
 def bind_step_to_run(
     task: WorkTask,
     step: TaskStep,

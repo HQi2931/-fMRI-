@@ -53,7 +53,7 @@ from neuroagent.application.automation.result_interpretation import (
 from neuroagent.application.automation.step_lifecycle import (
     bind_step_to_run,
     complete_step,
-    resolve_single_bound_run_step,
+    resolve_routed_workflow_run,
 )
 from neuroagent.application.automation.step_readiness import (
     StepReadinessAssessment,
@@ -2240,6 +2240,16 @@ class WorkTaskApplicationService:
 
         current = self._repository.get_task(task_id)
         expected_run_id = current.authority_refs.workflow_run_id
+        if len(current.steps) > 1:
+            try:
+                expected_run_id, _active_step = resolve_routed_workflow_run(current)
+            except ValueError as exc:
+                raise InputValidationError(
+                    "workflow_event_route_unavailable",
+                    "自动化任务当前没有唯一、有效的步骤运行事件路由。",
+                    task_id=task_id,
+                    reason=str(exc),
+                ) from exc
         if expected_run_id is None or event.workflow_run_id != expected_run_id:
             raise InputValidationError(
                 "workflow_event_run_mismatch",
@@ -2285,15 +2295,14 @@ class WorkTaskApplicationService:
         """
 
         task = self._repository.get_task(task_id)
-        run_id = task.authority_refs.workflow_run_id
-        if run_id is None:
+        if task.authority_refs.workflow_run_id is None and len(task.steps) <= 1:
             raise InputValidationError(
                 "workflow_run_reference_missing",
                 "自动化任务没有绑定可核验的运行。",
                 task_id=task_id,
             )
         try:
-            bound_step = resolve_single_bound_run_step(task, run_id)
+            run_id, bound_step = resolve_routed_workflow_run(task)
         except ValueError as exc:
             return WorkflowRunReconciliation(
                 task=task,
@@ -2382,7 +2391,7 @@ class WorkTaskApplicationService:
         # task version before deciding whether this reconciliation may transition it.
         task = self._repository.get_task(task_id)
         try:
-            bound_step = resolve_single_bound_run_step(task, run_id)
+            current_run_id, bound_step = resolve_routed_workflow_run(task)
         except ValueError as exc:
             return WorkflowRunReconciliation(
                 task=task,
@@ -2390,7 +2399,7 @@ class WorkTaskApplicationService:
                 event_receipts=tuple(receipts),
                 reason=f"事件消费后任务步骤结构或 Run 引用变化;本次不推进状态。({exc})",
             )
-        if bound_step != initial_bound_step:
+        if current_run_id != run_id or bound_step != initial_bound_step:
             return WorkflowRunReconciliation(
                 task=task,
                 readiness=RunReadiness.INDETERMINATE,
@@ -2438,6 +2447,17 @@ class WorkTaskApplicationService:
                 readiness=RunReadiness.INDETERMINATE,
                 event_receipts=tuple(receipts),
                 reason="任务等待状态已并发变化;本次只记录事件身份,需重新读取后再协调。",
+            )
+
+        if len(task.steps) > 1:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=tuple(receipts),
+                reason=(
+                    "活动步骤 Run 事件已安全消费；多步骤 readiness 与完成收口尚未启用，"
+                    "任务状态未推进。"
+                ),
             )
 
         if is_statistical:

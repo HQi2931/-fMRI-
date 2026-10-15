@@ -39,6 +39,7 @@ from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
 )
+from neuroagent.application.automation.step_lifecycle import resolve_routed_workflow_run
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
@@ -2149,9 +2150,23 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             text("DELETE FROM work_task_reconciliation_targets WHERE task_id = :task_id"),
             {"task_id": task.task_id},
         )
-        run_id = task.authority_refs.workflow_run_id
+        run_id: str | None = None
+        active_step = None
+        if len(task.steps) > 1:
+            try:
+                run_id, active_step = resolve_routed_workflow_run(task)
+            except ValueError:
+                # Invalid or ambiguous multi-step state is persisted as task
+                # data, but it must never become an automatic target.
+                return
+        else:
+            # Preserve existing root-level indexing for legacy and explicit
+            # single-step tasks, including non-Run orchestration steps.
+            run_id = task.authority_refs.workflow_run_id
+        if run_id is None:
+            return
         waiting = task.waiting_condition
-        if run_id is None or waiting is None:
+        if waiting is None:
             return
         target_kind: str | None = None
         if (
@@ -2176,12 +2191,28 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             task.status.value == "waiting_dependency"
             and waiting.kind.value == "dependency"
             and waiting.reference == f"downstream:{run_id}"
-            and sum(step.kind == "preprocessing_run" for step in task.steps) == 1
             and any(
                 step.kind == "preprocessing_run"
                 and step.authority_refs.workflow_run_id == run_id
-                and step.authority_refs.plan_revision_id == task.authority_refs.plan_revision_id
+                and (
+                    (
+                        active_step is not None
+                        and step.step_id == active_step.step_id
+                        and step.authority_refs.plan_revision_id is not None
+                        and task.authority_refs.plan_revision_id
+                        in {None, step.authority_refs.plan_revision_id}
+                    )
+                    or (
+                        active_step is None
+                        and step.authority_refs.plan_revision_id
+                        == task.authority_refs.plan_revision_id
+                    )
+                )
                 for step in task.steps
+            )
+            and (
+                active_step is not None
+                or sum(step.kind == "preprocessing_run" for step in task.steps) == 1
             )
         ):
             # The shared workflow_run target kind is already indexed by 0023;

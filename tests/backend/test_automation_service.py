@@ -285,6 +285,105 @@ def test_reconciliation_fails_closed_before_consuming_event_for_ambiguous_steps(
     assert "步骤结构或 Run 引用无法唯一解析" in result.reason
 
 
+def test_multi_step_reconciliation_routes_event_to_unique_waiting_step_only(service) -> None:
+    base = make_waiting_task()
+    task = WorkTask.model_validate(
+        {
+            **base.model_dump(),
+            "authority_refs": AuthorityReferences().model_dump(),
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="step-run",
+                reason="active step is waiting for its workflow run",
+            ).model_dump(),
+            "steps": (
+                TaskStep(
+                    step_id="statistical-step",
+                    sequence=0,
+                    kind="statistical_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id="step-run"),
+                ).model_dump(),
+                TaskStep(
+                    step_id="preprocessing-step",
+                    sequence=1,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.PENDING,
+                ).model_dump(),
+            ),
+        }
+    )
+    service.automation.create_task(task)
+    add_run_event(service, run_id="step-run")
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+    replay = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.event_receipts[0].decision is EventConsumptionDecision.CONSUME
+    assert result.task.event_cursors[0].stream_key == "workflow:step-run"
+    assert result.task.status is TaskStatus.WAITING_RUN
+    assert result.task.authority_refs.workflow_run_id is None
+    assert result.task.steps[0].status is TaskStepStatus.WAITING
+    assert result.task.steps[1].status is TaskStepStatus.PENDING
+    assert "多步骤 readiness 与完成收口尚未启用" in result.reason
+    assert replay.event_receipts == ()
+    assert replay.task.version == result.task.version
+    assert replay.task.steps == result.task.steps
+
+
+@pytest.mark.parametrize(
+    ("event_run_id", "stream_key", "error_code"),
+    [
+        ("other-run", "workflow:other-run", "workflow_event_run_mismatch"),
+        ("step-run", "workflow:alias", "workflow_event_stream_mismatch"),
+    ],
+)
+def test_multi_step_event_identity_must_match_active_run_and_stream(
+    service, event_run_id: str, stream_key: str, error_code: str
+) -> None:
+    base = make_waiting_task()
+    task = WorkTask.model_validate(
+        {
+            **base.model_dump(),
+            "authority_refs": AuthorityReferences().model_dump(),
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="step-run",
+                reason="active step is waiting for its workflow run",
+            ).model_dump(),
+            "steps": (
+                TaskStep(
+                    step_id="active-step",
+                    sequence=0,
+                    kind="statistical_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id="step-run"),
+                ).model_dump(),
+                TaskStep(
+                    step_id="next-step",
+                    sequence=1,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.PENDING,
+                ).model_dump(),
+            ),
+        }
+    )
+    service.automation.create_task(task)
+    event = WorkEventIdentity(
+        stream_key=stream_key,
+        workflow_run_id=event_run_id,
+        event_id=1,
+        dedupe_key=f"{event_run_id}:event:1",
+    )
+
+    with pytest.raises(InputValidationError) as error:
+        service.automation.consume_workflow_event(task.task_id, event)
+
+    assert error.value.code == error_code
+    assert service.automation.get_task(task.task_id) == task
+
+
 def test_reconciliation_reads_authoritative_running_state_and_duplicate_delivery_is_noop(
     service,
 ) -> None:

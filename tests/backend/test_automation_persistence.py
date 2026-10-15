@@ -438,6 +438,130 @@ def test_reconciliation_target_only_indexes_supported_waits(
     database.dispose()
 
 
+def test_multi_step_reconciliation_target_uses_unique_waiting_step_run(tmp_path) -> None:
+    database, repository = open_repository(tmp_path / "multi-step-target.sqlite")
+    task = make_task().model_copy(
+        update={
+            "authority_refs": AuthorityReferences(),
+            "status": TaskStatus.WAITING_RUN,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="step-run",
+                reason="active step is waiting for its run",
+            ),
+            "steps": (
+                TaskStep(
+                    step_id="active-step",
+                    sequence=0,
+                    kind="statistical_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id="step-run"),
+                ),
+                TaskStep(
+                    step_id="next-step",
+                    sequence=1,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.PENDING,
+                ),
+            ),
+            "version": 2,
+        }
+    )
+
+    repository.create_task(task)
+    claim = repository.claim_next_reconciliation_task(
+        "multi-step-worker", lease_seconds=10, cooldown_seconds=0
+    )
+
+    assert claim is not None
+    assert claim.task_id == task.task_id
+    repository.release_reconciliation_claim(claim.task_id, claim.worker_id, claim.claim_token)
+    database.dispose()
+
+
+def test_ambiguous_multi_step_task_is_not_a_reconciliation_target(tmp_path) -> None:
+    database, repository = open_repository(tmp_path / "ambiguous-multi-step-target.sqlite")
+    task = make_task().model_copy(
+        update={
+            "status": TaskStatus.WAITING_RUN,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference="run-4",
+                reason="ambiguous active steps",
+            ),
+            "steps": (
+                TaskStep(
+                    step_id="active-step-a",
+                    sequence=0,
+                    kind="statistical_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id="run-4"),
+                ),
+                TaskStep(
+                    step_id="active-step-b",
+                    sequence=1,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(workflow_run_id="run-5"),
+                ),
+            ),
+            "version": 2,
+        }
+    )
+
+    repository.create_task(task)
+    claim = repository.claim_next_reconciliation_task(
+        "ambiguous-worker", lease_seconds=10, cooldown_seconds=0
+    )
+
+    assert claim is None
+    database.dispose()
+
+
+def test_multi_step_preprocessing_dependency_target_uses_active_step_plan(tmp_path) -> None:
+    database, repository = open_repository(tmp_path / "multi-step-preprocessing-target.sqlite")
+    task = make_task().model_copy(
+        update={
+            "authority_refs": AuthorityReferences(),
+            "status": TaskStatus.WAITING_DEPENDENCY,
+            "waiting_condition": WaitingCondition(
+                kind=WaitingKind.DEPENDENCY,
+                reference="downstream:step-run",
+                reason="verify active preprocessing outputs",
+            ),
+            "steps": (
+                TaskStep(
+                    step_id="preprocessing-step",
+                    sequence=0,
+                    kind="preprocessing_run",
+                    status=TaskStepStatus.WAITING,
+                    authority_refs=AuthorityReferences(
+                        plan_revision_id="step-plan",
+                        workflow_run_id="step-run",
+                    ),
+                ),
+                TaskStep(
+                    step_id="analysis-step",
+                    sequence=1,
+                    kind="statistical_run",
+                    status=TaskStepStatus.PENDING,
+                ),
+            ),
+            "version": 2,
+        }
+    )
+
+    repository.create_task(task)
+    claim = repository.claim_next_reconciliation_task(
+        "multi-preprocessing-worker", lease_seconds=10, cooldown_seconds=0
+    )
+
+    assert claim is not None
+    assert claim.task_id == task.task_id
+    repository.release_reconciliation_claim(claim.task_id, claim.worker_id, claim.claim_token)
+    database.dispose()
+
+
 def test_preprocessing_downstream_wait_is_claimable_but_generic_dependency_is_not(
     tmp_path,
 ) -> None:

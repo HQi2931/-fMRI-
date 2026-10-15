@@ -30,7 +30,7 @@ WorkTask 已能保存多个带 `sequence` 的 TaskStep，但 Run 绑定、readin
 ## 引用与持久化边界
 
 - 每个 TaskStep 的 `authority_refs` 是该步骤 Plan、Run、输入版本及已核验 Artifact 的权威关联。单步骤旧任务继续保持 Task 根 Run/Artifact 引用与步骤引用一致。
-- 多步骤任务必须按 `TaskStep` 精确解析 Run 与事件，不再假设 Task 根 `workflow_run_id` 能代表全部历史/当前步骤。根引用在兼容窗口内只作为当前活动步骤的投影；事件路由和领取索引需改为步骤级关联，并对已成功步骤的迟到事件做到幂等忽略。
+- 多步骤任务必须按 `TaskStep` 精确解析 Run 与事件，不再假设 Task 根 `workflow_run_id` 能代表全部历史/当前步骤。根引用在兼容窗口内只作为当前活动步骤的投影。在线性且最多一个等待步骤的约束下，可从 `step_json` 解析当前 Run 并复用每任务一个目标的现有 SQLite 索引，无需单独 `step_id` 列；若后续要求 claim 固定 `(task, step, run)` 快照、审计历史步骤映射或支持多个并行目标，再增加持久步骤映射。
 - 每步的 Artifact 集与 lineage 保存在该步骤；Task 级 Artifact 引用只表达目标级、已核验输出。任何 finalizer/outbox 仍绑定产生它的精确步骤与 Artifact 集，不能用聚合引用替代类型校验。
 - 步骤完成、后继变为可准备状态、活动 Run 投影更新及事件回执必须在同一 SQLite Unit of Work 中按 Task version/CAS 与 Worker fencing token 原子提交。步骤级 Run 查询索引或等价持久映射若无法无迁移实现，须提供向后兼容迁移，并验证历史单步骤任务。
 - 空 `steps` 的历史任务继续走既有只读兼容路径；它们不会被迁移为成功的显式步骤，也不会自动扩展成多步骤。
@@ -44,7 +44,7 @@ WorkTask 已能保存多个带 `sequence` 的 TaskStep，但 Run 绑定、readin
 ## 分阶段落地
 
 1. 新增纯线性调度解析器和状态转换，覆盖单步骤兼容、双步骤前驱门控、重复/乱序事件、多个活跃步骤与非法序号拒绝。
-2. 建立步骤级 Run 事件解析和 SQLite 查询索引；确保已成功的前一步不会被后续 Run 绑定覆盖，也不会被迟到事件重新打开。
+2. 首个事件路由切片已复用现有目标索引：严格解析唯一等待步骤，校验事件 Run 和标准 stream，并幂等消费事件身份；消费事件不会改变科研或步骤状态。仍需扩展步骤级 Run binding、fenced prepare/claim 身份及迟到事件防护，确保已成功的前一步不会被后续 Run 绑定覆盖或重新打开。
 3. 注册有界 `prepare_step` 应用端口，完成事务外提案生成及 fenced 提交；复用现有审批、确认和类型专属 finalizer。
 4. 将复合目标 proposal/result outbox、目标级 Artifact 完成合同、共享任务预算接入序列推进；每项单独验证幂等和重启恢复。
 
