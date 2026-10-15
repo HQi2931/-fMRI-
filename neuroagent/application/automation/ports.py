@@ -10,6 +10,10 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxStatus,
     AnalysisProposalOutbox,
 )
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalIdentity,
+    CompositeGoalSnapshot,
+)
 from neuroagent.application.automation.models import (
     EventConsumptionDecision,
     WorkEventIdentity,
@@ -29,6 +33,21 @@ class WorkTaskRepositoryPort(Protocol):
     def create_task(self, task: WorkTask) -> WorkTask: ...
 
     def get_task(self, task_id: str) -> WorkTask: ...
+
+    def ensure_preprocessing_composite_goal(self, task: WorkTask) -> CompositeGoalIdentity: ...
+
+    def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot: ...
+
+    def find_composite_goal_for_analysis_task(
+        self, analysis_work_task_id: str
+    ) -> CompositeGoalIdentity | None: ...
+
+    def bind_composite_goal_analysis_task(
+        self,
+        goal: CompositeGoalIdentity,
+        analysis_work_task_id: str,
+        proposal_hash: str,
+    ) -> CompositeGoalIdentity: ...
 
     def save_task(
         self,

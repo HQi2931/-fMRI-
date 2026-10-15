@@ -131,7 +131,15 @@ flowchart TD
 
 统计结果登记晚于 Run 成功时，既有周期 reconciler 继续等待并重核权威记录；只有类型化 WorkTask 完成器核验到唯一、真实、非 synthetic 的 StatisticalResult 及其冻结 bundle 和全部 Artifact lineage 后，才在同一 Unit of Work 原子完成任务并写入独立的结果解释 outbox。此 outbox 不与 ADR 0041 的分析提案队列共用。结果解释消费者拥有独立租约/fencing，模型调用前后均重读 WorkTask、会话、Run、Plan/design、StatisticalResult 和 Artifact 证据；提交只允许 assistant-only 解释/报告草稿，并与 outbox 终态在同一事务收口。模型上下文由白名单统计摘要和确定性 readout 组成，对标签、文本和数组做字段级限长/限量，不传完整报告、subject-level 矩阵、逐 Artifact ID 或路径。零显著结果正常解释；synthetic/mock、来源冲突或无法验证的证据不调用模型；空间未知时不虚构定位。可恢复失败提供独立幂等重试 API 与 generation-aware 页面轮询。该切片不创建或批准 Plan、不创建或启动 Run、不修改科学决策；它完成了单个已完成统计 WorkTask 的结果草稿续接，不代表本计划的多意图、通用下游步骤或整体阶段 B 全部完成。合同见 [ADR 0042](../adr/0042-statistical-result-interpretation-outbox.md)。
 
-阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续普通预处理目标会 tombstone envelope，并清理可复用未启动 Task 的旧关联；已启动任务和已消费草稿不会改变或继承该关联。每个预处理任务当前仍只支持一个分析 intent/outbox。
+### 阶段 B 单个复合目标关联与进度投影（2026-10-15）
+
+当前垂直切片为明确的 `preprocess_then_analyze` intent 建立 identity-only 根记录，并与预处理 WorkTask 创建/保存共用 Unit of Work，因此目标可早于分析 proposal outbox 存在。根只保留 conversation/project、原始请求 hash、预处理 task、可选 proposal/result outbox 和当前分析 task 的稳定引用；proposal hash 修订通过仅含 attempt 序号、task ID 和 proposal hash 的尝试表保留历史，不复制 WorkTask 或 outbox 状态。首个 proposal outbox 继续指向首次自动提案任务；用户修订后可有不同 active task，迟到的旧 task 不能重新激活或绑定结果 outbox。
+
+只读 snapshot 在同一 SQLite read transaction 读取根、会话/Plan project 证据、两类 outbox、所有分析尝试、WorkTask 和结果解释 assistant continuation。只有 active task、结果 outbox、completed assistant 消息，以及消息 payload 中的 task/status/result ID/version 完全一致，投影才返回 `completed`。应用服务提供按 conversation ID + intent ID 取单个 identity/progress 的查询并验证 WORK 会话和 Plan 项目；尚未增加 HTTP 查询端点、当前会话 role-slot 投影或前端展示。本切片仅支持一个显式复合目标，不是通用调度器或多目标 fanout。
+
+迁移 0028 对历史任务仅在 Task/Step、WORK conversation、project/Plan/manifest，以及存在时的 proposal outbox/首个 analysis task 精确匹配时回填；歧义或相互矛盾的旧关联不导入，等待显式恢复。定向测试覆盖预处理任务建立时 root 已持久化且 outbox 为空、首个 outbox/task、修订 attempts、迟到旧尝试、精确结果 outbox 绑定、assistant continuation 错配 fail-closed 和迁移歧义跳过。阶段 B 整体仍未完成；HTTP/前端读取、用户可见进度以及通用多步骤恢复不在此切片内。
+
+阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。
 

@@ -213,6 +213,71 @@ class StatisticalResultInterpretationOutboxRow(Base):
     )
 
 
+class CompositeGoalLinkRow(Base):
+    """Identity-only links for one explicit preprocessing→analysis intent."""
+
+    __tablename__ = "composite_goal_links"
+    intent_task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="RESTRICT")
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.project_id", ondelete="RESTRICT")
+    )
+    analysis_request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    preprocessing_task_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("work_tasks.task_id", ondelete="RESTRICT"), unique=True
+    )
+    analysis_proposal_outbox_intent_task_id: Mapped[str | None] = mapped_column(
+        String(100),
+        ForeignKey("analysis_proposal_outbox.intent_task_id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+    )
+    analysis_work_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    result_interpretation_outbox_task_id: Mapped[str | None] = mapped_column(
+        String(100),
+        ForeignKey(
+            "statistical_result_interpretation_outbox.task_id", ondelete="RESTRICT"
+        ),
+        nullable=True,
+        unique=True,
+    )
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["analysis_work_task_id"], ["work_tasks.task_id"], ondelete="RESTRICT",
+            name="fk_composite_goal_analysis_task",
+        ),
+        CheckConstraint(
+            "length(analysis_request_hash) = 64",
+            name="ck_composite_goal_request_hash_length",
+        ),
+    )
+
+
+class CompositeGoalAnalysisAttemptRow(Base):
+    """Identity-only attempt history for explicit composite goals."""
+
+    __tablename__ = "composite_goal_analysis_attempts"
+    intent_task_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("composite_goal_links.intent_task_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    work_task_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("work_tasks.task_id", ondelete="RESTRICT"), unique=True
+    )
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    __table_args__ = (
+        CheckConstraint("attempt_number >= 1", name="ck_composite_goal_attempt_positive"),
+        CheckConstraint("length(proposal_hash) = 64", name="ck_composite_goal_attempt_hash_length"),
+        UniqueConstraint(
+            "intent_task_id", "proposal_hash", name="uq_composite_goal_attempt_proposal"
+        ),
+    )
+
+
 class PlanRevisionRow(Base):
     __tablename__ = "plan_revisions"
     plan_revision_id: Mapped[str] = mapped_column(String(36), primary_key=True)

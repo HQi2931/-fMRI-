@@ -604,7 +604,7 @@ class WorkDialogue:
                     and active_envelope.get("project_id") == project_id
                     else None
                 )
-                active_request_hash = (
+                envelope_request_hash = (
                     active_envelope.get("analysis_request_hash")
                     if isinstance(active_envelope, dict)
                     else None
@@ -628,7 +628,7 @@ class WorkDialogue:
                                     )
                                 ).strip()
                             )
-                            == active_request_hash
+                            == envelope_request_hash
                         ),
                         None,
                     )
@@ -697,6 +697,35 @@ class WorkDialogue:
                         "analysis_intent_task_id": active_envelope.get("task_id"),
                         "analysis_request_hash": active_envelope.get("analysis_request_hash"),
                     }
+            if role is WorkAgentRole.ANALYSIS and isinstance(body.get("analysis_draft"), dict):
+                analysis_draft = dict(body["analysis_draft"])
+                active_intent_id: object = None
+                active_request_hash: object = None
+                if explicit_dependency is not None:
+                    active_intent_id = explicit_dependency.get("task_id")
+                    active_request_hash = content_hash(
+                        str(explicit_dependency.get("analysis_request", "")).strip()
+                    )
+                elif (
+                    dependency is not None
+                    and isinstance(active_envelope, dict)
+                    and active_envelope.get("status") == "active"
+                    and active_envelope.get("conversation_id") == conversation.conversation_id
+                    and active_envelope.get("project_id") == project_id
+                ):
+                    active_intent_id = active_envelope.get("task_id")
+                    active_request_hash = active_envelope.get("analysis_request_hash")
+                if (
+                    isinstance(active_intent_id, str)
+                    and isinstance(active_request_hash, str)
+                    and re.fullmatch(r"[a-f0-9]{64}", active_request_hash)
+                ):
+                    analysis_draft["analysis_intent_task_id"] = active_intent_id
+                    analysis_draft["analysis_request_hash"] = active_request_hash
+                else:
+                    analysis_draft.pop("analysis_intent_task_id", None)
+                    analysis_draft.pop("analysis_request_hash", None)
+                body["analysis_draft"] = analysis_draft
             if explicit_dependency is None and starts_new_preprocessing_task(request.content):
                 clear_analysis_intent_envelope(
                     body,
@@ -2146,6 +2175,7 @@ class WorkDialogue:
                 },
                 "analysis_outbox_continuation": {
                     "intent_task_id": source.intent_task_id,
+                    "analysis_request_hash": content_hash(source.analysis_request),
                     "retry_generation": source.retry_generation,
                     "preprocessing_task_id": source.preprocessing_task_id,
                     "run_id": source.run_id,
@@ -2300,6 +2330,16 @@ class WorkDialogue:
             if proposal_only_continuation
             else latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
         )
+        composite_intent_task_id = (
+            continuation_source.intent_task_id
+            if continuation_source is not None
+            else None
+        )
+        composite_request_hash = (
+            content_hash(continuation_source.analysis_request)
+            if continuation_source is not None
+            else None
+        )
         try:
             saved_draft_data = saved.get("draft", {}) if saved else {}
             if (
@@ -2426,6 +2466,14 @@ class WorkDialogue:
                         "draft": draft.model_dump(mode="json"),
                         "issues": list(statistics_draft_issues(draft)),
                         "decision_contract_version": 1,
+                        **(
+                            {
+                                "analysis_intent_task_id": composite_intent_task_id,
+                                "analysis_request_hash": composite_request_hash,
+                            }
+                            if composite_intent_task_id and composite_request_hash
+                            else {}
+                        ),
                     }
                 },
             )
@@ -2853,6 +2901,14 @@ class WorkDialogue:
                     "issues": list(statistics_draft_issues(draft)),
                     "review": render_statistics_draft_review(draft),
                     "decision_contract_version": 1,
+                    **(
+                        {
+                            "analysis_intent_task_id": composite_intent_task_id,
+                            "analysis_request_hash": composite_request_hash,
+                        }
+                        if composite_intent_task_id and composite_request_hash
+                        else {}
+                    ),
                 },
             }
             if saved is not None and interpreted.action in {
@@ -3008,6 +3064,14 @@ class WorkDialogue:
                     "hash": statistics_draft_hash(updated),
                     "version": _snapshot_int(saved, "version") + 1,
                     "decision_contract_version": 1,
+                    **(
+                        {
+                            "analysis_intent_task_id": composite_intent_task_id,
+                            "analysis_request_hash": composite_request_hash,
+                        }
+                        if composite_intent_task_id and composite_request_hash
+                        else {}
+                    ),
                     "issues": issues,
                     "review": render_statistics_draft_review(updated),
                     "planning_preflight": checked_analysis_payload,

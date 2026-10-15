@@ -889,6 +889,21 @@ def bind_statistical_read_doubles(service, reads: StatisticalReconciliationReads
 def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_significance(
     service,
 ) -> None:
+    # Statistical result outbox rows are scoped to a persisted conversation;
+    # the reconciliation doubles below replace the read ports, but the write
+    # side still enforces the conversation foreign key.
+    from neuroagent.infrastructure.persistence.models import ConversationRow
+
+    with service.database.session_factory.begin() as session:
+        session.add(
+            ConversationRow(
+                conversation_id="conversation-statistics",
+                mode=ConversationMode.WORK.value,
+                title="Synthetic statistics conversation",
+                project_id=None,
+                version=1,
+            )
+        )
     design = _statistical_design()
     plan = _statistical_plan(design=design)
     summary, detail, artifacts = _real_zero_result(plan=plan, design=design)
@@ -915,7 +930,9 @@ def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_sig
     assert result.authoritative is not None
     assert result.authoritative.qc_status == "pending"
     assert result.authoritative.verified_statistical_result_id == summary.result_id
-    assert reads.run_reads == 2
+    # Two reads establish a stable reconciliation snapshot; result-outbox
+    # binding performs one more read to ensure the same Run remains current.
+    assert reads.run_reads == 3
 
 
 def test_succeeded_statistical_run_without_result_waits_for_dependency_stably(service) -> None:

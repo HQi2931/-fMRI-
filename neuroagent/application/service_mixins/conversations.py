@@ -730,7 +730,12 @@ class ConversationMixin(BaseServiceMixin):
                 "agent_name": "数据分析 Agent",
                 "statistical_result_interpretation": {
                     **(
-                        {"task_id": outbox.task_id, "retry_generation": outbox.retry_generation}
+                        {
+                            "task_id": outbox.task_id,
+                            "retry_generation": outbox.retry_generation,
+                            "result_id": outbox.result_id,
+                            "result_version": outbox.result_version,
+                        }
                         if include_source
                         else {}
                     ),
@@ -776,6 +781,27 @@ class ConversationMixin(BaseServiceMixin):
                     retry_available=retry_available,
                     include_source=include_source and source_matches,
                 )
+                composite_goal = self.automation.find_composite_goal_for_analysis_task(
+                    outbox.task_id
+                )
+                if composite_goal is not None and status is ResultInterpretationStatus.COMPLETED:
+                    if (
+                        composite_goal.analysis_work_task_id != outbox.task_id
+                        or composite_goal.result_interpretation_outbox_task_id != outbox.task_id
+                        or composite_goal.conversation_id != outbox.conversation_id
+                        or composite_goal.project_id != outbox.project_id
+                    ):
+                        raise ConflictError(
+                            "result_interpretation_composite_goal_mismatch",
+                            "统计结果解释与复合目标的 active task 或结果绑定不一致。",
+                        )
+                    payload["analysis_intent_envelope"] = {
+                        "status": "completed",
+                        "task_id": composite_goal.intent_task_id,
+                        "conversation_id": composite_goal.conversation_id,
+                        "project_id": composite_goal.project_id,
+                        "analysis_request_hash": composite_goal.analysis_request_hash,
+                    }
                 _, assistant = self.repository.append_assistant_continuation(
                     outbox.conversation_id,
                     continuation_key=continuation_key,
@@ -1953,6 +1979,17 @@ class ConversationMixin(BaseServiceMixin):
         proposal_hash = proposal.get("proposal_hash")
         draft_hash_value = draft.get("hash")
         effective_project_id = proposal.get("project_id") or project_id
+        continuation = payload.get("analysis_outbox_continuation")
+        draft_intent_id = draft.get("analysis_intent_task_id")
+        draft_request_hash = draft.get("analysis_request_hash")
+        continuation_intent_id = (
+            continuation.get("intent_task_id") if isinstance(continuation, dict) else None
+        )
+        continuation_request_hash = (
+            continuation.get("analysis_request_hash") if isinstance(continuation, dict) else None
+        )
+        analysis_intent_task_id = draft_intent_id or continuation_intent_id
+        analysis_request_hash = draft_request_hash or continuation_request_hash
         if (
             not isinstance(proposal_hash, str)
             or not re.fullmatch(r"[a-f0-9]{64}", proposal_hash)
@@ -1961,6 +1998,43 @@ class ConversationMixin(BaseServiceMixin):
             or not isinstance(effective_project_id, str)
         ):
             return None
+        if (
+            (draft_intent_id is not None and continuation_intent_id is not None
+             and draft_intent_id != continuation_intent_id)
+            or (draft_request_hash is not None and continuation_request_hash is not None
+                and draft_request_hash != continuation_request_hash)
+        ):
+            raise ConflictError(
+                "work_task_composite_goal_conflict",
+                "统计草稿与 outbox continuation 声明了不同的复合目标身份。",
+            )
+        # Older non-composite outboxes and adapters may include their local
+        # continuation task ID without a frozen composite request hash. Such
+        # an ID is not sufficient authority to associate a WorkTask. If a
+        # composite root exists, the repository's terminal outbox transaction
+        # below requires the complete identity and rolls back this task bind.
+        has_composite_hash = (
+            draft_request_hash is not None or continuation_request_hash is not None
+        )
+        if has_composite_hash and (
+            analysis_intent_task_id is None or analysis_request_hash is None
+        ):
+            raise ConflictError(
+                "work_task_composite_goal_identity_missing",
+                "统计草稿的复合目标身份不完整，无法绑定分析任务。",
+            )
+        if not has_composite_hash:
+            analysis_intent_task_id = None
+            analysis_request_hash = None
+        if analysis_intent_task_id is not None and (
+            not isinstance(analysis_intent_task_id, str)
+            or not isinstance(analysis_request_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", analysis_request_hash)
+        ):
+            raise ConflictError(
+                "work_task_composite_goal_identity_invalid",
+                "统计草稿的复合目标引用格式无效。",
+            )
 
         goal_turns: list[str] = []
         for index, message in enumerate(conversation.messages[:-1]):
@@ -1999,6 +2073,22 @@ class ConversationMixin(BaseServiceMixin):
             goal_description=("用户目标：\n" + "\n".join(f"- {item}" for item in goal_turns))[
                 -4000:
             ],
+            analysis_intent_task_id=(
+                analysis_intent_task_id if isinstance(analysis_intent_task_id, str) else None
+            ),
+            analysis_request_hash=(
+                analysis_request_hash if isinstance(analysis_request_hash, str) else None
+            ),
+            source_run_id=(
+                proposal.get("source_run_id")
+                if isinstance(proposal.get("source_run_id"), str)
+                else None
+            ),
+            input_manifest_hash=(
+                proposal.get("input_manifest_hash")
+                if isinstance(proposal.get("input_manifest_hash"), str)
+                else None
+            ),
         ).task_id
 
     async def _send_chat_turn(

@@ -36,6 +36,7 @@
 - Work 预处理在已提交的 `skill_plan` 确含冻结预处理参数后，按会话/角色/Plan 修订 ID 创建持久 WorkTask；目标文本来自可关联到预处理 Agent 的用户消息，任务引用冻结 manifest hash。显式授权创建的 Run 与任务状态、会话角色链接在同一 Unit of Work 中收口；`work-draft`、`work-review` 的成功 Plan 路径也写入任务及会话关联。部分入口的 Plan 在 finalize 前已经保存，因此不概括承诺所有 Plan 生成入口都与任务同事务。
 - Work 分析提案按会话与 proposal hash 创建持久 `statistical_run` WorkTask，冻结统计 Plan 时绑定任务和会话角色链接，显式授权创建 Run 时再原子绑定 Run。统计任务不使用头动 QC 判据；唯一真实、非占位、且完整匹配 Run、设计修订、Plan 哈希、报告/manifest 和 Artifact 清单的结果完成任务。零显著结果有效；无结果时等待登记；mock/synthetic 或身份不一致时阻断。结果任务完成后会以同一 Unit of Work 创建独立的解释 outbox；模型调用仍由独立 Worker 完成，不在 reconciler 中执行。
 - `automation/result_interpretation.py` 定义真实 StatisticalResult 解释续接状态和有界模型事实投影。完成器在任务收口事务内入队，消费者重核完整来源并只提交 assistant-only 解释/报告草稿；有界聚合事实不包含完整报告、受试者矩阵、路径或逐 Artifact 详情。该消费者不创建或批准统计 Plan/Run，详见 [ADR 0042](../../docs/adr/0042-statistical-result-interpretation-outbox.md)。
+- `automation/composite_goal.py` 定义单个显式 `preprocess_then_analyze` 目标的身份、只读 snapshot 投影和完成条件；应用服务按 conversation + intent 查询，并验证 WORK 会话、预处理 Task 与冻结 Plan 项目。统计草稿修订只保存 attempt 身份关联；结果解释完成还要求 active task/result outbox/assistant continuation 的 task、status、result ID/version 精确匹配。当前是应用层查询能力，HTTP/前端投影与多目标调度仍未接入。
 - `work_agents.py` 负责预处理/分析意图路由、角色专属历史与结构化交接；`statistics_draft.py` 的统计草稿与 `work_draft.py` 的预处理参数草稿分开保存；
 - 角色路由支持中英文任务和两阶段依赖，预处理诊断与统计故障分派到各自角色。空任务的模糊续接先澄清；明确手动选择保持优先，已绑定任务不会因短续接切换。
 - `work_tasks.py` 读取服务端角色任务引用并校验统计确认作用域。Work 统计方案绑定会话、提案消息/哈希与草稿哈希；方案和运行创建与角色引用保存原子提交。切换保留各自任务，旧草稿及另一角色的确认被拒绝，幂等重放不重新切换前台。

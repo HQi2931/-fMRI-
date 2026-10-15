@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -34,6 +35,303 @@ def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
     assert application_logger.isEnabledFor(logging.ERROR), (
         "migrations raised the effective level of application logging"
     )
+
+
+def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Path) -> None:
+    from neuroagent.infrastructure.persistence.models import (
+        AnalysisProposalOutboxRow,
+        ConversationMessageRow,
+        ConversationRow,
+        PlanRevisionRow,
+        ProjectRow,
+        WorkflowRunRow,
+    )
+
+    url = f"sqlite:///{(tmp_path / 'composite-goal-backfill.sqlite').as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0027_statistical_result_interpretation_outbox")
+    engine = create_engine(url)
+    request_hash = "d" * 64
+    proposal_hash = "e" * 64
+    unverified_proposal_hash = "0" * 64
+    analysis_task_id = "work-analysis-" + hashlib.sha256(
+        f"legacy-composite-conversation\0analysis\0{proposal_hash}".encode()
+    ).hexdigest()[:32]
+    unverified_analysis_task_id = "work-analysis-" + hashlib.sha256(
+        f"legacy-composite-conversation\0analysis\0{unverified_proposal_hash}".encode()
+    ).hexdigest()[:32]
+    manifest_hash = "b" * 64
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                ProjectRow.__table__.insert().values(
+                    project_id="legacy-composite-project",
+                    name="Legacy composite",
+                    source_roots_json="[]",
+                    work_root="fixture",
+                )
+            )
+            connection.execute(
+                ConversationRow.__table__.insert().values(
+                    conversation_id="legacy-composite-conversation",
+                    mode="work",
+                    title="Legacy composite",
+                    project_id="legacy-composite-project",
+                    version=1,
+                    foreground_agent_role="preprocessing",
+                    work_tasks_json="{}",
+                )
+            )
+            connection.execute(
+                ConversationRow.__table__.insert().values(
+                    conversation_id="legacy-unbound-work-conversation",
+                    mode="work",
+                    title="Legacy projectless Work",
+                    project_id=None,
+                    version=1,
+                    foreground_agent_role="preprocessing",
+                    work_tasks_json="{}",
+                )
+            )
+            connection.execute(
+                PlanRevisionRow.__table__.insert().values(
+                    plan_revision_id="legacy-composite-plan",
+                    project_id="legacy-composite-project",
+                    revision=1,
+                    state="approved",
+                    plan_hash="a" * 64,
+                    manifest_hash=manifest_hash,
+                    environment_hash="c" * 64,
+                    plan_json="{}",
+                )
+            )
+            connection.execute(
+                WorkflowRunRow.__table__.insert().values(
+                    run_id="legacy-composite-run",
+                    project_id="legacy-composite-project",
+                    plan_revision_id="legacy-composite-plan",
+                    state="succeeded",
+                )
+            )
+
+            def add_task(
+                task_id: str,
+                intent_id: str,
+                *,
+                analysis: bool = False,
+                task_proposal_hash: str | None = None,
+                task_conversation_id: str = "legacy-composite-conversation",
+            ) -> None:
+                authority = {
+                    "conversation_id": task_conversation_id,
+                    **(
+                        {"input_revision": "a" * 64}
+                        if analysis
+                        else {
+                            "analysis_intent_task_id": intent_id,
+                            "analysis_request_hash": request_hash,
+                            "plan_revision_id": "legacy-composite-plan",
+                            "input_revision": manifest_hash,
+                            "workflow_run_id": "legacy-composite-run",
+                        }
+                    ),
+                }
+                connection.execute(
+                    text(
+                        "INSERT INTO work_tasks "
+                        "(task_id,status,version,goal_json,waiting_condition_json,"
+                        "authority_refs_json,recovery_steps_json,budget_json) "
+                        "VALUES (:task_id,'waiting_user',1,'{}',:waiting,:authority,'[]','{}')"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "waiting": json.dumps(
+                            {"kind": "user_decision", "reference": "review", "reason": "legacy"}
+                        ),
+                        "authority": json.dumps(authority),
+                    },
+                )
+                step = {
+                    "step_id": f"step-{task_id}",
+                    "sequence": 0,
+                    "kind": "statistical_run" if analysis else "preprocessing_run",
+                    "status": "ready",
+                    "input_version": (task_proposal_hash or proposal_hash)
+                    if analysis
+                    else "f" * 64,
+                    "authority_refs": authority,
+                }
+                connection.execute(
+                    text(
+                        "INSERT INTO work_task_steps "
+                        "(task_id,step_id,sequence,status,version,step_json) "
+                        "VALUES (:task_id,:step_id,0,'ready',1,:step)"
+                    ),
+                    {
+                        "task_id": task_id,
+                        "step_id": step["step_id"],
+                        "step": json.dumps(step),
+                    },
+                )
+
+            add_task("legacy-composite-preprocessing", "legacy-composite-intent")
+            add_task(
+                analysis_task_id,
+                "legacy-composite-intent",
+                analysis=True,
+                task_proposal_hash=proposal_hash,
+            )
+            add_task("legacy-unverified-preprocessing", "legacy-unverified-intent")
+            add_task(
+                unverified_analysis_task_id,
+                "legacy-unverified-intent",
+                analysis=True,
+                task_proposal_hash=unverified_proposal_hash,
+            )
+            add_task("legacy-ambiguous-preprocessing-1", "legacy-ambiguous-intent")
+            add_task("legacy-ambiguous-preprocessing-2", "legacy-ambiguous-intent")
+            add_task(
+                "legacy-unbound-preprocessing",
+                "legacy-unbound-intent",
+                task_conversation_id="legacy-unbound-work-conversation",
+            )
+            connection.execute(
+                ConversationMessageRow.__table__.insert().values(
+                    message_id="legacy-proposal-message",
+                    conversation_id="legacy-composite-conversation",
+                    sequence=1,
+                    role="assistant",
+                    content="proposal",
+                    payload_json=json.dumps(
+                        {
+                            "analysis_outbox_continuation": {
+                                "intent_task_id": "legacy-composite-intent"
+                            },
+                            "statistical_design_proposal": {"proposal_hash": proposal_hash},
+                        }
+                    ),
+                )
+            )
+            connection.execute(
+                ConversationMessageRow.__table__.insert().values(
+                    message_id="legacy-unverified-proposal-message",
+                    conversation_id="legacy-composite-conversation",
+                    sequence=2,
+                    role="assistant",
+                    content="proposal",
+                    payload_json=json.dumps(
+                        {
+                            "analysis_outbox_continuation": {
+                                "intent_task_id": "legacy-unverified-intent"
+                            },
+                            "statistical_design_proposal": {"proposal_hash": "1" * 64},
+                        }
+                    ),
+                )
+            )
+            connection.execute(
+                AnalysisProposalOutboxRow.__table__.insert(),
+                [
+                    {
+                        "intent_task_id": "legacy-composite-intent",
+                        "conversation_id": "legacy-composite-conversation",
+                        "project_id": "legacy-composite-project",
+                        "preprocessing_task_id": "legacy-composite-preprocessing",
+                        "plan_revision_id": "legacy-composite-plan",
+                        "manifest_hash": manifest_hash,
+                        "run_id": "legacy-composite-run",
+                        "analysis_request_hash": request_hash,
+                        "artifact_ids_json": "[]",
+                        "status": "proposal_ready",
+                        "attempt_count": 1,
+                        "retry_generation": 0,
+                        "fencing_token": 1,
+                        "continuation_message_id": "legacy-proposal-message",
+                        "analysis_work_task_id": analysis_task_id,
+                    },
+                    {
+                        "intent_task_id": "legacy-unverified-intent",
+                        "conversation_id": "legacy-composite-conversation",
+                        "project_id": "legacy-composite-project",
+                        "preprocessing_task_id": "legacy-unverified-preprocessing",
+                        "plan_revision_id": "legacy-composite-plan",
+                        "manifest_hash": manifest_hash,
+                        "run_id": "legacy-composite-run",
+                        "analysis_request_hash": request_hash,
+                        "artifact_ids_json": "[]",
+                        "status": "proposal_ready",
+                        "attempt_count": 1,
+                        "retry_generation": 0,
+                        "fencing_token": 1,
+                        "continuation_message_id": "legacy-unverified-proposal-message",
+                        "analysis_work_task_id": unverified_analysis_task_id,
+                    },
+                ],
+            )
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            linked = connection.execute(
+                text(
+                    "SELECT analysis_proposal_outbox_intent_task_id, analysis_work_task_id "
+                    "FROM composite_goal_links WHERE intent_task_id='legacy-composite-intent'"
+                )
+            ).one()
+            attempt = connection.execute(
+                text(
+                    "SELECT attempt_number, work_task_id, proposal_hash "
+                    "FROM composite_goal_analysis_attempts "
+                    "WHERE intent_task_id='legacy-composite-intent'"
+                )
+            ).one()
+            ambiguous_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM composite_goal_links "
+                    "WHERE intent_task_id='legacy-ambiguous-intent'"
+                )
+            ).scalar_one()
+            unverified_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM composite_goal_links "
+                    "WHERE intent_task_id='legacy-unverified-intent'"
+                )
+            ).scalar_one()
+            unbound = connection.execute(
+                text(
+                    "SELECT conversation_id, project_id, preprocessing_task_id "
+                    "FROM composite_goal_links WHERE intent_task_id='legacy-unbound-intent'"
+                )
+            ).one()
+            migrated_analysis_refs = json.loads(
+                connection.execute(
+                    text("SELECT authority_refs_json FROM work_tasks WHERE task_id=:task_id"),
+                    {"task_id": analysis_task_id},
+                ).scalar_one()
+            )
+            migrated_step = json.loads(
+                connection.execute(
+                    text("SELECT step_json FROM work_task_steps WHERE task_id=:task_id"),
+                    {"task_id": analysis_task_id},
+                ).scalar_one()
+            )
+        assert tuple(linked) == ("legacy-composite-intent", analysis_task_id)
+        assert tuple(attempt) == (1, analysis_task_id, proposal_hash)
+        assert ambiguous_count == 0
+        assert unverified_count == 0
+        assert tuple(unbound) == (
+            "legacy-unbound-work-conversation",
+            "legacy-composite-project",
+            "legacy-unbound-preprocessing",
+        )
+        assert migrated_analysis_refs["analysis_intent_task_id"] == "legacy-composite-intent"
+        assert migrated_analysis_refs["analysis_request_hash"] == request_hash
+        assert migrated_step["authority_refs"]["analysis_intent_task_id"] == (
+            "legacy-composite-intent"
+        )
+        assert migrated_step["authority_refs"]["analysis_request_hash"] == request_hash
+    finally:
+        engine.dispose()
 
 
 def test_work_task_migration_preserves_legacy_preprocessing_run_and_round_trips(

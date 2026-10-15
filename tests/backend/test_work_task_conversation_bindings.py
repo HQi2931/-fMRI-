@@ -2,17 +2,33 @@
 
 # ruff: noqa: RUF001
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
+from neuroagent.agent.models import ModelProfile
 from neuroagent.api import create_app
-from neuroagent.application.automation.models import TaskStatus, WaitingCondition, WaitingKind
+from neuroagent.application.automation.analysis_outbox import AnalysisOutboxStatus
+from neuroagent.application.automation.composite_goal import CompositeGoalStatus
+from neuroagent.application.automation.models import (
+    TaskStatus,
+    TaskStepStatus,
+    WaitingCondition,
+    WaitingKind,
+)
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+    VerifiedResultInterpretationSource,
+    project_result_model_facts,
+)
 from neuroagent.application.contracts.conversations import ConversationCreate, ConversationMode
 from neuroagent.application.contracts.plans import ApprovalCreate, ApprovalDecision
 from neuroagent.application.contracts.projects import (
@@ -21,6 +37,7 @@ from neuroagent.application.contracts.projects import (
     ProjectCreate,
 )
 from neuroagent.application.contracts.runs import QcReviewState, RunCreate
+from neuroagent.application.conversation_work import WorkActionResult
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.work_agents import analysis_dependency_for_request
@@ -156,18 +173,33 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert user_goal in task.goal.description
             assert any("preprocessed_bold" in item for item in task.goal.completion_conditions)
 
-            # Reusing the same frozen Plan for a new ordinary draft must clear
-            # the pending composite association before any Run has started.
+            # The composite identity is committed with the preprocessing task,
+            # before an analysis outbox exists. Revisiting that Plan without an
+            # intent envelope must not detach the durable goal.
+            progress = service.automation.get_composite_goal_progress(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            assert progress.status.value == "waiting_user"
+            assert progress.reason_code == "preprocessing_user_decision"
+            identity = service.automation.get_composite_goal(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            assert identity.preprocessing_task_id == task_id
+            assert identity.analysis_proposal_outbox_intent_task_id is None
             service.automation.ensure_preprocessing_plan_task(
                 conversation_id=conversation.conversation_id,
                 project_id=project.project_id,
                 plan_revision_id=plan_id,
                 goal_description=task.goal.description,
             )
-            cleared_task = service.automation.get_task(task_id)
-            assert cleared_task.authority_refs.analysis_intent_task_id is None
+            retained_task = service.automation.get_task(task_id)
+            assert (
+                retained_task.authority_refs.analysis_intent_task_id
+                == analysis_intent["task_id"]
+            )
             assert all(
-                step.authority_refs.analysis_intent_task_id is None for step in cleared_task.steps
+                step.authority_refs.analysis_intent_task_id == analysis_intent["task_id"]
+                for step in retained_task.steps
             )
             service.automation.ensure_preprocessing_plan_task(
                 conversation_id=conversation.conversation_id,
@@ -292,6 +324,251 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert pending_outbox.run_id == run_id
             assert pending_outbox.plan_revision_id == plan_id
             assert pending_outbox.artifact_ids == ()
+            repository = service.automation._repository
+            ready_outbox = repository.mark_analysis_outbox_ready(
+                analysis_intent["task_id"],
+                preprocessing_task_id=task_id,
+                plan_revision_id=plan_id,
+                manifest_hash=plan_data["manifest_hash"],
+                run_id=run_id,
+                artifact_ids=("synthetic-verified-metric",),
+            )
+            assert ready_outbox.status is AnalysisOutboxStatus.READY
+            claim = service.automation.claim_next_analysis_outbox(
+                "composite-test", lease_seconds=30
+            )
+            assert claim is not None
+            request_hash = content_hash(user_goal.strip())
+            first_proposal_hash = "1" * 64
+            first_draft_hash = "2" * 64
+            first_analysis_task = service.automation.ensure_analysis_proposal_task(
+                conversation.conversation_id,
+                project.project_id,
+                first_proposal_hash,
+                "分析 ALFF 两组差异",
+                first_draft_hash,
+                analysis_intent_task_id=analysis_intent["task_id"],
+                analysis_request_hash=request_hash,
+                source_run_id=run_id,
+                input_manifest_hash=plan_data["manifest_hash"],
+            )
+            _, first_proposal_message = service.repository.append_assistant_continuation(
+                conversation.conversation_id,
+                continuation_key="test-composite-first-proposal",
+                assistant_content="首个分析提案已准备好。",
+                assistant_payload={
+                    "analysis_outbox_continuation": {
+                        "intent_task_id": analysis_intent["task_id"],
+                        "analysis_request_hash": request_hash,
+                    },
+                    "statistical_design_proposal": {"proposal_hash": first_proposal_hash},
+                },
+                project_id=project.project_id,
+                work_task_id=first_analysis_task.task_id,
+            )
+            repository.complete_analysis_outbox(
+                claim,
+                status=AnalysisOutboxStatus.PROPOSAL_READY,
+                continuation_message_id=first_proposal_message.message_id,
+                analysis_work_task_id=first_analysis_task.task_id,
+            )
+            linked_identity = service.automation.get_composite_goal(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            assert linked_identity.analysis_proposal_outbox_intent_task_id == analysis_intent[
+                "task_id"
+            ]
+            assert linked_identity.analysis_work_task_id == first_analysis_task.task_id
+
+            second_proposal_hash = "3" * 64
+            second_draft_hash = "4" * 64
+            second_analysis_task = service.automation.ensure_analysis_proposal_task(
+                conversation.conversation_id,
+                project.project_id,
+                second_proposal_hash,
+                "分析 ALFF 两组差异（修订）",
+                second_draft_hash,
+                analysis_intent_task_id=analysis_intent["task_id"],
+                analysis_request_hash=request_hash,
+                source_run_id=run_id,
+                input_manifest_hash=plan_data["manifest_hash"],
+            )
+            snapshot = repository.get_composite_goal_snapshot(analysis_intent["task_id"])
+            assert snapshot.goal.analysis_work_task_id == second_analysis_task.task_id
+            assert snapshot.analysis_proposal_outbox is not None
+            assert snapshot.analysis_proposal_outbox.analysis_work_task_id == (
+                first_analysis_task.task_id
+            )
+            assert [attempt.work_task_id for attempt in snapshot.analysis_attempts] == [
+                first_analysis_task.task_id,
+                second_analysis_task.task_id,
+            ]
+            with pytest.raises(ConflictError) as stale_attempt:
+                service.automation.ensure_analysis_proposal_task(
+                    conversation.conversation_id,
+                    project.project_id,
+                    first_proposal_hash,
+                    "分析 ALFF 两组差异",
+                    first_draft_hash,
+                    analysis_intent_task_id=analysis_intent["task_id"],
+                    analysis_request_hash=request_hash,
+                    source_run_id=run_id,
+                    input_manifest_hash=plan_data["manifest_hash"],
+                )
+            assert stale_attempt.value.code == "composite_goal_attempt_superseded"
+
+            with pytest.raises(ConflictError) as stale_result:
+                service.automation.ensure_result_interpretation_outbox(
+                    StatisticalResultInterpretationOutbox(
+                        task_id=first_analysis_task.task_id,
+                        conversation_id=conversation.conversation_id,
+                        project_id=project.project_id,
+                        run_id="late-old-analysis-run",
+                        plan_revision_id="late-old-analysis-plan",
+                        result_id="late-old-statistical-result",
+                        result_bundle_hash="5" * 64,
+                        result_version=1,
+                        artifact_ids=("late-old-result-artifact",),
+                    )
+                )
+            assert stale_result.value.code == "composite_goal_result_binding_mismatch"
+
+            # Seed an exact terminal identity chain without executing an
+            # analysis engine, then verify result-outbox creation updates the
+            # composite root in the same repository transaction.
+            finished_task = second_analysis_task.model_copy(
+                update={
+                    "version": second_analysis_task.version + 1,
+                    "status": TaskStatus.COMPLETED,
+                    "waiting_condition": None,
+                    "authority_refs": second_analysis_task.authority_refs.model_copy(
+                        update={"plan_revision_id": plan_id, "workflow_run_id": run_id}
+                    ),
+                    "steps": tuple(
+                        step.model_copy(
+                            update={
+                                "status": TaskStepStatus.SUCCEEDED,
+                                "authority_refs": step.authority_refs.model_copy(
+                                    update={
+                                        "plan_revision_id": plan_id,
+                                        "workflow_run_id": run_id,
+                                    }
+                                ),
+                            }
+                        )
+                        for step in second_analysis_task.steps
+                    ),
+                }
+            )
+            repository.save_task(
+                finished_task, expected_version=second_analysis_task.version
+            )
+            result_outbox = service.automation.ensure_result_interpretation_outbox(
+                StatisticalResultInterpretationOutbox(
+                    task_id=finished_task.task_id,
+                    conversation_id=conversation.conversation_id,
+                    project_id=project.project_id,
+                    run_id=run_id,
+                    plan_revision_id=plan_id,
+                    result_id="synthetic-active-statistical-result",
+                    result_bundle_hash="6" * 64,
+                    result_version=1,
+                    artifact_ids=("synthetic-result-artifact",),
+                )
+            )
+            assert result_outbox.task_id == finished_task.task_id
+            result_snapshot = repository.get_composite_goal_snapshot(
+                analysis_intent["task_id"]
+            )
+            assert result_snapshot.goal.analysis_work_task_id == finished_task.task_id
+            assert result_snapshot.goal.result_interpretation_outbox_task_id == (
+                finished_task.task_id
+            )
+            assert [attempt.work_task_id for attempt in result_snapshot.analysis_attempts] == [
+                first_analysis_task.task_id,
+                second_analysis_task.task_id,
+            ]
+
+            # Exercise the real result-outbox consumer and the envelope closeout
+            # for a composite goal. The model and evidence are deterministic
+            # test doubles; no provider, MATLAB, or DPABI process is invoked.
+            service.repository.create_model_profile(
+                ModelProfile(
+                    id="composite-result-interpretation-model",
+                    provider="openai-compatible",
+                    base_url="https://example.org/v1",
+                    model="test-model",
+                    api_key_env="UNUSED_COMPOSITE_RESULT_INTERPRETATION_API_KEY",
+                    context_window_tokens=32768,
+                )
+            )
+            result_facts = project_result_model_facts(
+                {
+                    "mode": "real",
+                    "non_scientific": False,
+                    "method": None,
+                    "inference_status": "no_significant_voxels",
+                    "significant_voxel_count": 0,
+                    "cluster_count": 0,
+                    "clusters": [],
+                    "localization_status": "no_significant_voxels",
+                    "interpretation_limits": ["零显著不等于等价。"],
+                }
+            )
+            verified_result = VerifiedResultInterpretationSource(
+                task_id=result_outbox.task_id,
+                conversation_id=conversation.conversation_id,
+                project_id=project.project_id,
+                run_id=result_outbox.run_id,
+                plan_revision_id=result_outbox.plan_revision_id,
+                result_id=result_outbox.result_id,
+                result_bundle_hash=result_outbox.result_bundle_hash,
+                result_version=result_outbox.result_version,
+                artifact_ids=result_outbox.artifact_ids,
+                source_evidence_hash="7" * 64,
+                model_facts=result_facts,
+                deterministic_readout="本次检验和校正阈值下未发现显著体素。",
+            )
+            monkeypatch.setattr(
+                service.automation,
+                "verify_result_interpretation_source",
+                lambda _outbox: verified_result,
+            )
+            monkeypatch.setattr(
+                service.work_dialogue,
+                "prepare_statistical_result_interpretation",
+                AsyncMock(
+                    return_value=WorkActionResult(
+                        "统计结果解释草稿已准备。",
+                        project_id=project.project_id,
+                    )
+                ),
+            )
+            assert (
+                asyncio.run(
+                    service.conversations.consume_next_result_interpretation_outbox(
+                        "composite-result-interpreter", lease_seconds=30
+                    )
+                )
+                == ResultInterpretationStatus.COMPLETED.value
+            )
+            completed_conversation = service.conversations.get_conversation(
+                conversation.conversation_id
+            )
+            completion_payload = completed_conversation.messages[-1].payload
+            assert completion_payload["analysis_intent_envelope"]["status"] == "completed"
+            assert completion_payload["statistical_result_interpretation"]["task_id"] == (
+                finished_task.task_id
+            )
+            progress = service.automation.get_composite_goal_progress(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            # This fixture intentionally leaves preprocessing running for the
+            # later assertions in this test. Result delivery must not falsely
+            # mark the overall goal complete while that authoritative task is
+            # still in progress.
+            assert progress.status is CompositeGoalStatus.WAITING_PREPROCESSING
+            assert progress.reason_code == "preprocessing_in_progress"
             with pytest.raises(ConflictError, match="项目"):
                 service.automation.ensure_analysis_proposal_outbox(
                     intent=analysis_intent,
@@ -621,6 +898,48 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert completed.task.steps[0].status.value == "succeeded"
             assert completed.task.steps[0].authority_refs.artifact_ids == ("verified-timeseries",)
             assert completed.task.authority_refs.artifact_ids == ("verified-timeseries",)
+            result_claim = service.automation.claim_next_result_interpretation_outbox(
+                "composite-result-test", lease_seconds=30
+            )
+            assert result_claim is not None
+            goal = service.automation.get_composite_goal(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            _, result_message = service.repository.append_assistant_continuation(
+                conversation.conversation_id,
+                continuation_key="test-composite-result-completed",
+                assistant_content="统计结果解释已准备好。",
+                assistant_payload={
+                    "statistical_result_interpretation": {
+                        "task_id": result_outbox.task_id,
+                        "status": "completed",
+                        "result_id": result_outbox.result_id,
+                        "result_version": result_outbox.result_version,
+                    },
+                    "analysis_intent_envelope": {
+                        "status": "completed",
+                        "task_id": goal.intent_task_id,
+                        "conversation_id": goal.conversation_id,
+                        "project_id": goal.project_id,
+                        "analysis_request_hash": goal.analysis_request_hash,
+                    },
+                },
+                project_id=project.project_id,
+                work_task_id=None,
+            )
+            service.automation.complete_result_interpretation_outbox(
+                result_claim,
+                status=ResultInterpretationStatus.COMPLETED,
+                continuation_message_id=result_message.message_id,
+            )
+            progress = service.automation.get_composite_goal_progress(
+                conversation.conversation_id, analysis_intent["task_id"]
+            )
+            assert progress.status.value == "completed"
+            assert progress.continuation_message_id == result_message.message_id
+            assert service.automation.claim_next_result_interpretation_outbox(
+                "composite-result-test", lease_seconds=30
+            ) is None
             ready_outbox = service.automation._repository.get_analysis_outbox(
                 str(analysis_intent["task_id"])
             )

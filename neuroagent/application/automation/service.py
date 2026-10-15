@@ -17,6 +17,12 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisSourceModelFacts,
     VerifiedAnalysisOutboxSource,
 )
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalIdentity,
+    CompositeGoalProgress,
+    CompositeGoalSnapshot,
+    project_composite_goal,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     EventConsumptionDecision,
@@ -208,6 +214,53 @@ class WorkTaskApplicationService:
 
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
+
+    def get_composite_goal_progress(
+        self, conversation_id: str, intent_task_id: str
+    ) -> CompositeGoalProgress:
+        """Read and project one explicitly identified composite goal."""
+
+        snapshot = self._repository.get_composite_goal_snapshot(intent_task_id)
+        self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
+        return project_composite_goal(snapshot)
+
+    def get_composite_goal(
+        self, conversation_id: str, intent_task_id: str
+    ) -> CompositeGoalIdentity:
+        snapshot = self._repository.get_composite_goal_snapshot(intent_task_id)
+        self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
+        return snapshot.goal
+
+    def find_composite_goal_for_analysis_task(
+        self, analysis_work_task_id: str
+    ) -> CompositeGoalIdentity | None:
+        """Resolve an internal task link without exposing an unscoped progress API."""
+
+        return self._repository.find_composite_goal_for_analysis_task(analysis_work_task_id)
+
+    @staticmethod
+    def _require_composite_goal_scope(
+        snapshot: CompositeGoalSnapshot, conversation_id: str, intent_task_id: str
+    ) -> None:
+        goal = snapshot.goal
+        task = snapshot.preprocessing_task
+        if (
+            snapshot.conversation_mode != ConversationMode.WORK.value
+            or snapshot.conversation_project_id not in {None, goal.project_id}
+            or snapshot.preprocessing_plan_project_id != goal.project_id
+            or task is None
+            or task.authority_refs.plan_revision_id != snapshot.preprocessing_plan_revision_id
+            or task.authority_refs.input_revision != snapshot.preprocessing_plan_manifest_hash
+            or goal.conversation_id != conversation_id
+            or task.task_id != goal.preprocessing_task_id
+            or task.authority_refs.conversation_id != goal.conversation_id
+            or task.authority_refs.analysis_intent_task_id != goal.intent_task_id
+            or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
+            or task.authority_refs.plan_revision_id is None
+        ):
+            raise NotFoundError(
+                "复合自动化目标", f"{conversation_id}:{intent_task_id}"
+            )
 
     def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox:
         return self._repository.get_analysis_outbox(intent_task_id)
@@ -769,6 +822,11 @@ class WorkTaskApplicationService:
         proposal_hash: str,
         goal_description: str,
         draft_hash: str,
+        *,
+        analysis_intent_task_id: str | None = None,
+        analysis_request_hash: str | None = None,
+        source_run_id: str | None = None,
+        input_manifest_hash: str | None = None,
     ) -> WorkTask:
         """Create/reuse the durable task for one reviewed statistical proposal."""
 
@@ -781,6 +839,55 @@ class WorkTaskApplicationService:
             raise InputValidationError("work_task_goal_required", "持久任务缺少用户目标描述。")
 
         task_id = self.analysis_proposal_task_id(conversation_id, proposal_hash)
+        try:
+            current = self._repository.get_task(task_id)
+        except NotFoundError:
+            current = None
+        if current is not None and analysis_intent_task_id is None:
+            # Reuse the exact persisted association for plan binding; never
+            # infer a parent from a conversation's latest message or role slot.
+            analysis_intent_task_id = current.authority_refs.analysis_intent_task_id
+            analysis_request_hash = current.authority_refs.analysis_request_hash
+        if (analysis_intent_task_id is None) != (analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "统计任务的复合 intent ID 与请求摘要必须同时存在。",
+            )
+        snapshot = None
+        if analysis_intent_task_id is not None:
+            self._validate_hash(analysis_request_hash or "", "analysis_request_hash")
+            snapshot = self._repository.get_composite_goal_snapshot(analysis_intent_task_id)
+            goal = snapshot.goal
+            if (
+                goal.conversation_id != conversation_id
+                or goal.project_id != project_id
+                or goal.analysis_request_hash != analysis_request_hash
+            ):
+                raise ConflictError(
+                    "composite_goal_analysis_scope_mismatch",
+                    "统计提案的会话、项目或请求摘要不属于该复合目标。",
+                )
+            if snapshot.analysis_proposal_outbox is None:
+                raise ConflictError(
+                    "composite_goal_proposal_outbox_missing",
+                    "统计提案不能绑定到尚未建立精确预处理 outbox 的目标。",
+                )
+            outbox = snapshot.analysis_proposal_outbox
+            if source_run_id is not None and source_run_id != outbox.run_id:
+                raise ConflictError(
+                    "composite_goal_proposal_source_mismatch",
+                    "统计提案使用的预处理 Run 与复合目标来源不一致。",
+                )
+            if input_manifest_hash is not None and input_manifest_hash != outbox.manifest_hash:
+                raise ConflictError(
+                    "composite_goal_proposal_manifest_mismatch",
+                    "统计提案使用的 manifest 与复合目标冻结输入不一致。",
+                )
+            if current is None and (source_run_id is None or input_manifest_hash is None):
+                raise ConflictError(
+                    "composite_goal_proposal_source_missing",
+                    "新的统计尝试必须显式绑定预处理 Run 和 manifest。",
+                )
         task = WorkTask(
             task_id=task_id,
             goal=WorkGoal(
@@ -798,6 +905,8 @@ class WorkTaskApplicationService:
             ),
             authority_refs={
                 "conversation_id": conversation_id,
+                "analysis_intent_task_id": analysis_intent_task_id,
+                "analysis_request_hash": analysis_request_hash,
                 "input_revision": draft_hash,
             },
             steps=(
@@ -809,6 +918,8 @@ class WorkTaskApplicationService:
                     input_version=proposal_hash,
                     authority_refs={
                         "conversation_id": conversation_id,
+                        "analysis_intent_task_id": analysis_intent_task_id,
+                        "analysis_request_hash": analysis_request_hash,
                         "input_revision": draft_hash,
                     },
                 ),
@@ -820,22 +931,33 @@ class WorkTaskApplicationService:
                 max_elapsed_seconds=86_400,
             ),
         )
-        try:
-            current = self._repository.get_task(task_id)
-        except NotFoundError:
-            return self._repository.create_task(task)
-        current_step = self._statistical_step(current)
-        if (
-            current.authority_refs.conversation_id != conversation_id
-            or current.authority_refs.input_revision != draft_hash
-            or current_step is None
-            or current_step.input_version != proposal_hash
-            or current_step.authority_refs.conversation_id != conversation_id
-            or current_step.authority_refs.input_revision != draft_hash
-        ):
-            raise ConflictError(
-                "work_task_binding_conflict", "同一统计提案已绑定到不同草稿或会话。"
-            )
+        with self.atomic():
+            if current is None:
+                current = self._repository.create_task(task)
+            elif (
+                current.authority_refs.analysis_intent_task_id != analysis_intent_task_id
+                or current.authority_refs.analysis_request_hash != analysis_request_hash
+            ):
+                raise ConflictError(
+                    "work_task_composite_goal_conflict",
+                    "同一统计提案不能切换到不同的复合目标身份。",
+                )
+            current_step = self._statistical_step(current)
+            if (
+                current.authority_refs.conversation_id != conversation_id
+                or current.authority_refs.input_revision != draft_hash
+                or current_step is None
+                or current_step.input_version != proposal_hash
+                or current_step.authority_refs.conversation_id != conversation_id
+                or current_step.authority_refs.input_revision != draft_hash
+            ):
+                raise ConflictError(
+                    "work_task_binding_conflict", "同一统计提案已绑定到不同草稿或会话。"
+                )
+            if snapshot is not None:
+                self._repository.bind_composite_goal_analysis_task(
+                    snapshot.goal, task_id, proposal_hash
+                )
         return current
 
     def bind_statistical_plan(
@@ -881,6 +1003,7 @@ class WorkTaskApplicationService:
             or step.authority_refs.input_revision != context["draft_hash"]
         ):
             raise ConflictError("work_task_binding_mismatch", "统计任务与当前提案草稿不匹配。")
+        self._require_active_composite_analysis_task(current, proposal_hash)
         if current.authority_refs.plan_revision_id not in {None, plan_revision_id}:
             raise ConflictError("work_task_plan_already_bound", "统计任务已绑定另一冻结方案。")
         if step.authority_refs.plan_revision_id not in {None, plan_revision_id}:
@@ -938,6 +1061,7 @@ class WorkTaskApplicationService:
         proposal_hash = step.input_version
         if not proposal_hash:
             raise ConflictError("work_task_binding_mismatch", "统计任务缺少已审查提案哈希。")
+        self._require_active_composite_analysis_task(task, proposal_hash)
         context, _design = self._statistical_plan_context(
             plan,
             conversation_id=conversation_id,
@@ -1018,6 +1142,35 @@ class WorkTaskApplicationService:
     def _validate_hash(value: str, field: str) -> None:
         if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise InputValidationError("work_task_hash_invalid", f"{field} 必须是 SHA-256 哈希。")
+
+    def _require_active_composite_analysis_task(
+        self, task: WorkTask, proposal_hash: str
+    ) -> None:
+        intent_id = task.authority_refs.analysis_intent_task_id
+        request_hash = task.authority_refs.analysis_request_hash
+        if intent_id is None and request_hash is None:
+            return
+        if intent_id is None or request_hash is None:
+            raise ConflictError(
+                "composite_goal_analysis_identity_incomplete",
+                "统计任务的复合目标身份不完整。",
+            )
+        snapshot = self._repository.get_composite_goal_snapshot(intent_id)
+        attempt = next(
+            (item for item in snapshot.analysis_attempts if item.work_task_id == task.task_id),
+            None,
+        )
+        if (
+            snapshot.goal.conversation_id != task.authority_refs.conversation_id
+            or snapshot.goal.analysis_request_hash != request_hash
+            or snapshot.goal.analysis_work_task_id != task.task_id
+            or attempt is None
+            or attempt.proposal_hash != proposal_hash
+        ):
+            raise ConflictError(
+                "composite_goal_analysis_attempt_superseded",
+                "该统计提案已经不是复合目标的当前尝试，不能继续绑定方案或运行。",
+            )
 
     @staticmethod
     def _require_work_conversation(
@@ -1104,6 +1257,14 @@ class WorkTaskApplicationService:
         key that resolves to different authority references is treated as a
         binding conflict.
         """
+
+        if (analysis_intent_task_id is None) != (analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "预处理任务的复合 intent ID 与请求摘要必须同时存在。",
+            )
+        if analysis_request_hash is not None:
+            self._validate_hash(analysis_request_hash, "analysis_request_hash")
 
         conversation = self._conversation_repository.get_conversation(conversation_id)
         if conversation.mode is not ConversationMode.WORK:
@@ -1218,7 +1379,10 @@ class WorkTaskApplicationService:
         try:
             current = self._repository.get_task(task_id)
         except NotFoundError:
-            return self._repository.create_task(task)
+            created = self._repository.create_task(task)
+            if analysis_intent_task_id is not None or analysis_request_hash is not None:
+                self._repository.ensure_preprocessing_composite_goal(created)
+            return created
         if (
             current.authority_refs.conversation_id != conversation_id
             or current.authority_refs.plan_revision_id != plan_revision_id
@@ -1243,48 +1407,8 @@ class WorkTaskApplicationService:
             raise ConflictError(
                 "work_task_analysis_intent_conflict", "预处理任务绑定的分析请求摘要不一致。"
             )
-        if (
-            current.authority_refs.analysis_intent_task_id is not None
-            and analysis_intent_task_id is None
-        ):
-            if (
-                current.authority_refs.workflow_run_id is not None
-                or current.status is not TaskStatus.WAITING_USER
-            ):
-                raise ConflictError(
-                    "work_task_analysis_intent_consumed",
-                    "已经启动的预处理任务不能替换或清除其复合分析意图。",
-                )
-            current = self._repository.save_task(
-                current.model_copy(
-                    update={
-                        "version": current.version + 1,
-                        "authority_refs": current.authority_refs.model_copy(
-                            update={
-                                "analysis_intent_task_id": None,
-                                "analysis_request_hash": None,
-                            }
-                        ),
-                        "steps": tuple(
-                            step.model_copy(
-                                update={
-                                    "version": step.version + 1,
-                                    "authority_refs": step.authority_refs.model_copy(
-                                        update={
-                                            "analysis_intent_task_id": None,
-                                            "analysis_request_hash": None,
-                                        }
-                                    ),
-                                }
-                            )
-                            if step.kind == "preprocessing_run"
-                            else step
-                            for step in current.steps
-                        ),
-                    }
-                ),
-                expected_version=current.version,
-            )
+        # An existing explicit composite intent is durable and remains attached
+        # when the same frozen Plan is revisited through an ordinary start flow.
         if current.authority_refs.analysis_intent_task_id is None and (
             analysis_intent_task_id is not None or analysis_request_hash is not None
         ):
@@ -1356,6 +1480,11 @@ class WorkTaskApplicationService:
                 }
             )
             return self._repository.save_task(updated, expected_version=current.version)
+        if (
+            current.authority_refs.analysis_intent_task_id is not None
+            or current.authority_refs.analysis_request_hash is not None
+        ):
+            self._repository.ensure_preprocessing_composite_goal(current)
         return current
 
     def bind_preprocessing_run(
