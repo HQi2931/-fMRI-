@@ -362,6 +362,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Step Plan Review */
+        get: operations["get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/workspace/consents": {
         parameters: {
             query?: never;
@@ -2304,6 +2321,24 @@ export interface components {
             revision: number;
             /** Row Count */
             row_count: number;
+        };
+        /**
+         * DpabiPreprocessingOutput
+         * @description One subject-level DPABI output and its registered Artifact identity.
+         */
+        DpabiPreprocessingOutput: {
+            /** Artifact Type */
+            artifact_type: string;
+            /**
+             * Metric
+             * @enum {string}
+             */
+            metric: "timeseries" | "brain_mask" | "alff" | "falff" | "reho";
+            /** Relative Path */
+            relative_path: string;
+            scaling?: components["schemas"]["MetricScaling"] | null;
+            /** Subject Id */
+            subject_id: string;
         };
         /** EnvironmentComponent */
         EnvironmentComponent: {
@@ -4979,6 +5014,53 @@ export interface components {
             statistical_design_revision_id: string;
         };
         /**
+         * StepPlanReviewView
+         * @description Read-only snapshot for rendering the exact Plan bound to a READY step.
+         */
+        StepPlanReviewView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Execution Authorized
+             * @default false
+             * @constant
+             */
+            execution_authorized: false;
+            /**
+             * Expected Artifacts
+             * @default []
+             */
+            expected_artifacts: components["schemas"]["DpabiPreprocessingOutput"][];
+            /** Input Revision */
+            input_revision: string;
+            plan: components["schemas"]["PlanRevisionView"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            plan_state: components["schemas"]["PlanState"];
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Step Input Version */
+            step_input_version: string | null;
+            /** Step Kind */
+            step_kind: string;
+            /** Step Sequence */
+            step_sequence: number;
+            step_status: components["schemas"]["TaskStepStatus"];
+            /** Step Version */
+            step_version: number;
+            /** Task Id */
+            task_id: string;
+            task_status: components["schemas"]["TaskStatus"];
+            /** Task Version */
+            task_version: number;
+            /** Waiting Reference */
+            waiting_reference: string;
+        };
+        /**
          * StructuredRecommendation
          * @description The only Agent result accepted by deterministic application services.
          */
@@ -5103,6 +5185,16 @@ export interface components {
          * @enum {string}
          */
         Tail: "one_sided_positive" | "one_sided_negative" | "two_sided";
+        /**
+         * TaskStatus
+         * @enum {string}
+         */
+        TaskStatus: "queued" | "running" | "waiting_user" | "waiting_run" | "waiting_dependency" | "completed" | "blocked" | "cancelled";
+        /**
+         * TaskStepStatus
+         * @enum {string}
+         */
+        TaskStepStatus: "pending" | "ready" | "running" | "waiting" | "succeeded" | "failed" | "blocked" | "skipped";
         /**
          * TaskType
          * @enum {string}
@@ -7163,6 +7255,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationTurnView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanReviewView"];
                 };
             };
             /** @description Bad Request */

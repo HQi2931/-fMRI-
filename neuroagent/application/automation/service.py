@@ -54,7 +54,9 @@ from neuroagent.application.automation.step_lifecycle import (
     bind_prepared_step_plan_for_review,
     bind_step_to_run,
     complete_step,
+    resolve_linear_step_sequence,
     resolve_routed_workflow_run,
+    step_plan_review_reference,
 )
 from neuroagent.application.automation.step_preparation import (
     StepPreparationClaim,
@@ -68,6 +70,7 @@ from neuroagent.application.automation.step_readiness import (
     StepReadinessResultKind,
     StepReadinessStepKind,
 )
+from neuroagent.application.contracts.automation import StepPlanReviewView
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
@@ -850,6 +853,221 @@ class WorkTaskApplicationService:
 
     def get_task(self, task_id: str) -> WorkTask:
         return self._repository.get_task(task_id)
+
+    def get_step_plan_review(
+        self, conversation_id: str, task_id: str, step_id: str
+    ) -> StepPlanReviewView:
+        """Read one step review using a consistent repository snapshot."""
+
+        with self.atomic():
+            return self._read_step_plan_review(conversation_id, task_id, step_id)
+
+    def _read_step_plan_review(
+        self, conversation_id: str, task_id: str, step_id: str
+    ) -> StepPlanReviewView:
+        """Read the exact frozen Plan bound to one READY step awaiting user review.
+
+        This projection is intentionally read-only. It neither records Plan
+        approval nor creates/authorizes a workflow Run.
+        """
+
+        task = self._repository.get_task(task_id)
+        if task.task_id != task_id:
+            raise NotFoundError("WorkTask", task_id)
+        if task.authority_refs.conversation_id != conversation_id:
+            # Keep this route conversation-scoped; do not disclose whether a
+            # task ID is valid in another Work conversation.
+            raise NotFoundError("WorkTask", task_id)
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        if (
+            conversation.conversation_id != conversation_id
+            or conversation.mode is not ConversationMode.WORK
+            or not conversation.project_id
+        ):
+            raise NotFoundError("Work 会话", conversation_id)
+        project = self._project_repository.get_project(conversation.project_id)
+        if project.project_id != conversation.project_id:
+            raise ConflictError(
+                "step_plan_review_project_mismatch", "Work 会话项目与项目读取结果不一致。"
+            )
+
+        if task.status is not TaskStatus.WAITING_USER:
+            raise ConflictError(
+                "step_plan_review_task_not_waiting",
+                "只有等待用户审查的 WorkTask 才能读取步骤方案。",
+            )
+        waiting = task.waiting_condition
+        if waiting is None or waiting.kind is not WaitingKind.USER_DECISION:
+            raise ConflictError(
+                "step_plan_review_wait_mismatch", "WorkTask 当前等待状态不是用户决策。"
+            )
+        if task.authority_refs.workflow_run_id is not None:
+            raise ConflictError(
+                "step_plan_review_run_already_bound", "待审查步骤不能已有 WorkTask Run 绑定。"
+            )
+
+        try:
+            ordered = resolve_linear_step_sequence(task)
+        except ValueError as exc:
+            raise ConflictError(
+                "step_plan_review_sequence_invalid", "WorkTask 步骤序列不是合法线性流程。"
+            ) from exc
+        if len(ordered) < 2:
+            raise ConflictError(
+                "step_plan_review_sequence_required", "步骤级方案审查仅适用于显式多步骤任务。"
+            )
+        active = tuple(
+            item
+            for item in ordered
+            if item.status in {TaskStepStatus.READY, TaskStepStatus.RUNNING, TaskStepStatus.WAITING}
+        )
+        ready = tuple(item for item in active if item.status is TaskStepStatus.READY)
+        if len(active) != 1 or len(ready) != 1 or ready[0].step_id != step_id:
+            raise ConflictError(
+                "step_plan_review_step_not_current",
+                "指定步骤不是当前唯一 READY 的线性步骤。",
+                step_id=step_id,
+            )
+        step = ready[0]
+        step_index = ordered.index(step)
+        if step_index == 0 or any(
+            item.status is not TaskStepStatus.SUCCEEDED for item in ordered[:step_index]
+        ):
+            raise ConflictError(
+                "step_plan_review_predecessor_not_succeeded",
+                "待审查步骤必须位于已成功的线性前缀之后。",
+            )
+        if step.kind not in {"preprocessing_run", "statistical_run"}:
+            raise ConflictError(
+                "step_plan_review_kind_unsupported", "当前步骤类型没有已注册的 Plan 审查合同。"
+            )
+        if step.authority_refs.conversation_id != conversation_id:
+            raise ConflictError(
+                "step_plan_review_step_conversation_mismatch", "步骤没有绑定到请求的 Work 会话。"
+            )
+
+        plan_revision_id = task.authority_refs.plan_revision_id
+        input_revision = task.authority_refs.input_revision
+        if (
+            not plan_revision_id
+            or not input_revision
+            or step.authority_refs.plan_revision_id != plan_revision_id
+            or step.authority_refs.input_revision != input_revision
+            or step.authority_refs.workflow_run_id is not None
+            or any(
+                item.authority_refs.plan_revision_id == plan_revision_id
+                for item in ordered
+                if item.step_id != step.step_id
+            )
+        ):
+            raise ConflictError(
+                "step_plan_review_binding_mismatch",
+                "Task 根引用与当前步骤的 Plan、输入或 Run 身份不一致。",
+            )
+        try:
+            expected_wait = step_plan_review_reference(task_id, step_id, plan_revision_id)
+        except ValueError as exc:
+            raise ConflictError(
+                "step_plan_review_identity_invalid", "步骤方案审查身份超出合法范围。"
+            ) from exc
+        if waiting.reference != expected_wait:
+            raise ConflictError(
+                "step_plan_review_wait_reference_mismatch",
+                "WorkTask 的等待引用没有指向该步骤的精确 Plan 修订。",
+            )
+
+        plan = self._plan_repository.get_plan(plan_revision_id)
+        if plan.plan_revision_id != plan_revision_id or plan.project_id != project.project_id:
+            raise ConflictError(
+                "step_plan_review_plan_scope_mismatch",
+                "重读的 Plan 修订不属于当前 Work 会话项目。",
+            )
+
+        expected_artifacts: tuple[DpabiPreprocessingOutput, ...] = ()
+        if step.kind == "statistical_run":
+            proposal_hash = step.input_version
+            if proposal_hash is None:
+                raise ConflictError(
+                    "step_plan_review_statistical_input_missing",
+                    "统计步骤缺少提案版本身份。",
+                )
+            try:
+                self._validate_hash(proposal_hash, "proposal_hash")
+                context, _design = self._statistical_plan_context(
+                    plan,
+                    conversation_id=conversation_id,
+                    project_id=project.project_id,
+                    proposal_hash=proposal_hash,
+                )
+            except (ConflictError, InputValidationError) as exc:
+                raise ConflictError(
+                    "step_plan_review_statistical_plan_invalid",
+                    "冻结统计 Plan 与当前会话、提案或哈希不匹配。",
+                ) from exc
+            if (
+                plan.state not in {PlanState.DRAFT, PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+                or context["draft_hash"] != input_revision
+                or step.expected_artifacts
+            ):
+                raise ConflictError(
+                    "step_plan_review_statistical_binding_mismatch",
+                    "统计 Plan 状态、输入草稿或产物投影与当前步骤不匹配。",
+                )
+        else:
+            if (
+                plan.state not in {PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+                or step.input_version != plan.plan_hash
+                or input_revision != plan.manifest_hash
+            ):
+                raise ConflictError(
+                    "step_plan_review_preprocessing_binding_mismatch",
+                    "预处理 Plan 状态、输入 manifest 或方案哈希与当前步骤不匹配。",
+                )
+            try:
+                expected_artifacts = self._derive_preprocessing_expectations(
+                    plan, project.project_id
+                )
+            except (
+                NotFoundError,
+                _InvalidPreprocessingAuthority,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+                ValidationError,
+            ) as exc:
+                raise ConflictError(
+                    "step_plan_review_preprocessing_plan_invalid",
+                    "预处理 Plan 的冻结 manifest、SkillPlan 或输出合同无法核验。",
+                ) from exc
+            if not expected_artifacts or step.expected_artifacts != expected_artifacts:
+                raise ConflictError(
+                    "step_plan_review_preprocessing_outputs_mismatch",
+                    "步骤输出投影与冻结预处理 Plan 推导结果不一致。",
+                )
+
+        return StepPlanReviewView(
+            conversation_id=conversation_id,
+            project_id=project.project_id,
+            task_id=task.task_id,
+            task_version=task.version,
+            task_status=task.status,
+            step_id=step.step_id,
+            step_sequence=step.sequence,
+            step_kind=step.kind,
+            step_status=step.status,
+            step_version=step.version,
+            step_input_version=step.input_version,
+            input_revision=input_revision,
+            waiting_reference=waiting.reference,
+            plan_revision_id=plan.plan_revision_id,
+            plan_hash=plan.plan_hash,
+            plan_state=plan.state,
+            plan=plan,
+            expected_artifacts=expected_artifacts,
+            execution_authorized=False,
+        )
 
     def get_composite_goal_progress(
         self, conversation_id: str, intent_task_id: str

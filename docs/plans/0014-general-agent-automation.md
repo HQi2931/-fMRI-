@@ -163,7 +163,7 @@ flowchart TD
 
 ### 阶段 B 后继步骤调度设计（2026-10-15）
 
-当前 TaskStep 虽有 `sequence`，但 readiness、用户审查 API 与类型专属 finalizer 仍没有完整多步骤路径。[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md) 已接受有界线性序列决策：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。历史单步骤与无步骤任务保持兼容。已完成步骤级事件路由、fenced READY 准备领取、READY 后继绑定 Plan 并进入精确 `step-plan:<task>:<step>:<plan>` 用户等待状态，以及纯生命周期的严格多步骤 Run 绑定转换。当前 conversation/confirmation/Run API 仍以既有单步骤 task ID、角色指针和根级 Plan 身份寻址，不能消费此步骤级 review reference；所以本切片不会把多步骤任务接入已有界面，也不代表后继 Run 可以端到端启动。
+当前 TaskStep 虽有 `sequence`，但 readiness、用户授权入口和类型专属 finalizer 仍没有完整多步骤路径。[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md) 已接受有界线性序列决策：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。历史单步骤与无步骤任务保持兼容。已完成步骤级事件路由、fenced READY 准备领取、READY 后继绑定 Plan、只读步骤 review DTO 查询，以及纯生命周期的严格多步骤 Run 绑定转换。新查询校验精确 `step-plan:<task>:<step>:<plan>` 等待引用并返回当前步骤 Plan，但不会批准或授权执行；现有 conversation confirmation/Run API 仍不能消费该步骤级引用，多步骤任务还没有接入用户可执行界面或后继 Run 闭环。
 
 ### 阶段 B 线性步骤纯生命周期首切片（2026-10-15）
 
@@ -191,9 +191,9 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 新增纯 lifecycle 转换：只接受合法线性多步任务中唯一 READY 的当前后继、空的任务级活动 Plan/Run/input 投影及未占用的 Plan ID；它保留所有成功前驱步骤的 Run/Artifact 引用，把 Plan 与 input revision 写入目标步骤和当前根投影，并将 `RUNNING` 转为 `WAITING_USER`，等待引用精确绑定 `task_id/step_id/plan_revision_id`。多步骤 `bind_step_to_run` 现在只接受唯一活动 READY 步骤及其相同的步骤/根 Plan、input 投影和确切 review wait；Run 必须不同于所有成功前驱 Run。单步骤和无步骤历史路径保持原契约。
 
-应用层通过 `StepPreparationClaim` 重新解析 task/step/version/input fingerprint，并核验 Work 会话、项目及类型专属 Plan/input 身份后，使用 `save_task(expected_version, step_preparation_claim=claim)` 原子提交。预处理只接受可审查的冻结 SkillPlan，并重新推导确切目标 Artifact 集；它按精确 Plan revision、项目和冻结 manifest/hash 验证输入。统计 Plan 校验 conversation、proposal hash、draft hash、design 和 Plan hash。当前 `PlanRevision` 没有 `conversation_id` 字段，因此预处理服务不能证明该 Plan 是由当前会话创建的；在接用户审查 API 前还需定义并执行该 Plan-to-conversation 身份合同。Plan 可以待审查，但本操作不会审批、创建 Run 或生成对话消息。
+应用层通过 `StepPreparationClaim` 重新解析 task/step/version/input fingerprint，并核验 Work 会话、项目及类型专属 Plan/input 身份后，使用 `save_task(expected_version, step_preparation_claim=claim)` 原子提交。预处理只接受可审查的冻结 SkillPlan，并重新推导确切目标 Artifact 集；它按精确 Plan revision、项目和冻结 manifest/hash 验证输入。统计 Plan 校验 conversation、proposal hash、draft hash、design 和 Plan hash。新增只读 review API 在查询时重读上述身份：预处理返回精确修订、项目、冻结输入和 outputs；统计返回与当前会话及提案匹配的 work_context 和 design。当前 `PlanRevision` 没有 `conversation_id` 字段，因此预处理服务不能证明该 Plan 是由当前会话创建的；这是明确记录的身份边界。Plan 可以待审查，但查询不会审批、创建 Run 或生成对话消息。
 
-现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务，没有按 `step-plan:<task>:<step>:<plan>` 解析任务/步骤的 API 或 UI。为避免误选同类型前驱或重复步骤，本切片不放宽这些入口；统计 Run 的现有 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。接通前还需增加精确步骤级 Plan review/confirmation route、Run 创建绑定与多步 readiness/finalizer 的任务身份传递。因此当前实现只是安全地到达该后端等待边界，不是多步骤用户可执行闭环。
+现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务。新增 review route 只返回 DTO；为避免误选同类型前驱或重复步骤，本切片不放宽旧入口，也未增加步骤级 approval/confirmation 或 Run 创建接口。统计 Run 的 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。后续仍需把精确步骤身份传入确认、Run 创建绑定与多步 readiness/finalizer。因此当前实现提供的是可核验的只读审查数据，不是多步骤用户可执行闭环。
 
 新增 lifecycle/service/persistence 覆盖 Plan 审查转换、前驱引用保留、精确 review wait、多步骤 Run 绑定重放/拒绝条件、权威项目/输入核验及过期 claim 写入拒绝。未运行 MATLAB/DPABI。
 

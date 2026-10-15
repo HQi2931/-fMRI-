@@ -2184,6 +2184,56 @@
         "title": "DemographicsRevisionView",
         "type": "object"
       },
+      "DpabiPreprocessingOutput": {
+        "additionalProperties": false,
+        "description": "One subject-level DPABI output and its registered Artifact identity.",
+        "properties": {
+          "artifact_type": {
+            "minLength": 1,
+            "title": "Artifact Type",
+            "type": "string"
+          },
+          "metric": {
+            "enum": [
+              "timeseries",
+              "brain_mask",
+              "alff",
+              "falff",
+              "reho"
+            ],
+            "title": "Metric",
+            "type": "string"
+          },
+          "relative_path": {
+            "minLength": 1,
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricScaling"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "metric",
+          "relative_path",
+          "artifact_type"
+        ],
+        "title": "DpabiPreprocessingOutput",
+        "type": "object"
+      },
       "EnvironmentComponent": {
         "additionalProperties": false,
         "properties": {
@@ -9707,6 +9757,119 @@
         "title": "StatisticsRunCreate",
         "type": "object"
       },
+      "StepPlanReviewView": {
+        "additionalProperties": false,
+        "description": "Read-only snapshot for rendering the exact Plan bound to a READY step.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "execution_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Execution Authorized",
+            "type": "boolean"
+          },
+          "expected_artifacts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DpabiPreprocessingOutput"
+            },
+            "title": "Expected Artifacts",
+            "type": "array"
+          },
+          "input_revision": {
+            "title": "Input Revision",
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/PlanRevisionView"
+          },
+          "plan_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "plan_revision_id": {
+            "title": "Plan Revision Id",
+            "type": "string"
+          },
+          "plan_state": {
+            "$ref": "#/components/schemas/PlanState"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "step_id": {
+            "title": "Step Id",
+            "type": "string"
+          },
+          "step_input_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Input Version"
+          },
+          "step_kind": {
+            "title": "Step Kind",
+            "type": "string"
+          },
+          "step_sequence": {
+            "title": "Step Sequence",
+            "type": "integer"
+          },
+          "step_status": {
+            "$ref": "#/components/schemas/TaskStepStatus"
+          },
+          "step_version": {
+            "title": "Step Version",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "integer"
+          },
+          "waiting_reference": {
+            "title": "Waiting Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "project_id",
+          "task_id",
+          "task_version",
+          "task_status",
+          "step_id",
+          "step_sequence",
+          "step_kind",
+          "step_status",
+          "step_version",
+          "step_input_version",
+          "input_revision",
+          "waiting_reference",
+          "plan_revision_id",
+          "plan_hash",
+          "plan_state",
+          "plan"
+        ],
+        "title": "StepPlanReviewView",
+        "type": "object"
+      },
       "StructuredRecommendation": {
         "additionalProperties": false,
         "description": "The only Agent result accepted by deterministic application services.",
@@ -10034,6 +10197,34 @@
           "two_sided"
         ],
         "title": "Tail",
+        "type": "string"
+      },
+      "TaskStatus": {
+        "enum": [
+          "queued",
+          "running",
+          "waiting_user",
+          "waiting_run",
+          "waiting_dependency",
+          "completed",
+          "blocked",
+          "cancelled"
+        ],
+        "title": "TaskStatus",
+        "type": "string"
+      },
+      "TaskStepStatus": {
+        "enum": [
+          "pending",
+          "ready",
+          "running",
+          "waiting",
+          "succeeded",
+          "failed",
+          "blocked",
+          "skipped"
+        ],
+        "title": "TaskStepStatus",
         "type": "string"
       },
       "TaskType": {
@@ -13402,6 +13593,116 @@
           }
         },
         "summary": "Prepare Work Review",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review": {
+      "get": {
+        "operationId": "get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "step_id",
+            "required": true,
+            "schema": {
+              "title": "Step Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepPlanReviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Step Plan Review",
         "tags": [
           "agent"
         ]

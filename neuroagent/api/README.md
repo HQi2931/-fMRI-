@@ -10,7 +10,7 @@
 
 当前能力：
 
-- Work 提供独立的方案审查与确认接口，产物提供按编号校验的下载和有限图像预览；契约与阶段验证边界见 [API v1](../../docs/api/api-v1.md)。
+- Work 提供独立的方案审查与确认接口；多步骤任务另有只读 `GET /conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review`，仅返回经持久任务、当前 READY 步骤和冻结 Plan 身份核验的审查 DTO，不批准 Plan、不签发执行授权或创建 Run。产物提供按编号校验的下载和有限图像预览；契约与阶段验证边界见 [API v1](../../docs/api/api-v1.md)。
 - 会话提供针对精确 intent ID 的分析 outbox 人工重试入口；它只重新排队可恢复的 proposal-only 草稿准备，依赖 `Idempotency-Key`，不确认统计方法或启动统计运行。
 - 会话提供独立的统计结果解释 outbox 重试入口；它只重新排队同一真实 StatisticalResult 的 assistant-only 解释草稿，依赖 `Idempotency-Key`，不创建或批准 Plan/Run。
 - Work 会话提供 conversation-scoped 复合目标进度列表；响应通过每个稳定 intent ID 重读权威 snapshot 投影，不接受裸 intent ID 查询。

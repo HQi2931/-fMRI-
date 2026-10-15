@@ -91,12 +91,15 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `GET` | `/conversations/{conversation_id}/composite-goals` | 列出该 Work 会话内复合预处理→分析目标的稳定身份与当前进度 |
+| `GET` | `/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review` | 只读获取当前唯一 READY 步骤绑定的精确 Plan review DTO |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
 | `POST` | `/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry` | 对当前会话中可恢复的统计结果解释续接进行幂等重试，返回更新后的对话 |
 
 结果解释重试使用 `Idempotency-Key` 请求头，不需要请求正文。服务端要求 task 属于该 conversation，且 outbox 为可恢复的 `waiting_user`；不支持的错误类别返回 `result_interpretation_not_recoverable`。重试只将原 outbox 的新 generation 重新排队并追加 assistant 状态消息，不创建或批准统计设计，也不创建或启动 Run。续接状态通过会话 assistant message payload 的 `statistical_result_interpretation` 或 `statistical_result_interpretation_retry` discriminator 呈现；该状态独立于 `analysis_outbox_*`。仅 `retry_available=true` 的当前 generation 显示重试操作。完整证据边界见 [ADR 0042](../adr/0042-statistical-result-interpretation-outbox.md)。
 
 `GET /conversations/{conversation_id}/composite-goals` 仅适用于 Work 会话；其他模式、缺失会话或与目标冻结 Plan 不一致的项目均返回安全的 404。成功返回按 `intent_task_id` 排序的数组，空 Work 会话返回 `[]`。每项平铺稳定身份字段（`intent_task_id`、`conversation_id`、`project_id`、`analysis_request_hash`、`preprocessing_task_id`、`analysis_proposal_outbox_intent_task_id`、`analysis_work_task_id`、`result_interpretation_outbox_task_id`）和最新投影字段（`status`、`preprocessing_status`、`analysis_proposal_status`、`analysis_status`、`result_interpretation_status`、`continuation_message_id`、`reason_code`）。阶段状态来自对应 Task/outbox/assistant continuation 的权威记录；该只读 API 不接受 intent ID 参数，也不创建或推进任务。
+
+步骤级 Plan review API 仅接受已持久化的多步骤 WorkTask：会话必须是绑定项目的 Work 会话；任务必须处于 `WAITING_USER`，具有唯一线性 READY 当前步骤，根和步骤引用必须精确绑定同一 Plan/input，等待引用必须等于 `step-plan:<task_id>:<step_id>:<plan_revision_id>`。服务端重读 Plan 并分别校验统计 `work_context`/design/hash 或预处理冻结 manifest/SkillPlan/outputs。响应包含 Task/Step 版本、输入身份、完整只读 Plan 和 `execution_authorized: false`；读取不会批准 Plan、签发启动授权或创建 Run。预处理 PlanRevision 当前没有 `conversation_id`，因此只能核验精确修订、项目和冻结输入，不能证明该 Plan 最初由当前会话创建。既有 Work confirmation/Run API 仍不接收步骤级 review reference。
 
 Work 回合请求可带 `agent_role: "preprocessing" | "analysis" | null`。省略或传 `null` 时由服务端根据当前任务和最近交接记录路由；显式角色用于界面手动切换。响应的 assistant payload 保存 `agent_role`、角色显示名和该角色独立草稿，工具审计行也记录角色。旧的预处理草稿默认归属 `preprocessing`。
 

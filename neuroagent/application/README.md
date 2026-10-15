@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-14
+- 更新日期：2026-10-15
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
@@ -13,6 +13,7 @@
 - Work 草稿绑定快速输入修订；发现变化后撤回事实状态并阻止旧确认，保留用户参数。新编译须重新读取受影响事实并冻结输入，旧请求的持久化响应仍可重放。历史未绑定修订草稿及完整恢复交互继续按计划验收。
 - 输入失效反馈提供明确的阶段重确认选项，确认接口允许该恢复操作并复查实时阶段与路径；重新冻结不能自动恢复采集事实，必须附本轮成功读取证据。历史带事实却未绑定修订的草稿同样撤回核实状态。
 - Work 完整草稿可自动编译待审查候选，使用独立 `proposal` 来源；确认接口直接复用服务端签发的操作与执行授权，不调用模型解释启动意图。来源与校验状态分别展示，审批仍为独立记录。完整体验验收仍按[计划 0012](../../docs/plans/0012-work-conversation-ux.md)执行。
+- `automation.get_step_plan_review()` 为多步骤 WorkTask 提供只读步骤级 Plan review 查询：重读并核验 Work conversation/project、合法线性序列中的唯一 READY 步骤、精确 `step-plan:<task>:<step>:<plan>` 等待引用，以及根/步骤 Plan 与输入投影。统计 Plan 校验 `work_context`、proposal/draft hash、design 和 Plan hash；预处理 Plan 校验精确 revision/project、冻结 manifest/SkillPlan hash 和推导出的 Artifact 集。预处理 `PlanRevision` 尚无 conversation 身份字段，故不能证明原始创建 conversation；该查询只返回 review DTO，不批准、不创建 Run。
 - 确认请求使用独立幂等作用域并绑定完整请求；先恢复已保存响应，再校验当前草稿与签发选项，保证响应丢失后的重放不重复批准或创建运行。显式选择输入阶段时冻结完整文件证据，快速概况检查不能替代冻结。
 
 - T1 重定向、裁剪与后续分割/DARTEL 合并为一次预处理运行；不再提供独立准备或中途审查 API；
