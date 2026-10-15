@@ -4,8 +4,9 @@
 
 ## Unreleased
 
-- Work 预处理反馈问题的指纹现在同时绑定当前草稿修订和对应事实值；同一证据下用户修改草稿后不会被历史指纹误判为无进展，重复的同稿同证据问题仍会停止。反馈循环仍受本轮预算限制，不自动更改科学选择。
+- 外部指标导入现在将文件名受试者编号与一级目录组/条件标为带来源的扫描候选；纳入前需在界面逐项复核，服务端将用户声明单独冻结并绑定候选映射哈希。session/run 保持 unknown，映射变化要求重新检查，外部导入不会将用户声明冒充为执行器 verified。
 
+- Work 预处理反馈问题的指纹现在同时绑定当前草稿修订和对应事实值；同一证据下用户修改草稿后不会被历史指纹误判为无进展，重复的同稿同证据问题仍会停止。反馈循环仍受本轮预算限制，不自动更改科学选择。
 - 新增只读步骤级 Plan review API：按 conversation/task/step 精确寻址，并在返回方案前复核 Work 项目、合法线性序列中的唯一 READY 步骤、`WAITING_USER` 与精确 `step-plan:<task>:<step>:<plan>` 引用，以及 Task 根/步骤的 Plan/input 投影。统计校验 work_context、design 与 Plan hash；预处理重新核验精确 revision、项目、冻结 manifest、SkillPlan 与目标 Artifact 集。响应显式标记 `execution_authorized: false`；该查询不批准方案、不签发启动授权、不创建 Run。由于预处理 PlanRevision 尚无 conversation_id，当前只能核验精确修订和项目/输入，不能证明其原始创建会话；旧确认与 Run API 仍未接入步骤级寻址。
 - 为有界线性 WorkTask 的唯一 READY 后继新增 fenced Plan-for-review 状态转换及严格多步 Run 绑定纯函数：统计 Plan 校验 conversation/proposal/draft/design，预处理 Plan 校验精确 revision、project 与冻结 manifest/input identity；PlanRevision 尚无 conversation 身份字段。转换仅绑定当前步骤、保留成功前驱 Run/Artifact 引用，并用精确步骤级 Plan wait 进入 `WAITING_USER`。现有 conversation review/confirmation 和 Run 创建 API 仍按单步任务 ID/根 Plan 寻址，暂不能推进该状态；统计 Run 的 APPROVED 门槛未放宽。此增量只建立后端待审查边界，不提供多步可执行闭环。
 - 为合法线性多步骤 WorkTask 中唯一 READY 后继步骤增加持久准备目标、冷却/租约领取和 Task/Step/输入指纹 fencing；保存任务会原子重建准备目标，过期或输入变化的 claim 不能提交。该切片只建立领取与写入围栏，尚未连接 prepare handler、方案审查或后继 Run 绑定，不改变单步骤兼容行为。

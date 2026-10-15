@@ -36,6 +36,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
   const [actor, setActor] = useState("researcher");
   const [reason, setReason] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
+  const [mappingAcknowledged, setMappingAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -80,7 +81,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
   const canInclude = Boolean(
     inspection && inspection.status === "needs_review" && !inspection.inspection.blocking_issues.length
     && includedSubjectIds.length >= 2 && !unknownExclusions.length && !emptyIncludedGroups.length
-    && acknowledged && actor.trim() && reason.trim() && !disabled,
+    && acknowledged && mappingAcknowledged && actor.trim() && reason.trim() && !disabled,
   );
 
   async function refreshList(): Promise<void> {
@@ -103,6 +104,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
       setSpace("unknown");
       setMaskRelativePath("");
       setAcknowledged(false);
+      setMappingAcknowledged(false);
       setReason("");
       await refreshList();
     } catch (caught) {
@@ -123,6 +125,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
         group_order: groupOrder,
         coordinate_space: space,
         acknowledge_unknown_processing: true,
+        acknowledge_candidate_mapping: true,
         actor: actor.trim(),
         reason: reason.trim(),
         ...(maskRelativePath.trim() ? { mask_relative_path: maskRelativePath.trim() } : {}),
@@ -163,6 +166,18 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
         <p>
           {inspection.inspection.metric_kind ?? "指标未识别"} · {inspection.inspection.scaling ?? "缩放未识别"} · {allImages.length} 张影像
         </p>
+        <p>指标、缩放、受试者编号和目录分组均为扫描候选；session/run 未知。研究者纳入时的映射声明不会被标记为执行器验证。</p>
+        <details>
+          <summary>受试者与组/条件候选映射（{allImages.length}）</summary>
+          <ul>{allImages.map((image) => <li key={image.relative_path}>
+            {image.relative_path} → {image.subject_id} / {image.condition ?? image.group}
+            （subject: {image.subject_id_evidence}；group: {image.group_evidence}；condition: {image.condition_evidence}；session/run: unknown）
+          </li>)}</ul>
+        </details>
+        {inspection.inclusion && <p>
+          映射证据：{inspection.inclusion.identity_mapping_evidence === "declared"
+            ? "研究者声明" : "未知（历史记录未保存复核证据）"}
+        </p>}
         <ul>
           {groupOrder.map((group, index) => <li key={group}>
             {group}：检查到 {inspection.inspection.images.filter((image) => image.group === group).length} 名，当前纳入 {includedByGroup.get(group) ?? 0} 名
@@ -200,6 +215,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
           <textarea value={reason} disabled={busy || inspection.status === "included"} onChange={(event) => setReason(event.target.value)} rows={2} placeholder="记录数据来源及纳入依据" />
         </label>
         {inspection.status === "needs_review" && <>
+          <label><input type="checkbox" checked={mappingAcknowledged} disabled={busy} onChange={(event) => setMappingAcknowledged(event.target.checked)} /> 我已逐项复核文件名受试者编号及一级目录组/条件候选映射，并声明本次纳入所使用的映射。</label>
           <label><input type="checkbox" checked={acknowledged} disabled={busy} onChange={(event) => setAcknowledged(event.target.checked)} /> 我已阅读检查结果，并接受未记录的处理参数保持未知。</label>
           <button className="button button-primary" type="button" onClick={() => void include()} disabled={!canInclude || busy}>
             确认纳入 {includedSubjectIds.length} 名受试者
@@ -251,7 +267,7 @@ export function ExternalAnalysisImportPanel({ projectId, initialPath = "", disab
         <button className="button button-secondary" type="button" disabled={busy} onClick={() => {
           setBusy(true); setError("");
           void statisticsApi.externalAnalysisImport(item.import_id)
-            .then((detail) => { setInspection(detail); setSourcePath(detail.source_path); setGroupOrder([...(detail.inclusion?.group_order ?? detail.inspection.group_order)]); setExcludedIds(detail.inclusion?.excluded_subject_ids.join("\n") ?? ""); setSpace(detail.inclusion?.coordinate_space ?? "unknown"); setMaskRelativePath(detail.inclusion?.mask_relative_path ?? ""); setAcknowledged(detail.status === "included"); setReason(detail.inclusion?.reason ?? ""); setActor(detail.inclusion?.actor ?? "researcher"); })
+            .then((detail) => { setInspection(detail); setSourcePath(detail.source_path); setGroupOrder([...(detail.inclusion?.group_order ?? detail.inspection.group_order)]); setExcludedIds(detail.inclusion?.excluded_subject_ids.join("\n") ?? ""); setSpace(detail.inclusion?.coordinate_space ?? "unknown"); setMaskRelativePath(detail.inclusion?.mask_relative_path ?? ""); setAcknowledged(detail.status === "included"); setMappingAcknowledged(detail.inclusion?.identity_mapping_evidence === "declared"); setReason(detail.inclusion?.reason ?? ""); setActor(detail.inclusion?.actor ?? "researcher"); })
             .catch((caught) => setError(describeError(caught)))
             .finally(() => setBusy(false));
         }}>查看</button>

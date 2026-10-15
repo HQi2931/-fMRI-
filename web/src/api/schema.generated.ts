@@ -2466,6 +2466,11 @@ export interface components {
          */
         ExternalAnalysisImportIncludeRequest: {
             /**
+             * Acknowledge Candidate Mapping
+             * @constant
+             */
+            acknowledge_candidate_mapping: true;
+            /**
              * Acknowledge Unknown Processing
              * @constant
              */
@@ -2683,14 +2688,54 @@ export interface components {
             ][];
             /** Condition */
             condition?: string | null;
+            /**
+             * Condition Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            condition_evidence: "unknown" | "candidate";
+            /**
+             * Condition Source
+             * @default unknown
+             * @enum {string}
+             */
+            condition_source: "unknown" | "first_level_directory";
             /** Grid Signature */
             grid_signature: string;
             /** Group */
             group: string;
+            /**
+             * Group Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            group_evidence: "unknown" | "candidate";
+            /**
+             * Group Source
+             * @default unknown
+             * @enum {string}
+             */
+            group_source: "unknown" | "first_level_directory";
             metric_kind: components["schemas"]["MetricKind"];
             /** Relative Path */
             relative_path: string;
+            /**
+             * Run Evidence
+             * @default unknown
+             * @constant
+             */
+            run_evidence: "unknown";
+            /** Run Id */
+            run_id?: null;
             scaling: components["schemas"]["MetricScaling"];
+            /**
+             * Session Evidence
+             * @default unknown
+             * @constant
+             */
+            session_evidence: "unknown";
+            /** Session Id */
+            session_id?: null;
             /** Sha256 */
             sha256: string;
             /** Shape Ijk */
@@ -2703,6 +2748,18 @@ export interface components {
             size_bytes: number;
             /** Subject Id */
             subject_id: string;
+            /**
+             * Subject Id Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            subject_id_evidence: "unknown" | "candidate";
+            /**
+             * Subject Id Source
+             * @default unknown
+             * @enum {string}
+             */
+            subject_id_source: "unknown" | "filename";
         };
         /**
          * ExternalMetricInclusion
@@ -2725,6 +2782,14 @@ export interface components {
             excluded_subject_ids: string[];
             /** Group Order */
             group_order: string[];
+            /**
+             * Identity Mapping Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            identity_mapping_evidence: "unknown" | "declared";
+            /** Identity Mapping Hash */
+            identity_mapping_hash?: string | null;
             /** Included Subject Ids */
             included_subject_ids: string[];
             /** Mask Grid Signature */
@@ -2760,6 +2825,8 @@ export interface components {
             grid_signature?: string | null;
             /** Group Order */
             group_order: string[];
+            /** Identity Mapping Hash */
+            identity_mapping_hash?: string | null;
             /** Images */
             images: components["schemas"]["ExternalMetricImage"][];
             /**

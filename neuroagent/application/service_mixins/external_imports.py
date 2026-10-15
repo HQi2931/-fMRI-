@@ -206,6 +206,13 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                     expected_hash=existing.inspection.source_tree_hash,
                     current_hash=current.source_tree_hash,
                 )
+            if current.identity_mapping_hash != existing.inspection.identity_mapping_hash:
+                raise ConflictError(
+                    "external_import_mapping_changed",
+                    "外部指标的受试者/组别/条件候选映射已变化；请重新检查并复核。",
+                    expected_hash=existing.inspection.identity_mapping_hash,
+                    current_hash=current.identity_mapping_hash,
+                )
             if current.blocking_issues:
                 raise InputValidationError(
                     "external_import_has_blocking_issues",
@@ -216,6 +223,11 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 raise InputValidationError(
                     "external_import_metric_unresolved",
                     "无法确认统一的指标类型与缩放版本。",
+                )
+            if not request.acknowledge_candidate_mapping:
+                raise InputValidationError(
+                    "external_import_mapping_not_reviewed",
+                    "请先复核文件名受试者编号及一级目录组别/条件映射。",
                 )
             if current.layout == "paired_conditions" and len(request.group_order) != 2:
                 raise InputValidationError(
@@ -283,6 +295,8 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 actor=request.actor,
                 reason=request.reason,
                 unknown_processing_acknowledged=True,
+                identity_mapping_evidence="declared",
+                identity_mapping_hash=current.identity_mapping_hash,
                 **mask_evidence,
             )
             record = inclusion.model_dump(mode="json")
@@ -290,6 +304,7 @@ class ExternalAnalysisImportMixin(BaseServiceMixin):
                 {
                     "import_id": import_id,
                     "source_tree_hash": current.source_tree_hash,
+                    "identity_mapping_hash": current.identity_mapping_hash,
                     "inclusion": record,
                 }
             )

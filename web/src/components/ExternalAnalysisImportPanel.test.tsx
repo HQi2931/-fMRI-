@@ -1,14 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type ExternalAnalysisImport } from "../api/client";
+import { statisticsApi as api } from "../api/statistics";
+import type { ExternalAnalysisImport } from "../api/types";
 import { ExternalAnalysisImportPanel } from "./ExternalAnalysisImportPanel";
 
-vi.mock("../api/client", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../api/client")>();
+vi.mock("../api/statistics", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../api/statistics")>();
   return {
     ...original,
-    api: {
+    statisticsApi: {
       externalAnalysisImports: vi.fn(),
       inspectExternalAnalysisImport: vi.fn(),
       includeExternalAnalysisImport: vi.fn(),
@@ -40,8 +41,8 @@ const pendingImport: ExternalAnalysisImport = {
     warnings: ["处理谱系未知"],
     unknown_processing_fields: ["TR and frequency band", "mask source and version"],
     images: [
-      { subject_id: "sub-01", group: "ASD", relative_path: "ASD/sub-01-zALFFMap.nii", sha256: "c".repeat(64), size_bytes: 100, shape_ijk: [4, 5, 6], affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], grid_signature: "b".repeat(64), metric_kind: "alff", scaling: "z_score" },
-      { subject_id: "sub-02", group: "HC", relative_path: "HC/sub-02-zALFFMap.nii", sha256: "d".repeat(64), size_bytes: 100, shape_ijk: [4, 5, 6], affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], grid_signature: "b".repeat(64), metric_kind: "alff", scaling: "z_score" },
+      { subject_id: "sub-01", group: "ASD", relative_path: "ASD/sub-01-zALFFMap.nii", sha256: "c".repeat(64), size_bytes: 100, shape_ijk: [4, 5, 6], affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], grid_signature: "b".repeat(64), metric_kind: "alff", scaling: "z_score", subject_id_source: "filename", subject_id_evidence: "candidate", group_source: "first_level_directory", group_evidence: "candidate", condition_source: "unknown", condition_evidence: "unknown", session_id: null, session_evidence: "unknown", run_id: null, run_evidence: "unknown" },
+      { subject_id: "sub-02", group: "HC", relative_path: "HC/sub-02-zALFFMap.nii", sha256: "d".repeat(64), size_bytes: 100, shape_ijk: [4, 5, 6], affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], grid_signature: "b".repeat(64), metric_kind: "alff", scaling: "z_score", subject_id_source: "filename", subject_id_evidence: "candidate", group_source: "first_level_directory", group_evidence: "candidate", condition_source: "unknown", condition_evidence: "unknown", session_id: null, session_evidence: "unknown", run_id: null, run_evidence: "unknown" },
     ],
   },
   inclusion: null,
@@ -69,17 +70,46 @@ beforeEach(() => {
       actor: "researcher",
       reason: "已核对来源目录并接受未知处理信息。",
       unknown_processing_acknowledged: true,
+      identity_mapping_evidence: "declared",
+      identity_mapping_hash: "f".repeat(64),
     },
   });
 });
 
 describe("External DPABI metric import", () => {
+  it("shows condition mapping evidence for paired-condition imports", async () => {
+    const pairedImport: ExternalAnalysisImport = {
+      ...pendingImport,
+      inspection: {
+        ...pendingImport.inspection,
+        layout: "paired_conditions",
+        group_order: ["before", "after"],
+        images: pendingImport.inspection.images.map((image, index) => ({
+          ...image,
+          group: index === 0 ? "before" : "after",
+          condition: index === 0 ? "before" : "after",
+          condition_source: "first_level_directory",
+          condition_evidence: "candidate",
+        })),
+      },
+    };
+    vi.mocked(api.inspectExternalAnalysisImport).mockResolvedValue(pairedImport);
+    render(<ExternalAnalysisImportPanel projectId="project-1" />);
+    fireEvent.click(screen.getByText("导入外部 DPABI 指标目录"));
+    fireEvent.change(screen.getByLabelText("指标目录路径"), {
+      target: { value: "D:\\Study\\ALFF" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
+
+    expect(await screen.findAllByText(/condition: candidate/)).toHaveLength(2);
+  });
+
   it("blocks unknown exclusions and an emptied group, and freezes the reviewed group order, mask and space", async () => {
     render(<ExternalAnalysisImportPanel projectId="project-1" initialPath="D:\\Study\\ALFF" />);
     fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
     await screen.findByLabelText("纳入理由");
     fireEvent.change(screen.getByLabelText("纳入理由"), { target: { value: "已检查空间、掩膜及组别顺序。" } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /候选映射/ }));
     const exclusions = screen.getByLabelText("受试者 ID（每行或逗号分隔）");
     fireEvent.change(exclusions, { target: { value: "unknown-subject" } });
     expect(screen.getByText(/以下 ID 不在检查清单中/)).toHaveTextContent("unknown-subject");
@@ -96,9 +126,11 @@ describe("External DPABI metric import", () => {
     fireEvent.change(screen.getByLabelText("图像空间"), { target: { value: "MNI" } });
     fireEvent.change(screen.getByLabelText("统计 mask（相对导入目录的 NIfTI 路径，可留空）"), { target: { value: " Mask.nii " } });
     fireEvent.change(screen.getByLabelText("审核人"), { target: { value: " Demo researcher " } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /未记录的处理参数/ }));
     fireEvent.click(screen.getByRole("button", { name: "确认纳入 2 名受试者" }));
     await waitFor(() => expect(api.includeExternalAnalysisImport).toHaveBeenCalledWith("import-1", expect.objectContaining({
       expected_version: 1, group_order: ["HC", "ASD"], coordinate_space: "MNI", mask_relative_path: "Mask.nii", actor: "Demo researcher",
+      acknowledge_candidate_mapping: true,
     })));
   });
 
@@ -108,14 +140,15 @@ describe("External DPABI metric import", () => {
     render(<ExternalAnalysisImportPanel projectId="project-1" initialPath="D:\\Study\\ALFF" onSelect={selected} />);
     fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
     fireEvent.change(await screen.findByLabelText("纳入理由"), { target: { value: "已检查目录。" } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /候选映射/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /未记录的处理参数/ }));
     fireEvent.click(screen.getByRole("button", { name: "确认纳入 2 名受试者" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("目录内容已变化");
     expect(screen.queryByText(/纳入决定已冻结/)).not.toBeInTheDocument();
     expect(selected).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
     await waitFor(() => expect(api.inspectExternalAnalysisImport).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getAllByRole("checkbox").every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
     expect(screen.getByLabelText("纳入理由")).toHaveValue("");
   });
 
@@ -129,7 +162,7 @@ describe("External DPABI metric import", () => {
     fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
     expect(await screen.findByText("重复受试者编号")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("纳入理由"), { target: { value: "待检查重复编号" } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /候选映射/ }));
     expect(screen.getByRole("button", { name: "确认纳入 2 名受试者" })).toBeDisabled();
     view.rerender(<ExternalAnalysisImportPanel projectId="project-2" initialPath={"D:\\OtherStudy\\ALFF"} />);
     await waitFor(() => expect(api.externalAnalysisImports).toHaveBeenCalledWith("project-2", expect.any(AbortSignal)));
@@ -172,7 +205,8 @@ describe("External DPABI metric import", () => {
       .toBeInTheDocument();
     expect(api.inspectExternalAnalysisImport).toHaveBeenCalledWith({ project_id: "project-1", source_path: "D:\\Study\\paired", layout: "paired_conditions" });
     fireEvent.change(screen.getByLabelText("纳入理由"), { target: { value: "已检查两个条件的配对编号。" } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /候选映射/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /未记录的处理参数/ }));
     fireEvent.click(screen.getByRole("button", { name: "确认纳入 2 名受试者" }));
     await waitFor(() => expect(api.includeExternalAnalysisImport).toHaveBeenCalledWith("import-1", expect.objectContaining({
       included_subject_ids: ["sub-01", "sub-02"], group_order: ["before", "after"],
@@ -243,7 +277,9 @@ describe("External DPABI metric import", () => {
     fireEvent.change(screen.getByLabelText("纳入理由"), {
       target: { value: "已核对来源目录并接受未知处理信息。" },
     });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    expect(include).toBeDisabled();
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
     expect(include).toBeEnabled();
     fireEvent.click(include);
 
@@ -255,6 +291,7 @@ describe("External DPABI metric import", () => {
         group_order: ["ASD", "HC"],
         coordinate_space: "unknown",
         acknowledge_unknown_processing: true,
+        acknowledge_candidate_mapping: true,
       }),
     ));
   });

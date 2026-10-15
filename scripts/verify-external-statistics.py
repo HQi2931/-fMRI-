@@ -146,6 +146,7 @@ def main() -> None:
                 group_order=("first", "second"),
                 coordinate_space="MNI" if args.with_signal else "unknown",
                 acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
                 actor="authorized_acceptance",
                 reason="User-authorized real MATLAB acceptance on six synthetic metric images.",
                 mask_relative_path="Mask.nii",

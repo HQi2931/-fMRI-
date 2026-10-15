@@ -2559,6 +2559,11 @@
         "additionalProperties": false,
         "description": "Explicit human decision to make an inspected import selectable for analysis.",
         "properties": {
+          "acknowledge_candidate_mapping": {
+            "const": true,
+            "title": "Acknowledge Candidate Mapping",
+            "type": "boolean"
+          },
           "acknowledge_unknown_processing": {
             "const": true,
             "title": "Acknowledge Unknown Processing",
@@ -2626,6 +2631,7 @@
           "group_order",
           "coordinate_space",
           "acknowledge_unknown_processing",
+          "acknowledge_candidate_mapping",
           "actor",
           "reason"
         ],
@@ -3111,6 +3117,24 @@
             ],
             "title": "Condition"
           },
+          "condition_evidence": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "candidate"
+            ],
+            "title": "Condition Evidence",
+            "type": "string"
+          },
+          "condition_source": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "first_level_directory"
+            ],
+            "title": "Condition Source",
+            "type": "string"
+          },
           "grid_signature": {
             "pattern": "^[a-f0-9]{64}$",
             "title": "Grid Signature",
@@ -3121,6 +3145,24 @@
             "title": "Group",
             "type": "string"
           },
+          "group_evidence": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "candidate"
+            ],
+            "title": "Group Evidence",
+            "type": "string"
+          },
+          "group_source": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "first_level_directory"
+            ],
+            "title": "Group Source",
+            "type": "string"
+          },
           "metric_kind": {
             "$ref": "#/components/schemas/MetricKind"
           },
@@ -3129,8 +3171,28 @@
             "title": "Relative Path",
             "type": "string"
           },
+          "run_evidence": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "Run Evidence",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "null"
+          },
           "scaling": {
             "$ref": "#/components/schemas/MetricScaling"
+          },
+          "session_evidence": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "Session Evidence",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "null"
           },
           "sha256": {
             "pattern": "^[a-f0-9]{64}$",
@@ -3162,6 +3224,24 @@
           "subject_id": {
             "minLength": 1,
             "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_id_evidence": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "candidate"
+            ],
+            "title": "Subject Id Evidence",
+            "type": "string"
+          },
+          "subject_id_source": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "filename"
+            ],
+            "title": "Subject Id Source",
             "type": "string"
           }
         },
@@ -3220,6 +3300,27 @@
             },
             "title": "Group Order",
             "type": "array"
+          },
+          "identity_mapping_evidence": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "declared"
+            ],
+            "title": "Identity Mapping Evidence",
+            "type": "string"
+          },
+          "identity_mapping_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Mapping Hash"
           },
           "included_subject_ids": {
             "items": {
@@ -3341,6 +3442,18 @@
             },
             "title": "Group Order",
             "type": "array"
+          },
+          "identity_mapping_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Mapping Hash"
           },
           "images": {
             "items": {

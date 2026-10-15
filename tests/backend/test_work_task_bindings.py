@@ -75,6 +75,7 @@ def _proposal(service: ApplicationServices, source_root: Path, work_root: Path):
             group_order=("ASD", "HC"),
             coordinate_space="unknown",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             mask_relative_path="Mask.nii",
             actor="researcher",
             reason="Synthetic input review",

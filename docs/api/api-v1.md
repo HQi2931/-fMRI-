@@ -347,7 +347,7 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | `POST` | `/statistics/external-imports/inspect` | 在项目只读源根内检查分组 DPABI 指标目录，保存待审核记录 |
 | `GET` | `/statistics/external-imports?project_id=...` | 列出状态、组别计数、网格及未知项摘要，不返回逐受试者路径 |
 | `GET` | `/statistics/external-imports/{import_id}` | 读取完整检查、纳入决定和可选的统计输入引用 |
-| `POST` | `/statistics/external-imports/{import_id}/include` | 以精确记录版本、纳入名单、组别、空间、未知项确认及可选 mask 冻结独立纳入决定 |
+| `POST` | `/statistics/external-imports/{import_id}/include` | 以精确记录版本、纳入名单、组别顺序、空间、未知处理史确认、候选身份映射复核及可选 mask 冻结独立纳入决定 |
 | `POST` | `/statistics/external-imports/{import_id}/demographics` | 以精确导入版本登记人口学表、编号列及字段对应，要求恰好覆盖纳入名单 |
 | `GET` | `/statistics/external-imports/{import_id}/demographics` | 读取最新人口学修订的列名、人数、源表和内容哈希；不返回原始行 |
 | `GET` | `/statistics/results?project_id=...&run_id=...` | 按项目（可选运行）列出已登记的统计结果摘要 |
@@ -364,7 +364,7 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 
 运行请求携带 `qc_mode=require|skip`。`require` 时，MATLAB/DPABI 预处理或指标运行成功并登记 Artifact 后，若本次计划启用了 Realign 且存在 `RealignParameter`，Worker 会解析 `HeadMotion.tsv`、FD 文件、`rp_*.txt` 和 DPABI 排除文件，登记 `qc.head_motion_report`，并自动创建 QC 草稿。含指标图的运行生成 `pre_statistics` scope，可在人工批准后作为统计来源；无指标图的纯预处理生成 `head_motion` scope。`skip` 时运行在产物登记完成后进入 `succeeded`，不解析头动文件或创建 QC 草稿。统计设计可绑定已批准 QC review，或绑定同一来源运行的 `qc_skip` 审计记录；后者会在报告中明确标记 QC 已跳过。默认阈值为最大平移/旋转 `≤2mm/2°`、mean FD Power `≤0.2`、FD Power > 0.5 比例 `≤20%`。
 
-外部纳入请求的 `mask_relative_path` 必须指向导入根内的 NIfTI，并通过同网格和非空检查。没有 mask 仍可保存纳入记录，但详细响应 `selection` 为 null，不能建立可执行设计。有完整 mask 时，`selection` 返回服务端生成的影像引用、mask 引用和 `input_manifest_hash`。创建统计设计使用 `qc_source=external_import`、`external_import_id`、`external_import_hash`，其内部 QC review/skip 字段必须为空；服务端核对逐 subject 引用、分组及目录/mask 哈希。设计顺序可以显式打乱，不能改变 subject 与影像、组别的关系。外部人口学可独立登记修订并绑定协变量。inspect 的 layout 显式选择 grouped（默认）或 paired_conditions；配对布局必须恰好有两个完整条件目录，selection.images 增加 condition。纳入名单每 subject 一项，同时纳入两张图；配对 t 的 condition_order 明确引用两个标签。
+外部纳入请求的 `mask_relative_path` 必须指向导入根内的 NIfTI，并通过同网格和非空检查。没有 mask 仍可保存纳入记录，但详细响应 `selection` 为 null，不能建立可执行设计。有完整 mask 时，`selection` 返回服务端生成的影像引用、mask 引用和 `input_manifest_hash`。创建统计设计使用 `qc_source=external_import`、`external_import_id`、`external_import_hash`，其内部 QC review/skip 字段必须为空；服务端核对逐 subject 引用、分组及目录/mask 哈希。设计顺序可以显式打乱，不能改变 subject 与影像、组别的关系。外部人口学可独立登记修订并绑定协变量。inspect 的 layout 显式选择 grouped（默认）或 paired_conditions；配对布局必须恰好有两个完整条件目录，selection.images 增加 condition。纳入名单每 subject 一项，同时纳入两张图；配对 t 的 condition_order 明确引用两个标签。外部检查响应为每项影像记录 subject/group/condition 的来源及 `candidate` 证据，并独立生成 `identity_mapping_hash`；纳入 API 要求用户显式确认候选映射，冻结记录将映射标为 `declared` 并绑定该 hash。session/run ID 与证据级别仍为 null/unknown，外部导入不会宣称 `verified`；检测到映射哈希变化时必须重新检查。
 
 ## Provider 和 Agent
 

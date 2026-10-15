@@ -404,6 +404,7 @@ def main() -> None:
                 group_order=("third", "first", "second"),
                 coordinate_space="MNI",
                 acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
                 actor="authorized_acceptance",
                 reason="User-authorized synthetic public Worker numerical acceptance.",
                 mask_relative_path="Mask.nii",

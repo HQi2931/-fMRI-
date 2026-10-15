@@ -35,9 +35,11 @@ from neuroagent.application.contracts.statistics import (
 )
 from neuroagent.application.conversation_work import WorkActionResult
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.service_mixins import external_imports as external_imports_module
 from neuroagent.application.services import ApplicationServices
 from neuroagent.application.statistics_draft import StatisticsDraft, merge_statistics_draft
 from neuroagent.context.interfaces import ContextPacket
+from neuroagent.domain.fmri.external_import import ExternalMetricInclusion, ExternalMetricLayout
 from neuroagent.domain.fmri.statistics import (
     AnalysisImage,
     MissingValuePolicy,
@@ -104,6 +106,7 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
             group_order=("before", "after"),
             coordinate_space="unknown",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="researcher",
             reason="Synthetic paired fixture",
             mask_relative_path="Mask.nii",
@@ -111,6 +114,20 @@ def test_external_paired_source_binds_both_images_and_explicit_condition_directi
         "paired-include",
     )
     assert imported.selection is not None
+    assert imported.inclusion is not None
+    assert imported.inclusion.identity_mapping_evidence == "declared"
+    assert imported.inclusion.identity_mapping_hash == imported.inspection.identity_mapping_hash
+    legacy_inclusion = imported.inclusion.model_dump(mode="json")
+    legacy_inclusion.pop("identity_mapping_evidence")
+    legacy_inclusion.pop("identity_mapping_hash")
+    assert (
+        ExternalMetricInclusion.model_validate(legacy_inclusion).identity_mapping_evidence
+        == "unknown"
+    )
+    assert all(item.subject_id_evidence == "candidate" for item in imported.inspection.images)
+    assert all(item.group_evidence == "candidate" for item in imported.inspection.images)
+    assert all(item.session_evidence == "unknown" for item in imported.inspection.images)
+    assert all(item.run_evidence == "unknown" for item in imported.inspection.images)
     assert len({image.artifact_id for image in imported.selection.images}) == 6
     summaries = service.external_imports.list_external_analysis_imports(project_id=project_id)
     assert summaries[0].subject_count == 3
@@ -180,6 +197,7 @@ def test_external_demographics_aligns_covariates_and_invalidates_old_design(
             group_order=("ASD", "HC"),
             coordinate_space="unknown",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="researcher",
             reason="Synthetic covariate fixture",
             mask_relative_path="Mask.nii",
@@ -348,6 +366,7 @@ def test_work_external_proposal_uses_reviewed_identity_and_rejects_source_drift(
             included_subject_ids=tuple(reversed(subjects)),
             group_order=("ASD", "HC"),
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="researcher",
             reason="Synthetic review",
             coordinate_space="unknown",
@@ -483,6 +502,7 @@ def test_external_import_requires_review_and_binds_inclusion_to_source_hash(
             group_order=("ASD", "HC"),
             coordinate_space="unknown",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="researcher",
             reason="Reviewed external DPABI output names and group folders.",
             mask_relative_path="Mask.nii",
@@ -530,12 +550,58 @@ def test_external_import_refuses_files_changed_after_inspection(
                 group_order=("ASD", "HC"),
                 coordinate_space="MNI",
                 acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
                 actor="researcher",
                 reason="Review should fail because input changed.",
             ),
             "external-inclusion-key-2",
         )
     assert caught.value.code == "external_import_source_changed"
+
+
+def test_external_import_refuses_mapping_drift_when_source_tree_is_unchanged(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = _make_project(service, source_root, work_root)
+    source = source_root / "Slow-1"
+    subjects = _valid_import_tree(source)
+    imported = service.external_imports.inspect_external_analysis_import(
+        ExternalAnalysisImportInspectRequest(project_id=project_id, source_path=str(source)),
+        "mapping-drift-inspection-key",
+    )
+    original_inspector = external_imports_module.inspect_external_metric_directory
+    mapping_hash = imported.inspection.identity_mapping_hash
+    assert mapping_hash is not None
+    changed_hash = ("0" if mapping_hash[0] != "0" else "1") + mapping_hash[1:]
+
+    def changed_mapping(path: Path, *, layout: ExternalMetricLayout = "grouped"):
+        current = original_inspector(path, layout=layout)
+        assert current.source_tree_hash == imported.inspection.source_tree_hash
+        return current.model_copy(update={"identity_mapping_hash": changed_hash})
+
+    monkeypatch.setattr(
+        external_imports_module, "inspect_external_metric_directory", changed_mapping
+    )
+    with pytest.raises(ConflictError) as caught:
+        service.external_imports.include_external_analysis_import(
+            imported.import_id,
+            ExternalAnalysisImportIncludeRequest(
+                expected_version=imported.version,
+                included_subject_ids=subjects,
+                group_order=("ASD", "HC"),
+                coordinate_space="unknown",
+                acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
+                actor="researcher",
+                reason="Mapping changed during verification.",
+            ),
+            "mapping-drift-inclusion-key",
+        )
+
+    assert caught.value.code == "external_import_mapping_changed"
 
 
 def test_external_import_rejects_mask_on_another_grid(
@@ -560,6 +626,7 @@ def test_external_import_rejects_mask_on_another_grid(
                 group_order=("ASD", "HC"),
                 coordinate_space="unknown",
                 acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
                 actor="researcher",
                 reason="Mask grid must be checked before inclusion.",
                 mask_relative_path="Mask.nii",
@@ -591,6 +658,7 @@ def test_external_import_with_scanner_blockers_cannot_be_included(
                 group_order=("ASD", "HC"),
                 coordinate_space="unknown",
                 acknowledge_unknown_processing=True,
+                acknowledge_candidate_mapping=True,
                 actor="researcher",
                 reason="Attempt to include an invalid mixed metric source.",
             ),
@@ -615,6 +683,28 @@ def test_external_import_api_returns_full_scan_once_and_bounded_list_projection(
         body = response.json()
         assert body["status"] == "needs_review"
         assert len(body["inspection"]["images"]) == 4
+        assert {image["subject_id_evidence"] for image in body["inspection"]["images"]} == {
+            "candidate"
+        }
+        assert {image["group_evidence"] for image in body["inspection"]["images"]} == {"candidate"}
+        assert {image["session_evidence"] for image in body["inspection"]["images"]} == {"unknown"}
+        assert body["inspection"]["identity_mapping_hash"]
+
+        missing_mapping_review = {
+            "expected_version": 1,
+            "included_subject_ids": [image["subject_id"] for image in body["inspection"]["images"]],
+            "group_order": ["ASD", "HC"],
+            "coordinate_space": "unknown",
+            "acknowledge_unknown_processing": True,
+            "actor": "researcher",
+            "reason": "Reviewed the scan.",
+        }
+        invalid_decision = client.post(
+            f"/api/v1/statistics/external-imports/{body['import_id']}/include",
+            headers={"Idempotency-Key": "external-api-missing-mapping-ack"},
+            json=missing_mapping_review,
+        )
+        assert invalid_decision.status_code == 422
 
         listed = client.get(
             "/api/v1/statistics/external-imports", params={"project_id": project_id}
@@ -637,12 +727,17 @@ def test_external_import_api_returns_full_scan_once_and_bounded_list_projection(
                 "group_order": ["ASD", "HC"],
                 "coordinate_space": "unknown",
                 "acknowledge_unknown_processing": True,
+                "acknowledge_candidate_mapping": True,
                 "actor": "researcher",
                 "reason": "Reviewed the scan and accepted unknown processing metadata.",
             },
         )
         assert decision.status_code == 200
         assert decision.json()["status"] == "included"
+        assert decision.json()["inclusion"]["identity_mapping_evidence"] == "declared"
+        assert {
+            image["subject_id_evidence"] for image in decision.json()["inspection"]["images"]
+        } == {"candidate"}
 
 
 def test_external_source_freezes_design_and_stages_hash_verified_copies(
@@ -664,6 +759,7 @@ def test_external_source_freezes_design_and_stages_hash_verified_copies(
             group_order=("ASD", "HC"),
             coordinate_space="MNI",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="researcher",
             reason="Synthetic source reviewed for execution staging test.",
             mask_relative_path="Mask.nii",

@@ -454,6 +454,7 @@ def _external_fixture(service, source_root, work_root):
             group_order=("ASD", "HC"),
             coordinate_space="unknown",
             acknowledge_unknown_processing=True,
+            acknowledge_candidate_mapping=True,
             actor="fixture",
             reason="Synthetic failure matrix",
             mask_relative_path="Mask.nii",

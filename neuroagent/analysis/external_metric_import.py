@@ -19,6 +19,7 @@ from neuroagent.domain.fmri.external_import import (
     ExternalMetricImage,
     ExternalMetricInspection,
     ExternalMetricLayout,
+    external_identity_mapping_hash,
 )
 from neuroagent.domain.fmri.metrics import MetricKind
 
@@ -64,7 +65,7 @@ def inspect_external_metric_directory(
     )
     group_dirs = sorted(
         (entry for entry in root_entries if entry.is_dir() and not _is_link(entry)),
-        key=lambda entry: entry.name.casefold(),
+        key=lambda entry: (entry.name.casefold(), entry.name),
     )
     minimum_group_dirs = 1 if layout == "grouped" else 2
     if len(group_dirs) < minimum_group_dirs:
@@ -180,6 +181,16 @@ def inspect_external_metric_directory(
                         grid_signature=signature,
                         metric_kind=metric_kind,
                         scaling=scaling,
+                        subject_id_source="filename",
+                        subject_id_evidence="candidate",
+                        group_source="first_level_directory",
+                        group_evidence="candidate",
+                        condition_source=(
+                            "first_level_directory" if layout == "paired_conditions" else "unknown"
+                        ),
+                        condition_evidence=(
+                            "candidate" if layout == "paired_conditions" else "unknown"
+                        ),
                     )
                 )
             except (OSError, ValueError, TypeError, nib.filebasedimages.ImageFileError) as exc:
@@ -218,14 +229,26 @@ def inspect_external_metric_directory(
     result_scaling: MetricScaling | None = None
     if len(metric_pairs) == 1:
         result_metric_kind, result_scaling = next(iter(metric_pairs))
+    image_records = tuple(
+        sorted(
+            images,
+            key=lambda item: (
+                item.group.casefold(),
+                item.group,
+                item.subject_id.casefold(),
+                item.subject_id,
+                item.relative_path.casefold(),
+                item.relative_path,
+            ),
+        )
+    )
     return ExternalMetricInspection(
         layout=layout,
         source_tree_hash=tree_hash,
+        identity_mapping_hash=external_identity_mapping_hash(layout, image_records),
         metric_kind=result_metric_kind,
         scaling=result_scaling,
-        images=tuple(
-            sorted(images, key=lambda item: (item.group.casefold(), item.subject_id.casefold()))
-        ),
+        images=image_records,
         group_order=tuple(groups),
         grid_signature=next(iter(signatures)) if len(signatures) == 1 else None,
         blocking_issues=tuple(dict.fromkeys(issues)),
@@ -310,9 +333,9 @@ def _walk_group(group_dir: Path, *, max_depth: int) -> tuple[list[Path], list[Pa
             elif path.is_file():
                 paths.append(path)
     return (
-        sorted(paths, key=lambda item: item.as_posix().casefold()),
-        sorted(linked, key=lambda item: item.as_posix().casefold()),
-        sorted(deep, key=lambda item: item.as_posix().casefold()),
+        sorted(paths, key=lambda item: (item.as_posix().casefold(), item.as_posix())),
+        sorted(linked, key=lambda item: (item.as_posix().casefold(), item.as_posix())),
+        sorted(deep, key=lambda item: (item.as_posix().casefold(), item.as_posix())),
     )
 
 

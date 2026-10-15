@@ -37,6 +37,7 @@ class ExternalAnalysisImportIncludeRequest(StrictModel):
     group_order: tuple[str, ...] = Field(min_length=1)
     coordinate_space: ExternalCoordinateSpace
     acknowledge_unknown_processing: Literal[True]
+    acknowledge_candidate_mapping: Literal[True]
     actor: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=2000)
     mask_relative_path: str | None = Field(default=None, min_length=1, max_length=4096)

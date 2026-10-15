@@ -19,7 +19,7 @@
 | `clusters.py` | DPABI cluster 表解析与 atlas 坐标最近邻匹配（几何启发式，校验坐标空间一致） |
 | `dpabi_atlas.py` | 只读检查配置 DPABI 的 AAL/AAL3/Brodmann 图谱，以 NIfTI 仿射采样峰值并计算 26 邻域簇覆盖比例 |
 | `cluster_roi.py` | 在复核峰值及正负簇的 26 邻域范围后，逐图读取同网格指标均值；仅用于描述性展示 |
-| `external_metric_import.py` | 只读检查分组或显式配对条件指标目录及 mask，核对编号、完整配对、网格和文件哈希；未知处理信息保持未知 |
+| `external_metric_import.py` | 只读检查分组或显式配对条件指标目录及 mask；受试者/组别/条件是带来源的扫描候选，subject/session/run 不靠目录顺序连接，session/run 保持 unknown |
 | `roi.py` | ROI 信号合同的 Nyquist/频带校验与长宽表导出 |
 | `tables.py` | CSV/TSV/XLSX 只读检查（不修改上传文件，损坏文件失败关闭） |
 | `templates.py` | 生成可审查的 Python ML 模板（不执行、不注入命令/绝对路径） |
@@ -31,5 +31,6 @@
 - 本模块当前为**本地确定性分析辅助**：不启动 MATLAB、不训练模型、不联网检索。
 - 结果定位只读取已登记统计图和受信的 DPABI 模板图谱；应用服务先验证来源 Artifact 边界与完整性哈希。合成结果、空间未知结果、簇峰值或连通范围不匹配时失败关闭。
 - 真实 4D `y_ExtractROISignal`、隔离 ML Runner 和脱敏联网 RAG 均待单独接线与授权。外部分组/配对目录检查、纳入及 Work 来源选择已接入统计执行；显著簇内体积指标均值由确定性程序提取。
+- 外部指标检查独立哈希原始文件树与 subject/group/condition 候选映射；用户纳入前需显式复核映射，纳入记录标为 `declared`，不能升为 `verified`。缺失的 session/run 身份维持 `unknown`；映射来源解释变化会要求重新检查。
 - AAL/AAL3/Brodmann 的定位结果是描述性空间覆盖，不能当成簇内二次统计检验。
 - 图谱头和标签解析使用有界内存缓存，键包含实际内容 SHA-256。大小和时间戳相同的内容变化也会重新解析；正式方案及报告的冻结版本由应用层验证，缓存不替代完整性检查。

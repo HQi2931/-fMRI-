@@ -1,8 +1,9 @@
 """Contracts for externally produced subject-level metric maps.
 
-The scanner records file evidence and claims only what it can verify. Processing
-history and anatomical space remain unknown until a researcher explicitly
-reviews and confirms them.
+The scanner records byte and image-grid evidence, while filename and directory
+identities remain candidates. Processing history and anatomical space stay
+unknown unless a researcher declares them; inclusion never creates verified
+execution provenance.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from neuroagent.domain.fmri.metrics import MetricKind
 
 ExternalCoordinateSpace = Literal["MNI", "Talairach", "unknown"]
 ExternalMetricLayout = Literal["grouped", "paired_conditions"]
+ExternalMappingEvidence = Literal["unknown", "candidate"]
 
 
 def external_metric_artifact_id(
@@ -53,6 +55,40 @@ def external_analysis_manifest_hash(
     ).hexdigest()
 
 
+def external_identity_mapping_hash(
+    layout: ExternalMetricLayout, images: tuple[ExternalMetricImage, ...]
+) -> str:
+    """Hash the scanner's subject/group/condition mapping separately from file bytes."""
+
+    mapping = [
+        {
+            "relative_path": image.relative_path,
+            "subject_id": image.subject_id,
+            "subject_id_source": image.subject_id_source,
+            "subject_id_evidence": image.subject_id_evidence,
+            "group": image.group,
+            "group_source": image.group_source,
+            "group_evidence": image.group_evidence,
+            "condition": image.condition,
+            "condition_source": image.condition_source,
+            "condition_evidence": image.condition_evidence,
+            "session_id": image.session_id,
+            "session_evidence": image.session_evidence,
+            "run_id": image.run_id,
+            "run_evidence": image.run_evidence,
+        }
+        for image in sorted(
+            images, key=lambda item: (item.relative_path.casefold(), item.relative_path)
+        )
+    ]
+    payload = {"layout": layout, "images": mapping}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 class ExternalMetricImage(FrozenModel):
     """One hashed, spatially inspected input image within an external import."""
 
@@ -67,6 +103,19 @@ class ExternalMetricImage(FrozenModel):
     grid_signature: str = Field(pattern=r"^[a-f0-9]{64}$")
     metric_kind: MetricKind
     scaling: MetricScaling
+    # Import scanning can only propose identities based on source labels. These
+    # fields deliberately remain candidates; external data never gains
+    # execution-verified identity evidence merely by being included.
+    subject_id_source: Literal["unknown", "filename"] = "unknown"
+    subject_id_evidence: ExternalMappingEvidence = "unknown"
+    group_source: Literal["unknown", "first_level_directory"] = "unknown"
+    group_evidence: ExternalMappingEvidence = "unknown"
+    condition_source: Literal["unknown", "first_level_directory"] = "unknown"
+    condition_evidence: ExternalMappingEvidence = "unknown"
+    session_id: None = None
+    session_evidence: Literal["unknown"] = "unknown"
+    run_id: None = None
+    run_evidence: Literal["unknown"] = "unknown"
 
 
 class ExternalMetricInspection(FrozenModel):
@@ -75,6 +124,7 @@ class ExternalMetricInspection(FrozenModel):
     schema_version: Literal["1.0"] = "1.0"
     layout: ExternalMetricLayout = "grouped"
     source_tree_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    identity_mapping_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     metric_kind: MetricKind | None = None
     scaling: MetricScaling | None = None
     images: tuple[ExternalMetricImage, ...]
@@ -103,6 +153,10 @@ class ExternalMetricInclusion(FrozenModel):
     actor: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=2000)
     unknown_processing_acknowledged: bool
+    # A researcher declaration is separate from the scanner's candidate
+    # mapping and is not equivalent to executor-verified provenance.
+    identity_mapping_evidence: Literal["unknown", "declared"] = "unknown"
+    identity_mapping_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     mask_relative_path: str | None = Field(default=None, min_length=1, max_length=4096)
     mask_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     mask_size_bytes: int | None = Field(default=None, gt=0)

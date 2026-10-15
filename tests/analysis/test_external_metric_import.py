@@ -11,6 +11,7 @@ from neuroagent.analysis.external_metric_import import (
     inspect_external_metric_directory,
 )
 from neuroagent.domain.fmri.artifacts import MetricScaling
+from neuroagent.domain.fmri.external_import import external_identity_mapping_hash
 from neuroagent.domain.fmri.metrics import MetricKind
 
 
@@ -62,6 +63,30 @@ def test_external_metric_inspection_aligns_groups_and_records_unknown_processing
     ]
     assert len({item.grid_signature for item in result.images}) == 1
     assert result.coordinate_space == "unknown"
+    assert all(item.subject_id_source == "filename" for item in result.images)
+    assert all(item.subject_id_evidence == "candidate" for item in result.images)
+    assert all(item.group_source == "first_level_directory" for item in result.images)
+    assert all(item.group_evidence == "candidate" for item in result.images)
+    assert all(
+        item.session_id is None and item.session_evidence == "unknown" for item in result.images
+    )
+    assert all(item.run_id is None and item.run_evidence == "unknown" for item in result.images)
+    assert result.identity_mapping_hash == external_identity_mapping_hash("grouped", result.images)
+    assert external_identity_mapping_hash("grouped", tuple(reversed(result.images))) == (
+        result.identity_mapping_hash
+    )
+    changed_mapping = result.images[0].model_copy(update={"subject_id": "reviewed-id"})
+    assert (
+        external_identity_mapping_hash("grouped", (changed_mapping, *result.images[1:]))
+        != result.identity_mapping_hash
+    )
+    case_tied_paths = (
+        result.images[0].model_copy(update={"relative_path": "ASD/Sub-01.nii"}),
+        result.images[1].model_copy(update={"relative_path": "asd/sub-02.nii"}),
+    )
+    assert external_identity_mapping_hash("grouped", case_tied_paths) == (
+        external_identity_mapping_hash("grouped", tuple(reversed(case_tied_paths)))
+    )
     assert result.blocking_issues == ()
     assert "mask source and version" in result.unknown_processing_fields
     assert len(result.source_tree_hash) == 64
