@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-12
 - 更新日期：2026-10-15
-- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
+- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045：有界线性步骤调度（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
 
@@ -222,4 +222,4 @@ composite intent
 
 本架构不承诺“任何自然语言目标、任何数据目录、任何指标、任何 DPABI 安装”都可自动执行。支持边界由当前已核验的输入合同、Skill、统计设计、执行适配器和产物检查共同决定。对 FC、复杂多 session/run、重复测量、批量 checkpoint 或未知预处理史，必须先具备完整身份、设计、执行和证据合同。
 
-实现按垂直切片演进：先统一结构化预检与有界反馈；再完成持久任务恢复和事件唤醒；随后扩展输入身份与可审查的外部导入；接着建立从逻辑科研步骤到真实 DPABI 执行单元的映射；最后逐项增加指标和统计方法。任务清单、场景与验收证据维护在[计划 0014](../plans/0014-general-agent-automation.md)，验证事实维护在[MVP 验证记录](../development/mvp-verification.md)，重大且不可逆的状态与权限边界通过 ADR 决策。
+实现按垂直切片演进：先统一结构化预检与有界反馈；再完成持久任务恢复和事件唤醒；当前下一项调度设计是以步骤级 Run 身份、单个活动步骤和前驱成功门控支持有界线性序列，不先开放任意 DAG；随后扩展输入身份与可审查的外部导入；接着建立从逻辑科研步骤到真实 DPABI 执行单元的映射；最后逐项增加指标和统计方法。线性步骤调度仍处于提议阶段，当前实现保持单步骤 fail-closed。任务清单、场景与验收证据维护在[计划 0014](../plans/0014-general-agent-automation.md)，验证事实维护在[MVP 验证记录](../development/mvp-verification.md)，重大且不可逆的状态与权限边界通过 ADR 决策。

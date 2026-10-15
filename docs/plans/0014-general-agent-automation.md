@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-11
 - 更新日期：2026-10-15
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)
 
 ## 目标里程碑
 
@@ -160,6 +160,10 @@ flowchart TD
 持久协调器现在通过精确 `TaskStep.kind` 注册表分派只读 readiness 检查器，首批覆盖 `preprocessing_run` 与 `statistical_run`。检查结果是绑定 Task/Step 版本和 Run ID 的不可变 Assessment；`waiting_*`、`blocked`、`indeterminate` 与 `ready_to_finalize` 和持久任务状态分离。预处理检查继续核验冻结 SkillPlan、显式 QC 决定、精确目标 Artifact 集与 lineage；统计检查继续核验冻结设计、唯一真实 StatisticalResult、结果 bundle 与 Artifact lineage，且不要求预处理头动 QC。应用协调层负责状态映射和 CAS；类型专属 finalizer 会在写入前重新读取并比较证据，只有通过复核才在既有事务中完成 Task/Step 和对应 outbox。Assessment 过期、Run/Artifact/QC 证据变化或最终重读无法确认时返回 `indeterminate`，不收口 Task/outbox。事件仍只负责去重与唤醒；无显式步骤的旧任务保留原只读兼容路径。
 
 本切片没有数据库迁移，未运行 MATLAB/DPABI，也没有开放多步骤 DAG、共享任务预算或多目标 fanout。自动化重核、readiness 合同、统计解释 outbox 相关的 3 个定向后端测试模块 65 项通过；Ruff check、格式、Mypy 与 `git diff --check` 通过。阶段 B 整体仍未完成。合同见 [ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)。
+
+### 阶段 B 后继步骤调度设计（2026-10-15）
+
+当前 TaskStep 虽有 `sequence`，但运行绑定、readiness 与完成转换仍严格限定单步骤。新增 [ADR 0045（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)，规定先扩展为有界线性序列：一次只允许一个活动步骤；后继只在直接前驱被类型化 handler 核验成功后进入可准备状态；每步独立保存 Run/Plan/Artifact 引用；目标只在所有必需步骤成功后完成。阶段一必须保持单步骤和无步骤历史任务兼容，并先解决步骤级 Run 事件路由、CAS/fencing 与事务收口，再接入下一步 prepare handler。该设计仍需评审，现有单步骤 fail-closed 行为继续有效；它没有宣称多步骤调度已经实现。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
