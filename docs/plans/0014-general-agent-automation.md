@@ -149,6 +149,12 @@ flowchart TD
 
 本切片的后端定向回归为 9 个模块、113 项通过；Ruff、Mypy、文档标准检查和 `git diff --check` 通过。没有运行 MATLAB/DPABI。
 
+### 阶段 B 显式步骤集合 fail-closed（2026-10-15）
+
+在注册式 readiness handler 与多步骤调度器实现之前，含显式 TaskStep 的 Run 生命周期仅接受一个已注册的 `preprocessing_run` 或 `statistical_run`，且 Task 与 Step 必须绑定同一个 Run、步骤必须处于等待状态。未知、混合、多步骤及 Run 引用冲突在重核入口返回 `indeterminate`，不消费该轮新事件，也不按“非统计即预处理”分派。共享绑定/完成转换拒绝 sibling 步骤，避免单个步骤完成时把其他 pending 步骤一起隐式关闭。无 TaskStep 的历史任务保留原只读重核兼容路径。
+
+本切片无需数据库迁移。9 个自动化相关后端模块 119 项通过；Ruff check、Mypy、文档规范与差异空白检查通过。`ruff format --check` 在这些既有文件中报告了本切片未触及的格式差异，未为此改写整文件。阶段 B 整体仍未完成。没有运行 MATLAB/DPABI。
+
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
 阶段 B 纵向接线（2026-10-12）：预处理 Work 的对话 finalize、`work-draft` 和 `work-review` 在真实 preprocessing `SkillPlan` 成功提交后，按 `(conversation_id, preprocessing, plan_revision_id)` 的确定性 ID 创建或复用一个 `waiting_user` WorkTask，并在同一 Unit of Work 中保存会话角色链接。目标说明来自能由预处理角色/草稿/方案证明关联的用户消息；缺少原始请求时使用带 Plan ID 的执行目标。任务权威引用保留会话、Plan 和冻结 `manifest_hash`；完成条件明确涵盖 Run 成功、实际 QC 决定和该 Plan 的 artifact expectations。显式一次性确认在现有 `send_conversation_turn` finalize 中提交 Run、确认消费、同一任务转入 `waiting_run` 及会话 Run 链接；绑定冲突会回滚该事务。部分对话入口的 Plan 已在 finalize 前的 prepare 中保存，因此这里只承诺任务与会话链接，以及明确授权启动 Run 的原子收口，不概括承诺所有入口的 Plan 创建均与任务同事务。HTTP ConversationWorkTask 响应补充 `work_task_id`。定向集成测试验证 draft 编译/review 复用、无效确认、finalize 故障回滚后同确认重试、Run 幂等重放和错项目拒绝；测试只创建排队记录，不运行 MATLAB。此接线只覆盖预处理 Plan；统计任务、事件订阅/后台调度、依赖继续及目标 artifact 成功判定仍未实现。

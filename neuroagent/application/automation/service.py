@@ -49,7 +49,11 @@ from neuroagent.application.automation.result_interpretation import (
     VerifiedResultInterpretationSource,
     project_result_model_facts,
 )
-from neuroagent.application.automation.step_lifecycle import bind_step_to_run, complete_step
+from neuroagent.application.automation.step_lifecycle import (
+    bind_step_to_run,
+    complete_step,
+    resolve_single_bound_run_step,
+)
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
@@ -1670,7 +1674,16 @@ class WorkTaskApplicationService:
                 "自动化任务没有绑定可核验的运行。",
                 task_id=task_id,
             )
-        is_statistical = any(step.kind == "statistical_run" for step in task.steps)
+        try:
+            bound_step = resolve_single_bound_run_step(task, run_id)
+        except ValueError as exc:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                reason=f"任务步骤结构或 Run 引用无法唯一解析;未消费新事件。({exc})",
+            )
+        initial_bound_step = bound_step
+        is_statistical = bound_step is not None and bound_step.kind == "statistical_run"
         is_waiting_for_bound_run = (
             task.status is TaskStatus.WAITING_RUN
             and task.waiting_condition is not None
@@ -1750,8 +1763,25 @@ class WorkTaskApplicationService:
         # Consume can race with user/API state changes. Always use the persisted
         # task version before deciding whether this reconciliation may transition it.
         task = self._repository.get_task(task_id)
+        try:
+            bound_step = resolve_single_bound_run_step(task, run_id)
+        except ValueError as exc:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=tuple(receipts),
+                reason=f"事件消费后任务步骤结构或 Run 引用变化;本次不推进状态。({exc})",
+            )
+        if bound_step != initial_bound_step:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=tuple(receipts),
+                reason="事件消费期间绑定步骤发生变化;本次只记录事件身份,需重新核验。",
+            )
+        is_statistical = bound_step is not None and bound_step.kind == "statistical_run"
         is_waiting_for_current_statistical_result = (
-            self._has_statistical_step(task)
+            is_statistical
             and task.status is TaskStatus.WAITING_DEPENDENCY
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"statistical-result:{run_id}"
@@ -1762,12 +1792,16 @@ class WorkTaskApplicationService:
             and task.waiting_condition.reference == run_id
         )
         is_waiting_for_current_qc = (
-            not self._has_statistical_step(task)
+            not is_statistical
             and task.status is TaskStatus.WAITING_USER
             and task.waiting_condition is not None
             and task.waiting_condition.reference == f"qc:{run_id}"
         )
-        current_preprocessing_step = self._preprocessing_step(task)
+        current_preprocessing_step = (
+            bound_step
+            if bound_step is not None and bound_step.kind == "preprocessing_run"
+            else None
+        )
         is_waiting_for_current_preprocessing_dependency = (
             current_preprocessing_step is not None
             and task.status is TaskStatus.WAITING_DEPENDENCY
@@ -1788,7 +1822,7 @@ class WorkTaskApplicationService:
                 reason="任务等待状态已并发变化;本次只记录事件身份,需重新读取后再协调。",
             )
 
-        if self._has_statistical_step(task):
+        if is_statistical:
             return self._reconcile_statistical_run(
                 task,
                 run_id,

@@ -21,6 +21,33 @@ from neuroagent.application.automation.models import (
 _SUPPORTED_RUN_STEP_KINDS = frozenset({"preprocessing_run", "statistical_run"})
 
 
+def resolve_single_bound_run_step(task: WorkTask, run_id: str) -> TaskStep | None:
+    """Resolve the current single-step Run contract or reject ambiguous state.
+
+    Tasks without TaskSteps are returned as ``None`` for the existing legacy
+    reconciliation fallback. Once a task has explicit steps, it must have one
+    supported Run step whose task and step Run references agree exactly.
+    """
+
+    if not run_id:
+        raise ValueError("run_id is required")
+    if not task.steps:
+        return None
+    if len(task.steps) != 1:
+        raise ValueError("current Run lifecycle requires exactly one TaskStep")
+    step = task.steps[0]
+    if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
+        raise ValueError(f"unsupported Run step kind: {step.kind}")
+    if (
+        task.authority_refs.workflow_run_id != run_id
+        or step.authority_refs.workflow_run_id != run_id
+    ):
+        raise ValueError("task and step must reference the same bound Run")
+    if step.status is not TaskStepStatus.WAITING:
+        raise ValueError("the uniquely bound Run step must be waiting")
+    return step
+
+
 def bind_step_to_run(
     task: WorkTask,
     step: TaskStep,
@@ -178,6 +205,8 @@ def _is_ready_for_verified_completion(task: WorkTask, step: TaskStep, run_id: st
 def _require_task_step(task: WorkTask, step: TaskStep) -> None:
     if step.kind not in _SUPPORTED_RUN_STEP_KINDS:
         raise ValueError(f"unsupported Run step kind: {step.kind}")
+    if len(task.steps) != 1:
+        raise ValueError("current Run lifecycle requires exactly one TaskStep")
     matches = tuple(item for item in task.steps if item.step_id == step.step_id)
     if len(matches) != 1 or matches[0] != step:
         raise ValueError("step does not identify the current persisted task step")

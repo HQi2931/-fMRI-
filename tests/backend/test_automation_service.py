@@ -230,6 +230,46 @@ def add_run_event(service, *, run_id: str = "run-application", payload=None) -> 
     )
 
 
+@pytest.mark.parametrize(
+    ("step_kinds", "step_run_id"),
+    [
+        pytest.param(("unregistered_run",), "run-application", id="unknown-kind"),
+        pytest.param(
+            ("statistical_run", "preprocessing_run"),
+            "run-application",
+            id="mixed-kinds",
+        ),
+        pytest.param(("preprocessing_run",), "another-run", id="step-run-mismatch"),
+    ],
+)
+def test_reconciliation_fails_closed_before_consuming_event_for_ambiguous_steps(
+    service, step_kinds: tuple[str, ...], step_run_id: str
+) -> None:
+    base = make_waiting_task()
+    steps = tuple(
+        TaskStep(
+            step_id=f"step-{index}",
+            sequence=index,
+            kind=kind,
+            status=TaskStepStatus.WAITING,
+            authority_refs=AuthorityReferences(workflow_run_id=step_run_id),
+        )
+        for index, kind in enumerate(step_kinds)
+    )
+    task = WorkTask.model_validate({**base.model_dump(), "steps": steps})
+    service.automation.create_task(task)
+    add_run_event(service)
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task.status is TaskStatus.WAITING_RUN
+    assert result.task.version == task.version
+    assert result.task.event_cursors == ()
+    assert result.event_receipts == ()
+    assert "步骤结构或 Run 引用无法唯一解析" in result.reason
+
+
 def test_reconciliation_reads_authoritative_running_state_and_duplicate_delivery_is_noop(
     service,
 ) -> None:

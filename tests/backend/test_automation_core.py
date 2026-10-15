@@ -20,7 +20,11 @@ from neuroagent.application.automation.models import (
     transition_task,
     transition_task_step,
 )
-from neuroagent.application.automation.step_lifecycle import bind_step_to_run, complete_step
+from neuroagent.application.automation.step_lifecycle import (
+    bind_step_to_run,
+    complete_step,
+    resolve_single_bound_run_step,
+)
 
 
 def make_task(**overrides: object) -> WorkTask:
@@ -127,6 +131,93 @@ def test_shared_step_binding_transition_is_versioned_and_idempotent() -> None:
         run_id="run-1",
         waiting_reason="ignored on an idempotent replay",
     ) is waiting
+
+
+def test_single_bound_run_step_resolver_keeps_legacy_tasks_and_rejects_mismatch() -> None:
+    legacy = make_task(authority_refs=AuthorityReferences(workflow_run_id="run-1"))
+    assert resolve_single_bound_run_step(legacy, "run-1") is None
+
+    step = TaskStep(
+        step_id="preprocess",
+        sequence=0,
+        kind="preprocessing_run",
+        status=TaskStepStatus.WAITING,
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
+    )
+    task = make_task(
+        status=TaskStatus.WAITING_RUN,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.WORKFLOW_RUN,
+            reference="run-1",
+            reason="waiting for the bound run",
+        ),
+        authority_refs=AuthorityReferences(workflow_run_id="run-1"),
+        steps=(step,),
+    )
+    assert resolve_single_bound_run_step(task, "run-1") == step
+
+    mismatched_step = step.model_copy(
+        update={
+            "authority_refs": step.authority_refs.model_copy(
+                update={"workflow_run_id": "run-2"}
+            )
+        }
+    )
+    mismatched = WorkTask.model_validate(
+        {**task.model_dump(), "steps": (mismatched_step.model_dump(),)}
+    )
+    with pytest.raises(ValueError, match="same bound Run"):
+        resolve_single_bound_run_step(mismatched, "run-1")
+
+
+@pytest.mark.parametrize("sibling_kind", ["preprocessing_run", "unregistered_run"])
+def test_shared_run_step_lifecycle_rejects_sibling_steps(sibling_kind: str) -> None:
+    ready = TaskStep(
+        step_id="analysis",
+        sequence=0,
+        kind="statistical_run",
+        status=TaskStepStatus.READY,
+    )
+    sibling = TaskStep(step_id="sibling", sequence=1, kind=sibling_kind)
+    task = make_task(
+        status=TaskStatus.WAITING_USER,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.USER_DECISION,
+            reference="proposal:proposal-1",
+            reason="review the proposal",
+        ),
+        steps=(ready, sibling),
+    )
+
+    with pytest.raises(ValueError, match="exactly one TaskStep"):
+        bind_step_to_run(task, ready, run_id="run-1", waiting_reason="wait")
+
+    bound = bind_step_to_run(
+        make_task(
+            status=TaskStatus.WAITING_USER,
+            waiting_condition=WaitingCondition(
+                kind=WaitingKind.USER_DECISION,
+                reference="proposal:proposal-1",
+                reason="review the proposal",
+            ),
+            steps=(ready,),
+        ),
+        ready,
+        run_id="run-1",
+        waiting_reason="wait",
+    )
+    task_with_sibling = WorkTask.model_validate(
+        {
+            **bound.model_dump(),
+            "steps": (*bound.model_dump()["steps"], sibling.model_dump()),
+        }
+    )
+    with pytest.raises(ValueError, match="exactly one TaskStep"):
+        complete_step(
+            task_with_sibling,
+            task_with_sibling.steps[0],
+            artifact_ids=("artifact-1",),
+        )
 
 
 @pytest.mark.parametrize("wrong_run_id", ["run-2", ""])
