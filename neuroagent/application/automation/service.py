@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import re
+from collections.abc import Callable, Mapping
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxClaim,
@@ -53,6 +54,14 @@ from neuroagent.application.automation.step_lifecycle import (
     bind_step_to_run,
     complete_step,
     resolve_single_bound_run_step,
+)
+from neuroagent.application.automation.step_readiness import (
+    StepReadinessAssessment,
+    StepReadinessEvidenceSummary,
+    StepReadinessOutcome,
+    StepReadinessRegistry,
+    StepReadinessResultKind,
+    StepReadinessStepKind,
 )
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import ArtifactView
@@ -122,6 +131,614 @@ class _StableRunAuthority:
         self.artifacts = artifacts
 
 
+class _StatisticalReadinessSnapshot(BaseModel):
+    """Minimal immutable identities needed to bind assessment to finalization.
+
+    The existing public authority snapshot stays unchanged. These extra fields
+    carry only the frozen Plan/input and verified result fingerprints required
+    by the readiness contract; they intentionally omit result payloads/paths.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authoritative: AuthoritativeRunSnapshot
+    plan_revision_id: str | None = Field(default=None, min_length=1, max_length=100)
+    frozen_input_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    result_bundle_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    result_version: int | None = Field(default=None, ge=1)
+    result_lineage_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class _StatisticalReadinessAssessment(StepReadinessAssessment):
+    """Readiness contract plus its internal read-only snapshot for coordination."""
+
+    stable_snapshot: _StatisticalReadinessSnapshot | None = None
+
+
+class _StatisticalFinalizationEvidence(BaseModel):
+    """Freshly re-read statistical outbox identity plus verified lineage hash."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    outbox: StatisticalResultInterpretationOutbox
+    lineage_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class _PreprocessingCompletionEvidence(BaseModel):
+    """Read-only, verified identities needed to complete one preprocessing step."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plan_revision_id: str = Field(min_length=1, max_length=100)
+    manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_artifacts: tuple[DpabiPreprocessingOutput, ...] = Field(min_length=1)
+    verified_artifact_ids: tuple[str, ...] = Field(min_length=1)
+    target_artifact_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    lineage_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    qc_decision_kind: str = Field(pattern=r"^(approved|skipped)$")
+    qc_decision_identity: str = Field(min_length=1, max_length=100)
+
+
+class _PreprocessingReadinessAssessment(StepReadinessAssessment):
+    """Readiness contract plus authority used only by the coordinator."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    stable_authority: _StableRunAuthority | None = None
+    completion_evidence: _PreprocessingCompletionEvidence | None = None
+
+
+class _StatisticalRunReadinessHandler:
+    """Classify one stable statistical authority read without mutating state."""
+
+    kind = "statistical_run"
+
+    def __init__(
+        self,
+        reader: Callable[[WorkTask, str], tuple[_StatisticalReadinessSnapshot | None, str | None]],
+    ) -> None:
+        self._reader = reader
+
+    def inspect(
+        self, task: WorkTask, step: TaskStep, run_id: str
+    ) -> _StatisticalReadinessAssessment:
+        if step.kind != self.kind:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "statistical_step_kind_mismatch",
+                "The requested step is not a statistical Run step.",
+            )
+        try:
+            snapshot, evidence_error = self._reader(task, run_id)
+        except NotFoundError:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "statistical_authority_unavailable",
+                "绑定的统计 Run 暂不可读取；任务状态未推进。",
+            )
+        except _InvalidStatisticalAuthority:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.BLOCKED,
+                "statistical_authority_invalid",
+                "统计 Run 或其冻结任务绑定未通过权威核验；任务已阻断。",
+            )
+
+        if snapshot is None:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "statistical_run_unstable",
+                "统计 Run 在三次权威状态读取期间都发生版本变化；保留原状态后重试。",
+            )
+        authoritative = snapshot.authoritative
+        if evidence_error is not None:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.BLOCKED,
+                "statistical_evidence_invalid",
+                "统计结果或冻结方案证据无法通过核验；任务已阻断。",
+                stable_snapshot=snapshot,
+            )
+
+        try:
+            state = WorkflowState(authoritative.run_state)
+        except ValueError:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "statistical_run_state_unknown",
+                "统计 Workflow 返回了不受支持的状态；任务状态未推进。",
+                stable_snapshot=snapshot,
+            )
+        if state in {WorkflowState.QUEUED, WorkflowState.RUNNING, WorkflowState.CANCELLING}:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.WAITING_RUN,
+                "statistical_run_active",
+                "权威统计 Workflow 状态仍在排队、运行或取消中。",
+                stable_snapshot=snapshot,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.WORKFLOW_RUN,
+                    reference=run_id,
+                    reason="等待该统计 Workflow Run 进入可核验的终态。",
+                ),
+            )
+        if state is WorkflowState.SUCCEEDED:
+            if authoritative.statistical_result_ids:
+                if authoritative.verified_statistical_result_id is None:
+                    return self._assessment(
+                        task,
+                        step,
+                        run_id,
+                        StepReadinessOutcome.BLOCKED,
+                        "statistical_result_unverified",
+                        "统计 Run 的结果记录未通过真实科学结果核验；任务已阻断。",
+                        stable_snapshot=snapshot,
+                    )
+                try:
+                    evidence = self._evidence_summary(snapshot, authoritative)
+                except (ValidationError, ValueError):
+                    return self._assessment(
+                        task,
+                        step,
+                        run_id,
+                        StepReadinessOutcome.INDETERMINATE,
+                        "statistical_readiness_evidence_unavailable",
+                        "真实统计结果的 readiness 证据摘要不完整；任务状态未推进。",
+                        stable_snapshot=snapshot,
+                    )
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.READY_TO_FINALIZE,
+                    "statistical_result_ready_to_finalize",
+                    "唯一真实统计结果及其 Artifact 已通过核验，可以进入完成收口。",
+                    stable_snapshot=snapshot,
+                    evidence=evidence,
+                )
+            if "mock.result" in authoritative.registered_artifact_types or any(
+                artifact_type.startswith("synthetic.")
+                for artifact_type in authoritative.registered_artifact_types
+            ):
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.BLOCKED,
+                    "statistical_mock_result_missing",
+                    "统计 Run 是 mock/synthetic 执行且没有真实 StatisticalResult；"
+                    "不能作为科学分析完成。",
+                    stable_snapshot=snapshot,
+                )
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.WAITING_DEPENDENCY,
+                "statistical_result_pending",
+                "统计 Run 已成功但尚无 StatisticalResult；保留 waiting_dependency 并等待结果登记。",
+                stable_snapshot=snapshot,
+                waiting_condition=WaitingCondition(
+                    kind=WaitingKind.DEPENDENCY,
+                    reference=f"statistical-result:{run_id}",
+                    reason="统计 Run 已成功，等待唯一真实 StatisticalResult 完成登记并通过核验。",
+                ),
+            )
+        if state in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
+            if task.status is TaskStatus.WAITING_RUN:
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.WAITING_RUN,
+                    "statistical_run_retrying",
+                    f"统计 Workflow 暂处于 {state.value}；继续等待同一 Run 的处理。",
+                    stable_snapshot=snapshot,
+                    waiting_condition=WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference=run_id,
+                        reason="Worker 正在按原有预算处理同一统计 Run。",
+                    ),
+                )
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.BLOCKED,
+                "statistical_run_state_inconsistent",
+                "等待统计结果时 Run 又回到非终态，任务与权威 Workflow 状态不一致。",
+                stable_snapshot=snapshot,
+            )
+        return self._assessment(
+            task,
+            step,
+            run_id,
+            StepReadinessOutcome.BLOCKED,
+            "statistical_run_terminal",
+            f"统计 Workflow 已处于 {state.value}；本任务不会自动重试或创建新 Run。",
+            stable_snapshot=snapshot,
+        )
+
+    @staticmethod
+    def _assessment(
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        outcome: StepReadinessOutcome,
+        reason_code: str,
+        reason: str,
+        *,
+        stable_snapshot: _StatisticalReadinessSnapshot | None = None,
+        waiting_condition: WaitingCondition | None = None,
+        evidence: StepReadinessEvidenceSummary | None = None,
+    ) -> _StatisticalReadinessAssessment:
+        return _StatisticalReadinessAssessment(
+            task_id=task.task_id,
+            task_version=task.version,
+            step_id=step.step_id,
+            step_version=step.version,
+            step_kind=step.kind,
+            run_id=run_id,
+            outcome=outcome,
+            reason_code=reason_code,
+            reason=reason,
+            waiting_condition=waiting_condition,
+            evidence=evidence,
+            stable_snapshot=stable_snapshot,
+        )
+
+    @staticmethod
+    def _evidence_summary(
+        snapshot: _StatisticalReadinessSnapshot,
+        authoritative: AuthoritativeRunSnapshot,
+    ) -> StepReadinessEvidenceSummary:
+        if (
+            snapshot.plan_revision_id is None
+            or snapshot.frozen_input_fingerprint is None
+            or snapshot.result_bundle_fingerprint is None
+            or snapshot.result_version is None
+            or snapshot.result_lineage_fingerprint is None
+            or authoritative.verified_statistical_result_id is None
+        ):
+            raise ValueError("verified statistical readiness identities are incomplete")
+        return StepReadinessEvidenceSummary(
+            step_kind=StepReadinessStepKind.STATISTICAL_RUN,
+            run_version=authoritative.run_version,
+            plan_revision_id=snapshot.plan_revision_id,
+            frozen_input_fingerprint=snapshot.frozen_input_fingerprint,
+            result_kind=StepReadinessResultKind.STATISTICAL_RESULT,
+            result_identity=authoritative.verified_statistical_result_id,
+            lineage_fingerprint=snapshot.result_lineage_fingerprint,
+            result_version=snapshot.result_version,
+            result_bundle_fingerprint=snapshot.result_bundle_fingerprint,
+        )
+
+
+class _PreprocessingRunReadinessHandler:
+    """Classify one stable preprocessing Run and its frozen output lineage."""
+
+    kind = "preprocessing_run"
+
+    def __init__(
+        self,
+        reader: Callable[[WorkTask, str], _StableRunAuthority | None],
+        completion_reader: Callable[
+            [WorkTask, str, _StableRunAuthority], _PreprocessingCompletionEvidence
+        ],
+    ) -> None:
+        self._reader = reader
+        self._completion_reader = completion_reader
+
+    def inspect(
+        self, task: WorkTask, step: TaskStep, run_id: str
+    ) -> _PreprocessingReadinessAssessment:
+        if step.kind != self.kind:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "preprocessing_step_kind_mismatch",
+                "The requested step is not a preprocessing Run step.",
+            )
+        try:
+            authority = self._reader(task, run_id)
+        except NotFoundError:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "preprocessing_authority_unavailable",
+                "绑定的预处理 Run 暂不可读取；任务状态未推进。",
+            )
+        except InputValidationError:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "preprocessing_authority_unverifiable",
+                "预处理权威记录的身份绑定无法核实；任务状态未推进。",
+            )
+
+        if authority is None:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "preprocessing_run_unstable",
+                "预处理 Run 在稳定读取期间持续变化；保留原状态后重试。",
+            )
+        snapshot = authority.snapshot
+        if snapshot.unresolved_referenced_artifact_ids:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.BLOCKED,
+                "preprocessing_referenced_artifact_missing",
+                "任务引用的 Artifact 不存在或不属于该项目；需先核验引用。",
+                stable_authority=authority,
+            )
+
+        try:
+            state = WorkflowState(snapshot.run_state)
+        except ValueError:
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.INDETERMINATE,
+                "preprocessing_run_state_unknown",
+                "预处理 Workflow 返回了不受支持的状态；任务状态未推进。",
+                stable_authority=authority,
+            )
+        if state in {WorkflowState.QUEUED, WorkflowState.RUNNING, WorkflowState.CANCELLING}:
+            return self._waiting_run(task, step, run_id, authority)
+        if state is WorkflowState.QC_REVIEW:
+            actionable = (
+                snapshot.qc_status in {"pending", "awaiting_review"}
+                and snapshot.latest_qc_review_state in {None, "draft"}
+            ) or (snapshot.qc_status == "failed" and snapshot.latest_qc_review_state == "draft")
+            if actionable:
+                return self._waiting_user(
+                    task,
+                    step,
+                    run_id,
+                    authority,
+                    "Workflow 已到达 QC 决策边界；需要用户查看并明确处理 QC。",
+                    "QC 尚未明确批准或记录显式跳过；本次未创建或批准 QC。",
+                )
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.BLOCKED,
+                "preprocessing_qc_state_inconsistent",
+                "Workflow 处于 QC_REVIEW，但 QC 状态或审查记录不一致。",
+                stable_authority=authority,
+            )
+        if state is WorkflowState.SUCCEEDED:
+            qc_approved = (
+                snapshot.qc_status == "approved" and snapshot.latest_qc_review_state == "approved"
+            )
+            qc_skipped = snapshot.qc_status == "skipped" and snapshot.qc_skip_id is not None
+            if not (qc_approved or qc_skipped) and (
+                snapshot.qc_status == "rejected" or snapshot.latest_qc_review_state == "rejected"
+            ):
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.BLOCKED,
+                    "preprocessing_qc_rejected",
+                    "权威 QC 记录为 rejected；任务已阻断，需用户决定后续处理。",
+                    stable_authority=authority,
+                )
+            if (
+                not (qc_approved or qc_skipped)
+                and snapshot.qc_status == "pending"
+                and snapshot.latest_qc_review_state
+                in {
+                    None,
+                    "draft",
+                }
+            ):
+                return self._waiting_user(
+                    task,
+                    step,
+                    run_id,
+                    authority,
+                    "运行已成功但 QC 仍 pending；等待用户检查或明确处理。",
+                    "运行成功但 QC 仍 pending；本次不会隐含批准或跳过。",
+                )
+            if not (qc_approved or qc_skipped):
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.BLOCKED,
+                    "preprocessing_qc_state_inconsistent",
+                    "运行成功，但 QC 状态与审查或跳过记录不一致；不能安全继续。",
+                    stable_authority=authority,
+                )
+
+            try:
+                completion_evidence = self._completion_reader(task, run_id, authority)
+                evidence = StepReadinessEvidenceSummary(
+                    step_kind=StepReadinessStepKind.PREPROCESSING_RUN,
+                    run_version=snapshot.run_version,
+                    plan_revision_id=completion_evidence.plan_revision_id,
+                    frozen_input_fingerprint=completion_evidence.manifest_hash,
+                    result_kind=StepReadinessResultKind.PREPROCESSING_ARTIFACTS,
+                    result_identity=completion_evidence.target_artifact_fingerprint,
+                    lineage_fingerprint=completion_evidence.lineage_fingerprint,
+                )
+            except NotFoundError:
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.BLOCKED,
+                    "preprocessing_evidence_invalid",
+                    "预处理任务引用的冻结对象或目标 Artifact 不存在；任务已阻断。",
+                    stable_authority=authority,
+                )
+            except (
+                ConflictError,
+                InputValidationError,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+                ValidationError,
+            ):
+                return self._assessment(
+                    task,
+                    step,
+                    run_id,
+                    StepReadinessOutcome.BLOCKED,
+                    "preprocessing_evidence_invalid",
+                    "预处理目标产物或冻结权威链无法通过核验；任务已阻断。",
+                    stable_authority=authority,
+                )
+            return self._assessment(
+                task,
+                step,
+                run_id,
+                StepReadinessOutcome.READY_TO_FINALIZE,
+                "preprocessing_artifacts_ready_to_finalize",
+                "冻结预处理 Plan、QC 决策及所有精确目标 Artifact 均已核验，可以进入完成收口。",
+                stable_authority=authority,
+                completion_evidence=completion_evidence,
+                evidence=evidence,
+            )
+        if state in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
+            return self._waiting_run(
+                task,
+                step,
+                run_id,
+                authority,
+                reason=(
+                    f"Workflow 暂处于 {state.value}；任务继续等待 Worker 对同一 Run 的重试，"
+                    "不创建新 Run。"
+                ),
+                condition_reason="Worker 正在按现有重试预算处理同一 Workflow Run。",
+            )
+        if state in {WorkflowState.FAILED_TERMINAL, WorkflowState.CANCELLED}:
+            reason = f"权威 Workflow 状态为 {state.value}；本协调器不会创建新 Run 或重试。"
+        else:
+            reason = "当前 Workflow/QC 组合无法安全判定后续动作；保留任务状态供人工核验。"
+        return self._assessment(
+            task,
+            step,
+            run_id,
+            StepReadinessOutcome.BLOCKED,
+            "preprocessing_run_terminal",
+            reason,
+            stable_authority=authority,
+        )
+
+    def _waiting_run(
+        self,
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        authority: _StableRunAuthority,
+        *,
+        reason: str = "权威 Workflow 状态仍在排队、运行或取消中。",
+        condition_reason: str = "等待该 Workflow Run 进入可核验的终态。",
+    ) -> _PreprocessingReadinessAssessment:
+        return self._assessment(
+            task,
+            step,
+            run_id,
+            StepReadinessOutcome.WAITING_RUN,
+            "preprocessing_run_active",
+            reason,
+            stable_authority=authority,
+            waiting_condition=WaitingCondition(
+                kind=WaitingKind.WORKFLOW_RUN,
+                reference=run_id,
+                reason=condition_reason,
+            ),
+        )
+
+    def _waiting_user(
+        self,
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        authority: _StableRunAuthority,
+        condition_reason: str,
+        reason: str,
+    ) -> _PreprocessingReadinessAssessment:
+        return self._assessment(
+            task,
+            step,
+            run_id,
+            StepReadinessOutcome.WAITING_USER,
+            "preprocessing_qc_waiting_user",
+            reason,
+            stable_authority=authority,
+            waiting_condition=WaitingCondition(
+                kind=WaitingKind.USER_DECISION,
+                reference=f"qc:{run_id}",
+                reason=condition_reason,
+            ),
+        )
+
+    @staticmethod
+    def _assessment(
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        outcome: StepReadinessOutcome,
+        reason_code: str,
+        reason: str,
+        *,
+        stable_authority: _StableRunAuthority | None = None,
+        completion_evidence: _PreprocessingCompletionEvidence | None = None,
+        waiting_condition: WaitingCondition | None = None,
+        evidence: StepReadinessEvidenceSummary | None = None,
+    ) -> _PreprocessingReadinessAssessment:
+        return _PreprocessingReadinessAssessment(
+            task_id=task.task_id,
+            task_version=task.version,
+            step_id=step.step_id,
+            step_version=step.version,
+            step_kind=step.kind,
+            run_id=run_id,
+            outcome=outcome,
+            reason_code=reason_code,
+            reason=reason,
+            waiting_condition=waiting_condition,
+            evidence=evidence,
+            stable_authority=stable_authority,
+            completion_evidence=completion_evidence,
+        )
+
+
 class WorkTaskApplicationService:
     """Persist task intent and event receipts without owning scientific run state."""
 
@@ -145,6 +762,15 @@ class WorkTaskApplicationService:
         self._conversation_repository = conversation_repository
         self._plan_repository = plan_repository
         self._project_repository = project_repository
+        self._step_readiness_registry = StepReadinessRegistry(
+            (
+                _PreprocessingRunReadinessHandler(
+                    self._read_stable_authoritative_snapshot,
+                    self._read_preprocessing_completion_evidence,
+                ),
+                _StatisticalRunReadinessHandler(self._read_stable_statistical_snapshot),
+            )
+        )
 
     def create_task(self, task: WorkTask) -> WorkTask:
         return self._repository.create_task(task)
@@ -229,9 +855,7 @@ class WorkTaskApplicationService:
         self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
         return project_composite_goal(snapshot)
 
-    def list_composite_goal_progress(
-        self, conversation_id: str
-    ) -> list[CompositeGoalProgress]:
+    def list_composite_goal_progress(self, conversation_id: str) -> list[CompositeGoalProgress]:
         """List freshly projected composite goals visible to one Work conversation."""
 
         conversation = self._conversation_repository.get_conversation(conversation_id)
@@ -277,9 +901,7 @@ class WorkTaskApplicationService:
             or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
             or task.authority_refs.plan_revision_id is None
         ):
-            raise NotFoundError(
-                "复合自动化目标", f"{conversation_id}:{intent_task_id}"
-            )
+            raise NotFoundError("复合自动化目标", f"{conversation_id}:{intent_task_id}")
 
     def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox:
         return self._repository.get_analysis_outbox(intent_task_id)
@@ -1123,18 +1745,14 @@ class WorkTaskApplicationService:
             run_id=run_id,
             waiting_reason="用户已确认启动统计分析；等待该统计 Workflow Run 和结果登记。",
         )
-        return self._repository.save_task(
-            updated, expected_version=task.version
-        )
+        return self._repository.save_task(updated, expected_version=task.version)
 
     @staticmethod
     def _validate_hash(value: str, field: str) -> None:
         if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise InputValidationError("work_task_hash_invalid", f"{field} 必须是 SHA-256 哈希。")
 
-    def _require_active_composite_analysis_task(
-        self, task: WorkTask, proposal_hash: str
-    ) -> None:
+    def _require_active_composite_analysis_task(self, task: WorkTask, proposal_hash: str) -> None:
         intent_id = task.authority_refs.analysis_intent_task_id
         request_hash = task.authority_refs.analysis_request_hash
         if intent_id is None and request_hash is None:
@@ -1829,6 +2447,14 @@ class WorkTaskApplicationService:
                 tuple(receipts),
                 claim_token=claim_token,
             )
+        if bound_step is not None:
+            return self._reconcile_preprocessing_run(
+                task,
+                bound_step,
+                run_id,
+                tuple(receipts),
+                claim_token=claim_token,
+            )
 
         try:
             stable_authority = self._read_stable_authoritative_snapshot(task, run_id)
@@ -1847,7 +2473,16 @@ class WorkTaskApplicationService:
                 reason=("Run 在三次权威状态读取期间都发生版本变化;保留任务原状态,稍后重新核验。"),
             )
         snapshot = stable_authority.snapshot
-        run_state = WorkflowState(snapshot.run_state)
+        try:
+            run_state = WorkflowState(snapshot.run_state)
+        except ValueError:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=tuple(receipts),
+                authoritative=snapshot,
+                reason="Workflow 返回了不受支持的状态；任务状态未推进。",
+            )
 
         target_status: TaskStatus | None = None
         waiting_condition: WaitingCondition | None = None
@@ -2015,6 +2650,135 @@ class WorkTaskApplicationService:
             reason=reason,
         )
 
+    def _read_preprocessing_completion_evidence(
+        self,
+        task: WorkTask,
+        run_id: str,
+        authority: _StableRunAuthority,
+    ) -> _PreprocessingCompletionEvidence:
+        """Read and verify the frozen preprocessing target and its lineage."""
+
+        step = self._preprocessing_step(task)
+        plan_revision_id = task.authority_refs.plan_revision_id
+        conversation_id = task.authority_refs.conversation_id
+        snapshot = authority.snapshot
+        if (
+            step is None
+            or plan_revision_id is None
+            or conversation_id is None
+            or task.authority_refs.workflow_run_id != run_id
+            or authority.plan_revision_id != plan_revision_id
+            or step.authority_refs.plan_revision_id != plan_revision_id
+            or step.authority_refs.workflow_run_id != run_id
+            or step.input_version is None
+            or snapshot.run_id != run_id
+            or snapshot.run_state != WorkflowState.SUCCEEDED.value
+        ):
+            raise _InvalidPreprocessingAuthority("WorkTask/step/Run authority references differ")
+
+        if (
+            snapshot.qc_status == "approved"
+            and snapshot.latest_qc_review_state == "approved"
+            and snapshot.latest_qc_review_id is not None
+        ):
+            qc_decision_kind = "approved"
+            qc_decision_identity = snapshot.latest_qc_review_id
+        elif snapshot.qc_status == "skipped" and snapshot.qc_skip_id is not None:
+            qc_decision_kind = "skipped"
+            qc_decision_identity = snapshot.qc_skip_id
+        else:
+            raise _InvalidPreprocessingAuthority("Run has no exact approved or skipped QC identity")
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, authority.project_id)
+        if task.task_id != self.preprocessing_task_id(conversation_id, plan_revision_id):
+            raise _InvalidPreprocessingAuthority("WorkTask ID does not match its frozen binding")
+        plan = self._plan_repository.get_plan(plan_revision_id)
+        if (
+            plan.plan_revision_id != plan_revision_id
+            or plan.project_id != authority.project_id
+            or plan.state not in {PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+            or plan.plan_hash != step.input_version
+            or task.authority_refs.input_revision != plan.manifest_hash
+            or step.authority_refs.input_revision != plan.manifest_hash
+        ):
+            raise _InvalidPreprocessingAuthority("WorkTask is not bound to this frozen Plan")
+        expected = self._derive_preprocessing_expectations(plan, authority.project_id)
+        if step.expected_artifacts and step.expected_artifacts != expected:
+            raise _InvalidPreprocessingAuthority(
+                "stored expected Artifacts differ from the frozen preprocessing Plan"
+            )
+        skill_plan = SkillPlan.model_validate(plan.plan["skill_plan"])
+        values = dict(skill_plan.resolved_parameters)
+        alff = (
+            AlffFalffParameters.model_validate(values["alff_falff"])
+            if "alff_falff" in values
+            else None
+        )
+        reho = RehoParameters.model_validate(values["reho"]) if "reho" in values else None
+        verified_ids = self._verify_preprocessing_artifacts(
+            expected=expected,
+            artifacts=authority.artifacts,
+            project_id=authority.project_id,
+            run_id=run_id,
+            manifest_hash=plan.manifest_hash,
+            alff=alff,
+            reho=reho,
+        )
+
+        targets: list[dict[str, Any]] = []
+        lineages: list[dict[str, Any]] = []
+        by_identity = {
+            (artifact.artifact_type, artifact.relative_path): artifact
+            for artifact in authority.artifacts
+        }
+        for target in expected:
+            artifact = by_identity[(target.artifact_type, target.relative_path)]
+            lineage = ArtifactLineage.model_validate(artifact.provenance["lineage"])
+            targets.append(
+                {
+                    "subject_id": target.subject_id,
+                    "metric": target.metric,
+                    "artifact_type": target.artifact_type,
+                    "relative_path": target.relative_path,
+                    "artifact_id": artifact.artifact_id,
+                    "checksum": artifact.checksum,
+                    "size_bytes": artifact.size_bytes,
+                }
+            )
+            lineages.append(
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "lineage": lineage.model_dump(mode="json"),
+                }
+            )
+        targets.sort(key=lambda item: (item["subject_id"], item["metric"], item["artifact_id"]))
+        lineages.sort(key=lambda item: item["artifact_id"])
+        target_artifact_fingerprint = content_hash(targets)
+        lineage_fingerprint = content_hash(
+            {
+                "run_id": run_id,
+                "run_version": snapshot.run_version,
+                "plan_revision_id": plan_revision_id,
+                "plan_hash": plan.plan_hash,
+                "manifest_hash": plan.manifest_hash,
+                "qc_decision_kind": qc_decision_kind,
+                "qc_decision_identity": qc_decision_identity,
+                "target_artifact_fingerprint": target_artifact_fingerprint,
+                "lineages": lineages,
+            }
+        )
+        return _PreprocessingCompletionEvidence(
+            plan_revision_id=plan_revision_id,
+            manifest_hash=plan.manifest_hash,
+            expected_artifacts=expected,
+            verified_artifact_ids=verified_ids,
+            target_artifact_fingerprint=target_artifact_fingerprint,
+            lineage_fingerprint=lineage_fingerprint,
+            qc_decision_kind=qc_decision_kind,
+            qc_decision_identity=qc_decision_identity,
+        )
+
     def _complete_preprocessing_task(
         self,
         task: WorkTask,
@@ -2023,66 +2787,44 @@ class WorkTaskApplicationService:
         receipts: tuple[EventReconciliationReceipt, ...],
         *,
         claim_token: str | None,
+        readiness_assessment: _PreprocessingReadinessAssessment | None = None,
     ) -> WorkflowRunReconciliation:
         """Complete a preprocessing goal only after exact target Artifact checks."""
 
         expected: tuple[DpabiPreprocessingOutput, ...] = ()
         try:
-            step = self._preprocessing_step(task)
-            plan_revision_id = task.authority_refs.plan_revision_id
-            conversation_id = task.authority_refs.conversation_id
-            if (
-                step is None
-                or plan_revision_id is None
-                or conversation_id is None
-                or task.authority_refs.workflow_run_id != run_id
-                or authority.plan_revision_id != plan_revision_id
-                or step.authority_refs.plan_revision_id != plan_revision_id
-                or step.authority_refs.workflow_run_id != run_id
-                or step.input_version is None
-            ):
-                raise _InvalidPreprocessingAuthority(
-                    "WorkTask/step/Run authority references differ"
-                )
-            conversation = self._conversation_repository.get_conversation(conversation_id)
-            self._require_work_conversation(conversation, conversation_id, authority.project_id)
-            if task.task_id != self.preprocessing_task_id(conversation_id, plan_revision_id):
-                raise _InvalidPreprocessingAuthority(
-                    "WorkTask ID does not match its frozen binding"
-                )
-            plan = self._plan_repository.get_plan(plan_revision_id)
-            if (
-                plan.plan_revision_id != plan_revision_id
-                or plan.project_id != authority.project_id
-                or plan.state not in {PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
-                or plan.plan_hash != step.input_version
-                or task.authority_refs.input_revision != plan.manifest_hash
-                or step.authority_refs.input_revision != plan.manifest_hash
-            ):
-                raise _InvalidPreprocessingAuthority("WorkTask is not bound to this frozen Plan")
-            expected = self._derive_preprocessing_expectations(plan, authority.project_id)
-            if step.expected_artifacts and step.expected_artifacts != expected:
-                raise _InvalidPreprocessingAuthority(
-                    "stored expected Artifacts differ from the frozen preprocessing Plan"
-                )
-            skill_plan = SkillPlan.model_validate(plan.plan["skill_plan"])
-            values = dict(skill_plan.resolved_parameters)
-            alff = (
-                AlffFalffParameters.model_validate(values["alff_falff"])
-                if "alff_falff" in values
-                else None
-            )
-            reho = RehoParameters.model_validate(values["reho"]) if "reho" in values else None
-            verified_ids = self._verify_preprocessing_artifacts(
-                expected=expected,
-                artifacts=authority.artifacts,
-                project_id=authority.project_id,
-                run_id=run_id,
-                manifest_hash=plan.manifest_hash,
-                alff=alff,
-                reho=reho,
-            )
+            if readiness_assessment is not None:
+                refreshed_authority = self._read_stable_authoritative_snapshot(task, run_id)
+                if refreshed_authority is None:
+                    return WorkflowRunReconciliation(
+                        task=task,
+                        readiness=RunReadiness.INDETERMINATE,
+                        event_receipts=receipts,
+                        authoritative=authority.snapshot,
+                        reason="预处理 Run 在 readiness 检查后仍不稳定；本次未写入任务或 outbox。",
+                    )
+                if refreshed_authority.snapshot.unresolved_referenced_artifact_ids:
+                    return WorkflowRunReconciliation(
+                        task=task,
+                        readiness=RunReadiness.INDETERMINATE,
+                        event_receipts=receipts,
+                        authoritative=refreshed_authority.snapshot,
+                        reason=(
+                            "预处理 Artifact 引用在最终复核时无法确认；本次未写入任务或 outbox。"
+                        ),
+                    )
+                authority = refreshed_authority
+            completion = self._read_preprocessing_completion_evidence(task, run_id, authority)
+            expected = completion.expected_artifacts
         except NotFoundError as exc:
+            if readiness_assessment is not None:
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    authoritative=authority.snapshot,
+                    reason="预处理完成证据在最终复核时发生变化；本次未保存任务或 outbox。",
+                )
             return self._block_preprocessing_task(
                 task,
                 receipts,
@@ -2100,6 +2842,14 @@ class WorkTaskApplicationService:
             AttributeError,
             ValidationError,
         ) as exc:
+            if readiness_assessment is not None:
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    authoritative=authority.snapshot,
+                    reason="预处理完成证据在最终复核时无法确认；本次未保存任务或 outbox。",
+                )
             return self._block_preprocessing_task(
                 task,
                 receipts,
@@ -2112,8 +2862,42 @@ class WorkTaskApplicationService:
                 claim_token=claim_token,
             )
 
-        assert step is not None
-        completed = complete_step(task, step, artifact_ids=verified_ids)
+        step = self._preprocessing_step(task)
+        if step is None:
+            raise _InvalidPreprocessingAuthority("completed preprocessing step disappeared")
+        if readiness_assessment is not None:
+            evidence = readiness_assessment.evidence
+            assessed_completion = readiness_assessment.completion_evidence
+            if (
+                evidence is None
+                or assessed_completion is None
+                or readiness_assessment.outcome is not StepReadinessOutcome.READY_TO_FINALIZE
+                or evidence.step_kind is not StepReadinessStepKind.PREPROCESSING_RUN
+                or readiness_assessment.task_id != task.task_id
+                or readiness_assessment.task_version != task.version
+                or readiness_assessment.step_id != step.step_id
+                or readiness_assessment.step_version != step.version
+                or readiness_assessment.step_kind != step.kind
+                or readiness_assessment.run_id != run_id
+                or evidence.run_version != authority.snapshot.run_version
+                or evidence.plan_revision_id != completion.plan_revision_id
+                or evidence.frozen_input_fingerprint != completion.manifest_hash
+                or evidence.result_identity != completion.target_artifact_fingerprint
+                or evidence.lineage_fingerprint != completion.lineage_fingerprint
+                or assessed_completion.plan_revision_id != completion.plan_revision_id
+                or assessed_completion.manifest_hash != completion.manifest_hash
+                or assessed_completion.target_artifact_fingerprint
+                != completion.target_artifact_fingerprint
+                or assessed_completion.lineage_fingerprint != completion.lineage_fingerprint
+            ):
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    authoritative=authority.snapshot,
+                    reason="预处理证据与 readiness assessment 不一致；本次未写入。",
+                )
+        completed = complete_step(task, step, artifact_ids=completion.verified_artifact_ids)
         completed_step = self._preprocessing_step(completed)
         if completed_step is None:
             raise _InvalidPreprocessingAuthority("completed preprocessing step disappeared")
@@ -2140,10 +2924,10 @@ class WorkTaskApplicationService:
                 self._repository.mark_analysis_outbox_ready(
                     outbox.intent_task_id,
                     preprocessing_task_id=task.task_id,
-                    plan_revision_id=plan_revision_id,
-                    manifest_hash=plan.manifest_hash,
+                    plan_revision_id=completion.plan_revision_id,
+                    manifest_hash=completion.manifest_hash,
                     run_id=run_id,
-                    artifact_ids=verified_ids,
+                    artifact_ids=completion.verified_artifact_ids,
                 )
         return WorkflowRunReconciliation(
             task=completed,
@@ -2381,6 +3165,211 @@ class WorkTaskApplicationService:
                     )
         return tuple(sorted(item.artifact_id for item in targets.values()))
 
+    def _reconcile_preprocessing_run(
+        self,
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        *,
+        claim_token: str | None = None,
+    ) -> WorkflowRunReconciliation:
+        assessment = self._step_readiness_registry.inspect(task, step, run_id)
+        if assessment.outcome is StepReadinessOutcome.INDETERMINATE:
+            authority = (
+                assessment.stable_authority
+                if isinstance(assessment, _PreprocessingReadinessAssessment)
+                else None
+            )
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                authoritative=authority.snapshot if authority is not None else None,
+                reason=assessment.reason,
+            )
+
+        preprocessing_assessment = self._current_preprocessing_assessment(
+            task, step, run_id, assessment
+        )
+        if preprocessing_assessment is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                reason="预处理 assessment 与当前绑定不一致；本次未推进状态。",
+            )
+        authority = preprocessing_assessment.stable_authority
+        if authority is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                reason="预处理 readiness assessment 缺少稳定权威快照；本次未推进状态。",
+            )
+        snapshot = authority.snapshot
+
+        if preprocessing_assessment.outcome is StepReadinessOutcome.BLOCKED:
+            if preprocessing_assessment.reason_code == "preprocessing_evidence_invalid":
+                return self._block_preprocessing_task(
+                    task,
+                    receipts,
+                    snapshot,
+                    (),
+                    reason=preprocessing_assessment.reason,
+                    claim_token=claim_token,
+                )
+            return self._apply_preprocessing_task_state(
+                task,
+                receipts,
+                snapshot,
+                target=TaskStatus.BLOCKED,
+                readiness=RunReadiness.BLOCKED,
+                waiting_condition=None,
+                reason=preprocessing_assessment.reason,
+                claim_token=claim_token,
+            )
+
+        if preprocessing_assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE:
+            return self._complete_preprocessing_task(
+                task,
+                run_id,
+                authority,
+                receipts,
+                readiness_assessment=preprocessing_assessment,
+                claim_token=claim_token,
+            )
+
+        waiting_state = {
+            StepReadinessOutcome.WAITING_RUN: (TaskStatus.WAITING_RUN, RunReadiness.WAITING_RUN),
+            StepReadinessOutcome.WAITING_USER: (TaskStatus.WAITING_USER, RunReadiness.WAITING_USER),
+            StepReadinessOutcome.WAITING_DEPENDENCY: (
+                TaskStatus.WAITING_DEPENDENCY,
+                RunReadiness.WAITING_DEPENDENCY,
+            ),
+        }.get(preprocessing_assessment.outcome)
+        condition = preprocessing_assessment.waiting_condition
+        if waiting_state is None or condition is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                authoritative=snapshot,
+                reason="预处理等待 assessment 缺少受支持的状态或等待条件；本次未推进状态。",
+            )
+        target, readiness = waiting_state
+        return self._apply_preprocessing_task_state(
+            task,
+            receipts,
+            snapshot,
+            target=target,
+            readiness=readiness,
+            waiting_condition=condition,
+            reason=preprocessing_assessment.reason,
+            claim_token=claim_token,
+        )
+
+    @staticmethod
+    def _current_preprocessing_assessment(
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        assessment: StepReadinessAssessment,
+    ) -> _PreprocessingReadinessAssessment | None:
+        if not isinstance(assessment, _PreprocessingReadinessAssessment):
+            return None
+        authority = assessment.stable_authority
+        if (
+            authority is None
+            or assessment.task_id != task.task_id
+            or assessment.task_version != task.version
+            or assessment.step_id != step.step_id
+            or assessment.step_version != step.version
+            or assessment.step_kind != "preprocessing_run"
+            or step.kind != "preprocessing_run"
+            or assessment.run_id != run_id
+            or authority.snapshot.run_id != run_id
+        ):
+            return None
+        if assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE:
+            evidence = assessment.evidence
+            completion = assessment.completion_evidence
+            if (
+                evidence is None
+                or completion is None
+                or evidence.step_kind is not StepReadinessStepKind.PREPROCESSING_RUN
+                or evidence.run_version != authority.snapshot.run_version
+                or evidence.plan_revision_id != completion.plan_revision_id
+                or evidence.plan_revision_id != task.authority_refs.plan_revision_id
+                or evidence.plan_revision_id != step.authority_refs.plan_revision_id
+                or evidence.frozen_input_fingerprint != completion.manifest_hash
+                or evidence.frozen_input_fingerprint != task.authority_refs.input_revision
+                or evidence.frozen_input_fingerprint != step.authority_refs.input_revision
+                or evidence.result_identity != completion.target_artifact_fingerprint
+                or evidence.lineage_fingerprint != completion.lineage_fingerprint
+            ):
+                return None
+        elif assessment.evidence is not None or assessment.completion_evidence is not None:
+            return None
+        return assessment
+
+    def _apply_preprocessing_task_state(
+        self,
+        task: WorkTask,
+        receipts: tuple[EventReconciliationReceipt, ...],
+        snapshot: AuthoritativeRunSnapshot,
+        *,
+        target: TaskStatus,
+        readiness: RunReadiness,
+        waiting_condition: WaitingCondition | None,
+        reason: str,
+        claim_token: str | None,
+    ) -> WorkflowRunReconciliation:
+        updated = task
+        if (
+            target
+            in {
+                TaskStatus.WAITING_RUN,
+                TaskStatus.WAITING_USER,
+                TaskStatus.WAITING_DEPENDENCY,
+            }
+            and waiting_condition is None
+        ):
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                authoritative=snapshot,
+                reason="预处理 waiting 状态缺少等待条件；本次未推进状态。",
+            )
+        if task.status is not target or task.waiting_condition != waiting_condition:
+            if task.status is not target:
+                updated = transition_task(task, target, waiting_condition=waiting_condition)
+            else:
+                updated = WorkTask.model_validate(
+                    {
+                        **task.model_dump(),
+                        "waiting_condition": (
+                            waiting_condition.model_dump()
+                            if waiting_condition is not None
+                            else None
+                        ),
+                        "version": task.version + 1,
+                    }
+                )
+            updated = self._save_task(
+                updated,
+                expected_version=task.version,
+                claim_token=claim_token,
+            )
+        return WorkflowRunReconciliation(
+            task=updated,
+            readiness=readiness,
+            event_receipts=receipts,
+            authoritative=snapshot,
+            reason=reason,
+        )
+
     def _reconcile_statistical_run(
         self,
         task: WorkTask,
@@ -2389,149 +3378,153 @@ class WorkTaskApplicationService:
         *,
         claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
-        if self._statistical_step(task) is None:
-            return self._block_statistical_task(
-                task,
-                run_id,
-                receipts,
-                reason="统计 WorkTask 必须恰好包含一个 statistical_run 步骤；当前绑定无效。",
-                claim_token=claim_token,
-            )
-        try:
-            snapshot, evidence_error = self._read_stable_statistical_snapshot(task, run_id)
-        except NotFoundError:
+        if len(task.steps) != 1:
             return WorkflowRunReconciliation(
                 task=task,
                 readiness=RunReadiness.INDETERMINATE,
                 event_receipts=receipts,
-                reason="绑定的统计 Run 暂不可读取；任务状态未推进。",
+                reason="统计 WorkTask 步骤结构无法唯一解析；任务状态未推进。",
             )
-        except _InvalidStatisticalAuthority as exc:
-            return self._block_statistical_task(
-                task,
-                run_id,
-                receipts,
-                reason=str(exc),
-                claim_token=claim_token,
+        step = task.steps[0]
+        assessment = self._step_readiness_registry.inspect(task, step, run_id)
+        if assessment.outcome is StepReadinessOutcome.INDETERMINATE:
+            authoritative = (
+                assessment.stable_snapshot.authoritative
+                if isinstance(assessment, _StatisticalReadinessAssessment)
+                and assessment.stable_snapshot is not None
+                else None
             )
-        if snapshot is None:
             return WorkflowRunReconciliation(
                 task=task,
                 readiness=RunReadiness.INDETERMINATE,
                 event_receipts=receipts,
-                reason="统计 Run 在三次权威状态读取期间都发生版本变化；保留原状态后重试。",
+                authoritative=authoritative,
+                reason=assessment.reason,
             )
 
-        state = WorkflowState(snapshot.run_state)
-        if evidence_error is not None:
-            return self._block_statistical_task(
-                task,
-                run_id,
-                receipts,
-                reason=evidence_error,
-                authoritative=snapshot,
-                claim_token=claim_token,
-            )
-        if state in {WorkflowState.QUEUED, WorkflowState.RUNNING, WorkflowState.CANCELLING}:
-            return self._apply_statistical_task_state(
-                task,
-                run_id,
-                receipts,
-                snapshot,
-                target=TaskStatus.WAITING_RUN,
-                readiness=RunReadiness.WAITING_RUN,
-                waiting_condition=WaitingCondition(
-                    kind=WaitingKind.WORKFLOW_RUN,
-                    reference=run_id,
-                    reason="等待该统计 Workflow Run 进入可核验的终态。",
-                ),
-                reason="权威统计 Workflow 状态仍在排队、运行或取消中。",
-                claim_token=claim_token,
-            )
-        if state is WorkflowState.SUCCEEDED:
-            if snapshot.statistical_result_ids:
-                if snapshot.verified_statistical_result_id is None:
-                    return self._block_statistical_task(
-                        task,
-                        run_id,
-                        receipts,
-                        reason="统计 Run 的结果记录未通过真实科学结果核验；任务已阻断。",
-                        authoritative=snapshot,
-                        claim_token=claim_token,
-                    )
-                return self._complete_statistical_task(
-                    task,
-                    run_id,
-                    receipts,
-                    snapshot,
-                    claim_token=claim_token,
-                )
-            if "mock.result" in snapshot.registered_artifact_types or any(
-                artifact_type.startswith("synthetic.")
-                for artifact_type in snapshot.registered_artifact_types
-            ):
-                return self._block_statistical_task(
-                    task,
-                    run_id,
-                    receipts,
-                    reason=(
-                        "统计 Run 是 mock/synthetic 执行且没有真实 StatisticalResult；"
-                        "不能作为科学分析完成。"
-                    ),
-                    authoritative=snapshot,
-                    claim_token=claim_token,
-                )
-            return self._apply_statistical_task_state(
-                task,
-                run_id,
-                receipts,
-                snapshot,
-                target=TaskStatus.WAITING_DEPENDENCY,
-                readiness=RunReadiness.WAITING_DEPENDENCY,
-                waiting_condition=WaitingCondition(
-                    kind=WaitingKind.DEPENDENCY,
-                    reference=f"statistical-result:{run_id}",
-                    reason="统计 Run 已成功，等待唯一真实 StatisticalResult 完成登记并通过核验。",
-                ),
+        statistical_assessment = self._current_statistical_assessment(
+            task, step, run_id, assessment
+        )
+        if statistical_assessment is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
                 reason=(
-                    "统计 Run 已成功但尚无 StatisticalResult；保留 waiting_dependency "
-                    "并等待结果登记。"
+                    "统计 readiness assessment 与当前 Task/Step/Run 证据不一致；本次未推进状态。"
                 ),
-                claim_token=claim_token,
             )
-        if state in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
-            if task.status is TaskStatus.WAITING_RUN:
-                return self._apply_statistical_task_state(
-                    task,
-                    run_id,
-                    receipts,
-                    snapshot,
-                    target=TaskStatus.WAITING_RUN,
-                    readiness=RunReadiness.WAITING_RUN,
-                    waiting_condition=WaitingCondition(
-                        kind=WaitingKind.WORKFLOW_RUN,
-                        reference=run_id,
-                        reason="Worker 正在按原有预算处理同一统计 Run。",
-                    ),
-                    reason=f"统计 Workflow 暂处于 {state.value}；继续等待同一 Run 的处理。",
-                    claim_token=claim_token,
-                )
+        stable_snapshot = statistical_assessment.stable_snapshot
+        snapshot = stable_snapshot.authoritative if stable_snapshot is not None else None
+
+        if statistical_assessment.outcome is StepReadinessOutcome.BLOCKED:
             return self._block_statistical_task(
                 task,
                 run_id,
                 receipts,
-                reason="等待统计结果时 Run 又回到非终态，任务与权威 Workflow 状态不一致。",
+                reason=statistical_assessment.reason,
                 authoritative=snapshot,
                 claim_token=claim_token,
             )
-        return self._block_statistical_task(
+        if statistical_assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE:
+            if snapshot is None:
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    reason="统计 readiness assessment 缺少稳定权威快照；本次未推进状态。",
+                )
+            return self._complete_statistical_task(
+                task,
+                run_id,
+                receipts,
+                snapshot,
+                readiness_assessment=statistical_assessment,
+                claim_token=claim_token,
+            )
+
+        if snapshot is None or statistical_assessment.waiting_condition is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                authoritative=snapshot,
+                reason="统计等待 assessment 缺少稳定快照或等待条件；本次未推进状态。",
+            )
+        waiting_state = {
+            StepReadinessOutcome.WAITING_RUN: (TaskStatus.WAITING_RUN, RunReadiness.WAITING_RUN),
+            StepReadinessOutcome.WAITING_USER: (TaskStatus.WAITING_USER, RunReadiness.WAITING_USER),
+            StepReadinessOutcome.WAITING_DEPENDENCY: (
+                TaskStatus.WAITING_DEPENDENCY,
+                RunReadiness.WAITING_DEPENDENCY,
+            ),
+        }.get(statistical_assessment.outcome)
+        if waiting_state is None:
+            return WorkflowRunReconciliation(
+                task=task,
+                readiness=RunReadiness.INDETERMINATE,
+                event_receipts=receipts,
+                authoritative=snapshot,
+                reason="统计 readiness outcome 未受协调器支持；本次未推进状态。",
+            )
+        target, readiness = waiting_state
+        return self._apply_statistical_task_state(
             task,
             run_id,
             receipts,
-            reason=f"统计 Workflow 已处于 {state.value}；本任务不会自动重试或创建新 Run。",
-            authoritative=snapshot,
+            snapshot,
+            target=target,
+            readiness=readiness,
+            waiting_condition=statistical_assessment.waiting_condition,
+            reason=statistical_assessment.reason,
             claim_token=claim_token,
         )
+
+    @staticmethod
+    def _current_statistical_assessment(
+        task: WorkTask,
+        step: TaskStep,
+        run_id: str,
+        assessment: StepReadinessAssessment,
+    ) -> _StatisticalReadinessAssessment | None:
+        if not isinstance(assessment, _StatisticalReadinessAssessment):
+            return None
+        snapshot = assessment.stable_snapshot
+        if snapshot is None:
+            return (
+                None if assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE else assessment
+            )
+        authoritative = snapshot.authoritative
+        if (
+            assessment.task_id != task.task_id
+            or assessment.task_version != task.version
+            or assessment.step_id != step.step_id
+            or assessment.step_version != step.version
+            or assessment.step_kind != "statistical_run"
+            or step.kind != "statistical_run"
+            or assessment.run_id != run_id
+            or authoritative.run_id != run_id
+        ):
+            return None
+        if assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE:
+            evidence = assessment.evidence
+            if (
+                evidence is None
+                or evidence.step_kind is not StepReadinessStepKind.STATISTICAL_RUN
+                or evidence.run_version != authoritative.run_version
+                or evidence.plan_revision_id != snapshot.plan_revision_id
+                or evidence.plan_revision_id != task.authority_refs.plan_revision_id
+                or evidence.frozen_input_fingerprint != snapshot.frozen_input_fingerprint
+                or evidence.frozen_input_fingerprint != task.authority_refs.input_revision
+                or evidence.result_identity != authoritative.verified_statistical_result_id
+                or evidence.result_version != snapshot.result_version
+                or evidence.result_bundle_fingerprint != snapshot.result_bundle_fingerprint
+                or evidence.lineage_fingerprint != snapshot.result_lineage_fingerprint
+                or snapshot.result_bundle_fingerprint is None
+                or snapshot.result_version is None
+            ):
+                return None
+        return assessment
 
     def _read_stable_statistical_snapshot(
         self,
@@ -2539,7 +3532,7 @@ class WorkTaskApplicationService:
         run_id: str,
         *,
         max_attempts: int = 3,
-    ) -> tuple[AuthoritativeRunSnapshot | None, str | None]:
+    ) -> tuple[_StatisticalReadinessSnapshot | None, str | None]:
         for _attempt in range(max_attempts):
             run_before = self._run_repository.get_run(run_id)
             run_failure: str | None = None
@@ -2633,6 +3626,7 @@ class WorkTaskApplicationService:
                 )
 
             summaries: list[StatisticalResultView] = []
+            detail: StatisticalResultDetailView | None = None
             if run_failure is None and run_before.state is WorkflowState.SUCCEEDED:
                 summaries = self._artifact_repository.list_statistical_results(
                     project_id=project_id,
@@ -2657,6 +3651,7 @@ class WorkTaskApplicationService:
 
             verified_id: str | None = None
             result_artifact_ids: tuple[str, ...] = ()
+            result_lineage_fingerprint: str | None = None
             if summaries and run_failure is None and plan is not None and design is not None:
                 try:
                     detail = self._artifact_repository.get_statistical_result(
@@ -2672,6 +3667,11 @@ class WorkTaskApplicationService:
                         registered_artifacts=artifacts,
                     )
                     verified_id = detail.result_id
+                    result_lineage_fingerprint = self._statistical_result_lineage_fingerprint(
+                        detail,
+                        artifacts,
+                        result_artifact_ids,
+                    )
                 except NotFoundError:
                     run_failure = "StatisticalResult 列表项对应的 detail 不存在；任务已阻断。"
                 except (ValueError, TypeError, KeyError, AttributeError, ValidationError) as exc:
@@ -2698,8 +3698,52 @@ class WorkTaskApplicationService:
                 verified_statistical_result_id=verified_id,
                 result_artifact_ids=result_artifact_ids,
             )
-            return snapshot, run_failure
+            input_revision = task.authority_refs.input_revision
+            frozen_input_fingerprint = (
+                input_revision
+                if input_revision is not None and re.fullmatch(r"[a-f0-9]{64}", input_revision)
+                else None
+            )
+            readiness_snapshot = _StatisticalReadinessSnapshot(
+                authoritative=snapshot,
+                plan_revision_id=(plan.plan_revision_id if plan is not None else None),
+                frozen_input_fingerprint=frozen_input_fingerprint,
+                result_bundle_fingerprint=(
+                    detail.bundle_hash if verified_id is not None and detail is not None else None
+                ),
+                result_version=detail.version
+                if verified_id is not None and detail is not None
+                else None,
+                result_lineage_fingerprint=result_lineage_fingerprint,
+            )
+            return readiness_snapshot, run_failure
         return None, None
+
+    @staticmethod
+    def _statistical_result_lineage_fingerprint(
+        detail: StatisticalResultDetailView,
+        artifacts: list[Any] | tuple[ArtifactView, ...],
+        result_artifact_ids: tuple[str, ...],
+    ) -> str:
+        result_artifact_ids_set = set(result_artifact_ids)
+        return content_hash(
+            {
+                "result_id": detail.result_id,
+                "result_version": detail.version,
+                "design_revision_id": detail.design_revision_id,
+                "bundle_hash": detail.bundle_hash,
+                "artifacts": [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "checksum": artifact.checksum,
+                        "size_bytes": artifact.size_bytes,
+                        "provenance_hash": content_hash(artifact.provenance),
+                    }
+                    for artifact in sorted(artifacts, key=lambda item: item.artifact_id)
+                    if artifact.artifact_id in result_artifact_ids_set
+                ],
+            }
+        )
 
     @staticmethod
     def _verify_statistical_result(
@@ -2848,6 +3892,7 @@ class WorkTaskApplicationService:
         receipts: tuple[EventReconciliationReceipt, ...],
         snapshot: AuthoritativeRunSnapshot,
         *,
+        readiness_assessment: _StatisticalReadinessAssessment | None = None,
         claim_token: str | None = None,
     ) -> WorkflowRunReconciliation:
         step = self._statistical_step(task)
@@ -2868,7 +3913,7 @@ class WorkTaskApplicationService:
         result_artifact_ids = tuple(sorted(set(snapshot.result_artifact_ids)))
         completed = complete_step(task, step, artifact_ids=result_artifact_ids)
         try:
-            outbox = self._statistical_result_interpretation_record(
+            finalization_record = self._statistical_result_interpretation_record(
                 task=task,
                 run_id=run_id,
                 snapshot=snapshot,
@@ -2883,6 +3928,17 @@ class WorkTaskApplicationService:
             KeyError,
             ValidationError,
         ) as exc:
+            if readiness_assessment is not None:
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    authoritative=snapshot,
+                    reason=(
+                        "统计最终权威重读暂无法与 readiness 证据一致匹配；"
+                        "本次未写入 Task 或解释续接记录。"
+                    ),
+                )
             return self._block_statistical_task(
                 task,
                 run_id,
@@ -2894,6 +3950,28 @@ class WorkTaskApplicationService:
                 authoritative=snapshot,
                 claim_token=claim_token,
             )
+        if readiness_assessment is not None:
+            evidence = readiness_assessment.evidence
+            if (
+                not isinstance(finalization_record, _StatisticalFinalizationEvidence)
+                or evidence is None
+                or not self._statistical_finalization_matches_assessment(
+                    finalization_record, evidence
+                )
+            ):
+                return WorkflowRunReconciliation(
+                    task=task,
+                    readiness=RunReadiness.INDETERMINATE,
+                    event_receipts=receipts,
+                    authoritative=snapshot,
+                    reason="统计 readiness 证据与最终重读的结果版本或 lineage 不一致；本次未收口。",
+                )
+            outbox = finalization_record.outbox
+        elif isinstance(finalization_record, _StatisticalFinalizationEvidence):
+            outbox = finalization_record.outbox
+        else:
+            # Kept for existing internal callers that predate readiness handlers.
+            outbox = finalization_record
         # WorkTask completion and durable READY enqueue share the same SQLite
         # UoW. A failed outbox write rolls back the completed task as well.
         with self._repository.atomic():
@@ -2911,6 +3989,21 @@ class WorkTaskApplicationService:
             reason="唯一真实统计结果及其 Artifact 已与冻结设计和 Plan 绑定并通过核验；任务已完成。",
         )
 
+    @staticmethod
+    def _statistical_finalization_matches_assessment(
+        finalization: _StatisticalFinalizationEvidence,
+        evidence: StepReadinessEvidenceSummary,
+    ) -> bool:
+        outbox = finalization.outbox
+        return (
+            evidence.result_kind is StepReadinessResultKind.STATISTICAL_RESULT
+            and evidence.result_identity == outbox.result_id
+            and evidence.result_version == outbox.result_version
+            and evidence.result_bundle_fingerprint == outbox.result_bundle_hash
+            and evidence.plan_revision_id == outbox.plan_revision_id
+            and evidence.lineage_fingerprint == finalization.lineage_fingerprint
+        )
+
     def _statistical_result_interpretation_record(
         self,
         *,
@@ -2918,7 +4011,7 @@ class WorkTaskApplicationService:
         run_id: str,
         snapshot: AuthoritativeRunSnapshot,
         result_artifact_ids: tuple[str, ...],
-    ) -> StatisticalResultInterpretationOutbox:
+    ) -> _StatisticalFinalizationEvidence:
         """Build the immutable outbox identity from the already verified result chain."""
         conversation_id = task.authority_refs.conversation_id
         plan_id = task.authority_refs.plan_revision_id
@@ -2996,16 +4089,23 @@ class WorkTaskApplicationService:
             )
         # Verify the reproducibility bundle now, before publishing READY.
         result_model_facts(detail)
-        return StatisticalResultInterpretationOutbox(
-            task_id=task.task_id,
-            conversation_id=conversation_id,
-            project_id=run.project_id,
-            run_id=run_id,
-            plan_revision_id=plan_id,
-            result_id=detail.result_id,
-            result_bundle_hash=detail.bundle_hash,
-            result_version=detail.version,
-            artifact_ids=verified_artifact_ids,
+        return _StatisticalFinalizationEvidence(
+            outbox=StatisticalResultInterpretationOutbox(
+                task_id=task.task_id,
+                conversation_id=conversation_id,
+                project_id=run.project_id,
+                run_id=run_id,
+                plan_revision_id=plan_id,
+                result_id=detail.result_id,
+                result_bundle_hash=detail.bundle_hash,
+                result_version=detail.version,
+                artifact_ids=verified_artifact_ids,
+            ),
+            lineage_fingerprint=self._statistical_result_lineage_fingerprint(
+                detail,
+                artifacts,
+                verified_artifact_ids,
+            ),
         )
 
     def _block_statistical_task(

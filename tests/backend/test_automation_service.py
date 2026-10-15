@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from neuroagent.application.automation.models import (
+    AuthoritativeRunSnapshot,
     AuthorityReferences,
     EventConsumptionDecision,
     RunReadiness,
@@ -21,7 +22,17 @@ from neuroagent.application.automation.models import (
     WorkGoal,
     WorkTask,
 )
-from neuroagent.application.automation.service import WorkTaskApplicationService
+from neuroagent.application.automation.service import (
+    WorkTaskApplicationService,
+    _InvalidStatisticalAuthority,
+    _StatisticalReadinessSnapshot,
+    _StatisticalRunReadinessHandler,
+)
+from neuroagent.application.automation.step_readiness import (
+    StepReadinessAssessment,
+    StepReadinessOutcome,
+    StepReadinessRegistry,
+)
 from neuroagent.application.contracts.conversations import ConversationMode
 from neuroagent.application.contracts.runs import QcReviewState
 from neuroagent.application.contracts.statistics import (
@@ -35,6 +46,8 @@ from neuroagent.bootstrap import build_service
 from neuroagent.domain.execution import QcExecutionMode
 from neuroagent.domain.fmri import (
     AnalysisImage,
+    ArtifactKind,
+    ArtifactLineage,
     FdrCorrection,
     MissingValuePolicy,
     RegisteredArtifactMetadata,
@@ -46,7 +59,9 @@ from neuroagent.domain.fmri import (
     StatisticalTest,
     Tail,
 )
+from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.skills.models import EnvironmentSnapshot, SkillPlan
 
 
 def make_task() -> WorkTask:
@@ -530,6 +545,7 @@ def test_succeeded_run_with_pending_qc_waits_for_user_and_never_approves(service
 
 def test_succeeded_run_with_approved_qc_waits_for_artifact_dependency(service) -> None:
     task = make_waiting_task()
+    assert task.steps == ()  # Empty-step tasks retain the pre-registry legacy path.
     task = task.model_copy(
         update={
             "authority_refs": task.authority_refs.model_copy(
@@ -926,6 +942,447 @@ def bind_statistical_read_doubles(service, reads: StatisticalReconciliationReads
     service.automation._event_repository = SimpleNamespace(list_events=lambda **_kwargs: [])
 
 
+def _bind_preprocessing_readiness_case(
+    service,
+    *,
+    run_state: WorkflowState = WorkflowState.SUCCEEDED,
+    qc_status: str = "approved",
+    review_state: QcReviewState | None = QcReviewState.APPROVED,
+    skip_id: str | None = None,
+    lineage_mode: str = "valid",
+) -> tuple[WorkTask, DpabiPreprocessingOutput, SimpleNamespace, SimpleNamespace]:
+    run_id = "run-preprocessing"
+    plan_revision_id = "prep-plan-1"
+    manifest_hash = "a" * 64
+    plan_hash = "b" * 64
+    target = DpabiPreprocessingOutput(
+        subject_id="sub-01",
+        metric="timeseries",
+        relative_path="output/sub-01/timeseries.nii",
+        artifact_type="preprocessing.functional_timeseries",
+    )
+    skill_plan = SkillPlan(
+        plan_id=plan_revision_id,
+        project_id="project-1",
+        dataset_ref="dataset-1",
+        input_manifest_hash=manifest_hash,
+        input_artifact_id="input-artifact",
+        base_cfg_artifact_id=None,
+        preprocessing_parameters_hash=None,
+        skill_locks=(),
+        resolved_parameters=(),
+        environment=EnvironmentSnapshot(
+            matlab_version="R2024b",
+            spm_version="12",
+            dpabi_version="8.2",
+            adapter_version="1",
+            environment_hash="c" * 64,
+        ),
+        steps=(),
+        artifact_expectations=(),
+        qc_gates=(),
+        approval_requirements=(),
+        warnings=(),
+        plan_hash=plan_hash,
+    )
+    plan = SimpleNamespace(
+        plan_revision_id=plan_revision_id,
+        project_id="project-1",
+        state=PlanState.APPROVED,
+        plan_hash=plan_hash,
+        manifest_hash=manifest_hash,
+        plan={"skill_plan": skill_plan.model_dump(mode="json")},
+    )
+    conversation = SimpleNamespace(
+        conversation_id="conversation-preprocessing",
+        mode=ConversationMode.WORK,
+        project_id="project-1",
+    )
+    lineage = ArtifactLineage(
+        artifact_id="artifact-timeseries",
+        kind=ArtifactKind.FUNCTIONAL_TIMESERIES,
+        subject_id="sub-01",
+        metadata_verified=True,
+        tr_seconds=2.0,
+        volume_count=120,
+        metadata_evidence_hash="d" * 64,
+        subject_manifest_hash=manifest_hash,
+        space="MNI152",
+        grid_signature="grid-3mm",
+        voxel_size_mm=(3.0, 3.0, 3.0),
+        mask_artifact_id=None,
+        mask_grid_signature=None,
+        temporally_filtered=False,
+        frequency_band=None,
+        spatially_smoothed=False,
+        smoothing_fwhm_mm=None,
+        scrubbed=False,
+        producer_step_hash="e" * 64,
+    )
+    if lineage_mode == "valid":
+        provenance = {"lineage": lineage.model_dump(mode="json")}
+    elif lineage_mode == "missing":
+        provenance = {}
+    else:
+        provenance = {
+            "lineage": lineage.model_copy(update={"subject_manifest_hash": "f" * 64}).model_dump(
+                mode="json"
+            )
+        }
+    artifact = SimpleNamespace(
+        artifact_id="artifact-timeseries",
+        project_id="project-1",
+        run_id=run_id,
+        artifact_type=target.artifact_type,
+        relative_path=target.relative_path,
+        checksum=hashlib.sha256(b"preprocessed-timeseries").hexdigest(),
+        size_bytes=24,
+        provenance=provenance,
+    )
+    run = SimpleNamespace(
+        run_id=run_id,
+        project_id="project-1",
+        plan_revision_id=plan_revision_id,
+        state=run_state,
+        version=3,
+        attempt=1,
+        qc_mode=QcExecutionMode.REQUIRE,
+        qc_status=qc_status,
+    )
+    qc_review = (
+        SimpleNamespace(
+            run_id=run_id,
+            project_id="project-1",
+            review=SimpleNamespace(review_revision_id="review-preprocessing-1"),
+            state=review_state,
+        )
+        if review_state is not None
+        else None
+    )
+    reads = SimpleNamespace(
+        run=run,
+        qc_review=qc_review,
+        qc_skip_id=skip_id,
+        get_run=lambda _run_id: SimpleNamespace(**vars(reads.run)),
+        get_latest_qc_review_for_run=lambda _run_id: reads.qc_review,
+        get_qc_skip_for_run=lambda _run_id: (
+            SimpleNamespace(run_id=run_id, qc_skip_id=reads.qc_skip_id)
+            if reads.qc_skip_id
+            else None
+        ),
+        list_artifacts=lambda _run_id: [artifact],
+        get_plan=lambda _plan_id: plan,
+        get_conversation=lambda _conversation_id: conversation,
+    )
+    automation = service.automation
+    automation._run_repository = reads
+    automation._qc_repository = reads
+    automation._artifact_repository = reads
+    automation._plan_repository = reads
+    automation._conversation_repository = reads
+    automation._event_repository = SimpleNamespace(list_events=lambda **_kwargs: [])
+    automation._derive_preprocessing_expectations = lambda _plan, _project_id: (target,)
+    task = WorkTask(
+        task_id=automation.preprocessing_task_id(conversation.conversation_id, plan_revision_id),
+        goal=WorkGoal(
+            description="Verify preprocessing outputs for the frozen plan",
+            completion_conditions=("all target outputs have valid lineage",),
+        ),
+        status=TaskStatus.WAITING_RUN,
+        waiting_condition=WaitingCondition(
+            kind=WaitingKind.WORKFLOW_RUN,
+            reference=run_id,
+            reason="waiting for the preprocessing Run",
+        ),
+        authority_refs=AuthorityReferences(
+            conversation_id=conversation.conversation_id,
+            plan_revision_id=plan_revision_id,
+            workflow_run_id=run_id,
+            input_revision=manifest_hash,
+        ),
+        steps=(
+            TaskStep(
+                step_id="preprocessing-run",
+                sequence=0,
+                kind="preprocessing_run",
+                status=TaskStepStatus.WAITING,
+                input_version=plan_hash,
+                authority_refs=AuthorityReferences(
+                    conversation_id=conversation.conversation_id,
+                    plan_revision_id=plan_revision_id,
+                    workflow_run_id=run_id,
+                    input_revision=manifest_hash,
+                ),
+                expected_artifacts=(target,),
+            ),
+        ),
+        budget=TaskBudget(
+            max_steps=10,
+            max_model_calls=2,
+            max_tokens=1000,
+            max_elapsed_seconds=600,
+        ),
+    )
+    automation.create_task(task)
+    return task, target, artifact, reads
+
+
+@pytest.mark.parametrize(
+    ("qc_status", "review_state", "skip_id", "decision_kind", "decision_identity"),
+    [
+        ("approved", QcReviewState.APPROVED, None, "approved", "review-preprocessing-1"),
+        ("skipped", None, "skip-preprocessing-1", "skipped", "skip-preprocessing-1"),
+    ],
+)
+def test_preprocessing_readiness_is_read_only_and_finalizes_exact_lineage(
+    service,
+    qc_status,
+    review_state,
+    skip_id,
+    decision_kind,
+    decision_identity,
+) -> None:
+    task, _target, _artifact, _reads = _bind_preprocessing_readiness_case(
+        service,
+        qc_status=qc_status,
+        review_state=review_state,
+        skip_id=skip_id,
+    )
+    handler_kinds = {
+        handler.kind for handler in service.automation._step_readiness_registry._handlers.values()
+    }
+    assert handler_kinds == {"preprocessing_run", "statistical_run"}
+
+    assessment = service.automation._step_readiness_registry.inspect(
+        task, task.steps[0], "run-preprocessing"
+    )
+
+    assert assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE
+    assert assessment.evidence is not None
+    assert assessment.evidence.run_version == 3
+    assert assessment.evidence.plan_revision_id == "prep-plan-1"
+    assert assessment.evidence.frozen_input_fingerprint == "a" * 64
+    assert assessment.evidence.result_identity != "0" * 64
+    assert assessment.evidence.lineage_fingerprint != "0" * 64
+    assert assessment.completion_evidence is not None
+    assert assessment.completion_evidence.qc_decision_kind == decision_kind
+    assert assessment.completion_evidence.qc_decision_identity == decision_identity
+    assert service.automation.get_task(task.task_id) == task
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.COMPLETED
+    assert result.task.status is TaskStatus.COMPLETED
+    assert result.task.steps[0].status is TaskStepStatus.SUCCEEDED
+    assert result.task.steps[0].authority_refs.artifact_ids == ("artifact-timeseries",)
+
+
+@pytest.mark.parametrize(
+    ("run_state", "qc_status", "review_state", "expected"),
+    [
+        (WorkflowState.RUNNING, "pending", None, StepReadinessOutcome.WAITING_RUN),
+        (
+            WorkflowState.QC_REVIEW,
+            "pending",
+            QcReviewState.DRAFT,
+            StepReadinessOutcome.WAITING_USER,
+        ),
+        (
+            WorkflowState.SUCCEEDED,
+            "pending",
+            QcReviewState.DRAFT,
+            StepReadinessOutcome.WAITING_USER,
+        ),
+        (WorkflowState.FAILED_TERMINAL, "failed", None, StepReadinessOutcome.BLOCKED),
+    ],
+)
+def test_preprocessing_readiness_state_matrix_preserves_wait_and_block_semantics(
+    service, run_state, qc_status, review_state, expected
+) -> None:
+    task, _target, _artifact, _reads = _bind_preprocessing_readiness_case(
+        service,
+        run_state=run_state,
+        qc_status=qc_status,
+        review_state=review_state,
+    )
+
+    assessment = service.automation._step_readiness_registry.inspect(
+        task, task.steps[0], "run-preprocessing"
+    )
+
+    assert assessment.outcome is expected
+    result = service.automation.reconcile_waiting_run(task.task_id)
+    expected_readiness = {
+        StepReadinessOutcome.WAITING_RUN: RunReadiness.WAITING_RUN,
+        StepReadinessOutcome.WAITING_USER: RunReadiness.WAITING_USER,
+        StepReadinessOutcome.BLOCKED: RunReadiness.BLOCKED,
+    }[expected]
+    expected_task_status = {
+        StepReadinessOutcome.WAITING_RUN: TaskStatus.WAITING_RUN,
+        StepReadinessOutcome.WAITING_USER: TaskStatus.WAITING_USER,
+        StepReadinessOutcome.BLOCKED: TaskStatus.BLOCKED,
+    }[expected]
+    assert result.readiness is expected_readiness
+    assert result.task.status is expected_task_status
+    if expected is StepReadinessOutcome.WAITING_RUN:
+        assert assessment.waiting_condition is not None
+        assert assessment.waiting_condition.kind is WaitingKind.WORKFLOW_RUN
+        assert assessment.waiting_condition.reference == "run-preprocessing"
+    elif expected is StepReadinessOutcome.WAITING_USER:
+        assert assessment.waiting_condition is not None
+        assert assessment.waiting_condition.kind is WaitingKind.USER_DECISION
+        assert assessment.waiting_condition.reference == "qc:run-preprocessing"
+    else:
+        assert assessment.waiting_condition is None
+
+
+@pytest.mark.parametrize("lineage_mode", ["missing", "wrong"])
+def test_preprocessing_readiness_blocks_missing_or_mismatched_artifact_lineage(
+    service, lineage_mode
+) -> None:
+    task, _target, _artifact, _reads = _bind_preprocessing_readiness_case(
+        service, lineage_mode=lineage_mode
+    )
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.BLOCKED
+    assert result.task.status is TaskStatus.BLOCKED
+    assert result.task.steps[0].status is TaskStepStatus.BLOCKED
+    assert "lineage" not in result.reason.lower()
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+
+@pytest.mark.parametrize("registry_mode", ["missing", "stale"])
+def test_preprocessing_readiness_fails_closed_on_missing_or_misbound_assessment(
+    service, registry_mode
+) -> None:
+    task, _target, _artifact, _reads = _bind_preprocessing_readiness_case(service)
+    if registry_mode == "missing":
+        service.automation._step_readiness_registry = StepReadinessRegistry()
+    else:
+
+        class StaleAssessmentHandler:
+            kind = "preprocessing_run"
+
+            def inspect(self, current_task, step, run_id):
+                return StepReadinessAssessment(
+                    task_id=current_task.task_id,
+                    task_version=current_task.version + 1,
+                    step_id=step.step_id,
+                    step_version=step.version,
+                    step_kind=step.kind,
+                    run_id=run_id,
+                    outcome=StepReadinessOutcome.WAITING_RUN,
+                    reason_code="stale_test_assessment",
+                    reason="The readiness result is stale.",
+                    waiting_condition=WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference=run_id,
+                        reason="Wait for this Run.",
+                    ),
+                )
+
+        service.automation._step_readiness_registry = StepReadinessRegistry(
+            (StaleAssessmentHandler(),)
+        )
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task == task
+    assert service.automation.get_task(task.task_id) == task
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+
+def test_preprocessing_readiness_returns_indeterminate_on_authority_identity_error(service) -> None:
+    task, _target, _artifact, reads = _bind_preprocessing_readiness_case(service)
+
+    def mismatched_run(_run_id):
+        raise InputValidationError(
+            "authoritative_run_mismatch",
+            "The run read port returned a different Run.",
+        )
+
+    reads.get_run = mismatched_run
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task == task
+    assert service.automation.get_task(task.task_id) == task
+    assert "The run read port" not in result.reason
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+
+def test_preprocessing_finalizer_rejects_lineage_drift_without_writing_task_or_outbox(
+    service, monkeypatch
+) -> None:
+    task, _target, artifact, _reads = _bind_preprocessing_readiness_case(service)
+    original_reader = service.automation._read_preprocessing_completion_evidence
+
+    def drift_before_finalizer(current_task, run_id, authority):
+        artifact.checksum = "0" * 64
+        return original_reader(current_task, run_id, authority)
+
+    monkeypatch.setattr(
+        service.automation,
+        "_read_preprocessing_completion_evidence",
+        drift_before_finalizer,
+    )
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task == task
+    assert service.automation.get_task(task.task_id) == task
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+
+def test_preprocessing_finalizer_rejects_run_version_drift_without_writing_task_or_outbox(
+    service,
+) -> None:
+    task, _target, _artifact, reads = _bind_preprocessing_readiness_case(service)
+    original_get_run = reads.get_run
+    run_reads = 0
+
+    def drift_run_version(run_id):
+        nonlocal run_reads
+        run_reads += 1
+        if run_reads == 3:
+            reads.run.version += 1
+        return original_get_run(run_id)
+
+    reads.get_run = drift_run_version
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert run_reads == 4
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task == task
+    assert service.automation.get_task(task.task_id) == task
+    assert (
+        service.automation._repository.get_analysis_outbox_for_preprocessing_task(task.task_id)
+        is None
+    )
+
+
 def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_significance(
     service,
 ) -> None:
@@ -955,11 +1412,29 @@ def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_sig
         artifacts=artifacts,
     )
     bind_statistical_read_doubles(service, reads)
-    service.automation.create_task(_statistical_task())
+    task = _statistical_task()
+    service.automation.create_task(task)
 
-    result = service.automation.reconcile_waiting_run(
-        WorkTaskApplicationService.analysis_proposal_task_id("conversation-statistics", "c" * 64)
+    assessment = service.automation._step_readiness_registry.inspect(
+        task, task.steps[0], "run-statistics"
     )
+    assert assessment.outcome is StepReadinessOutcome.READY_TO_FINALIZE
+    assert assessment.task_version == task.version
+    assert assessment.step_version == task.steps[0].version
+    assert assessment.evidence is not None
+    assert assessment.evidence.run_version == reads.run.version
+    assert assessment.evidence.plan_revision_id == plan.plan_revision_id
+    assert assessment.evidence.frozen_input_fingerprint == task.authority_refs.input_revision
+    assert assessment.evidence.result_identity == summary.result_id
+    assert assessment.evidence.lineage_fingerprint != "0" * 64
+    assert assessment.evidence.result_version == detail.version
+    assert assessment.evidence.result_bundle_fingerprint == summary.bundle_hash
+    assert service.automation.get_task(task.task_id) == task
+    # The direct inspection above is read-only; keep the legacy read-count
+    # assertion scoped to one normal reconciliation pass.
+    reads.run_reads = 0
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
 
     assert result.readiness is RunReadiness.COMPLETED
     assert result.task.status is TaskStatus.COMPLETED
@@ -973,6 +1448,147 @@ def test_statistical_success_ignores_pending_head_motion_qc_and_accepts_zero_sig
     # Two reads establish a stable reconciliation snapshot; result-outbox
     # binding performs one more read to ensure the same Run remains current.
     assert reads.run_reads == 3
+
+
+def test_statistical_finalizer_rejects_result_version_drift_without_writing_task_or_outbox(
+    service,
+) -> None:
+    from neuroagent.infrastructure.persistence.models import ConversationRow
+
+    with service.database.session_factory.begin() as session:
+        session.add(
+            ConversationRow(
+                conversation_id="conversation-statistics",
+                mode=ConversationMode.WORK.value,
+                title="Synthetic statistics conversation",
+                project_id=None,
+                version=1,
+            )
+        )
+    design = _statistical_design()
+    plan = _statistical_plan(design=design)
+    summary, detail, artifacts = _real_zero_result(plan=plan, design=design)
+    reads = StatisticalReconciliationReads(
+        plan=plan,
+        design=design,
+        summaries=[summary],
+        details={summary.result_id: detail},
+        artifacts=artifacts,
+    )
+    bind_statistical_read_doubles(service, reads)
+    original_get_detail = reads.get_statistical_result
+    detail_reads = 0
+
+    def drift_result_version(result_id: str):
+        nonlocal detail_reads
+        detail_reads += 1
+        found = original_get_detail(result_id)
+        if detail_reads > 1:
+            return found.model_copy(update={"version": found.version + 1})
+        return found
+
+    reads.get_statistical_result = drift_result_version
+    task = _statistical_task()
+    service.automation.create_task(task)
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert detail_reads == 2
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task == task
+    assert service.automation.get_task(task.task_id) == task
+    with pytest.raises(NotFoundError):
+        service.automation.get_result_interpretation_outbox(task.task_id)
+
+
+@pytest.mark.parametrize("registry_mode", ["missing", "stale_task_version", "wrong_step_kind"])
+def test_statistical_readiness_registry_fails_closed_on_missing_or_misbound_assessment(
+    service, registry_mode
+) -> None:
+    design = _statistical_design()
+    plan = _statistical_plan(design=design)
+    summary, detail, artifacts = _real_zero_result(plan=plan, design=design)
+    reads = StatisticalReconciliationReads(
+        plan=plan,
+        design=design,
+        summaries=[summary],
+        details={summary.result_id: detail},
+        artifacts=artifacts,
+    )
+    bind_statistical_read_doubles(service, reads)
+    task = _statistical_task()
+    service.automation.create_task(task)
+
+    if registry_mode == "missing":
+        service.automation._step_readiness_registry = StepReadinessRegistry()
+    else:
+
+        class MisboundAssessmentHandler:
+            kind = "statistical_run"
+
+            def inspect(self, current_task, step, run_id):
+                return StepReadinessAssessment(
+                    task_id=current_task.task_id,
+                    task_version=(
+                        current_task.version + 1
+                        if registry_mode == "stale_task_version"
+                        else current_task.version
+                    ),
+                    step_id=step.step_id,
+                    step_version=step.version,
+                    step_kind=(
+                        "preprocessing_run" if registry_mode == "wrong_step_kind" else step.kind
+                    ),
+                    run_id=run_id,
+                    outcome=StepReadinessOutcome.WAITING_RUN,
+                    reason_code="misbound_test_assessment",
+                    reason="The readiness result does not match the inspected task state.",
+                    waiting_condition=WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference=run_id,
+                        reason="Wait for the inspected Run.",
+                    ),
+                )
+
+        service.automation._step_readiness_registry = StepReadinessRegistry(
+            (MisboundAssessmentHandler(),)
+        )
+
+    result = service.automation.reconcile_waiting_run(task.task_id)
+
+    assert result.readiness is RunReadiness.INDETERMINATE
+    assert result.task.status is TaskStatus.WAITING_RUN
+    assert result.task.version == task.version
+    assert result.task.steps == task.steps
+    # Missing or stale assessments are rejected before any statistical reader
+    # is invoked through a fallback path.
+    assert reads.run_reads == 0
+
+
+@pytest.mark.parametrize("failure", ["authority", "evidence"])
+def test_statistical_readiness_reasons_do_not_expose_dynamic_authority_details(failure) -> None:
+    task = _statistical_task()
+    run_id = "run-statistics"
+    sensitive_detail = r"C:\private\subject-001\result.nii"
+    snapshot = _StatisticalReadinessSnapshot(
+        authoritative=AuthoritativeRunSnapshot(
+            run_id=run_id,
+            run_state=WorkflowState.SUCCEEDED.value,
+            run_version=1,
+            attempt=1,
+        )
+    )
+
+    def reader(_task, _run_id):
+        if failure == "authority":
+            raise _InvalidStatisticalAuthority(sensitive_detail)
+        return snapshot, sensitive_detail
+
+    assessment = _StatisticalRunReadinessHandler(reader).inspect(task, task.steps[0], run_id)
+
+    assert assessment.outcome is StepReadinessOutcome.BLOCKED
+    assert sensitive_detail not in assessment.reason
+    assert "任务已阻断" in assessment.reason
 
 
 def test_succeeded_statistical_run_without_result_waits_for_dependency_stably(service) -> None:

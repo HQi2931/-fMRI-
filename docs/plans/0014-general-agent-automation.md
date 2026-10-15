@@ -151,9 +151,15 @@ flowchart TD
 
 ### 阶段 B 显式步骤集合 fail-closed（2026-10-15）
 
-在注册式 readiness handler 与多步骤调度器实现之前，含显式 TaskStep 的 Run 生命周期仅接受一个已注册的 `preprocessing_run` 或 `statistical_run`，且 Task 与 Step 必须绑定同一个 Run、步骤必须处于等待状态。未知、混合、多步骤及 Run 引用冲突在重核入口返回 `indeterminate`，不消费该轮新事件，也不按“非统计即预处理”分派。共享绑定/完成转换拒绝 sibling 步骤，避免单个步骤完成时把其他 pending 步骤一起隐式关闭。无 TaskStep 的历史任务保留原只读重核兼容路径。
+在多步骤调度器实现之前，含显式 TaskStep 的 Run 生命周期仅接受一个已注册的 `preprocessing_run` 或 `statistical_run`，且 Task 与 Step 必须绑定同一个 Run、步骤必须处于等待状态。未知、混合、多步骤及 Run 引用冲突在重核入口返回 `indeterminate`，不消费该轮新事件，也不按“非统计即预处理”分派。共享绑定/完成转换拒绝 sibling 步骤，避免单个步骤完成时把其他 pending 步骤一起隐式关闭。无 TaskStep 的历史任务保留原只读重核兼容路径。
 
 本切片无需数据库迁移。9 个自动化相关后端模块 119 项通过；Ruff check、Mypy、文档规范与差异空白检查通过。`ruff format --check` 在这些既有文件中报告了本切片未触及的格式差异，未为此改写整文件。阶段 B 整体仍未完成。没有运行 MATLAB/DPABI。
+
+### 阶段 B 类型化 Step readiness 检查与收口（2026-10-15）
+
+持久协调器现在通过精确 `TaskStep.kind` 注册表分派只读 readiness 检查器，首批覆盖 `preprocessing_run` 与 `statistical_run`。检查结果是绑定 Task/Step 版本和 Run ID 的不可变 Assessment；`waiting_*`、`blocked`、`indeterminate` 与 `ready_to_finalize` 和持久任务状态分离。预处理检查继续核验冻结 SkillPlan、显式 QC 决定、精确目标 Artifact 集与 lineage；统计检查继续核验冻结设计、唯一真实 StatisticalResult、结果 bundle 与 Artifact lineage，且不要求预处理头动 QC。应用协调层负责状态映射和 CAS；类型专属 finalizer 会在写入前重新读取并比较证据，只有通过复核才在既有事务中完成 Task/Step 和对应 outbox。Assessment 过期、Run/Artifact/QC 证据变化或最终重读无法确认时返回 `indeterminate`，不收口 Task/outbox。事件仍只负责去重与唤醒；无显式步骤的旧任务保留原只读兼容路径。
+
+本切片没有数据库迁移，未运行 MATLAB/DPABI，也没有开放多步骤 DAG、共享任务预算或多目标 fanout。自动化重核、readiness 合同、统计解释 outbox 相关的 3 个定向后端测试模块 65 项通过；Ruff check、格式、Mypy 与 `git diff --check` 通过。阶段 B 整体仍未完成。合同见 [ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。每个预处理任务当前仍只支持一个分析 intent/outbox。
 
