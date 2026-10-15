@@ -183,6 +183,8 @@ def complete_step(
     This helper relies on ``transition_task`` for normal transitions. The only
     user-wait exception is a step that was waiting on QC for this exact Run;
     callers must first verify the authoritative QC decision and step evidence.
+    For an explicit linear sequence, completion advances only the immediate
+    successor; the WorkTask remains active until its final step succeeds.
     """
 
     ordered_steps = resolve_linear_step_sequence(task)
