@@ -40,9 +40,6 @@ def streaming_service(service: ApplicationServices) -> Iterator[ApplicationServi
 def configure(
     service: ApplicationServices, monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> MockProvider:
-    service.settings = service.settings.model_copy(
-        update={"redaction_salt": "synthetic-streaming-redaction-salt"}
-    )
     monkeypatch.setenv("STREAM_TEST_API_KEY", "synthetic-secret")
     service.repository.create_model_profile(
         ModelProfile(
@@ -69,7 +66,9 @@ def configure(
             return await super().generate(profile, api_key, messages, **kwargs)
 
     provider = Provider([answer])
-    service.providers = {"openai-compatible": provider}
+    providers = {"openai-compatible": provider}
+    service.providers = providers
+    service.models.providers = providers
     return provider
 
 
@@ -86,7 +85,7 @@ def decode_frames(text: str) -> list[tuple[str, dict[str, Any]]]:
 
 @pytest.mark.parametrize("mode", ["chat", "work"])
 def test_stream_final_is_durable_and_same_key_replays_without_provider(
-    service: ApplicationServices,
+    streaming_service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
@@ -98,8 +97,8 @@ def test_stream_final_is_durable_and_same_key_replays_without_provider(
         if mode == "work"
         else answer
     )
-    provider = configure(service, monkeypatch, raw)
-    with TestClient(create_app(service=service)) as client:
+    provider = configure(streaming_service, monkeypatch, raw)
+    with TestClient(create_app(service=streaming_service)) as client:
         conversation = client.post(
             "/api/v1/conversations",
             json={"mode": mode},
@@ -190,15 +189,19 @@ def test_stream_tool_loop_keeps_durable_steps_and_only_previews_answer(
 
 
 def test_stream_does_not_authorize_a_model_selected_execution_action(
-    service: ApplicationServices,
+    streaming_service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import Mock
 
-    configure(service, monkeypatch, '{"answer":"模型声称已启动。","action":"start_preprocessing"}')
+    configure(
+        streaming_service,
+        monkeypatch,
+        '{"answer":"模型声称已启动。","action":"start_preprocessing"}',
+    )
     execute = Mock(side_effect=AssertionError("model cannot dispatch execution"))
-    monkeypatch.setattr(service.conversation_work, "execute", execute)
-    with TestClient(create_app(service=service)) as client:
+    monkeypatch.setattr(streaming_service.conversation_work, "execute", execute)
+    with TestClient(create_app(service=streaming_service)) as client:
         conversation = client.post(
             "/api/v1/conversations",
             json={"mode": "work"},
@@ -244,9 +247,10 @@ def test_stream_error_has_stable_envelope_and_no_final(
 
 @pytest.mark.asyncio
 async def test_disconnected_stream_finishes_and_replays_without_duplicate_request(
-    service: ApplicationServices,
+    streaming_service: ApplicationServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    service = streaming_service
     provider = configure(service, monkeypatch, "最终回答。")
     entered, release = asyncio.Event(), asyncio.Event()
     original = provider.generate_stream
@@ -263,7 +267,13 @@ async def test_disconnected_stream_finishes_and_replays_without_duplicate_reques
     )
     body = ConversationTurnCreate(content="你好", stream=True, preferred_profile_id="stream-test")
     response = conversation_stream_response(
-        service, conversation.conversation_id, body, "disconnect-key", Request({"type": "http"})
+        mode="chat",
+        send_turn=service.conversations.send_conversation_turn,
+        map_response=lambda result: result,
+        conversation_id=conversation.conversation_id,
+        body=body,
+        key="disconnect-key",
+        request=Request({"type": "http"}),
     )
     reader = response.body_iterator
     assert "status" in await anext(reader)

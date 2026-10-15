@@ -2325,15 +2325,14 @@ class WorkDialogue:
         proposal_only_continuation: bool = False,
         continuation_source: VerifiedAnalysisOutboxSource | None = None,
     ) -> WorkActionResult:
+        loop_metadata: dict[str, Any] | None = None
         saved = (
             None
             if proposal_only_continuation
             else latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
         )
         composite_intent_task_id = (
-            continuation_source.intent_task_id
-            if continuation_source is not None
-            else None
+            continuation_source.intent_task_id if continuation_source is not None else None
         )
         composite_request_hash = (
             content_hash(continuation_source.analysis_request)

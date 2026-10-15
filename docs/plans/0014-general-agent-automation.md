@@ -159,7 +159,7 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 
 运行中的预处理来源登记为 PENDING，完成时由既有收口流程核验后置为 READY。已完成来源仅在稳定 Run/QC/Artifact 快照及 completion evidence 通过后直接 READY；finalize 会再次核对来源版本、Artifact IDs 与 lineage fingerprint。来源在准备与提交间变化时，事务回滚消息和 outbox。outbox consumer 仍会在模型调用前后复核来源，且只生成可审查的统计方案草稿；统计 Plan 审批和 Run 启动仍要求原有用户决定。若 Run 已成功但 WorkTask 尚未由 reconciler 收口，当前仍等待其 completion fanout。
 
-这条路径支持用户显式注册多个独立分析请求，不会自动拆分一条自然语言中的多个指标/统计目标，也不是通用 CompositeGoal 调度器。验证覆盖了来源绑定与证据失败、prepare/finalize 间 Artifact 变化和事务回滚、幂等重放、共享来源 fanout，以及前端显式选择/普通请求隔离。后端相关测试 23 项通过，Agent 页面测试 48 项通过；Ruff check、Mypy（6 个变更源文件）、前端类型检查、ESLint 与生产构建通过。宽范围后端回归另有 5 项失败，涉及 handoff 限额和 stream 测试，需独立调查；未运行 MATLAB/DPABI。
+这条路径支持用户显式注册多个独立分析请求，不会自动拆分一条自然语言中的多个指标/统计目标，也不是通用 CompositeGoal 调度器。验证覆盖了来源绑定与证据失败、prepare/finalize 间 Artifact 变化和事务回滚、幂等重放、共享来源 fanout，以及前端显式选择/普通请求隔离。后端六个相关模块共 41 项通过，Agent 页面测试 48 项通过；Ruff check/format、Mypy（6 个变更源文件）、前端类型检查、ESLint、生产构建和文档检查通过。验证期间也修正了 handoff 限额与 stream 测试中的过时依赖接线，并为分析反馈异常补上受控错误收口，避免审计字段未初始化导致 500。未运行 MATLAB/DPABI。
 
 ### 阶段 B WorkTask 步骤生命周期共用转换（2026-10-15）
 

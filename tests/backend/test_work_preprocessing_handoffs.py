@@ -114,7 +114,9 @@ def test_reverse_handoff_limit_counts_unique_requests_and_cannot_be_replayed_aro
     work_root,
 ):
     project, run, _, _, _, _ = _source(service, source_root, work_root)
-    service.settings = service.settings.model_copy(update={"work_max_handoffs": 1})
+    service.statistics.settings = service.statistics.settings.model_copy(
+        update={"work_max_handoffs": 1}
+    )
     conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work", project_id=project.project_id), "reverse-conversation"
     )

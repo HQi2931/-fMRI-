@@ -16,6 +16,7 @@ from neuroagent.application.contracts.conversations import (
 )
 from neuroagent.application.contracts.projects import DatasetCreate, ManifestScanRequest
 from neuroagent.application.conversation_work import WorkActionResult
+from neuroagent.application.errors import ApplicationError
 from neuroagent.application.services import ApplicationServices
 from neuroagent.context.interfaces import ContextPacket
 from neuroagent.multi_agent.registry import WorkAgentRole
@@ -88,6 +89,45 @@ def test_analysis_missing_design_choice_stops_without_inventing_a_retry(
     ]
     assert "planning_feedback_budget" not in result.payload
     assert "statistical_design_proposal" not in result.payload
+
+
+def test_analysis_provider_failure_keeps_a_controlled_error_envelope(
+    service: ApplicationServices,
+) -> None:
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work"), "feedback-analysis-provider-error"
+    )
+    service.work_dialogue._interpret = AsyncMock(
+        side_effect=ApplicationError(
+            "work_model_unavailable", "数据分析 Agent 暂时不可用。", status_code=503
+        )
+    )
+
+    result = asyncio.run(
+        service.work_dialogue._respond_analysis(
+            conversation,
+            ConversationTurnCreate(content="分析 ALFF"),
+            ContextPacket(
+                question="分析 ALFF",
+                metadata={"token_budget": 12_000, "selected": {}},
+            ),
+            workspace_path=None,
+            project_id=None,
+            preferred_profile_id=None,
+            workspace_content_consent=False,
+            idempotency_key="feedback-analysis-provider-error-turn",
+            has_profiles=True,
+            reply=lambda text, payload: WorkActionResult(
+                assistant_content=text, payload=payload or {}
+            ),
+        )
+    )
+
+    assert service.work_dialogue._interpret.await_count == 1
+    assert "model_error" in result.payload
+    assert result.payload["model_error"]["code"] == "work_model_unavailable"
+    assert "tool_loop" not in result.payload
+    assert "数据分析 Agent 未能完成本轮请求" in result.assistant_content
 
 
 def test_analysis_lineage_dry_run_blocker_is_user_visible_and_stops_once(
