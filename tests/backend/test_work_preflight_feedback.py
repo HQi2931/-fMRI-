@@ -80,6 +80,33 @@ def test_draft_repair_fingerprint_changes_with_draft_revision_and_serializes_saf
     assert feedback_payload(first)[0]["repairs"][0]["boundary"] == "draft_only"
 
 
+def test_observed_fact_fingerprint_is_stable_for_same_draft_and_changes_with_draft() -> None:
+    arguments = {
+        "messages": ("preprocessing.expected_time_points：需要复核候选值",),
+        "namespace": "preprocessing",
+        "facts": {"preprocessing.expected_time_points": 240},
+    }
+    first = planning_feedback_for_messages(**arguments, draft_revision="draft-1")
+    repeated = planning_feedback_for_messages(**arguments, draft_revision="draft-1")
+    changed = planning_feedback_for_messages(**arguments, draft_revision="draft-2")
+
+    assert first[0][0].fingerprint == repeated[0][0].fingerprint
+    assert first[0][0].fingerprint != changed[0][0].fingerprint
+
+    stopped = planning_feedback_for_messages(
+        **arguments,
+        draft_revision="draft-1",
+        prior_fingerprints=(first[0][0].fingerprint,),
+    )
+    progressed = planning_feedback_for_messages(
+        **arguments,
+        draft_revision="draft-2",
+        prior_fingerprints=(first[0][0].fingerprint,),
+    )
+    assert stopped[0][1].disposition is FeedbackDisposition.NO_PROGRESS
+    assert progressed[0][1].disposition is FeedbackDisposition.REVALIDATE
+
+
 def test_skill_blockers_keep_typed_disposition_and_same_evidence_fingerprint() -> None:
     blocker = ValidationIssue(
         code="EFFECTIVE_VOLUME_COUNT_UNKNOWN",

@@ -13,6 +13,7 @@ from neuroagent.application.planning_feedback import (
     RepairCandidate,
 )
 from neuroagent.application.planning_feedback_loop import PlanningFeedbackRetrier
+from neuroagent.application.preflight_adapter import planning_feedback_for_messages
 
 
 def _draft_issue(*, kind: PlanningIssueKind = PlanningIssueKind.INVALID_DRAFT) -> PlanningIssue:
@@ -89,6 +90,40 @@ def test_repeated_fingerprint_stops_immediately_after_one_feedback_retry() -> No
     assert calls == 2
     assert result.disposition is FeedbackDisposition.NO_PROGRESS
     assert result.rounds == 2
+
+
+def test_changed_candidate_with_same_observed_fact_is_not_no_progress() -> None:
+    calls = 0
+    revisions = {"draft-1": "candidate-hash-1", "draft-2": "candidate-hash-2"}
+
+    async def interpret(_context: dict[str, Any], _budget: AgentLoopBudget):
+        nonlocal calls
+        calls += 1
+        return (
+            f"draft-{calls}",
+            {"request_budget": {"model_steps": 1, "total_tokens": 10}},
+            None,
+        )
+
+    def validate(content: str, _metadata: dict[str, Any]) -> PlanningIssue:
+        return planning_feedback_for_messages(
+            ("preprocessing.expected_time_points：需要复核候选值",),  # noqa: RUF001
+            namespace="preprocessing",
+            draft_revision=revisions[content],
+            facts={"preprocessing.expected_time_points": 240},
+        )[0][0]
+
+    result = asyncio.run(
+        PlanningFeedbackRetrier(
+            interpret=interpret,
+            validate=validate,
+            limits=_safe_budget(),
+        ).run({"question": "prepare"})
+    )
+
+    assert calls == 2
+    assert result.rounds == 2
+    assert result.disposition is FeedbackDisposition.RETRY_LIMIT
 
 
 def test_conflict_user_decision_and_unsupported_capability_never_retry() -> None:

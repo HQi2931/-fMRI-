@@ -494,7 +494,10 @@ def _evidence_for(
     if fact is not None:
         source = EvidenceSourceKind.FILE_METADATA
         status = EvidenceStatus.EXECUTOR_VERIFIED
-        revision_value = fact
+        # Bind an observed fact to the candidate it validates. Otherwise an
+        # old fingerprint can suppress feedback after the user/model changes
+        # the draft while the registered fact itself remains unchanged.
+        revision_value = {"draft_revision": draft_revision, "fact": fact}
     else:
         origin = sources.get(target)
         source, status = {
