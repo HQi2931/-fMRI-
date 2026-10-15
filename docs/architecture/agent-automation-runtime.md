@@ -4,8 +4,8 @@
 - 文档类型：Architecture
 - 维护者：system_architect
 - 创建日期：2026-10-12
-- 更新日期：2026-10-14
-- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
+- 更新日期：2026-10-15
+- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
 
@@ -103,6 +103,31 @@ flowchart TD
 
 依赖方向保持单向：界面/API 调用应用用例；应用层依赖领域服务和窄持久化/执行端口；基础设施实现这些端口。Provider、文件系统或 SQLite 的细节不应渗入领域对象。模块化单体和共享事务足以支撑当前本地单用户场景，是否拆分进程或服务需由实际并发与部署需求驱动。
 
+### 当前代码结构的落点与解耦要求
+
+建议沿现有能力目录逐步整理职责，不做全仓搬迁。新行为应落在能表达其业务边界的位置，跨能力协作通过应用端口完成：
+
+| 代码边界 | 现有主要位置 | 应承担的责任 | 禁止形成的耦合 |
+| --- | --- | --- | --- |
+| HTTP 与前端 | `neuroagent/api/`、`web/` | 请求/响应映射、会话呈现、等待与确认交互 | 在路由中做科学规则判断、直接驱动 Worker 或拼接执行命令 |
+| Agent runtime | `neuroagent/agent/`、`neuroagent/multi_agent/` | Provider 调用、有界工具循环、工具风险级别、预处理/分析角色注册 | 持有科研任务状态、直接访问 SQLite/文件、把模型输出当作事实或授权 |
+| Work 用例 | `neuroagent/application/work_*.py`、`service_mixins/` | 对话、角色选择、草稿、审查、确认和领域能力调用 | 让会话角色指针兼任跨运行目标状态；把协调策略散落在多个 mixin 中 |
+| 自动化编排 | `neuroagent/application/automation/` | 持久目标身份、步骤依赖、等待条件、预算、恢复决策、进度投影 | 复制 Plan/Run/QC/Artifact 的状态；直接调用 Provider、MATLAB 或文件系统 |
+| fMRI 领域与能力 | `neuroagent/domain/fmri/`、`neuroagent/skills/` | 输入身份、方法学约束、指标 Skill、统计设计校验、产物和 lineage 合同 | 依赖 API、Provider、SQLite 或操作系统进程；用通用 Agent 规则替代具体 Skill 合同 |
+| 执行与工作流 | `neuroagent/workflow/`、`neuroagent/execution/` | 运行状态、attempt、租约、取消/超时、受控 DPABI 执行单元 | 理解自然语言目标、自动批准科学方案、根据日志猜测改变分析方法 |
+| 基础设施 | `neuroagent/infrastructure/` | 持久化/文件/模型/事件端口适配、事务和迁移 | 持有流程编排策略或 fMRI 科学决策 |
+| 组合根 | `neuroagent/bootstrap.py` 及应用服务装配 | 注入窄端口、组装能力对象和 Worker | 成为隐藏的 service locator，或承载业务条件分支 |
+
+保持现有模块化单体。只有当同一业务职责在多个入口重复、端口过宽或导入方向反转时，才在该能力目录内拆分用例/策略/适配器；不要为了“Agent 架构”预建微服务、通用工作流 DSL、无限计划图或新的协调模型。应用层的自动化服务应是确定性协调器，Agent 是其可调用的提案能力之一。
+
+### 双循环的推进与收口合同
+
+请求内反馈环和跨请求恢复环要共用问题/证据合同，但预算与运行方式分开。每次反馈迭代都按“读取有权限的证据 → 生成结构化草稿 → 确定性校验 → 选择继续、询问或停止”执行；工作区事实可以补查，格式或结构问题只在明确的安全修订范围内修复。每次修订要记录原草稿哈希、证据版本、问题指纹和修订结果。
+
+一条可恢复路径必须满足三个条件：问题被分类为瞬时工程故障、重试对象和最大次数明确、重试仍使用原有 Run/Worker 语义。达到相同草稿哈希和相同问题指纹时立即停止模型重试；禁止用新 Run 掩盖旧 Run 的失败。每轮跨请求恢复都重新读取权威记录，事件只作为唤醒信号。
+
+任何状态转换都必须以以下一种方式收口：推进到可验证的下一步、明确等待用户/运行、以有界条件等待重试，或携带可解释原因进入阻断/不确定状态。不能留下“Agent 还在想”的隐式状态，也不能把超时、预算耗尽或证据变化报告成成功。用户恢复任务时，续接输入必须绑定当前目标和待办决定；模糊的“继续”不得自动选择另一个角色或旧任务。
+
 ## 权威状态与任务记录
 
 | 对象 | 权威信息 | WorkTask 可保存的内容 |
@@ -115,6 +140,26 @@ flowchart TD
 | 输出 | 已登记 Artifact、QC 和报告 | 目标所需产物类型与它们的 ID |
 
 WorkTask 状态表达的是编排等待状态，例如 `waiting_user`、`waiting_run`、`waiting_dependency`、`blocked`、`completed` 和 `cancelled`。它不保存一份可独立演化的“Run 状态”或“QC 结论”。事件必须通过绑定对象校验、幂等消费和版本控制；乱序或重复通知触发一次权威重查，不能用过期 payload 覆盖当前事实。
+
+### 复合目标身份与尝试关联
+
+`preprocess_then_analyze` 这类跨角色请求需要一个稳定的目标身份。它应绑定明确的会话、项目和原始请求指纹；会话角色槽位、最近一条任务、当前页面选择或 outbox 的“最新记录”都不能充当目标身份。预处理 WorkTask 创建时即可登记目标根引用，因此尚未创建 Run 或分析 outbox 时，目标仍能被查询并投影为等待预处理。
+
+目标根只保存身份和权威对象引用，不缓存子对象状态。最小关联链为：
+
+```text
+composite intent
+  ├─ preprocessing WorkTask → frozen Plan / Run / QC / target Artifacts
+  ├─ analysis proposal outbox
+  ├─ analysis attempt(s) → frozen statistical Plan / Run / StatisticalResult
+  └─ result interpretation outbox → delivered assistant continuation
+```
+
+每条关联都校验 conversation、project、intent ID、原始请求 hash 和父子对象 ID。关联建立应加入对应对象的既有 Unit of Work：预处理目标与 outbox READY 原子收口；统计提案、分析 WorkTask 和 proposal outbox 终态原子收口；统计结果、结果解释 outbox 与目标引用原子收口。若记录存在但关联缺失或身份冲突，进度应返回 `indeterminate`/`blocked`，不通过“按会话查最新任务”修补。
+
+统计草稿每次形成不同 proposal hash 时可能创建新的分析 WorkTask，因此应保留可审计的尝试历史，并明确唯一的 active attempt。未开始、等待用户决定的草稿可在用户修改后被新尝试替代；已经绑定 Plan/Run 或产生真实结果的尝试不能静默改写成新尝试。旧尝试迟到完成只更新其自身权威记录，不能完成新的 active attempt。当前单目标切片先支持一条预处理链和一个有效分析尝试；多指标、多组比较和多意图扩展要在明确的尝试集合与停止条件验收后再开放。
+
+进度状态是查询时从权威记录投影出来的视图，而不是另一套可写状态机。可供前端呈现的阶段至少包括：等待预处理方案审查/授权、预处理运行中、等待 QC/用户、检查目标产物、等待统计设计决定、统计运行中、等待结果解释、结果已交付、能力阻断及证据不确定。目标只有在 active 统计尝试完成、真实 StatisticalResult 与冻结设计/Artifact lineage 相符，且同一结果的解释 continuation 已写入该会话后才能标记完成；Run 成功、outbox 入队或结果草稿生成都不够。
 
 ## fMRI 能力与方案生成
 
@@ -133,7 +178,7 @@ WorkTask 状态表达的是编排等待状态，例如 `waiting_user`、`waiting
 
 ## 从一个用户目标贯穿预处理与分析
 
-以“检查所选工作区，为符合条件的受试者计算 ALFF 和 ReHo；用现有或新生成的指标完成组间分析并整理报告”为例，用户描述的是一个研究目标，系统内部则把它编排成若干可审查的能力步骤：
+以“检查所选工作区，为符合条件的受试者计算 ALFF 和 ReHo；用现有或新生成的指标完成组间分析并整理报告”为例，用户描述的是一个研究目标，系统内部则把它编排成若干可审查的能力步骤。步骤顺序由各指标 Skill 的输入/输出合同决定，不能假设所有指标共用一条固定流水线：
 
 1. **调查输入。** 读取授权工作区内的受试者、session/run、功能像、采集元数据、已有指标和处理谱系。区分已核验事实、用户声明、候选推断和未知；保留冲突证据。
 2. **解析可行路径。** 分别检查 ALFF 与 ReHo Skill 的输入和步骤前置条件，核验已有 Artifact 是否能复用。共享处理步骤可以复用，但两个指标的输入检查点和后续顺序必须遵循各自合同，不能用一个笼统的“已预处理”标签代替。
@@ -142,6 +187,8 @@ WorkTask 状态表达的是编排等待状态，例如 `waiting_user`、`waiting
 5. **等待并续接。** 页面关闭或 MATLAB 长时间运行时，WorkTask 保留目标、Plan/Run 引用和等待条件。Worker 事件只唤醒任务；应用服务重新读取当前 Run、QC、输入修订和登记 Artifact，检查本目标的输出合同。重复事件不会重跑或重复创建 Run。QC 尚待用户审查时等待用户；执行可恢复时沿用原 Worker attempt 语义；输入已变化时让旧草稿和确认失效并重新预检。
 6. **准备统计分析。** 只有上游指标及其谱系、空间、mask 和纳入顺序达到冻结设计的要求后，才由分析角色准备正式统计设计。服务端依据已登记来源绑定影像及组别/协变量顺序；模型不能补造来源，也不能因设计失败而自动换检验、对比、阈值或样本。
 7. **验证并交付。** 用户审查统计设计并按现有门禁授权执行。结果登记后，从真实统计结果及其冻结设计生成解释和复现报告。零显著体素是有效分析结果，正常进入报告；目标的所有要求产物和必要审查条件满足后，WorkTask 才标记完成。
+
+其中 ALFF/fALFF 与 ReHo 的分支必须分别核对适用的时序检查点、滤波/平滑顺序与最终产物；复用公共预处理只能发生在合同一致且 lineage 可证明时。统计阶段按每项指标分别核对图像空间、mask、受试者顺序、分组和协变量来源；用户没有指定检验、尾部、缺失值策略或多重比较方法时，应合并科研问题后等待用户，而不是让分析 Agent 从常见做法中自行补全。FC 等尚未贯通数据身份、Skill、统计设计、DPABI 接口和产物证据的指标，应在执行前作为能力边界呈现。
 
 用户看到的是同一个目标的状态变化，而不是必须反复给 Agent 下达“下一步做什么”的操作序列。自动化的边界也要显式：缺少的可读事实由系统调查；科研选择交给用户；未注册的能力在执行前说明并阻断；工程故障根据分类有限等待或恢复。
 
