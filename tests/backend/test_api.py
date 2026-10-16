@@ -61,6 +61,7 @@ def test_health_openapi_and_error_envelope(service: ApplicationServices) -> None
             "preprocessing_status",
             "analysis_proposal_status",
             "analysis_status",
+            "analysis_summary",
             "result_interpretation_status",
             "continuation_message_id",
             "reason_code",

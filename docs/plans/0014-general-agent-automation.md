@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-15
+- 更新日期：2026-10-16
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)
 
 ## 目标里程碑
@@ -160,6 +160,14 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 运行中的预处理来源登记为 PENDING，完成时由既有收口流程核验后置为 READY。已完成来源仅在稳定 Run/QC/Artifact 快照及 completion evidence 通过后直接 READY；finalize 会再次核对来源版本、Artifact IDs 与 lineage fingerprint。来源在准备与提交间变化时，事务回滚消息和 outbox。outbox consumer 仍会在模型调用前后复核来源，且只生成可审查的统计方案草稿；统计 Plan 审批和 Run 启动仍要求原有用户决定。若 Run 已成功但 WorkTask 尚未由 reconciler 收口，当前仍等待其 completion fanout。
 
 这条路径支持用户显式注册多个独立分析请求，不会自动拆分一条自然语言中的多个指标/统计目标，也不是通用 CompositeGoal 调度器。验证覆盖了来源绑定与证据失败、prepare/finalize 间 Artifact 变化和事务回滚、幂等重放、共享来源 fanout，以及前端显式选择/普通请求隔离。后端六个相关模块共 41 项通过，Agent 页面测试 48 项通过；Ruff check/format、Mypy（6 个变更源文件）、前端类型检查、ESLint、生产构建和文档检查通过。验证期间也修正了 handoff 限额与 stream 测试中的过时依赖接线，并为分析反馈异常补上受控错误收口，避免审计字段未初始化导致 500。未运行 MATLAB/DPABI。
+
+### 阶段 B 分析目标摘要与继续交互审查（2026-10-16）
+
+流程卡片现在显示来自精确持久 intent 消息的 `analysis_summary`。同一 SQLite snapshot 读取候选消息，只有唯一消息同时匹配 intent、会话、项目、任务种类与原始请求 hash 时才返回摘要；折叠空白，长度不超过 160 字符。旧记录缺失精确证据、请求 hash 冲突或多个匹配时返回空值，不从最新角色指针猜测标题。此前“目标列表暂不包含意图标题”的记录描述的是当时切片，本项已补齐该显示能力。
+
+继续交互审查发现两个实际缺口：自动分析续接将 intent envelope 标为 consumed 后，普通用户补充或修改草稿的路径只继承 active envelope，可能丢失原 CompositeGoal 身份；多个目标续接会覆盖同一 ANALYSIS 角色指针，前一个目标缺少精确选择并恢复其草稿、提案、Plan 或 Run 的用户入口。下一步优先修复目标内身份继承和明确的 goal-scoped selection/resume，再扩展后台目标 dispatch。选择上下文不得复活旧确认或替代方案审批、Run 和 QC 的权威状态；其他目标的后台续接不得夺取已选目标。阶段 B 仍未完成。
+
+本次 API/摘要/CompositeGoal/来源登记定向回归 14 项通过，文档检查通过 84 份 Markdown；范围与限制见[MVP 验证记录](../development/mvp-verification.md)。
 
 ### 阶段 B WorkTask 步骤生命周期共用转换（2026-10-15）
 
