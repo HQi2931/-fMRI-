@@ -53,12 +53,13 @@ export function AnalysisProposalActions({ proposal, conversation, isCurrent, onT
   }, [isCurrent, planId, runId]);
 
   async function createDesign(): Promise<void> {
-    if (!proposal.project_id || !proposal.project_version || !proposal.input_manifest_hash) {
+    if (!proposal.project_id || !proposal.project_version || !proposal.input_manifest_hash || !proposal.proposal_hash) {
       setError("统计预览缺少项目版本或输入清单哈希，无法创建正式设计。");
       return;
     }
     setBusy(true); setError("");
     try {
+      const workContext: NonNullable<StatisticalDesignCreateBody["work_context"]> = { conversation_id: conversation.conversation_id, proposal_hash: proposal.proposal_hash, proposal_message_id: task?.proposal_message_id ?? null };
       const body = {
         project_id: proposal.project_id,
         expected_project_version: proposal.project_version,
@@ -66,7 +67,7 @@ export function AnalysisProposalActions({ proposal, conversation, isCurrent, onT
         design: proposal.design,
         correction: proposal.correction ?? null,
         atlas_id: atlasId || null,
-        work_context: { conversation_id: conversation.conversation_id, proposal_hash: proposal.proposal_hash },
+        work_context: workContext,
       } as StatisticalDesignCreateBody;
       const created = await api.createStatisticalDesign(body);
       setDesign(created);

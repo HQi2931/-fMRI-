@@ -170,6 +170,26 @@ def preprocessing_source_run(
 ) -> str | None:
     if explicit_run_id:
         return explicit_run_id
+    analysis = work_task(conversation, WorkAgentRole.ANALYSIS)
+    if analysis and analysis.analysis_intent_task_id:
+        from neuroagent.application.work_agents import latest_agent_payload
+
+        saved = latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
+        draft = saved.get("draft") if saved else None
+        source = draft.get("source_run_id") if isinstance(draft, dict) else None
+        if isinstance(source, str):
+            return source
+        sources = {
+            continuation["run_id"]
+            for message in conversation.messages
+            if message.role.value == "assistant"
+            and isinstance(
+                continuation := message.payload.get("analysis_outbox_continuation"), dict
+            )
+            and continuation.get("intent_task_id") == analysis.analysis_intent_task_id
+            and isinstance(continuation.get("run_id"), str)
+        }
+        return next(iter(sources)) if len(sources) == 1 else None
     task = work_task(conversation, WorkAgentRole.PREPROCESSING)
     if task and task.run_id:
         return task.run_id

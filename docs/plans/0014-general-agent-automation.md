@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-16
+- 更新日期：2026-10-17
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)
 
 ## 目标里程碑
@@ -166,6 +166,14 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 流程卡片现在显示来自精确持久 intent 消息的 `analysis_summary`。同一 SQLite snapshot 读取候选消息，只有可唯一核验的原请求同时匹配 intent、会话、项目、任务种类与请求 hash 时才返回摘要；相同请求的后续快照可以重复，不因续接和修订而隐藏标题。摘要折叠空白，长度不超过 160 字符。旧记录缺失精确证据或请求身份无法唯一核验时返回空值，不从最新角色指针猜测标题。此前“目标列表暂不包含意图标题”的记录描述的是当时切片，本项已补齐该显示能力。
 
 2026-10-17 已修复 consumed 分析草稿的跨轮身份继承：用户补充或连续修订保留精确 intent/request hash，原始请求、草稿哈希及唯一来源续接不一致时受控停止；其他目标的完成 envelope 不影响当前草稿。来源绑定不依赖预处理角色当前选择的另一运行，分析补充中出现 ALFF 不会误建预处理目标。多个目标的明确选择、后台前台隔离及 Plan/Run 恢复仍需独立验收；阶段 B 尚未完成。
+
+### 阶段 B 未冻结分析目标选择（2026-10-17）
+
+按 [ADR 0046](../adr/0046-composite-goal-foreground-selection.md) 增加会话内精确目标选择，角色槽持久保存 intent 指针，无数据库迁移。入口只接受等待用户处理、当前尚无 Plan/Run 的分析目标；恢复最新草稿，完整提案保留原消息 ID，不完整修订清除旧提案资格。后台不同 intent 仍完成其消息/任务/outbox 提交，但不覆盖前台；草稿、来源上下文、历史和交接使用同一目标范围。统计冻结对复合目标强制核对提案消息 ID，防止相同 proposal hash 的跨目标竞态。
+
+本切片不恢复已有 Plan/Run 的目标，也未实现通用多目标 dispatch、目标共享累计模型预算或完整步骤调度。阶段 B 仍为部分完成；真实模型与 MATLAB 验收需独立证据。
+
+最终相关后端回归 210 项、AgentPage 前端测试 52 项通过；Ruff、Mypy、前端类型/静态检查及构建、文档检查通过。详细验证范围与限制见 [MVP 记录](../development/mvp-verification.md)。下一步先接冻结 Plan/Run 的精确恢复：以冻结 work_context 原消息为权威，保留当前审批/启动门禁和已存在 Run 的禁止重复创建语义，再推进通用目标 dispatch 与累计预算。
 
 本次 API/摘要/CompositeGoal/来源登记定向回归 14 项通过，文档检查通过 84 份 Markdown；范围与限制见[MVP 验证记录](../development/mvp-verification.md)。
 

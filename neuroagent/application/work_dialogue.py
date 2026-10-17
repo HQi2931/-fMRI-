@@ -412,6 +412,8 @@ def _consumed_analysis_intent(
 
     saved = latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
     if saved is None:
+        if any(task.analysis_intent_task_id for task in conversation.work_tasks):
+            conflict()
         return None
     intent_id = saved.get("analysis_intent_task_id")
     request_hash = saved.get("analysis_request_hash")
@@ -430,7 +432,9 @@ def _consumed_analysis_intent(
         if message.role.value != "assistant" or not isinstance(candidate, dict):
             continue
         if candidate.get("status") == "cleared" and candidate.get("task_id") is None:
-            return None
+            if not any(task.analysis_intent_task_id for task in conversation.work_tasks):
+                return None
+            continue
         if candidate.get("task_id") == intent_id:
             envelope = candidate
             break
@@ -744,7 +748,11 @@ class WorkDialogue:
             )
             dependency = explicit_dependency
             active_envelope: dict[str, Any] | None = None
-            if dependency is None and not starts_new_preprocessing_task(request.content):
+            if (
+                dependency is None
+                and consumed_intent is None
+                and not starts_new_preprocessing_task(request.content)
+            ):
                 active_envelope = next(
                     (
                         message.payload.get("analysis_intent_envelope")
@@ -3102,6 +3110,7 @@ class WorkDialogue:
                 "get_qc_status",
             }:
                 payload["analysis_draft"] = saved
+                payload["analysis_draft_unchanged"] = True
             if not work_agent_allows_action(WorkAgentRole.ANALYSIS, interpreted.action):
                 return reply("该操作不属于数据分析 Agent 的职责范围，未执行任何操作。", payload)
             if proposal_only_continuation and interpreted.action != "prepare_statistical_analysis":

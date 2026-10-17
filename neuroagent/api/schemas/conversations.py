@@ -72,6 +72,10 @@ class WorkAgentSelection(StrictHttpModel):
     expected_version: int = Field(ge=1)
 
 
+class CompositeGoalSelection(StrictHttpModel):
+    expected_version: int = Field(ge=1)
+
+
 class WorkDraftUpdate(StrictHttpModel):
     base_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     patch: dict[str, Any] = Field(max_length=32)

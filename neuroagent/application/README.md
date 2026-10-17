@@ -3,12 +3,14 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-16
+- 更新日期：2026-10-17
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
 
 当前能力：
+
+- 分析角色槽通过 `analysis_intent_task_id` 保存当前复合目标。选择服务只恢复目标最新的未冻结草稿/提案，保留原始消息 ID；较新不完整草稿清除旧提案资格。后台不同目标的续接仍登记独立消息/任务/outbox，但不覆盖当前角色槽；草稿、历史、交接、来源上下文按目标过滤。已有 Plan/Run 的目标恢复尚不在该入口范围，见 [ADR 0046](../../docs/adr/0046-composite-goal-foreground-selection.md)。
 
 - Work 草稿绑定快速输入修订；发现变化后撤回事实状态并阻止旧确认，保留用户参数。新编译须重新读取受影响事实并冻结输入，旧请求的持久化响应仍可重放。历史未绑定修订草稿及完整恢复交互继续按计划验收。
 - 输入失效反馈提供明确的阶段重确认选项，确认接口允许该恢复操作并复查实时阶段与路径；重新冻结不能自动恢复采集事实，必须附本轮成功读取证据。历史带事实却未绑定修订的草稿同样撤回核实状态。

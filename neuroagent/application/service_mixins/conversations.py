@@ -17,6 +17,7 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxRetryRequest,
     AnalysisOutboxStatus,
 )
+from neuroagent.application.automation.goal_selection import analysis_selection
 from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationRetryRequest,
     ResultInterpretationStatus,
@@ -28,6 +29,7 @@ from neuroagent.application.contracts.agent import (
     RsFmriQuestionRequest,
 )
 from neuroagent.application.contracts.conversations import (
+    CompositeGoalSelection,
     ConversationAction,
     ConversationContextView,
     ConversationCreate,
@@ -120,6 +122,50 @@ class ConversationMixin(BaseServiceMixin):
     get_run: Callable[[str], RunView]
     list_model_profiles: Callable[[], list[ModelProfileView]]
     automation: WorkTaskApplicationService
+
+    def select_composite_goal(
+        self,
+        conversation_id: str,
+        intent_task_id: str,
+        request: CompositeGoalSelection,
+        idempotency_key: str,
+    ) -> ConversationView:
+        def action() -> ConversationView:
+            conversation = self.repository.get_conversation(conversation_id)
+            goal = self.automation.get_composite_goal(conversation_id, intent_task_id)
+            progress = self.automation.get_composite_goal_progress(conversation_id, intent_task_id)
+            if progress.status.value != "waiting_user":
+                raise ConflictError(
+                    "analysis_goal_not_selectable", "当前目标不在等待分析草稿审查阶段。"
+                )
+            outbox = self.automation.get_analysis_outbox(intent_task_id)
+            task = (
+                self.automation.get_task(goal.analysis_work_task_id)
+                if goal.analysis_work_task_id is not None
+                else None
+            )
+            selected = self.repository.select_analysis_goal(
+                conversation_id,
+                project_id=goal.project_id,
+                expected_version=request.expected_version,
+                task=analysis_selection(conversation, goal, outbox, task),
+            )
+            self.event_store.append_event(
+                project_id=goal.project_id,
+                run_id=None,
+                event_type="CompositeAnalysisGoalSelected",
+                severity="info",
+                payload={"conversation_id": conversation_id, "intent_task_id": intent_task_id},
+            )
+            return selected
+
+        return self._idempotent(
+            scope=f"conversations:{conversation_id}:composite-goals:{intent_task_id}:select",
+            key=idempotency_key,
+            request=request,
+            response_type=ConversationView,
+            action=action,
+        )
 
     def select_work_agent(
         self,

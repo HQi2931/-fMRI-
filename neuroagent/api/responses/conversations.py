@@ -199,6 +199,7 @@ class ConversationToolCallView(StrictModel):
 
 class ConversationWorkTaskView(StrictModel):
     agent_role: WorkAgentRole
+    analysis_intent_task_id: str | None = Field(default=None, min_length=1, max_length=100)
     work_task_id: str | None = None
     draft_hash: str | None = None
     proposal_hash: str | None = None

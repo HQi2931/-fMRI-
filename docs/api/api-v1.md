@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-15
+- 更新日期：2026-10-17
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
@@ -11,6 +11,10 @@
 ## 通用规则
 
 ### Work 角色任务引用
+
+`POST /conversations/{conversation_id}/composite-goals/{intent_task_id}/select` 接受 `{expected_version}` 与 `Idempotency-Key`，返回 `ConversationView`。仅可选择等待用户处理且没有冻结统计 Plan/Run 的分析草稿/提案；版本过期、草稿/来源/当前 attempt 不一致或超出范围返回 409，跨会话/项目目标返回 404。服务端按目标最新草稿恢复 `work_tasks.analysis_intent_task_id`、草稿哈希及可用的原始提案消息引用；不重发提案、不创建方案或运行。幂等重放不再次切换前台。不同目标的后台续接不改该指针。
+
+统计冻结的 `work_context` 可额外传入 `proposal_message_id`；复合目标必须提供并与当前角色槽完全一致，旧非复合请求保持兼容。即使 proposal hash 相同，另一目标的消息 ID 也会被拒绝。已有 Plan 的后续校验、审批与执行继续核验冻结上下文。
 
 会话返回 `foreground_agent_role` 和 `work_tasks`，后者分别保存角色的草稿哈希、当前提案消息/哈希、正式方案与运行引用；`active_run_id` 表示前台角色的运行。旧 Work 会话默认预处理。
 
@@ -91,6 +95,7 @@ Work 回合 payload 可包含 `work_timings: {stages: [{stage, duration_ms, call
 | `GET` | `/conversations?mode=...` | 按更新时间读取对话、消息和工具调用记录 |
 | `GET` | `/conversations/{conversation_id}` | 恢复一段完整多轮对话 |
 | `GET` | `/conversations/{conversation_id}/composite-goals` | 列出该 Work 会话内复合预处理→分析目标的稳定身份与当前进度 |
+| `POST` | `/conversations/{conversation_id}/composite-goals/{intent_task_id}/select` | 恢复未冻结分析草稿的精确目标上下文；不批准或执行 |
 | `GET` | `/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review` | 只读获取当前唯一 READY 步骤绑定的精确 Plan review DTO |
 | `POST` | `/conversations/{conversation_id}/turns` | 保存一轮消息，执行本地工具或经脱敏策略调用 Chat 模型 |
 | `POST` | `/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry` | 对当前会话中可恢复的统计结果解释续接进行幂等重试，返回更新后的对话 |

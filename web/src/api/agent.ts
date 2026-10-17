@@ -35,6 +35,8 @@ export const agentApi = {
     request<Conversation>(`/conversations/${conversationId}`, { signal }),
   compositeGoals: (conversationId: string, signal?: AbortSignal) =>
     request<CompositeGoalProgress[]>(`/conversations/${encodeURIComponent(conversationId)}/composite-goals`, { signal }),
+  selectCompositeGoal: (conversationId: string, intentTaskId: string, expectedVersion: number, signal?: AbortSignal) =>
+    post<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/composite-goals/${encodeURIComponent(intentTaskId)}/select`, { expected_version: expectedVersion }, signal),
   selectWorkAgent: (conversationId: string, body: Schemas["WorkAgentSelection"], signal?: AbortSignal) =>
     patch<Conversation>(`/conversations/${conversationId}/work-agent`, body, signal),
   conversationContext: (conversationId: string, signal?: AbortSignal) =>

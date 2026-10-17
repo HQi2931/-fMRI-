@@ -795,6 +795,17 @@ class StatisticsMixin(BaseServiceMixin):
             project_id=request.project_id,
             proposal_hash=request.work_context.proposal_hash,
         )
+        if (
+            request.work_context.proposal_message_id is not None
+            and request.work_context.proposal_message_id != task.proposal_message_id
+        ) or (
+            task.analysis_intent_task_id is not None
+            and request.work_context.proposal_message_id is None
+        ):
+            raise ConflictError(
+                "statistics_work_proposal_stale",
+                "当前分析提案已切换或缺少精确消息引用, 请重新审查。",
+            )
         message = next(
             (item for item in conversation.messages if item.message_id == task.proposal_message_id),
             None,

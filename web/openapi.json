@@ -948,6 +948,21 @@
         "title": "CompositeGoalProgressView",
         "type": "object"
       },
+      "CompositeGoalSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "CompositeGoalSelection",
+        "type": "object"
+      },
       "ContextSummaryView": {
         "additionalProperties": false,
         "properties": {
@@ -1683,6 +1698,19 @@
         "properties": {
           "agent_role": {
             "$ref": "#/components/schemas/WorkAgentRole"
+          },
+          "analysis_intent_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Intent Task Id"
           },
           "draft_hash": {
             "anyOf": [
@@ -9846,6 +9874,19 @@
             "pattern": "^[a-f0-9]{64}$",
             "title": "Proposal Hash",
             "type": "string"
+          },
+          "proposal_message_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Message Id"
           }
         },
         "required": [
@@ -12627,6 +12668,128 @@
           }
         },
         "summary": "List Composite Goal Progress",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/composite-goals/{intent_task_id}/select": {
+      "post": {
+        "operationId": "select_composite_goal_api_v1_conversations__conversation_id__composite_goals__intent_task_id__select_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "intent_task_id",
+            "required": true,
+            "schema": {
+              "title": "Intent Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompositeGoalSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Select Composite Goal",
         "tags": [
           "agent"
         ]

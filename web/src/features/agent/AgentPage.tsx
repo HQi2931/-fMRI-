@@ -115,10 +115,14 @@ function CompositeGoalProgressPanel({
   view,
   refreshingAutomatically,
   onRefresh,
+  disabled,
+  onSelect,
 }: {
   view: { conversationId: string; goals: CompositeGoalProgress[]; loading: boolean; error: string };
   refreshingAutomatically: boolean;
   onRefresh: () => void;
+  disabled: boolean;
+  onSelect: (intentTaskId: string) => void;
 }) {
   return <section className="panel composite-goal-progress" aria-label="自动化流程进度">
     <div className="panel-heading">
@@ -150,6 +154,10 @@ function CompositeGoalProgressPanel({
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
+            {goal.status === "waiting_user"
+              && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
+              && (!goal.analysis_status || goal.analysis_status === "waiting_user")
+              && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>继续此分析</button>}
           </article>
         </li>;
       })}
@@ -305,8 +313,15 @@ export function AgentPage() {
   useEffect(() => {
     setAnalysisSourceSelection((current) => current?.context === preprocessingSourceContext ? current : null);
   }, [preprocessingSourceContext]);
+  const analysisRoleTask = activeConversation?.work_tasks?.find((task) => task.agent_role === "analysis");
+  const selectedAnalysisIntentId = analysisRoleTask?.analysis_intent_task_id ?? null;
   const latestAnalysisPayload = [...(activeConversation?.messages ?? [])].reverse()
-    .find((message) => message.role === "assistant" && message.payload.agent_role === "analysis" && message.payload.analysis_draft)?.payload.analysis_draft;
+    .find((message) => {
+      if (message.role !== "assistant" || message.payload.agent_role !== "analysis") return false;
+      const draft = message.payload.analysis_draft;
+      return draft && typeof draft === "object" && (!selectedAnalysisIntentId
+        || ("analysis_intent_task_id" in draft && draft.analysis_intent_task_id === selectedAnalysisIntentId));
+    })?.payload.analysis_draft;
   const savedAnalysisDraft = latestAnalysisPayload && typeof latestAnalysisPayload === "object" && "draft" in latestAnalysisPayload ? latestAnalysisPayload.draft : null;
   const savedExternalImportId = savedAnalysisDraft && typeof savedAnalysisDraft === "object" && "external_import_id" in savedAnalysisDraft && typeof savedAnalysisDraft.external_import_id === "string" ? savedAnalysisDraft.external_import_id : null;
   const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId || selectedPreprocessingSource ? null
@@ -586,6 +601,24 @@ export function AgentPage() {
       setAgentRole(role);
     } catch (caught) { setError(describeError(caught)); await refreshWorkTask().catch(() => {}); }
     finally { setBusy(false); }
+  }
+
+  async function selectCompositeGoal(intentTaskId: string): Promise<void> {
+    if (!activeConversation || busy || draftDirty) return;
+    setBusy(true); setError("");
+    try {
+      const selected = await agentApi.selectCompositeGoal(activeConversation.conversation_id, intentTaskId, activeConversation.version);
+      cache(selected);
+      setAgentRole("analysis");
+      setExternalSource(null);
+      setAnalysisSourceSelection(null);
+      setOpenedConfirmation(null);
+      setCompositeGoalRefreshNonce((value) => value + 1);
+    } catch (caught) {
+      setError(describeError(caught));
+      await refreshWorkTask().catch(() => {});
+      setCompositeGoalRefreshNonce((value) => value + 1);
+    } finally { setBusy(false); }
   }
 
   async function ensureConversation(target: ConversationMode): Promise<string> {
@@ -880,6 +913,8 @@ export function AgentPage() {
         view={activeCompositeGoalView}
         refreshingAutomatically={hasActiveCompositeGoal}
         onRefresh={() => setCompositeGoalRefreshNonce((value) => value + 1)}
+        disabled={busy || draftDirty}
+        onSelect={(intentTaskId) => void selectCompositeGoal(intentTaskId)}
       />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">

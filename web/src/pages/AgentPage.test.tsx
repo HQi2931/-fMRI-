@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetWorkspace } from "../workspace";
-import { AgentPage } from "./AgentPage";
+import { AgentPage, AnalysisProposalActions } from "./AgentPage";
+import type { Conversation } from "../api/types";
 
 const now = "2026-09-18T00:00:00Z";
 const initialWindowWidth = window.innerWidth;
@@ -135,12 +136,15 @@ type Options = {
   retryOutbox?: (init?: RequestInit) => Promise<Response>;
   retryResultInterpretation?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
+  selectCompositeGoal?: (intentTaskId: string, init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const selectedGoal = path.match(/\/composite-goals\/([^/]+)\/select$/)?.[1];
+    if (selectedGoal) return options.selectCompositeGoal?.(decodeURIComponent(selectedGoal), init) ?? notFound();
     if (path.endsWith("/work-agent")) return options.selectAgent?.(init) ?? notFound();
     if (path.endsWith("/work-review")) return options.review?.(init) ?? notFound();
     if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
@@ -321,6 +325,115 @@ describe("agent workbench page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
     await waitFor(() => expect(loadGoals).toHaveBeenCalledTimes(2));
+  });
+
+  it("selects an exact analysis goal and uses its saved source instead of a newer unrelated draft", async () => {
+    const goals = [
+      { ...compositeGoal("waiting_user", "goal/selected"), analysis_status: "waiting_user" },
+      { ...compositeGoal("waiting_user", "goal-other"), analysis_status: null, analysis_proposal_status: "waiting_user" },
+      compositeGoal("completed", "goal-complete"),
+      compositeGoal("waiting_analysis", "goal-running"),
+    ];
+    const messages = [
+      message("draft-selected", "assistant", "已保存选中目标", { agent_role: "analysis", analysis_draft: {
+        analysis_intent_task_id: "goal/selected", hash: "b".repeat(64), draft: { external_import_id: null },
+      } }),
+      message("draft-newer", "assistant", "另一个分析目标", { agent_role: "analysis", analysis_draft: {
+        analysis_intent_task_id: "goal-other", hash: "c".repeat(64), draft: { external_import_id: "unrelated-external" },
+      } }),
+    ];
+    const preprocessingTasks = [
+      { agent_role: "preprocessing", work_task_id: "prep-1", run_id: "run-1" },
+    ];
+    const initial = conversation({ project_id: "project-1", version: 5, foreground_agent_role: "analysis", work_tasks: preprocessingTasks });
+    const selectGoal = vi.fn((intentTaskId: string, init?: RequestInit) => {
+      expect(intentTaskId).toBe("goal/selected");
+      expect(JSON.parse(String(init?.body))).toEqual({ expected_version: 5 });
+      return json({ ...initial, version: 6, foreground_agent_role: "analysis", messages, work_tasks: [
+        ...preprocessingTasks,
+        { agent_role: "analysis", analysis_intent_task_id: "goal/selected", draft_hash: "b".repeat(64) },
+      ] });
+    });
+    const turn = vi.fn((init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.agent_role).toBe("analysis");
+      expect(body.external_analysis_import_id).toBeNull();
+      expect(body).not.toHaveProperty("preprocessing_task_id");
+      return json({ conversation: initial, user_message: message("u", "user", "继续"), assistant_message: message("a", "assistant", "已继续"), tool_call: null });
+    });
+    installFetch({ conversations: () => json([initial]), compositeGoals: () => json(goals), selectCompositeGoal: selectGoal, turn });
+    render(<AgentPage />);
+    const registration = await screen.findByRole("checkbox", { name: "以指定的预处理结果新建分析目标" });
+    fireEvent.click(registration);
+    expect(registration).toBeChecked();
+    const buttons = await screen.findAllByRole("button", { name: "继续此分析" });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]);
+    await waitFor(() => expect(selectGoal).toHaveBeenCalledOnce());
+    await screen.findByText("当前负责：数据分析 Agent");
+    expect(registration).not.toBeChecked();
+    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("analysis");
+    fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续这个分析目标" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+  });
+
+  it("disables goal selection while a selection is pending and refreshes after a conflict", async () => {
+    let finishSelection!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finishSelection = resolve; });
+    const refresh = vi.fn(() => json(conversation({ version: 8, foreground_agent_role: "preprocessing" })));
+    const selectGoal = vi.fn(() => pending);
+    installFetch({ compositeGoals: () => json([{ ...compositeGoal("waiting_user", "goal-1"), analysis_status: "waiting_user" }]), selectCompositeGoal: selectGoal, conversation: refresh });
+    render(<AgentPage />);
+    const button = await screen.findByRole("button", { name: "继续此分析" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "处理中…" })).toBeDisabled();
+    await act(async () => { finishSelection(await json({ error: { code: "version_conflict", message: "会话已变化，请刷新后重试。", details: {}, trace_id: null } }, 409)); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("会话已变化");
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(button).toBeEnabled();
+    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("auto");
+  });
+
+  it("requires unsaved preprocessing edits to be handled before selecting an analysis goal", async () => {
+    const selectGoal = vi.fn();
+    installFetch({
+      conversations: () => json([conversation({ messages: [message("draft", "assistant", "方案已准备", {
+        work_draft: { hash: "a".repeat(64), draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, compiled: false },
+      })] })]),
+      compositeGoals: () => json([{ ...compositeGoal("waiting_user", "goal-1"), analysis_status: "waiting_user" }]),
+      selectCompositeGoal: selectGoal,
+    });
+    render(<AgentPage />);
+    const button = await screen.findByRole("button", { name: "继续此分析" });
+    expect(button).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("重复时间 TR（秒）"), { target: { value: "3" } });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(selectGoal).not.toHaveBeenCalled();
+  });
+
+  it("freezes the statistical design with the current server proposal message identity", async () => {
+    const proposal = { project_id: "project-1", project_version: 2, input_manifest_hash: "b".repeat(64), proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const current = conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, proposal_message_id: "selected-proposal-message", analysis_intent_task_id: "goal-selected" }] }) as unknown as Conversation;
+    const design = { plan_revision: { plan_revision_id: "plan-selected", version: 1, state: "draft" } };
+    const create = vi.fn((init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body)).work_context).toEqual({ conversation_id: "work-1", proposal_hash: proposal.proposal_hash, proposal_message_id: "selected-proposal-message" });
+      return json(design);
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const path = pathOf(input);
+      if (path.endsWith("/statistics/atlases")) return json([]);
+      if (path.endsWith("/statistical-designs")) return create(init);
+      if (path.endsWith("/validate")) return json(design);
+      return notFound();
+    });
+    render(<AnalysisProposalActions proposal={proposal} conversation={current} isCurrent onTaskChange={async () => {}} onRunChange={() => {}} />);
+    const button = await screen.findByRole("button", { name: "建立并校验正式统计设计" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
   });
 
   it("keeps progress API errors separate from the conversation error and lets the user retry", async () => {

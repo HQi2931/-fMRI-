@@ -105,6 +105,10 @@ def work_agent_role_for_turn(
     for message in reversed(conversation.messages):
         if message.role != "assistant":
             continue
+        if prior is WorkAgentRole.ANALYSIS and not analysis_payload_matches_selection(
+            conversation, message.payload
+        ):
+            continue
         value = message.payload.get("agent_role")
         handoff = message.payload.get("agent_handoff")
         if (
@@ -140,6 +144,12 @@ def work_agent_role_for_turn(
         return WorkAgentRole.PREPROCESSING
     if _ANALYSIS_INTENT.search(content):
         return WorkAgentRole.ANALYSIS
+    if (
+        prior is WorkAgentRole.ANALYSIS
+        and any(task.analysis_intent_task_id for task in conversation.work_tasks)
+        and not starts_new_preprocessing_task(content)
+    ):
+        return WorkAgentRole.ANALYSIS
     if _PREPROCESSING_INTENT.search(content):
         return WorkAgentRole.PREPROCESSING
     return prior
@@ -155,6 +165,10 @@ def latest_handoff_for_agent(
         if not isinstance(value, dict) or value.get("to_agent") != role.value:
             continue
         if not _handoff_project_matches(value, conversation):
+            continue
+        if role is WorkAgentRole.ANALYSIS and not analysis_payload_matches_selection(
+            conversation, message.payload
+        ):
             continue
         if pending_only and value.get("status") not in {"pending", "proposed"}:
             return None
@@ -218,6 +232,11 @@ def latest_analysis_dependency(
     conversation: ConversationView,
 ) -> dict[str, object] | None:
     for message in reversed(conversation.messages):
+        if (
+            conversation.foreground_agent_role is WorkAgentRole.ANALYSIS
+            and not analysis_payload_matches_selection(conversation, message.payload)
+        ):
+            continue
         value = message.payload.get("analysis_dependency")
         if isinstance(value, dict) and value.get("project_id") == conversation.project_id:
             return dict(value)
@@ -250,6 +269,11 @@ def recent_messages_for_agent(
         if owner != role.value:
             pending_user = None
             continue
+        if role is WorkAgentRole.ANALYSIS and not analysis_payload_matches_selection(
+            conversation, message.payload
+        ):
+            pending_user = None
+            continue
         if pending_user is not None:
             messages.append({"role": "user", "content": pending_user})
         messages.append({"role": "assistant", "content": message.content})
@@ -271,5 +295,36 @@ def latest_agent_payload(
         if message_role is None and key == "work_draft":
             message_role = WorkAgentRole.PREPROCESSING.value
         if message_role == role.value:
+            if role is WorkAgentRole.ANALYSIS and not analysis_payload_matches_selection(
+                conversation, message.payload
+            ):
+                continue
             return value
+    return None
+
+
+def analysis_payload_matches_selection(
+    conversation: ConversationView, payload: dict[str, Any]
+) -> bool:
+    selected = next(
+        (
+            task.analysis_intent_task_id
+            for task in conversation.work_tasks
+            if task.agent_role is WorkAgentRole.ANALYSIS
+        ),
+        None,
+    )
+    return selected is None or analysis_payload_intent_id(payload) == selected
+
+
+def analysis_payload_intent_id(payload: dict[str, Any]) -> str | None:
+    for key, field in (
+        ("analysis_draft", "analysis_intent_task_id"),
+        ("analysis_outbox_continuation", "intent_task_id"),
+        ("analysis_intent_envelope", "task_id"),
+        ("analysis_dependency", "task_id"),
+    ):
+        value = payload.get(key)
+        if isinstance(value, dict) and isinstance(value.get(field), str):
+            return str(value[field])
     return None

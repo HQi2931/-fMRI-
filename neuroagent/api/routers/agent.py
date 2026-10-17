@@ -32,6 +32,7 @@ from neuroagent.api.schemas.agent import (
     RsFmriQuestionRequest,
 )
 from neuroagent.api.schemas.conversations import (
+    CompositeGoalSelection,
     ConversationCreate,
     ConversationMode,
     ConversationTurnCreate,
@@ -48,6 +49,9 @@ from neuroagent.application.contracts.agent import ModelListRequest as AppModelL
 from neuroagent.application.contracts.agent import ModelProfileCreate as AppModelProfileCreate
 from neuroagent.application.contracts.agent import ProviderTestRequest as AppProviderTestRequest
 from neuroagent.application.contracts.agent import RsFmriQuestionRequest as AppRsFmriQuestionRequest
+from neuroagent.application.contracts.conversations import (
+    CompositeGoalSelection as AppCompositeGoalSelection,
+)
 from neuroagent.application.contracts.conversations import (
     ConversationCreate as AppConversationCreate,
 )
@@ -227,6 +231,32 @@ def select_work_agent(
             capability_from(request, "conversations").select_work_agent(
                 conversation_id,
                 to_application_message(body, AppWorkAgentSelection),
+                idempotency_key,
+            ),
+            ConversationView,
+        ),
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/composite-goals/{intent_task_id}/select",
+    response_model=ConversationView,
+    tags=["agent"],
+)
+def select_composite_goal(
+    conversation_id: str,
+    intent_task_id: str,
+    body: CompositeGoalSelection,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ConversationView:
+    return cast(
+        ConversationView,
+        to_http_response(
+            capability_from(request, "conversations").select_composite_goal(
+                conversation_id,
+                intent_task_id,
+                to_application_message(body, AppCompositeGoalSelection),
                 idempotency_key,
             ),
             ConversationView,

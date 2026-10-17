@@ -30,6 +30,7 @@ from neuroagent.application.contracts.conversations import (
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json
+from neuroagent.application.work_agents import analysis_payload_intent_id
 from neuroagent.application.work_tasks import require_analysis_task
 from neuroagent.infrastructure.persistence.models import (
     ConfirmationChallengeRow,
@@ -54,6 +55,37 @@ from neuroagent.multi_agent.registry import WorkAgentRole
 
 
 class ConversationMixin(RepositoryBaseMixin):
+    def select_analysis_goal(
+        self,
+        conversation_id: str,
+        *,
+        project_id: str,
+        expected_version: int,
+        task: ConversationWorkTaskView,
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            self._check_version("conversation", row.version, expected_version)
+            if (
+                row.mode != "work"
+                or row.project_id != project_id
+                or task.agent_role is not WorkAgentRole.ANALYSIS
+                or task.analysis_intent_task_id is None
+                or task.plan_revision_id is not None
+                or task.run_id is not None
+            ):
+                raise ConflictError("analysis_goal_selection_conflict", "分析目标上下文已变化。")
+            tasks = _load(row.work_tasks_json, {})
+            tasks["analysis"] = task.model_dump(mode="json")
+            row.work_tasks_json = canonical_json(tasks)
+            row.foreground_agent_role = WorkAgentRole.ANALYSIS.value
+            row.active_run_id = None
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
     def select_work_agent(
         self, conversation_id: str, request: WorkAgentSelection
     ) -> ConversationView:
@@ -367,6 +399,22 @@ class ConversationMixin(RepositoryBaseMixin):
                 snapshot = assistant_payload.get(
                     "analysis_draft" if role is WorkAgentRole.ANALYSIS else "work_draft"
                 )
+                if role is WorkAgentRole.ANALYSIS and isinstance(snapshot, dict):
+                    intent_id = analysis_payload_intent_id(assistant_payload)
+                    if task.analysis_intent_task_id != intent_id or (
+                        not isinstance(assistant_payload.get("statistical_design_proposal"), dict)
+                        and assistant_payload.get("analysis_draft_unchanged") is not True
+                    ):
+                        task = task.model_copy(
+                            update={
+                                "proposal_hash": None,
+                                "proposal_message_id": None,
+                                "plan_revision_id": None,
+                                "work_task_id": None,
+                                "run_id": None,
+                            }
+                        )
+                    task = task.model_copy(update={"analysis_intent_task_id": intent_id})
                 if (
                     isinstance(snapshot, dict)
                     and isinstance(snapshot.get("hash"), str)
@@ -565,6 +613,10 @@ class ConversationMixin(RepositoryBaseMixin):
             session.add(assistant_row)
             session.flush()
 
+            current_tasks = _load(row.work_tasks_json, {})
+            selected_intent = current_tasks.get("analysis", {}).get("analysis_intent_task_id")
+            if selected_intent and analysis_payload_intent_id(assistant_payload) != selected_intent:
+                update_work_state = False
             if update_work_state:
                 tasks = _load(row.work_tasks_json, {})
                 role = WorkAgentRole.ANALYSIS
@@ -572,6 +624,22 @@ class ConversationMixin(RepositoryBaseMixin):
                     tasks.get(role.value, {"agent_role": role.value})
                 )
                 snapshot = assistant_payload.get("analysis_draft")
+                if isinstance(snapshot, dict):
+                    intent_id = analysis_payload_intent_id(assistant_payload)
+                    if task.analysis_intent_task_id != intent_id or (
+                        not isinstance(assistant_payload.get("statistical_design_proposal"), dict)
+                        and assistant_payload.get("analysis_draft_unchanged") is not True
+                    ):
+                        task = task.model_copy(
+                            update={
+                                "proposal_hash": None,
+                                "proposal_message_id": None,
+                                "plan_revision_id": None,
+                                "work_task_id": None,
+                                "run_id": None,
+                            }
+                        )
+                    task = task.model_copy(update={"analysis_intent_task_id": intent_id})
                 if (
                     isinstance(snapshot, dict)
                     and isinstance(snapshot.get("hash"), str)

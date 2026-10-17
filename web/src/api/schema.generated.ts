@@ -192,6 +192,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/composite-goals/{intent_task_id}/select": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Select Composite Goal */
+        post: operations["select_composite_goal_api_v1_conversations__conversation_id__composite_goals__intent_task_id__select_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/context": {
         parameters: {
             query?: never;
@@ -1926,6 +1943,11 @@ export interface components {
             result_interpretation_status?: string | null;
             status: components["schemas"]["CompositeGoalProgressStatus"];
         };
+        /** CompositeGoalSelection */
+        CompositeGoalSelection: {
+            /** Expected Version */
+            expected_version: number;
+        };
         /** ContextSummaryView */
         ContextSummaryView: {
             /** Content */
@@ -2153,6 +2175,8 @@ export interface components {
         /** ConversationWorkTaskView */
         ConversationWorkTaskView: {
             agent_role: components["schemas"]["WorkAgentRole"];
+            /** Analysis Intent Task Id */
+            analysis_intent_task_id?: string | null;
             /** Draft Hash */
             draft_hash?: string | null;
             /** Plan Revision Id */
@@ -5065,6 +5089,8 @@ export interface components {
             conversation_id: string;
             /** Proposal Hash */
             proposal_hash: string;
+            /** Proposal Message Id */
+            proposal_message_id?: string | null;
         };
         /** StatisticsRunCreate */
         StatisticsRunCreate: {
@@ -6520,6 +6546,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompositeGoalProgressView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    select_composite_goal_api_v1_conversations__conversation_id__composite_goals__intent_task_id__select_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                intent_task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompositeGoalSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
                 };
             };
             /** @description Bad Request */

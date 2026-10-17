@@ -63,6 +63,7 @@ class SkillPlanResolveRequest(StrictHttpModel):
 class StatisticalWorkContext(StrictHttpModel):
     conversation_id: str = Field(min_length=1)
     proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proposal_message_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class StatisticalDesignCreate(StrictHttpModel):

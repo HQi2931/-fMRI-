@@ -22,6 +22,7 @@ from neuroagent.application.contracts.conversations import (
     ConversationMode,
     ConversationToolCallView,
     ConversationView,
+    ConversationWorkTaskView,
     MemoryCreate,
     MemoryKind,
     MemoryScope,
@@ -125,6 +126,15 @@ class ConversationRepositoryPort(Protocol):
 
     def select_work_agent(
         self, conversation_id: str, request: WorkAgentSelection
+    ) -> ConversationView: ...
+
+    def select_analysis_goal(
+        self,
+        conversation_id: str,
+        *,
+        project_id: str,
+        expected_version: int,
+        task: ConversationWorkTaskView,
     ) -> ConversationView: ...
 
     def bind_statistics_task(

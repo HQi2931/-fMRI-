@@ -3,8 +3,16 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-16
+- 更新日期：2026-10-17
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-10-17 未冻结分析目标选择与上下文隔离
+
+新增目标选择 API 与 Work 流程卡片入口，恢复尚无统计 Plan/Run 的最新草稿及原始提案消息。不同目标的后台续接不抢占角色槽；草稿、历史、交接、自动路由和模型来源上下文使用同一 intent 范围。只读查询复用原草稿时显式标记不变，保留已有正式方案/运行引用；较新不完整修订仍清除旧提案资格。复合目标冻结请求必须携带原始 proposal message ID，相同 proposal hash 的另一目标不能被迟到请求误冻结。
+
+最终定向后端回归 210 项通过，涵盖新增选择集成测试 22 项、跨轮身份、双角色交接、Work 任务绑定、outbox、统计结果、API 和流式回复。前端 AgentPage 52 项通过；全量 neuroagent Ruff 与 Mypy（301 个源文件）、相关格式检查、前端 ESLint/TypeScript/生产构建、文档检查（85 份）及差异检查通过。只观察到已有 Starlette/httpx deprecation warning。测试使用 Mock 模型/执行器和合成 fixture；没有真实 Provider、MATLAB 或 DPABI 运行，未作全量后端/前端测试通过声明。
+
+Plan/Run/已完成目标的精确恢复仍未开放；下一切片须从冻结 Plan 的原始 work_context 核验消息、Task/Step、Run 和当前 attempt，防止恢复旧确认。通用目标 dispatch、累计模型预算和计划 0014 的其余阶段仍未完成。
 
 ## 2026-10-17 分析目标身份继承修复
 

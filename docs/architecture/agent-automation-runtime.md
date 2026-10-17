@@ -4,7 +4,7 @@
 - 文档类型：Architecture
 - 维护者：system_architect
 - 创建日期：2026-10-12
-- 更新日期：2026-10-15
+- 更新日期：2026-10-17
 - 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045：有界线性步骤调度（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
@@ -18,6 +18,8 @@
 现有持久任务和事件重核已经打下基础，部分预处理到分析的草稿续接、统计结果解释续接也已接入；但这不等于任意复合目标都能自动完成。多目标、多意图的步骤依赖、完整的失败恢复和目标完成判定仍需按计划 0014 的验收范围逐步补齐。当前建议是保留科研规则与执行授权边界，优先补齐反馈预检和持久推进闭环，再按能力合同扩展支持范围。
 
 ## 设计结论
+
+复合分析目标的前台选择由现有角色任务 JSON 中的 `analysis_intent_task_id` 表达，不复制目标生命周期。读取草稿、交接、历史和来源上下文时按该身份过滤；不同目标的后台续接只保存自身结果，不改变已选前台。未冻结草稿恢复及提案消息身份门禁由 [ADR 0046](../adr/0046-composite-goal-foreground-selection.md) 定义，已有 Plan/Run 恢复另行扩展。
 
 通用自动化不依赖一个无限运行或拥有完整权限的 Agent。系统由两个有界循环配合：一次请求内的反馈循环负责理解、读取证据、形成提案并修正可修正的问题；持久任务循环负责跨消息与异步运行保存目标、等待权威状态变化，并决定下一项允许的步骤。前者结束后释放模型资源，后者在事件或用户输入到达时恢复。
 
