@@ -251,6 +251,76 @@ class CompositeGoalLinkRow(Base):
     )
 
 
+class CompositeGoalModelBudgetRow(Base):
+    """Mutable cumulative provider allowance for one composite goal."""
+
+    __tablename__ = "composite_goal_model_budgets"
+
+    intent_task_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("composite_goal_links.intent_task_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    max_steps: Mapped[int] = mapped_column(Integer)
+    max_model_calls: Mapped[int] = mapped_column(Integer)
+    max_tokens: Mapped[int] = mapped_column(Integer)
+    max_elapsed_seconds: Mapped[int] = mapped_column(Integer)
+    used_steps: Mapped[int] = mapped_column(Integer, default=0)
+    used_model_calls: Mapped[int] = mapped_column(Integer, default=0)
+    used_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    elapsed_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        CheckConstraint("max_steps >= 1", name="ck_composite_goal_budget_max_steps"),
+        CheckConstraint("max_model_calls >= 0", name="ck_composite_goal_budget_max_calls"),
+        CheckConstraint("max_tokens >= 0", name="ck_composite_goal_budget_max_tokens"),
+        CheckConstraint("max_elapsed_seconds >= 1", name="ck_composite_goal_budget_max_elapsed"),
+        CheckConstraint("used_steps >= 0", name="ck_composite_goal_budget_used_steps"),
+        CheckConstraint("used_model_calls >= 0", name="ck_composite_goal_budget_used_calls"),
+        CheckConstraint("used_tokens >= 0", name="ck_composite_goal_budget_used_tokens"),
+        CheckConstraint("elapsed_seconds >= 0", name="ck_composite_goal_budget_elapsed"),
+    )
+
+
+class CompositeGoalModelCallReservationRow(Base):
+    """Idempotency ledger for provider calls charged to a composite goal."""
+
+    __tablename__ = "composite_goal_model_call_reservations"
+
+    intent_task_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("composite_goal_model_budgets.intent_task_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    reservation_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(100))
+    state: Mapped[str] = mapped_column(String(16))
+    estimated_tokens: Mapped[int] = mapped_column(Integer)
+    reserved_tokens: Mapped[int] = mapped_column(Integer)
+    actual_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elapsed_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        UniqueConstraint(
+            "intent_task_id", "call_id", name="uq_composite_goal_model_reservation_call"
+        ),
+        CheckConstraint(
+            "state IN ('reserved', 'settled', 'exhausted')",
+            name="ck_composite_goal_model_reservation_state",
+        ),
+        CheckConstraint(
+            "estimated_tokens >= 0", name="ck_composite_goal_model_reservation_estimate"
+        ),
+        CheckConstraint(
+            "reserved_tokens >= 0", name="ck_composite_goal_model_reservation_reserved"
+        ),
+        CheckConstraint(
+            "actual_tokens IS NULL OR actual_tokens >= 0",
+            name="ck_composite_goal_model_reservation_actual",
+        ),
+        CheckConstraint("elapsed_seconds >= 0", name="ck_composite_goal_model_reservation_elapsed"),
+        Index("ix_composite_goal_model_reservation_goal", "intent_task_id", "state"),
+    )
+
+
 class CompositeGoalAnalysisAttemptRow(Base):
     """Identity-only attempt history for explicit composite goals."""
 

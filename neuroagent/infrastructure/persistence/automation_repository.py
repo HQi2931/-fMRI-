@@ -27,8 +27,17 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalIntentMessage,
     CompositeGoalSnapshot,
 )
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallDecisionStatus,
+    CompositeGoalModelCallReservation,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallSettlement,
+    CompositeGoalModelCallState,
+)
 from neuroagent.application.automation.models import (
     EventConsumptionDecision,
+    TaskBudget,
     WorkEventIdentity,
     WorkTask,
     WorkTaskClaim,
@@ -302,7 +311,341 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 "composite_goal_identity_conflict",
                 "稳定复合目标 ID 已绑定到不同的会话、项目、请求或预处理任务。",
             )
+        SqliteWorkTaskRepository._ensure_composite_goal_model_budget(
+            session, intent_id, task.budget
+        )
         return identity
+
+    @staticmethod
+    def _ensure_composite_goal_model_budget(
+        session: Session, intent_task_id: str, source_budget: TaskBudget
+    ) -> None:
+        row = session.execute(
+            text("SELECT 1 FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"),
+            {"intent_id": intent_task_id},
+        ).first()
+        if row is not None:
+            return
+        session.execute(
+            text(
+                "INSERT INTO composite_goal_model_budgets "
+                "(intent_task_id, max_steps, max_model_calls, max_tokens, "
+                "max_elapsed_seconds, used_steps, used_model_calls, used_tokens, elapsed_seconds) "
+                "VALUES (:intent_id, :max_steps, :max_model_calls, :max_tokens, "
+                ":max_elapsed_seconds, 0, 0, 0, 0)"
+            ),
+            {
+                "intent_id": intent_task_id,
+                "max_steps": source_budget.max_steps,
+                "max_model_calls": source_budget.max_model_calls,
+                "max_tokens": source_budget.max_tokens,
+                "max_elapsed_seconds": source_budget.max_elapsed_seconds,
+            },
+        )
+
+    def get_composite_goal_model_budget(self, intent_task_id: str) -> CompositeGoalModelBudget:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("复合目标模型预算", intent_task_id)
+            return self._model_budget_from_row(row)
+
+    def reserve_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        call_id: str,
+        estimated_tokens: int,
+    ) -> CompositeGoalModelCallReserveResult:
+        """Reserve one exact provider invocation under the shared SQLite writer lock."""
+
+        if not reservation_id or len(reservation_id) > 100:
+            raise ValueError("reservation_id must contain 1 to 100 characters")
+        if not call_id or len(call_id) > 100:
+            raise ValueError("call_id must contain 1 to 100 characters")
+        if (
+            isinstance(estimated_tokens, bool)
+            or not isinstance(estimated_tokens, int)
+            or not 0 <= estimated_tokens <= 10_000_000
+        ):
+            raise ValueError("estimated_tokens must be between 0 and 10000000")
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            budget_row = self._model_budget_row(session, intent_task_id)
+            budget = self._model_budget_from_row(budget_row)
+            existing_call = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND call_id=:call_id"
+                    ),
+                    {"intent_id": intent_task_id, "call_id": call_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing_call is not None:
+                reservation = self._model_call_reservation_from_row(existing_call)
+                return CompositeGoalModelCallReserveResult(
+                    status=CompositeGoalModelCallDecisionStatus.DUPLICATE,
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            existing_id = (
+                session.execute(
+                    text(
+                        "SELECT call_id "
+                        "FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing_id is not None:
+                raise ConflictError(
+                    "composite_goal_model_reservation_id_conflict",
+                    "模型调用预算 reservation ID 已绑定到其他调用。",
+                )
+
+            exhausted = (
+                budget.used_steps + 1 > budget.max_steps
+                or budget.used_model_calls + 1 > budget.max_model_calls
+                or budget.used_tokens + estimated_tokens > budget.max_tokens
+                or budget.elapsed_seconds >= budget.max_elapsed_seconds
+            )
+            if exhausted:
+                row = {
+                    "intent_id": intent_task_id,
+                    "reservation_id": reservation_id,
+                    "call_id": call_id,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_tokens": 0,
+                    "state": CompositeGoalModelCallState.EXHAUSTED.value,
+                }
+                session.execute(
+                    text(
+                        "INSERT INTO composite_goal_model_call_reservations "
+                        "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
+                        "reserved_tokens, actual_tokens, elapsed_seconds) "
+                        "VALUES (:reservation_id, :intent_id, :call_id, :state, "
+                        ":estimated_tokens, :reserved_tokens, NULL, 0)"
+                    ),
+                    row,
+                )
+                reservation = CompositeGoalModelCallReservation(
+                    intent_task_id=intent_task_id,
+                    reservation_id=reservation_id,
+                    call_id=call_id,
+                    state=CompositeGoalModelCallState.EXHAUSTED,
+                    estimated_tokens=estimated_tokens,
+                    reserved_tokens=0,
+                )
+                return CompositeGoalModelCallReserveResult(
+                    status=CompositeGoalModelCallDecisionStatus.EXHAUSTED,
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_budgets "
+                    "SET used_steps=used_steps+1, used_model_calls=used_model_calls+1, "
+                    "used_tokens=used_tokens+:estimated_tokens "
+                    "WHERE intent_task_id=:intent_id"
+                ),
+                {"intent_id": intent_task_id, "estimated_tokens": estimated_tokens},
+            )
+            session.execute(
+                text(
+                    "INSERT INTO composite_goal_model_call_reservations "
+                    "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
+                    "reserved_tokens, actual_tokens, elapsed_seconds) "
+                    "VALUES (:reservation_id, :intent_id, :call_id, :state, "
+                    ":estimated_tokens, :reserved_tokens, NULL, 0)"
+                ),
+                {
+                    "reservation_id": reservation_id,
+                    "intent_id": intent_task_id,
+                    "call_id": call_id,
+                    "state": CompositeGoalModelCallState.RESERVED.value,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_tokens": estimated_tokens,
+                },
+            )
+            updated_budget = self._model_budget_row(session, intent_task_id)
+            reservation = CompositeGoalModelCallReservation(
+                intent_task_id=intent_task_id,
+                reservation_id=reservation_id,
+                call_id=call_id,
+                state=CompositeGoalModelCallState.RESERVED,
+                estimated_tokens=estimated_tokens,
+                reserved_tokens=estimated_tokens,
+            )
+            return CompositeGoalModelCallReserveResult(
+                status=CompositeGoalModelCallDecisionStatus.RESERVED,
+                reservation=reservation,
+                budget=self._model_budget_from_row(updated_budget),
+            )
+
+    def settle_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> CompositeGoalModelCallSettlement:
+        """Settle actual usage once; unknown token usage retains the reservation."""
+
+        if actual_tokens is not None and (
+            isinstance(actual_tokens, bool)
+            or not isinstance(actual_tokens, int)
+            or not 0 <= actual_tokens <= 10_000_000
+        ):
+            raise ValueError("actual_tokens must be None or between 0 and 10000000")
+        if (
+            isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, int)
+            or not 0 <= elapsed_seconds <= 31_536_000
+        ):
+            raise ValueError("elapsed_seconds must be between 0 and 31536000")
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("复合目标模型调用 reservation", reservation_id)
+            reservation = self._model_call_reservation_from_row(row)
+            budget_row = self._model_budget_row(session, intent_task_id)
+            budget = self._model_budget_from_row(budget_row)
+            if reservation.state is CompositeGoalModelCallState.EXHAUSTED:
+                raise ConflictError(
+                    "composite_goal_model_reservation_exhausted",
+                    "预算耗尽的模型调用没有被预留，不能结算或发送给 Provider。",
+                )
+            if reservation.state is CompositeGoalModelCallState.SETTLED:
+                if (
+                    reservation.actual_tokens != actual_tokens
+                    or reservation.elapsed_seconds != elapsed_seconds
+                ):
+                    raise ConflictError(
+                        "composite_goal_model_reservation_already_settled",
+                        "模型调用预算已按不同 usage 结算，拒绝重复记账。",
+                    )
+                return CompositeGoalModelCallSettlement(
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            charged_tokens = reservation.reserved_tokens if actual_tokens is None else actual_tokens
+            settled_budget_row = {
+                "intent_id": intent_task_id,
+                "used_tokens": budget.used_tokens - reservation.reserved_tokens + charged_tokens,
+                "elapsed_seconds": budget.elapsed_seconds + elapsed_seconds,
+            }
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_budgets "
+                    "SET used_tokens=:used_tokens, elapsed_seconds=:elapsed_seconds "
+                    "WHERE intent_task_id=:intent_id"
+                ),
+                settled_budget_row,
+            )
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_call_reservations "
+                    "SET state=:state, actual_tokens=:actual_tokens, elapsed_seconds=:elapsed "
+                    "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id "
+                    "AND state=:reserved_state"
+                ),
+                {
+                    "intent_id": intent_task_id,
+                    "reservation_id": reservation_id,
+                    "state": CompositeGoalModelCallState.SETTLED.value,
+                    "actual_tokens": actual_tokens,
+                    "elapsed": elapsed_seconds,
+                    "reserved_state": CompositeGoalModelCallState.RESERVED.value,
+                },
+            )
+            settled_row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .one()
+            )
+            latest_budget_row = self._model_budget_row(session, intent_task_id)
+            return CompositeGoalModelCallSettlement(
+                reservation=self._model_call_reservation_from_row(settled_row),
+                budget=self._model_budget_from_row(latest_budget_row),
+            )
+
+    @staticmethod
+    def _model_budget_row(session: Session, intent_task_id: str) -> Any:
+        row = (
+            session.execute(
+                text("SELECT * FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"),
+                {"intent_id": intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFoundError("复合目标模型预算", intent_task_id)
+        return row
+
+    @staticmethod
+    def _model_budget_from_row(row: Any) -> CompositeGoalModelBudget:
+        return CompositeGoalModelBudget(
+            intent_task_id=row["intent_task_id"],
+            max_steps=row["max_steps"],
+            max_model_calls=row["max_model_calls"],
+            max_tokens=row["max_tokens"],
+            max_elapsed_seconds=row["max_elapsed_seconds"],
+            used_steps=row["used_steps"],
+            used_model_calls=row["used_model_calls"],
+            used_tokens=row["used_tokens"],
+            elapsed_seconds=row["elapsed_seconds"],
+        )
+
+    @staticmethod
+    def _model_call_reservation_from_row(row: Any) -> CompositeGoalModelCallReservation:
+        return CompositeGoalModelCallReservation(
+            intent_task_id=row["intent_task_id"],
+            reservation_id=row["reservation_id"],
+            call_id=row["call_id"],
+            state=row["state"],
+            estimated_tokens=row["estimated_tokens"],
+            reserved_tokens=row["reserved_tokens"],
+            actual_tokens=row["actual_tokens"],
+            elapsed_seconds=row["elapsed_seconds"],
+        )
 
     @staticmethod
     def _sync_preprocessing_composite_goal(session: Session, task: WorkTask) -> None:
@@ -1049,6 +1392,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 "composite_goal_outbox_binding_mismatch",
                 "分析 outbox 根身份与共享预处理来源不一致。",
             )
+        SqliteWorkTaskRepository._ensure_composite_goal_model_budget(
+            session, identity.intent_task_id, task.budget
+        )
         existing = identity.analysis_proposal_outbox_intent_task_id
         if existing not in {None, record.intent_task_id}:
             raise ConflictError(

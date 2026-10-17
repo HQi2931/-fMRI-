@@ -14,6 +14,11 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalIdentity,
     CompositeGoalSnapshot,
 )
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallSettlement,
+)
 from neuroagent.application.automation.models import (
     EventConsumptionDecision,
     WorkEventIdentity,
@@ -40,6 +45,26 @@ class WorkTaskRepositoryPort(Protocol):
     def list_composite_goal_intent_ids(self, conversation_id: str) -> tuple[str, ...]: ...
 
     def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot: ...
+
+    def get_composite_goal_model_budget(self, intent_task_id: str) -> CompositeGoalModelBudget: ...
+
+    def reserve_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        call_id: str,
+        estimated_tokens: int,
+    ) -> CompositeGoalModelCallReserveResult: ...
+
+    def settle_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> CompositeGoalModelCallSettlement: ...
 
     def find_composite_goal_for_analysis_task(
         self, analysis_work_task_id: str

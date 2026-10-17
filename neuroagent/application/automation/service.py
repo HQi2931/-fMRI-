@@ -25,6 +25,11 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalSnapshot,
     project_composite_goal,
 )
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallSettlement,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     EventConsumptionDecision,
@@ -1358,6 +1363,45 @@ class WorkTaskApplicationService:
         snapshot = self._repository.get_composite_goal_snapshot(intent_task_id)
         self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
         return snapshot.goal
+
+    def get_composite_goal_model_budget(self, intent_task_id: str) -> CompositeGoalModelBudget:
+        """Read cumulative limits and usage for one explicit composite goal."""
+
+        return self._repository.get_composite_goal_model_budget(intent_task_id)
+
+    def reserve_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        call_id: str,
+        estimated_tokens: int,
+    ) -> CompositeGoalModelCallReserveResult:
+        """Atomically reserve cumulative goal budget before provider dispatch."""
+
+        return self._repository.reserve_composite_goal_model_call(
+            intent_task_id,
+            reservation_id=reservation_id,
+            call_id=call_id,
+            estimated_tokens=estimated_tokens,
+        )
+
+    def settle_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> CompositeGoalModelCallSettlement:
+        """Persist one provider outcome and return the cumulative goal budget."""
+
+        return self._repository.settle_composite_goal_model_call(
+            intent_task_id,
+            reservation_id=reservation_id,
+            actual_tokens=actual_tokens,
+            elapsed_seconds=elapsed_seconds,
+        )
 
     def find_composite_goal_for_analysis_task(
         self, analysis_work_task_id: str

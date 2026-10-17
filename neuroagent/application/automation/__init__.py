@@ -5,6 +5,14 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxStatus,
     AnalysisProposalOutbox,
 )
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallDecisionStatus,
+    CompositeGoalModelCallReservation,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallSettlement,
+    CompositeGoalModelCallState,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     AuthorityReferences,
@@ -59,6 +67,12 @@ __all__ = [
     "AnalysisProposalOutbox",
     "AuthoritativeRunSnapshot",
     "AuthorityReferences",
+    "CompositeGoalModelBudget",
+    "CompositeGoalModelCallDecisionStatus",
+    "CompositeGoalModelCallReservation",
+    "CompositeGoalModelCallReserveResult",
+    "CompositeGoalModelCallSettlement",
+    "CompositeGoalModelCallState",
     "EventConsumptionDecision",
     "EventCursor",
     "EventReconciliationReceipt",
