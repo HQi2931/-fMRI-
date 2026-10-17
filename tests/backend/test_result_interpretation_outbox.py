@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import text
 
 from neuroagent.agent.models import ModelProfile
+from neuroagent.application.automation.composite_goal import CompositeGoalIdentity
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     AuthorityReferences,
@@ -30,6 +31,7 @@ from neuroagent.application.automation.result_interpretation import (
 from neuroagent.application.contracts.conversations import ConversationCreate, ConversationMode
 from neuroagent.application.conversation_work import WorkActionResult
 from neuroagent.context.engine import RegexTokenCounter
+from neuroagent.shared.errors import NotFoundError
 from tests.backend.conftest import make_project
 
 
@@ -222,6 +224,64 @@ async def test_unverified_result_authority_fails_closed_without_model_call(
 
 
 @pytest.mark.asyncio
+async def test_composite_goal_without_model_budget_fails_closed_before_interpretation(
+    service, source_root, work_root, monkeypatch
+):
+    project, conversation, outbox = _ready_result_outbox(service, source_root, work_root)
+    service.repository.create_model_profile(
+        ModelProfile(
+            id="result-interpretation-budget-model",
+            provider="openai-compatible",
+            base_url="https://example.org/v1",
+            model="test-model",
+            api_key_env="UNUSED_RESULT_INTERPRETATION_BUDGET_API_KEY",
+            context_window_tokens=32768,
+        )
+    )
+    composite_goal = CompositeGoalIdentity(
+        intent_task_id="result-interpretation-budget-intent",
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+        analysis_request_hash="d" * 64,
+        preprocessing_task_id="preprocessing-budget-task",
+        analysis_work_task_id=outbox.task_id,
+        result_interpretation_outbox_task_id=outbox.task_id,
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "verify_result_interpretation_source",
+        lambda _outbox: _verified_source(project, conversation, outbox),
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "find_composite_goal_for_analysis_task",
+        lambda _task_id: composite_goal,
+    )
+
+    def missing_budget(_intent_task_id: str):
+        raise NotFoundError("composite goal model budget", composite_goal.intent_task_id)
+
+    monkeypatch.setattr(service.automation, "get_composite_goal_model_budget", missing_budget)
+    interpret = AsyncMock()
+    monkeypatch.setattr(
+        service.work_dialogue, "prepare_statistical_result_interpretation", interpret
+    )
+
+    outcome = await service.conversations.consume_next_result_interpretation_outbox(
+        "result-interpreter", lease_seconds=30
+    )
+
+    assert outcome == ResultInterpretationStatus.BLOCKED.value
+    interpret.assert_not_awaited()
+    latest = service.repository.get_conversation(conversation.conversation_id)
+    assert (
+        latest.messages[-1].payload["statistical_result_interpretation"]["error_code"]
+        == "composite_goal_model_budget_missing"
+    )
+    assert not service.runs.list_runs(project_id=project.project_id)
+
+
+@pytest.mark.asyncio
 async def test_missing_model_profile_pauses_and_manual_retry_reuses_outbox_generation(
     service, source_root, work_root
 ):
@@ -362,7 +422,7 @@ def test_statistical_task_completion_and_result_outbox_insert_share_rollback(
                 sequence=0,
                 kind="statistical_run",
                 status=TaskStepStatus.WAITING,
-                    authority_refs=AuthorityReferences(workflow_run_id=outbox.run_id),
+                authority_refs=AuthorityReferences(workflow_run_id=outbox.run_id),
             ),
         ),
         budget=TaskBudget(

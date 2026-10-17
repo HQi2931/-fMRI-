@@ -4,8 +4,8 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-17
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)
+- 更新日期：2026-10-18
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)
 
 ## 目标里程碑
 
@@ -171,7 +171,7 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 
 按 [ADR 0046](../adr/0046-composite-goal-foreground-selection.md) 增加会话内精确目标选择，角色槽持久保存 intent 指针，无数据库迁移。入口只接受等待用户处理、当前尚无 Plan/Run 的分析目标；恢复最新草稿，完整提案保留原消息 ID，不完整修订清除旧提案资格。后台不同 intent 仍完成其消息/任务/outbox 提交，但不覆盖前台；草稿、来源上下文、历史和交接使用同一目标范围。统计冻结对复合目标强制核对提案消息 ID，防止相同 proposal hash 的跨目标竞态。
 
-本切片不恢复已有 Plan/Run 的目标，也未实现通用多目标 dispatch、目标共享累计模型预算或完整步骤调度。阶段 B 仍为部分完成；真实模型与 MATLAB 验收需独立证据。
+本切片不恢复已有 Plan/Run 的目标，也未实现通用多目标 dispatch 或完整步骤调度。累计模型预算由下方独立切片覆盖两个后台续接 outbox；前台建根前及尚未接入阶段仍有缺口。阶段 B 仍为部分完成；真实模型与 MATLAB 验收需独立证据。
 
 ### 阶段 B 冻结分析目标恢复与只读查询（2026-10-17）
 
@@ -179,9 +179,17 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 
 冻结目标的自然语言与显式 READ 查询进入同一只读入口：结果、进度和 QC 读取按选中统计 Run 收口；无 Run 时返回冻结方法与尚未启动状态，拒绝携带其他运行 QC ID。模型不接收设计矩阵、逐受试者路径或值，工具循环关闭，执行上下文只允许精确选中的统计 Run；模型产生的分析/草稿修改被丢弃。切换目标、请求来源冲突、历史身份不完整或冻结记录改变时失败关闭。前端恢复仍按绑定 Plan/Run 读取，错误不退化为新建方案或启动操作，晚到响应不能覆盖新选择。
 
-新增冻结选择与只读回归 43 项通过，覆盖六类生命周期状态、身份错配、后续草稿与只读快照、精确 Run 结果读取、无 Run 不触发项目级结果查询、显式进度保留分析角色，以及拒绝跨 Run 查询。完成态夹具只核验持久身份，不声称生成真实统计结果。前端 AgentPage/提案操作定向测试 73 项通过，TypeScript 和相关四个文件的 ESLint 检查通过。验证使用合成记录、Mock 模型与执行器；没有真实 Provider、MATLAB 或 DPABI 运行。计划 0014 的通用目标 dispatch、累计预算、多目标自动拆分与完整多步骤调度仍未完成。
+新增冻结选择与只读回归 43 项通过，覆盖六类生命周期状态、身份错配、后续草稿与只读快照、精确 Run 结果读取、无 Run 不触发项目级结果查询、显式进度保留分析角色，以及拒绝跨 Run 查询。完成态夹具只核验持久身份，不声称生成真实统计结果。前端 AgentPage/提案操作定向测试 73 项通过，TypeScript 和相关四个文件的 ESLint 检查通过。验证使用合成记录、Mock 模型与执行器；没有真实 Provider、MATLAB 或 DPABI 运行。该切片当时仍未完成通用目标 dispatch、累计预算、多目标自动拆分与完整多步骤调度；预算后续进展见下节。
 
-最终相关后端回归 210 项、AgentPage 前端测试 52 项通过；Ruff、Mypy、前端类型/静态检查及构建、文档检查通过。详细验证范围与限制见 [MVP 记录](../development/mvp-verification.md)。下一步先接冻结 Plan/Run 的精确恢复：以冻结 work_context 原消息为权威，保留当前审批/启动门禁和已存在 Run 的禁止重复创建语义，再推进通用目标 dispatch 与累计预算。
+最终相关后端回归 210 项、AgentPage 前端测试 52 项通过；Ruff、Mypy、前端类型/静态检查及构建、文档检查通过。详细验证范围与限制见 [MVP 记录](../development/mvp-verification.md)。下一步推进通用 CompositeGoal dispatch 与阶段能力注册；共享预算的前台入口和其他阶段覆盖仍需纳入该合同，并保留审批/启动门禁及已存在 Run 不重复创建的语义。
+
+### 阶段 B 显式复合目标共享累计模型预算（2026-10-17 至 2026-10-18）
+
+新增独立于 `CompositeGoal` 身份根的 SQLite 累计预算和调用账本（迁移 0031、0032）。新根从精确预处理 WorkTask 的 `TaskBudget` 复制上限；工具循环中每一轮和结构化单次回退在分发前原子预留步数、调用数、估算 token 与最多剩余额度的整数秒，后者限制本地 Gateway await。调用后按 token usage 幂等结算，实际观测的向上取整耗时替换 elapsed 预扣；超时取消清理可能产生 elapsed overrun 并阻止后续分发，进程退出时未结算的预扣仍保留。报告成功的 profile failover attempt 会对额外尝试按单次估算 token 收费。Reservation ID、调用 ID 在同一 intent、outbox 重试代数、claim fencing token 和单次尝试序号内稳定生成；重复预留不再次分发模型。分析提案与统计结果解释共享同一 CompositeGoal 账本，额度耗尽时 outbox 进入不可自动重试的 `WAITING_USER`，不会创建或批准 Plan，也不会创建或启动 Run；claim fence 丢失时本地生成协程会被取消。没有 CompositeGoal 根的历史 standalone outbox 保留既有消费路径。
+
+0031 为历史 CompositeGoal 回填预算上限；0032 持久化 in-flight elapsed reservation。旧模型调用没有可核验 usage/调用账本，故迁移后历史已用额度从零开始；新根从创建时开始完整记账。当前预算只接入两个后台 outbox，不覆盖普通前台 Work 对话、建根前生成和未来通用调度阶段。Gateway 内部 profile attempts 按一次逻辑 invocation 计调用数；成功后报告的额外 attempts 会估算收费，失败且没有 usage 的隐藏 attempts 不能精确记账。本地 timeout 不能保证远端 Provider 停止处理或计费。约束与取舍见 [ADR 0048](../adr/0048-composite-goal-model-call-budget.md)。
+
+定向后端验证覆盖持久化原子预留/结算、重放与耗尽、重启时 elapsed reservation、Gateway timeout 与迟到响应拒收、claim 丢失取消、预算缺失失败关闭、报告的 profile failover token 估算、工具循环/单次回退预算闸门、分析与结果 outbox 及 CompositeGoal 回归；通过数见 [MVP 验证记录](../development/mvp-verification.md)。Ruff、Mypy 和文档检查结果以最新验证记录为准；没有调用真实 Provider、MATLAB 或 DPABI。阶段 B 仍未完成。
 
 本次 API/摘要/CompositeGoal/来源登记定向回归 14 项通过，文档检查通过 84 份 Markdown；范围与限制见[MVP 验证记录](../development/mvp-verification.md)。
 
@@ -247,7 +255,7 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 显式 `preprocess_then_analyze` 目前由 identity-only `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示。应继续保留这一阶段边界：预处理 WorkTask 只负责其 Run/QC/目标 Artifact 完成合同；分析 WorkTask 只在 outbox 基于已核验证据生成具体 proposal 后建立，并负责该 proposal 的 Plan/Run/结果合同。阶段之间通过精确绑定来源的 outbox 交接，不把统计草稿步骤再复制到预处理 WorkTask 的 TaskStep 中。步骤级 READY successor 仅用于同一个 WorkTask 生命周期内的线性步骤，不充当跨 WorkTask 调度器。
 
-当前显式复合目标的 prep→proposal 和统计结果→解释两个专用 outbox 已能处理异步续接；用户也可明确注册多个分析 intent，共享一个精确的预处理来源并在完成时 fanout。剩余缺口是把这些受约束的阶段交接推广为可注册、可判定、可恢复的目标级编排，并提供统一等待/停止原因与跨阶段完成判定。后续应先建立不复制 child/outbox 状态的 CompositeGoal dispatch 合同，再接通声明支持的阶段组合；每个 dispatcher 只能在重新读取并核验前驱权威后创建唯一后继阶段，复用现有 fencing、重试和幂等 continuation。统计 Plan 仍需 APPROVED 且由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户，不能从 `WorkGoal.description` 推导科学参数。
+当前显式复合目标的 prep→proposal 和统计结果→解释两个专用 outbox 已能处理异步续接；用户也可明确注册多个分析 intent，共享一个精确的预处理来源并在完成时 fanout。两个后台 outbox 现共用 CompositeGoal 累计模型预算，但预算从持久根建立后开始完整记账，前台建根前的生成和未接入的阶段尚未覆盖。剩余缺口是把这些受约束的阶段交接推广为可注册、可判定、可恢复的目标级编排，并提供统一等待/停止原因与跨阶段完成判定。后续应先建立不复制 child/outbox 状态的 CompositeGoal dispatch 合同，再接通声明支持的阶段组合；每个 dispatcher 只能在重新读取并核验前驱权威后创建唯一后继阶段，复用现有 fencing、重试和幂等 continuation。统计 Plan 仍需 APPROVED 且由用户明确启动；来源变化、claim 过期或缺少科学选择时丢弃模型结果或等待用户，不能从 `WorkGoal.description` 推导科学参数。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。该切片当时仍只支持一个分析 intent/outbox；后续显式来源注册切片已允许多个独立 intent 共享来源。
 

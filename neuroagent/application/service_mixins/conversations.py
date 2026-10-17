@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
@@ -64,7 +64,12 @@ from neuroagent.application.conversation_work import (
     ConversationWorkCoordinator,
     WorkActionResult,
 )
-from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
+from neuroagent.application.errors import (
+    ApplicationError,
+    ConflictError,
+    InputValidationError,
+    NotFoundError,
+)
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
@@ -115,6 +120,52 @@ RECOVERABLE_RESULT_INTERPRETATION_ERRORS = (
 )
 
 
+class _CompositeGoalModelBudgetSession:
+    """Bind successive provider turns to one exact fenced outbox attempt."""
+
+    def __init__(
+        self,
+        automation: WorkTaskApplicationService,
+        *,
+        intent_task_id: str,
+        scope: str,
+    ) -> None:
+        self._automation = automation
+        self._intent_task_id = intent_task_id
+        self._scope = scope
+        self._call_index = 0
+
+    def reserve(self, estimated_tokens: int, estimated_elapsed_seconds: int) -> Any:
+        self._call_index += 1
+        call_id = content_hash({"scope": self._scope, "call_index": self._call_index})
+        reservation_id = content_hash({"intent_task_id": self._intent_task_id, "call_id": call_id})
+        return self._automation.reserve_composite_goal_model_call(
+            self._intent_task_id,
+            reservation_id=reservation_id,
+            call_id=call_id,
+            estimated_tokens=estimated_tokens,
+            estimated_elapsed_seconds=estimated_elapsed_seconds,
+        )
+
+    def settle(
+        self,
+        reserve_result: Any,
+        *,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> Any:
+        reservation = getattr(reserve_result, "reservation", None)
+        reservation_id = getattr(reservation, "reservation_id", None)
+        if not isinstance(reservation_id, str):
+            raise ValueError("model call reservation identity is missing")
+        return self._automation.settle_composite_goal_model_call(
+            self._intent_task_id,
+            reservation_id=reservation_id,
+            actual_tokens=actual_tokens,
+            elapsed_seconds=elapsed_seconds,
+        )
+
+
 class ConversationMixin(BaseServiceMixin):
     repository: ConversationRepositoryPort
     conversation_context: ConversationContextCoordinator
@@ -126,6 +177,26 @@ class ConversationMixin(BaseServiceMixin):
     get_run: Callable[[str], RunView]
     list_model_profiles: Callable[[], list[ModelProfileView]]
     automation: WorkTaskApplicationService
+
+    @staticmethod
+    async def _await_fenced_generation(
+        generation: Awaitable[Any], claim_lost: asyncio.Event
+    ) -> Any | None:
+        generation_task = asyncio.ensure_future(generation)
+        claim_lost_task = asyncio.create_task(claim_lost.wait())
+        try:
+            await asyncio.wait(
+                {generation_task, claim_lost_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if claim_lost.is_set():
+                generation_task.cancel()
+                await asyncio.gather(generation_task, return_exceptions=True)
+                return None
+            return await generation_task
+        finally:
+            claim_lost_task.cancel()
+            await asyncio.gather(claim_lost_task, return_exceptions=True)
 
     def select_composite_goal(
         self,
@@ -572,19 +643,93 @@ class ConversationMixin(BaseServiceMixin):
                     "phase": "analysis_outbox_continuation",
                 },
             )
-            action_result = await self.work_dialogue.prepare_analysis_continuation(
-                conversation,
-                packet,
-                source,
-                has_profiles=True,
+            composite_goal = self.automation.find_composite_goal(outbox.intent_task_id)
+            if composite_goal is None:
+                # Older standalone proposal outboxes predate CompositeGoal roots.
+                # Keep their existing model path; only explicit durable roots
+                # have a goal-level budget to share across stages.
+                model_budget = None
+            elif (
+                composite_goal.conversation_id != outbox.conversation_id
+                or composite_goal.project_id != outbox.project_id
+            ):
+                return commit_terminal(
+                    expected_version=conversation.version,
+                    status=AnalysisOutboxStatus.BLOCKED,
+                    content="分析续接的复合目标身份与会话或项目不一致，系统已停止生成。",
+                    payload=outbox_payload(
+                        AnalysisOutboxStatus.BLOCKED,
+                        "composite_goal_model_budget_scope_mismatch",
+                    ),
+                    error_code="composite_goal_model_budget_scope_mismatch",
+                )
+            else:
+                try:
+                    self.automation.get_composite_goal_model_budget(outbox.intent_task_id)
+                except NotFoundError:
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=AnalysisOutboxStatus.BLOCKED,
+                        content="复合目标缺少持久模型预算记录，自动续接已失败关闭。",
+                        payload=outbox_payload(
+                            AnalysisOutboxStatus.BLOCKED,
+                            "composite_goal_model_budget_missing",
+                        ),
+                        error_code="composite_goal_model_budget_missing",
+                    )
+                model_budget = _CompositeGoalModelBudgetSession(
+                    self.automation,
+                    intent_task_id=outbox.intent_task_id,
+                    scope=(
+                        f"analysis:{outbox.intent_task_id}:g{outbox.retry_generation}"
+                        f":f{claim.fencing_token}"
+                    ),
+                )
+            action_result = await self._await_fenced_generation(
+                self.work_dialogue.prepare_analysis_continuation(
+                    conversation,
+                    packet,
+                    source,
+                    has_profiles=True,
+                    persistent_model_budget=model_budget,
+                ),
+                claim_lost,
             )
-            if claim_lost.is_set():
+            if action_result is None or claim_lost.is_set():
                 return "claim_lost"
 
             model_error = action_result.payload.get("model_error")
             if isinstance(model_error, dict):
                 error_code = model_error.get("code")
                 await stop_heartbeat()
+                if error_code == "composite_goal_model_budget_exhausted":
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=AnalysisOutboxStatus.WAITING_USER,
+                        content="复合目标的累计模型预算已用完，分析提案自动续接已暂停；不会通过重试重置预算。",
+                        payload=outbox_payload(
+                            AnalysisOutboxStatus.WAITING_USER,
+                            "composite_goal_model_budget_exhausted",
+                            retry_available=False,
+                        ),
+                        error_code="composite_goal_model_budget_exhausted",
+                    )
+                if error_code in {
+                    "composite_goal_model_call_duplicate",
+                    "composite_goal_model_reservation_invalid",
+                }:
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=AnalysisOutboxStatus.BLOCKED,
+                        content=(
+                            "模型调用预算 reservation 身份异常，系统拒绝重复分发并停止自动续接。"
+                        ),
+                        payload=outbox_payload(
+                            AnalysisOutboxStatus.BLOCKED,
+                            str(error_code),
+                        ),
+                        error_code=str(error_code),
+                    )
                 if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
                     return bounded_waiting_user(
                         expected_version=conversation.version,
@@ -1000,17 +1145,76 @@ class ConversationMixin(BaseServiceMixin):
                     retry_available=True,
                 )
 
-            prepared = await self.work_dialogue.prepare_statistical_result_interpretation(
-                conversation,
-                source,
-                preferred_profile_id=conversation.preferred_profile_id,
+            composite_goal = self.automation.find_composite_goal_for_analysis_task(outbox.task_id)
+            model_budget = None
+            if composite_goal is not None:
+                if (
+                    composite_goal.analysis_work_task_id != outbox.task_id
+                    or composite_goal.result_interpretation_outbox_task_id != outbox.task_id
+                    or composite_goal.conversation_id != outbox.conversation_id
+                    or composite_goal.project_id != outbox.project_id
+                ):
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=ResultInterpretationStatus.BLOCKED,
+                        content="统计结果解释与复合目标的当前分析任务或结果绑定不一致，系统已停止生成。",
+                        error_code="result_interpretation_composite_goal_mismatch",
+                    )
+                try:
+                    self.automation.get_composite_goal_model_budget(composite_goal.intent_task_id)
+                except NotFoundError:
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=ResultInterpretationStatus.BLOCKED,
+                        content="复合目标缺少持久模型预算记录，统计结果解释已失败关闭。",
+                        error_code="composite_goal_model_budget_missing",
+                        retry_available=False,
+                    )
+                model_budget = _CompositeGoalModelBudgetSession(
+                    self.automation,
+                    intent_task_id=composite_goal.intent_task_id,
+                    scope=(
+                        f"result_interpretation:{outbox.task_id}"
+                        f":g{outbox.retry_generation}:f{claim.fencing_token}"
+                    ),
+                )
+            prepared = await self._await_fenced_generation(
+                self.work_dialogue.prepare_statistical_result_interpretation(
+                    conversation,
+                    source,
+                    preferred_profile_id=conversation.preferred_profile_id,
+                    persistent_model_budget=model_budget,
+                ),
+                claim_lost,
             )
-            if claim_lost.is_set():
+            if prepared is None or claim_lost.is_set():
                 return "claim_lost"
             model_error = prepared.payload.get("model_error")
             if isinstance(model_error, dict):
                 await stop_heartbeat()
                 code = str(model_error.get("code", "result_interpretation_model_unavailable"))
+                if code == "composite_goal_model_budget_exhausted":
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=ResultInterpretationStatus.WAITING_USER,
+                        content="复合目标的累计模型预算已用完，统计结果解释自动续接已暂停；不会通过重试重置预算。",
+                        error_code=code,
+                        retry_available=False,
+                    )
+                if code in {
+                    "composite_goal_model_call_duplicate",
+                    "composite_goal_model_reservation_invalid",
+                }:
+                    return commit_terminal(
+                        expected_version=conversation.version,
+                        status=ResultInterpretationStatus.BLOCKED,
+                        content=(
+                            "统计结果解释的模型调用 reservation 身份异常，"
+                            "系统拒绝重复分发并已停止。"
+                        ),
+                        error_code=code,
+                        retry_available=False,
+                    )
                 if outbox.attempt_count + 1 >= MAX_RESULT_INTERPRETATION_ATTEMPTS:
                     return commit_terminal(
                         expected_version=conversation.version,

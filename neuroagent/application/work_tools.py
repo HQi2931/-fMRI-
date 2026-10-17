@@ -11,10 +11,13 @@ validation and the whole authorization path stay untouched.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +46,7 @@ from neuroagent.application.statistical_result_facts import (
     result_model_facts,
     verified_result_design,
 )
+from neuroagent.context.engine import RegexTokenCounter
 
 logger = logging.getLogger(__name__)
 MAX_WORKSPACE_RETURN_CHARS = 16_000
@@ -848,6 +852,24 @@ class WorkToolLoopResult(BaseModel):
     attempted_profile_ids: tuple[str, ...] = ()
 
 
+class PersistentModelCallBudget(Protocol):
+    """One request-scoped view of a durable, goal-level model-call budget."""
+
+    def reserve(self, estimated_tokens: int, estimated_elapsed_seconds: int) -> Any: ...
+
+    def settle(
+        self,
+        reservation: Any,
+        *,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> Any: ...
+
+
+class _ModelCallBudgetStop(RuntimeError):
+    """Internal signal used to stop a loop before an unbudgeted provider call."""
+
+
 BuildMessages = Callable[..., ChatMessages]
 CallTurn = Callable[..., Awaitable[ToolTurnResult]]
 DispatcherFactory = Callable[[AgentExecutionContext], ToolInvoker]
@@ -894,6 +916,7 @@ class WorkToolRunner:
         max_output_tokens: int = 2_048,
         request_budget: AgentLoopBudget | None = None,
         system_prompt: str | None = None,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkToolLoopResult:
         rendered = self._build_messages(
             question=question,
@@ -918,20 +941,87 @@ class WorkToolRunner:
             }
 
         captured: dict[str, Any] = {}
+        counter = RegexTokenCounter()
+
+        def response_tokens(
+            response: ProviderResponse,
+            *,
+            estimated_retry_count: int = 0,
+            estimated_retry_tokens: int = 0,
+        ) -> int | None:
+            usage = response.usage
+            total = usage.get("total_tokens", 0)
+            component_total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+            if total > 0:
+                return total + estimated_retry_count * estimated_retry_tokens
+            if component_total > 0:
+                return component_total + estimated_retry_count * estimated_retry_tokens
+            if estimated_retry_count > 0:
+                return (estimated_retry_count + 1) * estimated_retry_tokens
+            return None
 
         async def call_model(
             transcript: list[dict[str, Any]], *, remaining_seconds: float | None = None
         ) -> ProviderResponse:
-            turn = await self._call_turn(
-                messages=transcript,
-                tools=tools,
-                preferred_profile_id=preferred_profile_id,
-                model=model,
-                remaining_seconds=remaining_seconds,
-            )
-            captured["profile_id"] = turn.selected_profile_id
-            captured["attempted"] = turn.attempted_profile_ids
-            return turn.response
+            reservation = None
+            estimated_retry_tokens = 0
+            attempted_profile_ids: tuple[str, ...] = ()
+            call_remaining_seconds = remaining_seconds or budget.max_seconds
+            if persistent_model_budget is not None:
+                estimate = counter.count(transcript) + max_output_tokens
+                estimate = max(1, math.ceil(estimate * 1.2))
+                estimated_retry_tokens = estimate
+                reservation = persistent_model_budget.reserve(
+                    estimate, max(1, math.ceil(call_remaining_seconds))
+                )
+                reservation_status = str(
+                    getattr(getattr(reservation, "status", None), "value", "") or ""
+                )
+                if reservation_status != "reserved":
+                    captured["budget_stop"] = {
+                        "exhausted": "composite_goal_model_budget_exhausted",
+                        "duplicate": "composite_goal_model_call_duplicate",
+                    }.get(reservation_status, "composite_goal_model_reservation_invalid")
+                    raise _ModelCallBudgetStop("goal-level model call was not reserved")
+                call_remaining_seconds = min(
+                    call_remaining_seconds,
+                    float(reservation.reservation.reserved_elapsed_seconds),
+                )
+            started = time.monotonic()
+            response: ProviderResponse | None = None
+            try:
+                turn = await asyncio.wait_for(
+                    self._call_turn(
+                        messages=transcript,
+                        tools=tools,
+                        preferred_profile_id=preferred_profile_id,
+                        model=model,
+                        remaining_seconds=call_remaining_seconds,
+                    ),
+                    timeout=call_remaining_seconds,
+                )
+                response = turn.response
+                attempted_profile_ids = turn.attempted_profile_ids
+                captured["profile_id"] = turn.selected_profile_id
+                captured["attempted"] = turn.attempted_profile_ids
+                if time.monotonic() - started > call_remaining_seconds:
+                    raise TimeoutError("provider response arrived after its elapsed allowance")
+                return turn.response
+            finally:
+                if reservation is not None and persistent_model_budget is not None:
+                    persistent_model_budget.settle(
+                        reservation,
+                        actual_tokens=(
+                            response_tokens(
+                                response,
+                                estimated_retry_count=max(len(attempted_profile_ids) - 1, 0),
+                                estimated_retry_tokens=estimated_retry_tokens,
+                            )
+                            if response is not None
+                            else None
+                        ),
+                        elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                    )
 
         budget = replace(
             request_budget or self._budget,
@@ -945,7 +1035,7 @@ class WorkToolRunner:
         return WorkToolLoopResult(
             final_text=result.final_text,
             finish_reason=result.finish_reason,
-            stop_reason=result.stop_reason.value,
+            stop_reason=str(captured.get("budget_stop") or result.stop_reason.value),
             steps=result.steps,
             tool_names=tuple(outcome.name for outcome in result.outcomes),
             outcomes=result.outcomes,

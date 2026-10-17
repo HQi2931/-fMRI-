@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from neuroagent.application.contracts.conversations import (
     ConversationRole,
 )
 from neuroagent.application.conversation_work import WorkActionResult
-from neuroagent.application.errors import ConflictError
+from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.statistics_draft import DesignIssue
 from neuroagent.context.engine import RegexTokenCounter
@@ -178,6 +179,7 @@ async def test_consumer_records_assistant_only_question_and_deduplicates(
 
     assert result == AnalysisOutboxStatus.WAITING_USER.value
     interpret.assert_awaited_once()
+    assert interpret.await_args.kwargs["persistent_model_budget"] is None
     model_context = interpret.await_args.args[0]
     assert model_context["question"] == source.analysis_request
     work_context = model_context["work_context"]
@@ -219,6 +221,69 @@ async def test_consumer_records_assistant_only_question_and_deduplicates(
         after.messages
     )
     assert service.runs.list_runs(project_id=conversation.project_id) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_composite_goal_without_budget_fails_closed_before_model(
+    service, source_root, work_root
+):
+    project, conversation, outbox, _, _ = seed_ready_outbox(service, source_root, work_root)
+    add_model_profile(service)
+    service.automation.find_composite_goal = lambda _intent_id: SimpleNamespace(
+        intent_task_id=outbox.intent_task_id,
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+    )
+    budget_lookup = Mock(side_effect=NotFoundError("复合目标模型预算", outbox.intent_task_id))
+    service.automation.get_composite_goal_model_budget = budget_lookup
+    model = AsyncMock(side_effect=AssertionError("model must not run without its goal budget"))
+    service.work_dialogue.prepare_analysis_continuation = model
+
+    result = await service.conversations.consume_next_analysis_outbox(
+        "outbox-worker", lease_seconds=30
+    )
+
+    assert result == AnalysisOutboxStatus.BLOCKED.value
+    budget_lookup.assert_called_once_with(outbox.intent_task_id)
+    model.assert_not_awaited()
+    persisted = service.automation.get_analysis_outbox(outbox.intent_task_id)
+    assert persisted.last_error_code == "composite_goal_model_budget_missing"
+
+
+@pytest.mark.asyncio
+async def test_claim_loss_cancels_analysis_generation_before_more_provider_work(
+    service, source_root, work_root
+):
+    _, conversation, outbox, _, _ = seed_ready_outbox(service, source_root, work_root)
+    add_model_profile(service)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    service.automation.renew_analysis_outbox_claim = lambda *_args, **_kwargs: None
+
+    async def slow_generation(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("the claim should be lost before generation completes")
+
+    service.work_dialogue.prepare_analysis_continuation = slow_generation
+    before = service.repository.get_conversation(conversation.conversation_id)
+    task = asyncio.create_task(
+        service.conversations.consume_next_analysis_outbox("outbox-worker", lease_seconds=3)
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    result = await asyncio.wait_for(task, timeout=4)
+
+    assert result == "claim_lost"
+    assert cancelled.is_set()
+    after = service.repository.get_conversation(conversation.conversation_id)
+    assert len(after.messages) == len(before.messages)
+    assert service.automation.get_analysis_outbox(outbox.intent_task_id).status is (
+        AnalysisOutboxStatus.READY
+    )
 
 
 @pytest.mark.asyncio
@@ -557,8 +622,16 @@ async def test_expired_fence_rolls_back_assistant_message_and_analysis_work_task
     proposal_hash = "d" * 64
     draft_hash = "e" * 64
 
-    async def stale_claim(_conversation, _packet, source, *, has_profiles):
+    async def stale_claim(
+        _conversation,
+        _packet,
+        source,
+        *,
+        has_profiles,
+        persistent_model_budget=None,
+    ):
         assert has_profiles
+        assert persistent_model_budget is None
         with service.database.session_factory.begin() as session:
             session.execute(
                 text(

@@ -113,7 +113,11 @@ from neuroagent.application.work_presentation import (
     set_value,
 )
 from neuroagent.application.work_tasks import preprocessing_source_run, work_task
-from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
+from neuroagent.application.work_tools import (
+    AgentExecutionContext,
+    PersistentModelCallBudget,
+    WorkToolRunner,
+)
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
 from neuroagent.multi_agent.registry import (
@@ -575,6 +579,7 @@ class WorkDialogue:
         execution_context: AgentExecutionContext | None = None,
         budget_override: AgentLoopBudget | None = None,
         allow_tools: bool = True,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
         """Interpret one turn through the bounded model/tool runtime.
 
@@ -593,6 +598,7 @@ class WorkDialogue:
             model=model,
             execution_context=execution_context,
             allow_tools=allow_tools,
+            persistent_model_budget=persistent_model_budget,
         )
 
     def input_recovery_confirmation(
@@ -2351,6 +2357,7 @@ class WorkDialogue:
         source: VerifiedAnalysisOutboxSource,
         *,
         has_profiles: bool,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
         """Prepare one analysis draft from an exact, server-verified outbox source."""
 
@@ -2425,6 +2432,7 @@ class WorkDialogue:
             reply=reply,
             proposal_only_continuation=True,
             continuation_source=source,
+            persistent_model_budget=persistent_model_budget,
         )
 
     async def prepare_statistical_result_interpretation(
@@ -2433,6 +2441,7 @@ class WorkDialogue:
         source: VerifiedResultInterpretationSource,
         *,
         preferred_profile_id: str | None,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
         """Generate an assistant-only interpretation draft from bounded verified facts."""
         if (
@@ -2472,13 +2481,19 @@ class WorkDialogue:
                 preferred_profile_id=preferred_profile_id,
                 model=None,
                 allow_tools=False,
+                persistent_model_budget=persistent_model_budget,
             )
             if metadata.get("stop_reason"):
+                code = (
+                    str(metadata["stop_reason"])
+                    if str(metadata["stop_reason"]).startswith("composite_goal_model_")
+                    else "result_interpretation_model_unavailable"
+                )
                 return WorkActionResult(
                     "统计结果解释模型本轮未能完成。",
                     payload={
                         "model_error": {
-                            "code": "result_interpretation_model_unavailable",
+                            "code": code,
                             "stop_reason": metadata["stop_reason"],
                         }
                     },
@@ -2542,6 +2557,7 @@ class WorkDialogue:
         reply: Callable[[str, dict[str, Any] | None], WorkActionResult],
         proposal_only_continuation: bool = False,
         continuation_source: VerifiedAnalysisOutboxSource | None = None,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
         loop_metadata: dict[str, Any] | None = None
         saved = (
@@ -2884,7 +2900,14 @@ class WorkDialogue:
                     work_agent_role=WorkAgentRole.ANALYSIS.value,
                 ),
                 budget_override=remaining_budget,
+                persistent_model_budget=persistent_model_budget,
             )
+            stop_reason = str(result[1].get("stop_reason") or "")
+            if stop_reason.startswith("composite_goal_model_"):
+                raise ApplicationError(
+                    stop_reason,
+                    "复合目标的模型调用预算未能通过校验；自动续接已停止。",
+                )
             feedback_state["latest_loop_metadata"] = result[2]
             if result[2] is not None:
                 feedback_state["loop_audits"].append(result[2])

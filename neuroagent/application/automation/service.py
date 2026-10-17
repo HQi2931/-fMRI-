@@ -1357,6 +1357,11 @@ class WorkTaskApplicationService:
             for intent_task_id in intent_task_ids
         ]
 
+    def find_composite_goal(self, intent_task_id: str) -> CompositeGoalIdentity | None:
+        """Distinguish a legacy standalone outbox from a broken goal ledger."""
+
+        return self._repository.find_composite_goal(intent_task_id)
+
     def get_composite_goal(
         self, conversation_id: str, intent_task_id: str
     ) -> CompositeGoalIdentity:
@@ -1376,6 +1381,7 @@ class WorkTaskApplicationService:
         reservation_id: str,
         call_id: str,
         estimated_tokens: int,
+        estimated_elapsed_seconds: int = 1,
     ) -> CompositeGoalModelCallReserveResult:
         """Atomically reserve cumulative goal budget before provider dispatch."""
 
@@ -1384,6 +1390,7 @@ class WorkTaskApplicationService:
             reservation_id=reservation_id,
             call_id=call_id,
             estimated_tokens=estimated_tokens,
+            estimated_elapsed_seconds=estimated_elapsed_seconds,
         )
 
     def settle_composite_goal_model_call(

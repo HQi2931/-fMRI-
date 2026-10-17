@@ -44,6 +44,8 @@ class WorkTaskRepositoryPort(Protocol):
 
     def list_composite_goal_intent_ids(self, conversation_id: str) -> tuple[str, ...]: ...
 
+    def find_composite_goal(self, intent_task_id: str) -> CompositeGoalIdentity | None: ...
+
     def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot: ...
 
     def get_composite_goal_model_budget(self, intent_task_id: str) -> CompositeGoalModelBudget: ...
@@ -55,6 +57,7 @@ class WorkTaskRepositoryPort(Protocol):
         reservation_id: str,
         call_id: str,
         estimated_tokens: int,
+        estimated_elapsed_seconds: int = 1,
     ) -> CompositeGoalModelCallReserveResult: ...
 
     def settle_composite_goal_model_call(

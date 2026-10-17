@@ -366,8 +366,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         reservation_id: str,
         call_id: str,
         estimated_tokens: int,
+        estimated_elapsed_seconds: int = 1,
     ) -> CompositeGoalModelCallReserveResult:
-        """Reserve one exact provider invocation under the shared SQLite writer lock."""
+        """Reserve one exact provider request, including its elapsed-time allowance."""
 
         if not reservation_id or len(reservation_id) > 100:
             raise ValueError("reservation_id must contain 1 to 100 characters")
@@ -379,6 +380,12 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             or not 0 <= estimated_tokens <= 10_000_000
         ):
             raise ValueError("estimated_tokens must be between 0 and 10000000")
+        if (
+            isinstance(estimated_elapsed_seconds, bool)
+            or not isinstance(estimated_elapsed_seconds, int)
+            or not 1 <= estimated_elapsed_seconds <= 31_536_000
+        ):
+            raise ValueError("estimated_elapsed_seconds must be between 1 and 31536000")
 
         with self.unit_of_work.atomic(), self._write_session() as session:
             budget_row = self._model_budget_row(session, intent_task_id)
@@ -439,9 +446,10 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     text(
                         "INSERT INTO composite_goal_model_call_reservations "
                         "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
-                        "reserved_tokens, actual_tokens, elapsed_seconds) "
+                        "reserved_tokens, actual_tokens, elapsed_seconds, "
+                        "reserved_elapsed_seconds) "
                         "VALUES (:reservation_id, :intent_id, :call_id, :state, "
-                        ":estimated_tokens, :reserved_tokens, NULL, 0)"
+                        ":estimated_tokens, :reserved_tokens, NULL, 0, 0)"
                     ),
                     row,
                 )
@@ -459,22 +467,31 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     budget=budget,
                 )
 
+            reserved_elapsed_seconds = min(
+                estimated_elapsed_seconds, budget.remaining_elapsed_seconds
+            )
             session.execute(
                 text(
                     "UPDATE composite_goal_model_budgets "
                     "SET used_steps=used_steps+1, used_model_calls=used_model_calls+1, "
-                    "used_tokens=used_tokens+:estimated_tokens "
+                    "used_tokens=used_tokens+:estimated_tokens, "
+                    "elapsed_seconds=elapsed_seconds+:reserved_elapsed_seconds "
                     "WHERE intent_task_id=:intent_id"
                 ),
-                {"intent_id": intent_task_id, "estimated_tokens": estimated_tokens},
+                {
+                    "intent_id": intent_task_id,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_elapsed_seconds": reserved_elapsed_seconds,
+                },
             )
             session.execute(
                 text(
                     "INSERT INTO composite_goal_model_call_reservations "
                     "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
-                    "reserved_tokens, actual_tokens, elapsed_seconds) "
+                    "reserved_tokens, actual_tokens, elapsed_seconds, "
+                    "reserved_elapsed_seconds) "
                     "VALUES (:reservation_id, :intent_id, :call_id, :state, "
-                    ":estimated_tokens, :reserved_tokens, NULL, 0)"
+                    ":estimated_tokens, :reserved_tokens, NULL, 0, :reserved_elapsed_seconds)"
                 ),
                 {
                     "reservation_id": reservation_id,
@@ -483,6 +500,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     "state": CompositeGoalModelCallState.RESERVED.value,
                     "estimated_tokens": estimated_tokens,
                     "reserved_tokens": estimated_tokens,
+                    "reserved_elapsed_seconds": reserved_elapsed_seconds,
                 },
             )
             updated_budget = self._model_budget_row(session, intent_task_id)
@@ -493,6 +511,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 state=CompositeGoalModelCallState.RESERVED,
                 estimated_tokens=estimated_tokens,
                 reserved_tokens=estimated_tokens,
+                reserved_elapsed_seconds=reserved_elapsed_seconds,
             )
             return CompositeGoalModelCallReserveResult(
                 status=CompositeGoalModelCallDecisionStatus.RESERVED,
@@ -508,7 +527,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         actual_tokens: int | None,
         elapsed_seconds: int,
     ) -> CompositeGoalModelCallSettlement:
-        """Settle actual usage once; unknown token usage retains the reservation."""
+        """Settle actual usage once; crash-surviving time precharge is adjusted."""
 
         if actual_tokens is not None and (
             isinstance(actual_tokens, bool)
@@ -563,7 +582,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             settled_budget_row = {
                 "intent_id": intent_task_id,
                 "used_tokens": budget.used_tokens - reservation.reserved_tokens + charged_tokens,
-                "elapsed_seconds": budget.elapsed_seconds + elapsed_seconds,
+                "elapsed_seconds": (
+                    budget.elapsed_seconds - reservation.reserved_elapsed_seconds + elapsed_seconds
+                ),
             }
             session.execute(
                 text(
@@ -645,6 +666,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             reserved_tokens=row["reserved_tokens"],
             actual_tokens=row["actual_tokens"],
             elapsed_seconds=row["elapsed_seconds"],
+            reserved_elapsed_seconds=row["reserved_elapsed_seconds"],
         )
 
     @staticmethod
@@ -753,10 +775,12 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             row = (
                 session.execute(
                     text(
-                        """SELECT goal.* FROM composite_goal_analysis_attempts AS attempt
-                        JOIN composite_goal_links AS goal
+                        """SELECT goal.* FROM composite_goal_links AS goal
+                        LEFT JOIN composite_goal_analysis_attempts AS attempt
                           ON goal.intent_task_id=attempt.intent_task_id
-                        WHERE attempt.work_task_id=:task_id"""
+                        WHERE goal.analysis_work_task_id=:task_id
+                           OR attempt.work_task_id=:task_id
+                        LIMIT 1"""
                     ),
                     {"task_id": analysis_work_task_id},
                 )
@@ -777,6 +801,20 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 {"conversation_id": conversation_id},
             ).scalars()
             return tuple(str(intent_task_id) for intent_task_id in rows)
+
+    def find_composite_goal(self, intent_task_id: str) -> CompositeGoalIdentity | None:
+        """Look up a durable root independently from its budget ledger."""
+
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            return self._composite_goal_from_row(row) if row is not None else None
 
     def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot:
         """Read the root, attempt identities and authoritative children consistently."""

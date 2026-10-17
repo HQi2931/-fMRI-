@@ -298,6 +298,7 @@ class CompositeGoalModelCallReservationRow(Base):
     reserved_tokens: Mapped[int] = mapped_column(Integer)
     actual_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     elapsed_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_elapsed_seconds: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (
         UniqueConstraint(
             "intent_task_id", "call_id", name="uq_composite_goal_model_reservation_call"
@@ -317,6 +318,10 @@ class CompositeGoalModelCallReservationRow(Base):
             name="ck_composite_goal_model_reservation_actual",
         ),
         CheckConstraint("elapsed_seconds >= 0", name="ck_composite_goal_model_reservation_elapsed"),
+        CheckConstraint(
+            "reserved_elapsed_seconds >= 0",
+            name="ck_composite_goal_model_reservation_reserved_elapsed",
+        ),
         Index("ix_composite_goal_model_reservation_goal", "intent_task_id", "state"),
     )
 

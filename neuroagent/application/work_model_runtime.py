@@ -6,14 +6,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
+from neuroagent.agent.gateway import ChatGatewayResult
 from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.application.work_prompts import work_system_prompt
-from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
+from neuroagent.application.work_tools import (
+    AgentExecutionContext,
+    PersistentModelCallBudget,
+    WorkToolRunner,
+)
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.multi_agent.registry import WorkAgentRole
 
@@ -82,6 +88,7 @@ class WorkModelRuntime:
         model: str | None,
         execution_context: AgentExecutionContext | None = None,
         allow_tools: bool = True,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
         """Produce the Work JSON contract, preferring the bounded tool loop.
 
@@ -128,6 +135,7 @@ class WorkModelRuntime:
                 max_output_tokens=int(model_context.get("max_output_tokens", 2_048)),
                 request_budget=replace(self.model_budget, max_seconds=remaining_seconds),
                 system_prompt=system_prompt,
+                persistent_model_budget=persistent_model_budget,
             )
             loop_metadata = _work_loop_metadata(looped)
             spent_steps = looped.steps
@@ -147,6 +155,8 @@ class WorkModelRuntime:
                 "budget_steps",
                 "budget_tokens",
             }:
+                return "", {"stop_reason": looped.stop_reason, "usage": looped.usage}, loop_metadata
+            if looped.stop_reason.startswith("composite_goal_"):
                 return "", {"stop_reason": looped.stop_reason, "usage": looped.usage}, loop_metadata
             if looped.finish_reason == "length":
                 # Never spend another complete request repeating a known
@@ -216,6 +226,45 @@ class WorkModelRuntime:
             reason = "budget_tokens"
         if reason:
             return "", {"stop_reason": reason}, loop_metadata
+        reservation = None
+        estimated_retry_tokens = 0
+        if persistent_model_budget is not None:
+            estimate = RegexTokenCounter().count(fallback_context) + int(
+                model_context.get("max_output_tokens", 2048)
+            )
+            estimated_retry_tokens = max(1, math.ceil(estimate * 1.2))
+            reservation = persistent_model_budget.reserve(
+                estimated_retry_tokens,
+                max(1, math.ceil(remaining_seconds)),
+            )
+            reservation_status = str(
+                getattr(getattr(reservation, "status", None), "value", "") or ""
+            )
+            if reservation_status != "reserved":
+                reason = {
+                    "exhausted": "composite_goal_model_budget_exhausted",
+                    "duplicate": "composite_goal_model_call_duplicate",
+                }.get(reservation_status, "composite_goal_model_reservation_invalid")
+                return "", {"stop_reason": reason}, loop_metadata
+            remaining_seconds = min(
+                remaining_seconds,
+                float(reservation.reservation.reserved_elapsed_seconds),
+            )
+        started = time.monotonic()
+        generated: ChatGatewayResult | None = None
+
+        def generated_tokens(result: ChatGatewayResult) -> int | None:
+            usage = result.response.usage
+            total = usage.get("total_tokens", 0)
+            components = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+            actual_tokens = total if total > 0 else components if components > 0 else None
+            retry_count = max(len(result.attempted_profile_ids) - 1, 0)
+            if retry_count:
+                actual_tokens = (
+                    actual_tokens if actual_tokens is not None else estimated_retry_tokens
+                ) + retry_count * estimated_retry_tokens
+            return actual_tokens
+
         try:
             generated = await asyncio.wait_for(
                 self.generate(
@@ -229,8 +278,31 @@ class WorkModelRuntime:
                 ),
                 timeout=remaining_seconds,
             )
+            if time.monotonic() - started > remaining_seconds:
+                raise TimeoutError("provider response arrived after its elapsed allowance")
         except TimeoutError:
+            if reservation is not None and persistent_model_budget is not None:
+                persistent_model_budget.settle(
+                    reservation,
+                    actual_tokens=generated_tokens(generated) if generated is not None else None,
+                    elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                )
             return "", {"stop_reason": "provider_timeout"}, loop_metadata
+        except BaseException:
+            if reservation is not None and persistent_model_budget is not None:
+                persistent_model_budget.settle(
+                    reservation,
+                    actual_tokens=generated_tokens(generated) if generated is not None else None,
+                    elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                )
+            raise
+        assert generated is not None
+        if reservation is not None and persistent_model_budget is not None:
+            persistent_model_budget.settle(
+                reservation,
+                actual_tokens=generated_tokens(generated),
+                elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+            )
         metadata = {
             "profile_id": generated.selected_profile_id,
             "model": generated.response.model,

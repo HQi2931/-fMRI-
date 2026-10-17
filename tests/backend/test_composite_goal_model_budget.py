@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from neuroagent.application.automation.model_budget import (
@@ -133,7 +135,10 @@ def test_new_composite_goal_initializes_budget_from_preprocessing_task(tmp_path)
     )
 
     budget = repository.get_composite_goal_model_budget("budget-new-goal")
+    goal = repository.find_composite_goal("budget-new-goal")
 
+    assert goal is not None
+    assert goal.intent_task_id == "budget-new-goal"
     assert budget.max_steps == expected.max_steps
     assert budget.max_model_calls == expected.max_model_calls
     assert budget.max_tokens == expected.max_tokens
@@ -251,7 +256,10 @@ def test_settlement_adjusts_actual_usage_and_is_idempotent(tmp_path) -> None:
         reservation_id="reservation-settle",
         call_id="provider-call-settle",
         estimated_tokens=300,
+        estimated_elapsed_seconds=20,
     )
+    reserved_budget = repository.get_composite_goal_model_budget("budget-settlement")
+    assert reserved_budget.elapsed_seconds == 20
 
     settled = repository.settle_composite_goal_model_call(
         "budget-settlement",
@@ -267,6 +275,7 @@ def test_settlement_adjusts_actual_usage_and_is_idempotent(tmp_path) -> None:
     )
 
     assert settled.reservation.state is CompositeGoalModelCallState.SETTLED
+    assert settled.reservation.reserved_elapsed_seconds == 20
     assert settled.budget.used_tokens == 245
     assert settled.budget.elapsed_seconds == 4
     assert replay == settled
@@ -278,6 +287,43 @@ def test_settlement_adjusts_actual_usage_and_is_idempotent(tmp_path) -> None:
             elapsed_seconds=4,
         )
     database.dispose()
+
+
+def test_inflight_elapsed_reservation_survives_repository_restart(tmp_path) -> None:
+    path = tmp_path / "goal-budget-inflight-time.sqlite"
+    database, repository = _open_repository(path)
+    _create_goal(
+        repository,
+        database,
+        intent_task_id="budget-inflight-time",
+        max_elapsed_seconds=5,
+    )
+    reserved = repository.reserve_composite_goal_model_call(
+        "budget-inflight-time",
+        reservation_id="reservation-crash",
+        call_id="provider-call-crash",
+        estimated_tokens=100,
+        estimated_elapsed_seconds=5,
+    )
+    assert reserved.reservation.reserved_elapsed_seconds == 5
+    assert reserved.budget.elapsed_seconds == 5
+    database.dispose()
+
+    restarted_database, restarted_repository = _open_repository(path)
+    budget_after_restart = restarted_repository.get_composite_goal_model_budget(
+        "budget-inflight-time"
+    )
+    assert budget_after_restart.remaining_elapsed_seconds == 0
+    exhausted = restarted_repository.reserve_composite_goal_model_call(
+        "budget-inflight-time",
+        reservation_id="reservation-after-crash",
+        call_id="provider-call-after-crash",
+        estimated_tokens=100,
+        estimated_elapsed_seconds=1,
+    )
+    assert exhausted.status is CompositeGoalModelCallDecisionStatus.EXHAUSTED
+    assert exhausted.budget.elapsed_seconds == 5
+    restarted_database.dispose()
 
 
 def test_missing_provider_usage_keeps_estimate_and_still_charges_elapsed(tmp_path) -> None:
@@ -372,3 +418,58 @@ def test_migration_backfills_budget_caps_from_existing_preprocessing_task(tmp_pa
     assert budget.used_steps == budget.used_model_calls == budget.used_tokens == 0
     assert budget.elapsed_seconds == 0
     migrated_database.dispose()
+
+
+def test_elapsed_budget_migration_preserves_legacy_inflight_reservations(tmp_path) -> None:
+    path = tmp_path / "budget-elapsed-migration.sqlite"
+    database, repository = _open_repository(path)
+    _create_goal(repository, database, intent_task_id="budget-elapsed-migration")
+    database.dispose()
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{path.as_posix()}")
+    command.downgrade(config, "0031_composite_goal_model_budgets")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE composite_goal_model_budgets "
+                    "SET used_steps=1, used_model_calls=1, used_tokens=90 "
+                    "WHERE intent_task_id='budget-elapsed-migration'"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO composite_goal_model_call_reservations "
+                    "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
+                    "reserved_tokens, actual_tokens, elapsed_seconds) "
+                    "VALUES ('legacy-reservation', 'budget-elapsed-migration', "
+                    "'legacy-call', 'reserved', 90, 90, NULL, 0)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            reservation = (
+                connection.execute(
+                    text(
+                        "SELECT state, reserved_tokens, reserved_elapsed_seconds "
+                        "FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id='budget-elapsed-migration' "
+                        "AND reservation_id='legacy-reservation'"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert reservation["state"] == CompositeGoalModelCallState.RESERVED.value
+    assert reservation["reserved_tokens"] == 90
+    assert reservation["reserved_elapsed_seconds"] == 0

@@ -11,8 +11,9 @@ class CompositeGoalModelBudget(BaseModel):
     """Cumulative model allowance shared by every stage of one intent goal.
 
     Reserved calls and tokens count as used before a provider is invoked. Actual
-    provider usage can exceed a reservation or elapsed-time cap; that overrun is
-    retained as evidence and prevents subsequent reservations.
+    provider usage can exceed a token reservation; that overrun is retained as
+    evidence and prevents subsequent reservations. In-flight elapsed time is
+    precharged so a crashed worker cannot regain time by skipping settlement.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -69,6 +70,7 @@ class CompositeGoalModelCallReservation(BaseModel):
     reserved_tokens: int = Field(ge=0, le=10_000_000)
     actual_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     elapsed_seconds: int = Field(default=0, ge=0, le=31_536_000)
+    reserved_elapsed_seconds: int = Field(default=0, ge=0, le=31_536_000)
 
 
 class CompositeGoalModelCallReserveResult(BaseModel):

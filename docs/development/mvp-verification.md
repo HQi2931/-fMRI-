@@ -3,8 +3,16 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-17
+- 更新日期：2026-10-18
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-10-18 复合目标累计模型预算
+
+复合目标根现在拥有独立的持久模型预算和调用预留账本。分析提案自动续接与统计结果解释两个 outbox 共用 intent 级的步数、Gateway invocation 数、token 和累计耗时上限。工具循环每轮及 JSON 单次回退都会在模型分发前原子预留；只有 reservation 状态为 `reserved` 才允许请求。elapsed allowance 预先扣减并限制本地 Gateway await；超时会请求取消，取消清理仍运行的实际观测耗时也计入账本并可形成 overrun；进程退出会保留未结算的预扣。返回的 Provider usage 按实际 token 幂等结算；缺失 usage 时保留估算值，额外报告的 profile failover attempts 以每次一份请求估算 token 收费。预算耗尽时 outbox 转为 `WAITING_USER` 且不开放重试，确保手动 retry 不会重置额度。缺失预算记录、重复 reservation 和异常状态均失败关闭，不会误报成额度耗尽。claim fence 丢失会取消本地生成任务，旧结果不会提交。迁移 0031 为现有根回填精确预处理 WorkTask 的预算上限，0032 加入持久耗时预留字段。
+
+分析 outbox、结果解释 outbox、CompositeGoal、预算存储、运行接线与持久化重启的扩展定向后端回归通过 175 项；其中覆盖预算重放/耗尽、elapsed 预扣、deadline、取消后迟到响应、fence 丢失、两类 outbox 缺失预算时失败关闭、重复 reservation、0031 到 0032 的旧预留行保留和已报告 failover 的保守 token 计费。Ruff check/format、305 个源文件 Mypy 和 87 份文档规范检查通过；验证没有调用真实 Provider、MATLAB 或 DPABI。
+
+历史 CompositeGoal 的 Provider 使用记录无法从旧消息/outbox 可靠还原，0031 将旧已用计数初始化为零；只有迁移后发生的调用才由此账本记录。预算目前接入两个后台 outbox，尚未涵盖普通前台 Work 对话、建根前生成和其他通用调度阶段。Gateway 内部 attempts 按一次逻辑 invocation 计调用；成功返回且报告的额外 attempts 才能逐次估算收费，失败且没有 usage 的内部重试无法精确重建。本地超时可能等待取消清理；远端 Provider 也可能在取消后继续处理或计费。设计决策见 [ADR 0048](../adr/0048-composite-goal-model-call-budget.md)。本记录不代表完整计划 0014 或真实模型/计算路径验收已完成。
 
 ## 2026-10-17 未冻结分析目标选择与上下文隔离
 

@@ -4,8 +4,8 @@
 - 文档类型：Architecture
 - 维护者：system_architect
 - 创建日期：2026-10-12
-- 更新日期：2026-10-17
-- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045：有界线性步骤调度（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
+- 更新日期：2026-10-18
+- 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045：有界线性步骤调度（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0048：复合目标共享模型预算](../adr/0048-composite-goal-model-call-budget.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
 
@@ -164,6 +164,12 @@ composite intent
 统计草稿每次形成不同 proposal hash 时可能创建新的分析 WorkTask，因此应保留可审计的尝试历史，并明确唯一的 active attempt。未开始、等待用户决定的草稿可在用户修改后被新尝试替代；已经绑定 Plan/Run 或产生真实结果的尝试不能静默改写成新尝试。旧尝试迟到完成只更新其自身权威记录，不能完成新的 active attempt。当前单目标切片先支持一条预处理链和一个有效分析尝试；多指标、多组比较和多意图扩展要在明确的尝试集合与停止条件验收后再开放。
 
 进度状态是查询时从权威记录投影出来的视图，而不是另一套可写状态机。可供前端呈现的阶段至少包括：等待预处理方案审查/授权、预处理运行中、等待 QC/用户、检查目标产物、等待统计设计决定、统计运行中、等待结果解释、结果已交付、能力阻断及证据不确定。目标只有在 active 统计尝试完成、真实 StatisticalResult 与冻结设计/Artifact lineage 相符，且同一结果的解释 continuation 已写入该会话后才能标记完成；Run 成功、outbox 入队或结果草稿生成都不够。
+
+### 复合目标累计模型预算
+
+`CompositeGoal` 的身份/进度根不保存可独立变化的预算状态。预算和调用账本由以 intent 为外键的 SQLite 记录持有：每个模型 Gateway invocation 在分发前原子预留一次调用、一个 step、估算 token 和剩余 elapsed allowance；调用结束或失败后按 reservation 幂等结算。工具循环每轮和 JSON 单次回退共用同一预算端口。已接入的分析提案、统计结果解释后台 outbox 共用一份 goal 账本。重复 call ID、超额与耗尽都不能继续分发 Provider 请求。成功响应中报告的 profile failover attempts 会按额外估算 token 记账。具体 schema、生成身份、兼容处理和限制见 [ADR 0048](../adr/0048-composite-goal-model-call-budget.md)。
+
+预算预留同时预扣最多为剩余额度的整数秒，并以该值限制本地 Gateway await；结算记录实际向上取整耗时，取消清理可能造成 overrun 并阻止后续调用，进程中途退出则保留预扣。token usage 超过 estimate 时按实际值结算并阻止后续调用。claim fence 丢失会取消本地生成任务。这个预算目前仅保护持久根建立后已接入的两种后台 outbox；普通前台 Work 对话尚未接入、根建立前的生成无法使用尚未创建的账本、没有根的历史 standalone outbox 也保留旧路径。迁移 0031、0032 为旧目标回填精确预处理任务预算上限并增加 elapsed reservation 字段；无法重建启用账本前的模型调用/usage，所以历史 used 计数从零开始。Gateway 内部失败且无 usage 的 profile attempts 不能精确计数；本地取消也不能保证远端 Provider 停止处理或计费。
 
 ## fMRI 能力与方案生成
 
