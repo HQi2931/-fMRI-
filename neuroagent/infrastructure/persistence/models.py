@@ -214,7 +214,7 @@ class StatisticalResultInterpretationOutboxRow(Base):
 
 
 class CompositeGoalLinkRow(Base):
-    """Identity-only links for one explicit preprocessing→analysis intent."""
+    """Identity-only links for one explicit Work analysis goal."""
 
     __tablename__ = "composite_goal_links"
     intent_task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -228,7 +228,20 @@ class CompositeGoalLinkRow(Base):
     # ``work_tasks`` is created by Alembic SQL and is intentionally absent
     # from Base.metadata. The durable FK lives in migration 0028; keeping an
     # ORM FK here breaks the in-memory metadata.create_all() used by OpenAPI.
-    preprocessing_task_id: Mapped[str] = mapped_column(String(100))
+    goal_kind: Mapped[str] = mapped_column(
+        String(40), default="preprocess_then_analyze", server_default="preprocess_then_analyze"
+    )
+    preprocessing_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_external_import_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("external_analysis_imports.import_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source_import_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_tree_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_inclusion_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_manifest_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_revision_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     analysis_proposal_outbox_intent_task_id: Mapped[str | None] = mapped_column(
         String(100),
         ForeignKey("analysis_proposal_outbox.intent_task_id", ondelete="RESTRICT"),
@@ -248,6 +261,23 @@ class CompositeGoalLinkRow(Base):
             name="ck_composite_goal_request_hash_length",
         ),
         Index("ix_composite_goal_preprocessing_task", "preprocessing_task_id"),
+        CheckConstraint(
+            "goal_kind IN ('preprocess_then_analyze', 'analysis_only_external_import')",
+            name="ck_composite_goal_kind",
+        ),
+        CheckConstraint(
+            "(goal_kind = 'preprocess_then_analyze' AND preprocessing_task_id IS NOT NULL "
+            "AND source_external_import_id IS NULL AND source_import_version IS NULL "
+            "AND source_tree_hash IS NULL AND source_inclusion_hash IS NULL "
+            "AND source_manifest_hash IS NULL AND source_revision_hash IS NULL) OR "
+            "(goal_kind = 'analysis_only_external_import' AND preprocessing_task_id IS NULL "
+            "AND source_external_import_id IS NOT NULL AND source_import_version IS NOT NULL "
+            "AND source_tree_hash IS NOT NULL AND source_inclusion_hash IS NOT NULL "
+            "AND source_manifest_hash IS NOT NULL AND source_revision_hash IS NOT NULL "
+            "AND analysis_proposal_outbox_intent_task_id IS NULL "
+            "AND result_interpretation_outbox_task_id IS NULL)",
+            name="ck_composite_goal_source_kind",
+        ),
     )
 
 

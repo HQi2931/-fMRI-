@@ -21,6 +21,7 @@ from neuroagent.application.automation.model_budget import (
 )
 from neuroagent.application.automation.models import (
     EventConsumptionDecision,
+    TaskBudget,
     WorkEventIdentity,
     WorkTask,
     WorkTaskClaim,
@@ -41,6 +42,10 @@ class WorkTaskRepositoryPort(Protocol):
     def get_task(self, task_id: str) -> WorkTask: ...
 
     def ensure_preprocessing_composite_goal(self, task: WorkTask) -> CompositeGoalIdentity: ...
+
+    def ensure_analysis_only_external_goal(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity: ...
 
     def list_composite_goal_intent_ids(self, conversation_id: str) -> tuple[str, ...]: ...
 

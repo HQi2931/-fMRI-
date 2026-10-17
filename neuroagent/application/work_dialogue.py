@@ -692,6 +692,7 @@ class WorkDialogue:
         workspace_content_consent: bool = False,
         idempotency_key: str,
         has_profiles: bool,
+        persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
         run_context = packet.work_context.get("run")
         qc_context = packet.work_context.get("qc")
@@ -1043,6 +1044,7 @@ class WorkDialogue:
                 idempotency_key=idempotency_key,
                 has_profiles=has_profiles,
                 reply=reply,
+                persistent_model_budget=persistent_model_budget,
             )
 
         saved = latest_agent_payload(conversation, "work_draft", WorkAgentRole.PREPROCESSING)

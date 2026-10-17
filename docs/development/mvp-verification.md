@@ -12,6 +12,14 @@
 
 `test_work_task_bindings.py`、`test_frozen_analysis_goal_selection.py` 与 `test_frozen_analysis_readout.py` 定向回归共 32 项通过，覆盖模型/无模型 standalone 只读结果查询，以及真实 CompositeGoal task 丢失 intent 身份时拒绝读取。Ruff check/format、全量 neuroagent Mypy（305 个源文件）、文档规范与差异空白检查通过；测试仅有既有 Starlette/httpx deprecation warning，未调用真实 Provider、MATLAB 或 DPABI。
 
+## 2026-10-18 已有外部来源的独立统计目标
+
+Work 对明确选择的一个当前项目外部纳入来源，现在在首次草稿模型调用前写入 analysis-only CompositeGoal root 和累计模型预算。目标绑定导入 ID、版本、源树 hash、inclusion hash、manifest hash 及组合 revision hash；建根时服务端在同一事务再次核验来源仍处于 included 且身份未变化。此目标没有 preprocessing task、preprocessing Run 或异步 proposal/result outbox。冻结统计 proposal 随后绑定目标的分析 intent 与 Statistical WorkTask，保留既有用户审查、Plan Approval 和显式 Run 创建门禁。
+
+纵向集成测试确认：Provider 首次调用开始时 root 与预算已持久化，首个 invocation 已记账；统计任务停在 `WAITING_USER`；未批准的 Run 被拒，显式验证/批准后才允许创建 Run。`test_composite_goal.py`、摘要/选择、两类预算测试、WorkTask 绑定、frozen-analysis/readout 与 migration 回归共 100 项通过，包含旧 CompositeGoal 预算回填和 0033 重建后根身份保留。Ruff check/format、全量 neuroagent Mypy（306 个源文件）、88 份文档规范检查和 `git diff --check` 通过；有既有 Starlette/httpx deprecation warning。迁移 0033 保留既有预处理根和预算/reservation 行；降级遇到 analysis-only 根则拒绝丢失 source identity。没有运行真实 Provider、MATLAB 或 DPABI。
+
+本能力只使用现有外部导入和统计设计装配器支持的单 Work conversation、单个明确来源及现有统计组合。没有科学参数推断、来源猜测、自动批准/启动 Run、多 Run/session、多指标拆分、FC 或任意 DAG。analysis-only root 尚未接入现有仅针对预处理复合目标的进度列表、后台 outbox/续接与统一完成投影，因此不表示计划 0014 的通用自动化体验已完成。决策见 [ADR 0049](../adr/0049-analysis-only-external-import-goals.md)。
+
 ## 2026-10-18 复合目标累计模型预算
 
 复合目标根现在拥有独立的持久模型预算和调用预留账本。分析提案自动续接与统计结果解释两个 outbox 共用 intent 级的步数、Gateway invocation 数、token 和累计耗时上限。工具循环每轮及 JSON 单次回退都会在模型分发前原子预留；只有 reservation 状态为 `reserved` 才允许请求。elapsed allowance 预先扣减并限制本地 Gateway await；超时会请求取消，取消清理仍运行的实际观测耗时也计入账本并可形成 overrun；进程退出会保留未结算的预扣。返回的 Provider usage 按实际 token 幂等结算；缺失 usage 时保留估算值，额外报告的 profile failover attempts 以每次一份请求估算 token 收费。预算耗尽时 outbox 转为 `WAITING_USER` 且不开放重试，确保手动 retry 不会重置额度。缺失预算记录、重复 reservation 和异常状态均失败关闭，不会误报成额度耗尽。claim fence 丢失会取消本地生成任务，旧结果不会提交。迁移 0031 为现有根回填精确预处理 WorkTask 的预算上限，0032 加入持久耗时预留字段。

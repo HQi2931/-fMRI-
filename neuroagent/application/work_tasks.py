@@ -109,6 +109,8 @@ def ensure_statistical_work_task_for_plan(
     conversation = get_conversation(conversation_id)
     design = plan.plan.get("design")
     test_name = design.get("test") if isinstance(design, dict) else None
+    external_import_id = design.get("external_import_id") if isinstance(design, dict) else None
+    external_import_hash = design.get("external_import_hash") if isinstance(design, dict) else None
     goal_description = _analysis_goal_description(
         conversation,
         role_task,
@@ -121,6 +123,11 @@ def ensure_statistical_work_task_for_plan(
         proposal_hash=proposal_hash,
         draft_hash=draft_hash,
         goal_description=goal_description,
+        input_manifest_hash=plan.manifest_hash,
+        external_import_id=(external_import_id if isinstance(external_import_id, str) else None),
+        external_import_hash=(
+            external_import_hash if isinstance(external_import_hash, str) else None
+        ),
     )
     if role_task.work_task_id not in {None, durable_task.task_id}:
         raise ConflictError(

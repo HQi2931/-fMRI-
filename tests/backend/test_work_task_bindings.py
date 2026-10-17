@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,7 +9,10 @@ import nibabel as nib
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
+from neuroagent.agent.gateway import ChatGatewayResult
+from neuroagent.agent.models import ModelProfile, ProviderResponse
 from neuroagent.api.app import create_app
 from neuroagent.application.automation.models import TaskStatus, TaskStepStatus
 from neuroagent.application.contracts.conversations import (
@@ -281,6 +286,191 @@ def test_work_statistics_persists_plan_run_and_role_without_browser_cache(
         assert failure.value.code == "work_agent_confirmation_mismatch"
     finally:
         fresh.close()
+
+
+def test_external_analysis_target_persists_budget_before_provider_and_binds_review_chain(
+    service, source_root, work_root, monkeypatch
+):
+    _old_conversation_id, _old_request, source_proposal_payload = _proposal(
+        service, source_root, work_root
+    )
+    external_import_id = source_proposal_payload["statistical_design_proposal"]["design"][
+        "external_import_id"
+    ]
+    project_id = service.external_imports.get_external_analysis_import(
+        external_import_id
+    ).project_id
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work", project_id=project_id),
+        "analysis-only-target-conversation",
+    )
+    draft_patch = dict(source_proposal_payload["analysis_draft"]["draft"])
+    response = ChatGatewayResult(
+        response=ProviderResponse(
+            content=json.dumps(
+                {
+                    "answer": "请审查已选来源对应的统计方案。",
+                    "action": "prepare_statistical_analysis",
+                    "analysis_patch": draft_patch,
+                }
+            ),
+            model="chosen-model",
+            usage={"total_tokens": 81},
+        ),
+        selected_profile_id="dialogue-model",
+        context_hash="a" * 64,
+        attempted_profile_ids=("dialogue-model",),
+        remote_search_used=False,
+        redaction_count=0,
+    )
+    service.repository.create_model_profile(
+        ModelProfile(
+            id="dialogue-model",
+            provider="openai-compatible",
+            base_url="https://example.org/v1",
+            model="chosen-model",
+            api_key_env="UNUSED_MOCK_API_KEY",
+            context_window_tokens=32768,
+        )
+    )
+    provider_calls: list[str] = []
+
+    async def generate(**_kwargs: Any) -> ChatGatewayResult:
+        with service.database.engine.connect() as connection:
+            root = (
+                connection.execute(
+                    text(
+                        "SELECT intent_task_id, preprocessing_task_id, source_external_import_id, "
+                        "source_inclusion_hash FROM composite_goal_links "
+                        "WHERE goal_kind='analysis_only_external_import' "
+                        "AND source_external_import_id=:import_id"
+                    ),
+                    {"import_id": external_import_id},
+                )
+                .mappings()
+                .one()
+            )
+            budget = (
+                connection.execute(
+                    text(
+                        "SELECT used_model_calls, used_tokens FROM composite_goal_model_budgets "
+                        "WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": root["intent_task_id"]},
+                )
+                .mappings()
+                .one()
+            )
+        assert root["preprocessing_task_id"] is None
+        assert root["source_external_import_id"] == external_import_id
+        assert (
+            root["source_inclusion_hash"]
+            == service.external_imports.get_external_analysis_import(
+                external_import_id
+            ).inclusion_hash
+        )
+        # The provider is reached only after the durable reservation charged the target.
+        assert budget["used_model_calls"] >= 1
+        provider_calls.append(root["intent_task_id"])
+        return response
+
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", generate)
+    turn = asyncio.run(
+        service.conversations.send_conversation_turn(
+            conversation.conversation_id,
+            ConversationTurnCreate(
+                content="请用所选外部指标进行独立统计分析。",
+                project_id=project_id,
+                external_analysis_import_id=external_import_id,
+                preferred_profile_id="dialogue-model",
+            ),
+            "analysis-only-target-turn",
+        )
+    )
+
+    payload = turn.assistant_message.payload
+    target = payload["analysis_target"]
+    assert provider_calls
+    assert len(set(provider_calls)) == 1
+    assert target["goal_kind"] == "analysis_only_external_import"
+    assert target["source_external_import_id"] == external_import_id
+    assert payload["analysis_draft"]["analysis_intent_task_id"] == target["intent_task_id"]
+    assert payload["statistical_design_proposal"]["design"]["external_import_id"] == (
+        external_import_id
+    )
+    assert service.runs.list_runs(project_id=project_id) == []
+
+    role_task = work_task(
+        service.conversations.get_conversation(conversation.conversation_id),
+        WorkAgentRole.ANALYSIS,
+    )
+    assert role_task is not None
+    assert role_task.analysis_intent_task_id == target["intent_task_id"]
+    assert role_task.work_task_id is not None
+    durable_task = service.automation.get_task(role_task.work_task_id)
+    assert durable_task.status is TaskStatus.WAITING_USER
+    assert durable_task.authority_refs.analysis_intent_task_id == target["intent_task_id"]
+    goal = service.automation.find_composite_goal(target["intent_task_id"])
+    assert goal is not None
+    assert goal.goal_kind == "analysis_only_external_import"
+    assert goal.preprocessing_task_id is None
+    budget = service.automation.get_composite_goal_model_budget(target["intent_task_id"])
+    assert budget.used_model_calls >= 1
+    assert budget.used_tokens >= 81
+
+    proposal = payload["statistical_design_proposal"]
+    plan = service.statistics.create_statistical_design(
+        StatisticalDesignCreate(
+            project_id=project_id,
+            expected_project_version=proposal["project_version"],
+            input_manifest_hash=proposal["input_manifest_hash"],
+            design=proposal["design"],
+            correction=proposal["correction"],
+            work_context=StatisticalWorkContext(
+                conversation_id=conversation.conversation_id,
+                proposal_hash=proposal["proposal_hash"],
+                proposal_message_id=role_task.proposal_message_id,
+            ),
+        ),
+        "analysis-only-statistical-plan",
+    )
+    assert service.automation.get_task(role_task.work_task_id).status is TaskStatus.WAITING_USER
+    with pytest.raises(ConflictError):
+        service.runs.create_statistics_run(
+            StatisticsRunCreate(
+                project_id=project_id,
+                statistical_design_revision_id=plan.plan_revision.plan_revision_id,
+                expected_plan_hash=plan.plan_revision.plan_hash,
+            ),
+            "analysis-only-before-approval",
+        )
+    service.statistics.validate_statistical_design(
+        plan.plan_revision.plan_revision_id,
+        StatisticalDesignValidationRequest(expected_version=1),
+        "analysis-only-plan-validation",
+    )
+    approved_plan = service.plans.get_plan(plan.plan_revision.plan_revision_id)
+    service.plans.approve_plan(
+        approved_plan.plan_revision_id,
+        ApprovalCreate(
+            expected_version=approved_plan.version,
+            plan_hash=approved_plan.plan_hash,
+            actor="researcher",
+            decision="approved",
+            reason="Explicit user review in synthetic test",
+        ),
+        "analysis-only-plan-approval",
+    )
+    run = service.runs.create_statistics_run(
+        StatisticsRunCreate(
+            project_id=project_id,
+            statistical_design_revision_id=approved_plan.plan_revision_id,
+            expected_plan_hash=approved_plan.plan_hash,
+        ),
+        "analysis-only-explicit-run",
+    )
+    assert run.project_id == project_id
+    assert len(service.runs.list_runs(project_id=project_id)) == 1
 
 
 @pytest.mark.parametrize("operation", ["validate", "approve", "run"])

@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Work 现在可以对用户明确选定的单个已纳入外部指标建立独立分析目标；首次模型调用前持久化来源 revision 与累计预算，并将统计提案绑定到既有 Statistical WorkTask。统计方案仍待用户审查和批准，Run 仍需显式授权。此切片不创建虚构预处理任务，不扩展科学方法、目标列表/后台续接、多 Run/session、FC 或自动化 DAG。
+
 - 计划 0014 为显式 CompositeGoal 增加持久共享模型预算：两个后台续接 outbox 在工具循环每轮及 JSON 回退调用前原子预留调用、token 与 elapsed allowance，并限制本地 Gateway await；之后幂等结算，进程退出时预扣保留。额度耗尽暂停自动续接且重试不重置。历史 standalone outbox 保留兼容路径，迁移无法重建的历史模型 usage 明确从零记账；普通前台 Work 对话和通用 dispatcher 覆盖仍待实现。
 
 - 复合分析目标选择现可按冻结 Plan 保存的原提案消息恢复其精确 Plan、Task 和可选 Run；方法/结果/进度/QC 查询保持只读并限定到所选统计 Run。无 Run 时不查询项目级结果或其他运行 QC；模型无工具权限，不能把只读问答变成新方案或执行。

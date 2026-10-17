@@ -78,6 +78,7 @@ from neuroagent.application.automation.step_readiness import (
 )
 from neuroagent.application.contracts.automation import StepPlanReviewView
 from neuroagent.application.contracts.conversations import ConversationMode
+from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
     StatisticalResultDetailView,
@@ -784,6 +785,73 @@ class WorkTaskApplicationService:
                 ),
                 _StatisticalRunReadinessHandler(self._read_stable_statistical_snapshot),
             )
+        )
+
+    def ensure_analysis_only_external_goal(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        analysis_request: str,
+        imported: ExternalAnalysisImportView,
+    ) -> CompositeGoalIdentity:
+        """Persist an explicit external-source goal and budget before model work."""
+
+        conversation = self._conversation_repository.get_conversation(conversation_id)
+        self._require_work_conversation(conversation, conversation_id, project_id)
+        if (
+            imported.project_id != project_id
+            or imported.status != "included"
+            or imported.selection is None
+            or imported.inclusion_hash is None
+            or imported.inspection.source_tree_hash is None
+        ):
+            raise ConflictError(
+                "analysis_goal_external_source_unverified",
+                "建立独立统计目标前，必须选择当前项目中已纳入且可核验的外部来源。",
+            )
+        request_hash = content_hash(analysis_request.strip())
+        manifest_hash = imported.selection.input_manifest_hash
+        revision_hash = content_hash(
+            {
+                "external_import_id": imported.import_id,
+                "import_version": imported.version,
+                "source_tree_hash": imported.inspection.source_tree_hash,
+                "inclusion_hash": imported.inclusion_hash,
+                "input_manifest_hash": manifest_hash,
+            }
+        )
+        identity_fields = {
+            "goal_kind": "analysis_only_external_import",
+            "conversation_id": conversation_id,
+            "project_id": project_id,
+            "analysis_request_hash": request_hash,
+            "external_import_id": imported.import_id,
+            "source_revision_hash": revision_hash,
+        }
+        intent_id = content_hash(identity_fields)[:32]
+        goal = CompositeGoalIdentity(
+            intent_task_id=intent_id,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            analysis_request_hash=request_hash,
+            goal_kind="analysis_only_external_import",
+            preprocessing_task_id=None,
+            source_external_import_id=imported.import_id,
+            source_import_version=imported.version,
+            source_tree_hash=imported.inspection.source_tree_hash,
+            source_inclusion_hash=imported.inclusion_hash,
+            source_manifest_hash=manifest_hash,
+            source_revision_hash=revision_hash,
+        )
+        return self._repository.ensure_analysis_only_external_goal(
+            goal,
+            TaskBudget(
+                max_steps=100,
+                max_model_calls=40,
+                max_tokens=200_000,
+                max_elapsed_seconds=86_400,
+            ),
         )
 
     def create_task(self, task: WorkTask) -> WorkTask:
@@ -2287,6 +2355,8 @@ class WorkTaskApplicationService:
         analysis_request_hash: str | None = None,
         source_run_id: str | None = None,
         input_manifest_hash: str | None = None,
+        external_import_id: str | None = None,
+        external_import_hash: str | None = None,
     ) -> WorkTask:
         """Create/reuse the durable task for one reviewed statistical proposal."""
 
@@ -2329,21 +2399,33 @@ class WorkTaskApplicationService:
                     "composite_goal_analysis_scope_mismatch",
                     "统计提案的会话、项目或请求摘要不属于该复合目标。",
                 )
-            if snapshot.analysis_proposal_outbox is None:
+            if goal.goal_kind == "preprocess_then_analyze":
+                if snapshot.analysis_proposal_outbox is None:
+                    raise ConflictError(
+                        "composite_goal_proposal_outbox_missing",
+                        "统计提案不能绑定到尚未建立精确预处理 outbox 的目标。",
+                    )
+                outbox = snapshot.analysis_proposal_outbox
+                if source_run_id is not None and source_run_id != outbox.run_id:
+                    raise ConflictError(
+                        "composite_goal_proposal_source_mismatch",
+                        "统计提案使用的预处理 Run 与复合目标来源不一致。",
+                    )
+                if input_manifest_hash is not None and input_manifest_hash != outbox.manifest_hash:
+                    raise ConflictError(
+                        "composite_goal_proposal_manifest_mismatch",
+                        "统计提案使用的 manifest 与复合目标冻结输入不一致。",
+                    )
+            elif (
+                snapshot.analysis_proposal_outbox is not None
+                or source_run_id is not None
+                or input_manifest_hash != goal.source_manifest_hash
+                or external_import_id != goal.source_external_import_id
+                or external_import_hash != goal.source_inclusion_hash
+            ):
                 raise ConflictError(
-                    "composite_goal_proposal_outbox_missing",
-                    "统计提案不能绑定到尚未建立精确预处理 outbox 的目标。",
-                )
-            outbox = snapshot.analysis_proposal_outbox
-            if source_run_id is not None and source_run_id != outbox.run_id:
-                raise ConflictError(
-                    "composite_goal_proposal_source_mismatch",
-                    "统计提案使用的预处理 Run 与复合目标来源不一致。",
-                )
-            if input_manifest_hash is not None and input_manifest_hash != outbox.manifest_hash:
-                raise ConflictError(
-                    "composite_goal_proposal_manifest_mismatch",
-                    "统计提案使用的 manifest 与复合目标冻结输入不一致。",
+                    "analysis_goal_external_proposal_source_mismatch",
+                    "统计提案来源与目标绑定的外部纳入 revision 不一致。",
                 )
             legacy_matches_intent = bool(
                 legacy_current is not None
@@ -2379,10 +2461,28 @@ class WorkTaskApplicationService:
                         "work_task_composite_goal_conflict",
                         "intent-scoped 统计任务 ID 已绑定到不同复合目标。",
                     )
-            if current is None and (source_run_id is None or input_manifest_hash is None):
+            if (
+                current is None
+                and goal.goal_kind == "preprocess_then_analyze"
+                and (source_run_id is None or input_manifest_hash is None)
+            ):
                 raise ConflictError(
                     "composite_goal_proposal_source_missing",
                     "新的统计尝试必须显式绑定预处理 Run 和 manifest。",
+                )
+            if (
+                current is None
+                and goal.goal_kind == "analysis_only_external_import"
+                and (
+                    external_import_id != goal.source_external_import_id
+                    or external_import_hash != goal.source_inclusion_hash
+                    or input_manifest_hash != goal.source_manifest_hash
+                    or source_run_id is not None
+                )
+            ):
+                raise ConflictError(
+                    "analysis_goal_external_proposal_source_mismatch",
+                    "新的统计提案必须精确绑定已选择的外部纳入来源。",
                 )
         else:
             task_id = (

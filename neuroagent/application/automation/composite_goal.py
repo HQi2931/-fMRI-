@@ -33,7 +33,17 @@ class CompositeGoalIdentity(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=100)
     project_id: str = Field(min_length=1, max_length=100)
     analysis_request_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    preprocessing_task_id: str = Field(min_length=1, max_length=100)
+    goal_kind: str = Field(
+        default="preprocess_then_analyze",
+        pattern=r"^(preprocess_then_analyze|analysis_only_external_import)$",
+    )
+    preprocessing_task_id: str | None = Field(default=None, max_length=100)
+    source_external_import_id: str | None = Field(default=None, max_length=100)
+    source_import_version: int | None = Field(default=None, ge=1)
+    source_tree_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    source_inclusion_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    source_manifest_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    source_revision_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # The root exists as soon as the preprocessing Plan is committed. Its
     # proposal outbox is created later, together with the authorized Run.
     analysis_proposal_outbox_intent_task_id: str | None = Field(default=None, max_length=100)
@@ -42,6 +52,26 @@ class CompositeGoalIdentity(BaseModel):
 
     @model_validator(mode="after")
     def references_match_stable_ids(self) -> CompositeGoalIdentity:
+        source_fields = (
+            self.source_external_import_id,
+            self.source_import_version,
+            self.source_tree_hash,
+            self.source_inclusion_hash,
+            self.source_manifest_hash,
+            self.source_revision_hash,
+        )
+        if self.goal_kind == "preprocess_then_analyze":
+            if self.preprocessing_task_id is None or any(
+                item is not None for item in source_fields
+            ):
+                raise ValueError("preprocessing goals require only a preprocessing task reference")
+        elif (
+            self.preprocessing_task_id is not None
+            or any(item is None for item in source_fields)
+            or self.analysis_proposal_outbox_intent_task_id is not None
+            or self.result_interpretation_outbox_task_id is not None
+        ):
+            raise ValueError("analysis-only goals require an exact external import source")
         if (
             self.analysis_proposal_outbox_intent_task_id is not None
             and self.analysis_proposal_outbox_intent_task_id != self.intent_task_id

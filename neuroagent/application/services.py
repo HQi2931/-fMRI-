@@ -254,6 +254,7 @@ class ApplicationServices:
         self.workspaces.get_conversation = self.conversations.get_conversation
         self.conversations.get_plan = self.plans.get_plan
         self.conversations.get_run = self.runs.get_run
+        self.conversations.get_external_import = self.external_imports.get_external_analysis_import
         self.conversations.list_model_profiles = self.models.list_model_profiles
         self.conversations.workspace_content_consent_granted = (
             self.workspaces.workspace_content_consent_granted

@@ -150,10 +150,18 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
                         "INSERT INTO work_tasks "
                         "(task_id,status,version,goal_json,waiting_condition_json,"
                         "authority_refs_json,recovery_steps_json,budget_json) "
-                        "VALUES (:task_id,'waiting_user',1,'{}',:waiting,:authority,'[]','{}')"
+                        "VALUES (:task_id,'waiting_user',1,'{}',:waiting,:authority,'[]',:budget)"
                     ),
                     {
                         "task_id": task_id,
+                        "budget": json.dumps(
+                            {
+                                "max_steps": 100,
+                                "max_model_calls": 40,
+                                "max_tokens": 200_000,
+                                "max_elapsed_seconds": 86_400,
+                            }
+                        ),
                         "waiting": json.dumps(
                             {"kind": "user_decision", "reference": "review", "reason": "legacy"}
                         ),
@@ -286,6 +294,19 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
                     "FROM composite_goal_links WHERE intent_task_id='legacy-composite-intent'"
                 )
             ).one()
+            migrated_root = connection.execute(
+                text(
+                    "SELECT goal_kind, preprocessing_task_id, source_external_import_id "
+                    "FROM composite_goal_links WHERE intent_task_id='legacy-composite-intent'"
+                )
+            ).one()
+            migrated_budget = connection.execute(
+                text(
+                    "SELECT max_steps, max_model_calls, max_tokens, max_elapsed_seconds "
+                    "FROM composite_goal_model_budgets "
+                    "WHERE intent_task_id='legacy-composite-intent'"
+                )
+            ).one()
             attempt = connection.execute(
                 text(
                     "SELECT attempt_number, work_task_id, proposal_hash "
@@ -336,6 +357,12 @@ def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Pa
                 ).mappings()
             }
         assert tuple(linked) == ("legacy-composite-intent", analysis_task_id)
+        assert tuple(migrated_root) == (
+            "preprocess_then_analyze",
+            "legacy-composite-preprocessing",
+            None,
+        )
+        assert tuple(migrated_budget) == (100, 40, 200_000, 86_400)
         assert tuple(attempt) == (1, analysis_task_id, proposal_hash)
         assert ambiguous_count == 0
         assert unverified_count == 0
@@ -428,9 +455,19 @@ def test_composite_goal_source_fanout_migration_preserves_identity_rows(
                         "INSERT INTO work_tasks "
                         "(task_id,status,version,goal_json,waiting_condition_json,"
                         "authority_refs_json,recovery_steps_json,budget_json) "
-                        "VALUES (:task_id,'waiting_user',1,'{}',NULL,'{}','[]','{}')"
+                        "VALUES (:task_id,'waiting_user',1,'{}',NULL,'{}','[]',:budget)"
                     ),
-                    {"task_id": task_id},
+                    {
+                        "task_id": task_id,
+                        "budget": json.dumps(
+                            {
+                                "max_steps": 100,
+                                "max_model_calls": 40,
+                                "max_tokens": 200_000,
+                                "max_elapsed_seconds": 86_400,
+                            }
+                        ),
+                    },
                 )
             connection.execute(
                 AnalysisProposalOutboxRow.__table__.insert().values(  # type: ignore[attr-defined]
@@ -447,14 +484,21 @@ def test_composite_goal_source_fanout_migration_preserves_identity_rows(
                 )
             )
             connection.execute(
-                CompositeGoalLinkRow.__table__.insert().values(  # type: ignore[attr-defined]
-                    intent_task_id="fanout-intent-legacy",
-                    conversation_id="fanout-conversation",
-                    project_id="fanout-project",
-                    analysis_request_hash=request_hash,
-                    preprocessing_task_id="fanout-preprocessing",
-                    analysis_proposal_outbox_intent_task_id="fanout-intent-legacy",
-                )
+                text(
+                    "INSERT INTO composite_goal_links "
+                    "(intent_task_id,conversation_id,project_id,analysis_request_hash,"
+                    "preprocessing_task_id,analysis_proposal_outbox_intent_task_id) "
+                    "VALUES (:intent_id,:conversation_id,:project_id,:request_hash,"
+                    ":preprocessing_task_id,:outbox_intent_id)"
+                ),
+                {
+                    "intent_id": "fanout-intent-legacy",
+                    "conversation_id": "fanout-conversation",
+                    "project_id": "fanout-project",
+                    "request_hash": request_hash,
+                    "preprocessing_task_id": "fanout-preprocessing",
+                    "outbox_intent_id": "fanout-intent-legacy",
+                },
             )
             connection.execute(
                 CompositeGoalAnalysisAttemptRow.__table__.insert().values(  # type: ignore[attr-defined]
@@ -475,16 +519,50 @@ def test_composite_goal_source_fanout_migration_preserves_identity_rows(
                 )
             )
 
+        upgrade("0032_reserved_model_elapsed_budget")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO composite_goal_model_call_reservations "
+                    "(intent_task_id,reservation_id,call_id,state,estimated_tokens,"
+                    "reserved_tokens,actual_tokens,elapsed_seconds,reserved_elapsed_seconds) "
+                    "VALUES ('fanout-intent-legacy','legacy-reservation','legacy-call',"
+                    "'settled',31,29,29,2,0)"
+                )
+            )
         upgrade("head")
         with engine.connect() as connection:
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
             assert connection.execute(
                 text(
-                    "SELECT preprocessing_task_id, analysis_request_hash, "
-                    "analysis_proposal_outbox_intent_task_id "
+                    "SELECT goal_kind, preprocessing_task_id, source_external_import_id, "
+                    "analysis_request_hash, analysis_proposal_outbox_intent_task_id "
                     "FROM composite_goal_links WHERE intent_task_id='fanout-intent-legacy'"
                 )
-            ).one() == ("fanout-preprocessing", request_hash, "fanout-intent-legacy")
+            ).one() == (
+                "preprocess_then_analyze",
+                "fanout-preprocessing",
+                None,
+                request_hash,
+                "fanout-intent-legacy",
+            )
+            assert connection.execute(
+                text(
+                    "SELECT reservation_id, call_id, state, estimated_tokens, reserved_tokens, "
+                    "actual_tokens, elapsed_seconds, reserved_elapsed_seconds "
+                    "FROM composite_goal_model_call_reservations "
+                    "WHERE intent_task_id='fanout-intent-legacy'"
+                )
+            ).one() == (
+                "legacy-reservation",
+                "legacy-call",
+                "settled",
+                31,
+                29,
+                29,
+                2,
+                0,
+            )
             assert connection.execute(
                 text(
                     "SELECT preprocessing_task_id, artifact_ids_json "

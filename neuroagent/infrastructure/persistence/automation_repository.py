@@ -57,6 +57,7 @@ from neuroagent.application.automation.step_preparation import (
 )
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import content_hash
+from neuroagent.domain.fmri.external_import import external_analysis_manifest_hash
 from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
 from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
@@ -180,6 +181,123 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     "预处理任务在建立复合目标关联前已发生变化。",
                 )
             return self._ensure_preprocessing_composite_goal(session, current)
+
+    def ensure_analysis_only_external_goal(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity:
+        """Persist one exact external-import target and its initial model budget."""
+
+        if goal.goal_kind != "analysis_only_external_import":
+            raise ValueError("analysis-only root required")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            conversation = (
+                session.execute(
+                    text("SELECT mode, project_id FROM conversations WHERE conversation_id=:id"),
+                    {"id": goal.conversation_id},
+                )
+                .mappings()
+                .first()
+            )
+            imported = (
+                session.execute(
+                    text(
+                        "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                        "FROM external_analysis_imports WHERE import_id=:import_id"
+                    ),
+                    {"import_id": goal.source_external_import_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                conversation is None
+                or conversation["mode"] != "work"
+                or conversation["project_id"] not in {None, goal.project_id}
+                or imported is None
+                or imported["project_id"] != goal.project_id
+                or imported["status"] != "included"
+                or imported["version"] != goal.source_import_version
+                or imported["source_tree_hash"] != goal.source_tree_hash
+                or imported["inclusion_hash"] != goal.source_inclusion_hash
+            ):
+                raise ConflictError(
+                    "analysis_goal_external_source_changed",
+                    "显式外部分析来源未纳入、已变化或不属于当前 Work 项目。",
+                )
+            current_manifest_hash = external_analysis_manifest_hash(
+                str(goal.source_external_import_id),
+                str(imported["source_tree_hash"]),
+                str(imported["inclusion_hash"]),
+            )
+            current_revision_hash = content_hash(
+                {
+                    "external_import_id": goal.source_external_import_id,
+                    "import_version": imported["version"],
+                    "source_tree_hash": imported["source_tree_hash"],
+                    "inclusion_hash": imported["inclusion_hash"],
+                    "input_manifest_hash": current_manifest_hash,
+                }
+            )
+            if (
+                current_manifest_hash != goal.source_manifest_hash
+                or current_revision_hash != goal.source_revision_hash
+            ):
+                raise ConflictError(
+                    "analysis_goal_external_source_changed",
+                    "外部分析来源 revision 在建立目标前已变化，请重新选择来源。",
+                )
+            current_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if current_row is None:
+                session.execute(
+                    text(
+                        """INSERT INTO composite_goal_links
+                        (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                         goal_kind, preprocessing_task_id, source_external_import_id,
+                         source_import_version, source_tree_hash, source_inclusion_hash,
+                         source_manifest_hash, source_revision_hash,
+                         analysis_proposal_outbox_intent_task_id, analysis_work_task_id,
+                         result_interpretation_outbox_task_id)
+                        VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                                'analysis_only_external_import', NULL, :import_id,
+                                :import_version, :tree_hash, :inclusion_hash,
+                                :manifest_hash, :revision_hash, NULL, NULL, NULL)"""
+                    ),
+                    {
+                        "intent_id": goal.intent_task_id,
+                        "conversation_id": goal.conversation_id,
+                        "project_id": goal.project_id,
+                        "request_hash": goal.analysis_request_hash,
+                        "import_id": goal.source_external_import_id,
+                        "import_version": goal.source_import_version,
+                        "tree_hash": goal.source_tree_hash,
+                        "inclusion_hash": goal.source_inclusion_hash,
+                        "manifest_hash": goal.source_manifest_hash,
+                        "revision_hash": goal.source_revision_hash,
+                    },
+                )
+                current_row = (
+                    session.execute(
+                        text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+            identity = SqliteWorkTaskRepository._composite_goal_from_row(current_row)
+            if identity != goal:
+                raise ConflictError(
+                    "analysis_goal_identity_conflict",
+                    "稳定分析目标 ID 已绑定到不同的会话、请求或外部来源 revision。",
+                )
+            self._ensure_composite_goal_model_budget(session, goal.intent_task_id, budget)
+            return identity
 
     @staticmethod
     def _ensure_preprocessing_composite_goal(
@@ -760,7 +878,14 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             conversation_id=row["conversation_id"],
             project_id=row["project_id"],
             analysis_request_hash=row["analysis_request_hash"],
+            goal_kind=row["goal_kind"],
             preprocessing_task_id=row["preprocessing_task_id"],
+            source_external_import_id=row["source_external_import_id"],
+            source_import_version=row["source_import_version"],
+            source_tree_hash=row["source_tree_hash"],
+            source_inclusion_hash=row["source_inclusion_hash"],
+            source_manifest_hash=row["source_manifest_hash"],
+            source_revision_hash=row["source_revision_hash"],
             analysis_proposal_outbox_intent_task_id=(
                 row["analysis_proposal_outbox_intent_task_id"]
             ),
@@ -796,7 +921,8 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             rows = session.execute(
                 text(
                     "SELECT intent_task_id FROM composite_goal_links "
-                    "WHERE conversation_id=:conversation_id ORDER BY intent_task_id"
+                    "WHERE conversation_id=:conversation_id "
+                    "AND goal_kind='preprocess_then_analyze' ORDER BY intent_task_id"
                 ),
                 {"conversation_id": conversation_id},
             ).scalars()
@@ -872,10 +998,18 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     )
                     if len(intent_messages) == 2:
                         break
-            preprocessing_task = self._task_from_session(session, goal.preprocessing_task_id)
+            preprocessing_task = (
+                self._task_from_session(session, goal.preprocessing_task_id)
+                if goal.preprocessing_task_id is not None
+                else None
+            )
             preprocessing_plan_project_id = None
             preprocessing_plan_manifest_hash = None
-            plan_revision_id = preprocessing_task.authority_refs.plan_revision_id
+            plan_revision_id = (
+                preprocessing_task.authority_refs.plan_revision_id
+                if preprocessing_task is not None
+                else None
+            )
             if plan_revision_id is not None:
                 plan_row = (
                     session.execute(
@@ -1017,7 +1151,14 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 current_goal.conversation_id != goal.conversation_id
                 or current_goal.project_id != goal.project_id
                 or current_goal.analysis_request_hash != goal.analysis_request_hash
+                or current_goal.goal_kind != goal.goal_kind
                 or current_goal.preprocessing_task_id != goal.preprocessing_task_id
+                or current_goal.source_external_import_id != goal.source_external_import_id
+                or current_goal.source_import_version != goal.source_import_version
+                or current_goal.source_tree_hash != goal.source_tree_hash
+                or current_goal.source_inclusion_hash != goal.source_inclusion_hash
+                or current_goal.source_manifest_hash != goal.source_manifest_hash
+                or current_goal.source_revision_hash != goal.source_revision_hash
                 or current_goal.analysis_proposal_outbox_intent_task_id
                 != goal.analysis_proposal_outbox_intent_task_id
                 or current_goal.analysis_work_task_id != goal.analysis_work_task_id
@@ -1025,23 +1166,67 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 raise ConflictError(
                     "composite_goal_changed", "复合目标在统计提案提交前已变化，请刷新后重试。"
                 )
-            outbox_row = (
-                session.execute(
-                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
-                    {"intent_id": goal.intent_task_id},
+            outbox_row = None
+            if current_goal.goal_kind == "preprocess_then_analyze":
+                outbox_row = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"
+                        ),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .first()
                 )
-                .mappings()
-                .first()
-            )
-            if outbox_row is None or not self._outbox_matches_goal(outbox_row, current_goal):
-                raise ConflictError(
-                    "composite_goal_outbox_mismatch", "分析提案 outbox 与复合目标身份不匹配。"
+                if outbox_row is None or not self._outbox_matches_goal(outbox_row, current_goal):
+                    raise ConflictError(
+                        "composite_goal_outbox_mismatch", "分析提案 outbox 与复合目标身份不匹配。"
+                    )
+                if outbox_row["status"] not in {"ready", "proposal_ready", "waiting_user"}:
+                    raise ConflictError(
+                        "composite_goal_outbox_not_open",
+                        "分析提案 outbox 已阻断，不能绑定新尝试。",
+                    )
+            else:
+                imported = (
+                    session.execute(
+                        text(
+                            "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                            "FROM external_analysis_imports WHERE import_id=:import_id"
+                        ),
+                        {"import_id": current_goal.source_external_import_id},
+                    )
+                    .mappings()
+                    .first()
                 )
-            if outbox_row["status"] not in {"ready", "proposal_ready", "waiting_user"}:
-                raise ConflictError(
-                    "composite_goal_outbox_not_open",
-                    "分析提案 outbox 已阻断，不能绑定新尝试。",
-                )
+                if (
+                    imported is None
+                    or imported["project_id"] != current_goal.project_id
+                    or imported["status"] != "included"
+                    or imported["version"] != current_goal.source_import_version
+                    or imported["source_tree_hash"] != current_goal.source_tree_hash
+                    or imported["inclusion_hash"] != current_goal.source_inclusion_hash
+                    or external_analysis_manifest_hash(
+                        str(current_goal.source_external_import_id),
+                        str(imported["source_tree_hash"]),
+                        str(imported["inclusion_hash"]),
+                    )
+                    != current_goal.source_manifest_hash
+                    or content_hash(
+                        {
+                            "external_import_id": current_goal.source_external_import_id,
+                            "import_version": imported["version"],
+                            "source_tree_hash": imported["source_tree_hash"],
+                            "inclusion_hash": imported["inclusion_hash"],
+                            "input_manifest_hash": current_goal.source_manifest_hash,
+                        }
+                    )
+                    != current_goal.source_revision_hash
+                ):
+                    raise ConflictError(
+                        "analysis_goal_external_source_changed",
+                        "外部分析来源在统计任务绑定前已变化，提案不能进入审查链。",
+                    )
             task = self._task_from_session(session, analysis_work_task_id)
             step_rows = tuple(step for step in task.steps if step.kind == "statistical_run")
             if (
@@ -1101,15 +1286,18 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                         "composite_goal_active_attempt_missing",
                         "复合目标有历史尝试但没有当前尝试引用。",
                     )
-                if outbox_row["status"] == "proposal_ready" and (
-                    outbox_row["analysis_work_task_id"] != analysis_work_task_id
+                if (
+                    outbox_row is not None
+                    and outbox_row["status"] == "proposal_ready"
+                    and (outbox_row["analysis_work_task_id"] != analysis_work_task_id)
                 ):
                     raise ConflictError(
                         "composite_goal_initial_attempt_mismatch",
                         "首个统计尝试必须对应 proposal outbox 生成的精确任务。",
                     )
                 if (
-                    outbox_row["status"] == "ready"
+                    outbox_row is not None
+                    and outbox_row["status"] == "ready"
                     and outbox_row["analysis_work_task_id"] is not None
                 ):
                     raise ConflictError(

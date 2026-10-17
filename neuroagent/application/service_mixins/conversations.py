@@ -50,6 +50,7 @@ from neuroagent.application.contracts.conversations import (
     WorkDraftUpdate,
     WorkReviewCreate,
 )
+from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.plans import PlanRevisionView
 from neuroagent.application.contracts.runs import (
     QcExecutionMode,
@@ -176,6 +177,7 @@ class ConversationMixin(BaseServiceMixin):
     get_plan: Callable[[str], PlanRevisionView]
     get_run: Callable[[str], RunView]
     list_model_profiles: Callable[[], list[ModelProfileView]]
+    get_external_import: Callable[[str], ExternalAnalysisImportView]
     automation: WorkTaskApplicationService
 
     @staticmethod
@@ -1856,6 +1858,41 @@ class ConversationMixin(BaseServiceMixin):
                 else conversation.preferred_profile_id
             )
             project_id = request.project_id or conversation.project_id
+            analysis_goal = None
+            persistent_model_budget = None
+            if (
+                request.external_analysis_import_id is not None
+                and request.action is ConversationAction.AUTO
+            ):
+                if conversation.mode is not ConversationMode.WORK or project_id is None:
+                    raise InputValidationError(
+                        "analysis_only_work_project_required",
+                        "独立统计分析需要绑定到一个 Work 会话和当前项目。",
+                    )
+                imported = self.get_external_import(request.external_analysis_import_id)
+                if (
+                    imported.project_id != project_id
+                    or imported.status != "included"
+                    or imported.selection is None
+                    or imported.inclusion_hash is None
+                    or imported.inspection.metric_kind is None
+                    or imported.inspection.scaling is None
+                ):
+                    raise InputValidationError(
+                        "analysis_only_external_source_unverified",
+                        "请从当前项目选择已纳入并登记掩膜的外部分析来源。",
+                    )
+                analysis_goal = self.automation.ensure_analysis_only_external_goal(
+                    conversation_id=conversation_id,
+                    project_id=project_id,
+                    analysis_request=request.content,
+                    imported=imported,
+                )
+                persistent_model_budget = _CompositeGoalModelBudgetSession(
+                    self.automation,
+                    intent_task_id=analysis_goal.intent_task_id,
+                    scope=f"analysis-only:{analysis_goal.intent_task_id}:{idempotency_key}",
+                )
             if request.preprocessing_task_id is not None:
                 if _confirmation is not None:
                     raise InputValidationError(
@@ -2044,6 +2081,7 @@ class ConversationMixin(BaseServiceMixin):
                     ),
                     idempotency_key=idempotency_key,
                     has_profiles=bool(self.list_model_profiles()),
+                    persistent_model_budget=persistent_model_budget,
                 )
             else:
                 action_result = self.conversation_work.execute(
@@ -2069,6 +2107,50 @@ class ConversationMixin(BaseServiceMixin):
                         **action_result.payload,
                     },
                 )
+            if (
+                analysis_goal is not None
+                and action_result.payload.get("agent_role") == WorkAgentRole.ANALYSIS.value
+            ):
+                payload = dict(action_result.payload)
+                request_hash = analysis_goal.analysis_request_hash
+                payload["analysis_dependency"] = {
+                    "task_kind": analysis_goal.goal_kind,
+                    "task_id": analysis_goal.intent_task_id,
+                    "conversation_id": conversation_id,
+                    "project_id": analysis_goal.project_id,
+                    "analysis_request": request.content.strip(),
+                    "status": "analysis_started",
+                    "data_references": {
+                        "external_import_id": analysis_goal.source_external_import_id,
+                        "external_import_version": analysis_goal.source_import_version,
+                        "source_tree_hash": analysis_goal.source_tree_hash,
+                        "inclusion_hash": analysis_goal.source_inclusion_hash,
+                        "input_manifest_hash": analysis_goal.source_manifest_hash,
+                    },
+                    "evidence_hash": analysis_goal.source_revision_hash,
+                }
+                payload["analysis_intent_envelope"] = {
+                    "status": "active",
+                    "task_id": analysis_goal.intent_task_id,
+                    "conversation_id": conversation_id,
+                    "project_id": analysis_goal.project_id,
+                    "analysis_request_hash": request_hash,
+                }
+                analysis_draft = payload.get("analysis_draft")
+                if isinstance(analysis_draft, dict):
+                    payload["analysis_draft"] = {
+                        **analysis_draft,
+                        "analysis_intent_task_id": analysis_goal.intent_task_id,
+                        "analysis_request_hash": request_hash,
+                    }
+                payload["analysis_target"] = {
+                    "goal_kind": analysis_goal.goal_kind,
+                    "intent_task_id": analysis_goal.intent_task_id,
+                    "source_external_import_id": analysis_goal.source_external_import_id,
+                    "source_revision_hash": analysis_goal.source_revision_hash,
+                    "input_manifest_hash": analysis_goal.source_manifest_hash,
+                }
+                action_result = replace(action_result, payload=payload)
             model_metadata = action_result.payload.get("model")
             return (
                 conversation.version,
@@ -2476,6 +2558,13 @@ class ConversationMixin(BaseServiceMixin):
         )
         analysis_intent_task_id = draft_intent_id or continuation_intent_id
         analysis_request_hash = draft_request_hash or continuation_request_hash
+        design = proposal.get("design")
+        proposal_external_import_id = (
+            design.get("external_import_id") if isinstance(design, dict) else None
+        )
+        proposal_external_import_hash = (
+            design.get("external_import_hash") if isinstance(design, dict) else None
+        )
         if (
             not isinstance(proposal_hash, str)
             or not re.fullmatch(r"[a-f0-9]{64}", proposal_hash)
@@ -2574,6 +2663,16 @@ class ConversationMixin(BaseServiceMixin):
             input_manifest_hash=(
                 proposal.get("input_manifest_hash")
                 if isinstance(proposal.get("input_manifest_hash"), str)
+                else None
+            ),
+            external_import_id=(
+                proposal_external_import_id
+                if isinstance(proposal_external_import_id, str)
+                else None
+            ),
+            external_import_hash=(
+                proposal_external_import_hash
+                if isinstance(proposal_external_import_hash, str)
                 else None
             ),
         ).task_id

@@ -11,6 +11,7 @@
 - SQLAlchemy 2 + SQLite 持久化与 Alembic 迁移；
 - 分析提案及统计结果解释 outbox 分别使用独立状态、租约、fencing token、有界退避与终态引用；assistant continuation message 与对应 WorkTask/outbox 终态由应用层共享 Unit of Work 原子写入，迁移约束禁止半完成引用和重复 continuation key；
 - 迁移 0028 用 `composite_goal_links` 保存显式 intent 的身份根与当前分析 task/outbox 引用，用 `composite_goal_analysis_attempts` 追溯 proposal hash 修订；attempt 不保存 WorkTask/outbox 状态。preprocessing task 创建和根记录建立同事务，proposal outbox 外键可延后绑定；进度读取在一条 SQLite read transaction 中组装 Task、Plan project、outbox、attempt 和 assistant continuation 证据。迁移仅回填精确一致的旧 Task/Step/outbox 关系，歧义旧关联不导入；
+- 迁移 0033 将 composite root 明确区分为 preprocessing 复合目标与一个外部纳入来源的 analysis-only 目标。analysis-only root 固定来源导入版本、源树/inclusion/manifest/revision hash，不关联预处理 WorkTask；迁移按外键依赖顺序重建 root 与累计预算/调用预留账本，保留既有行，并在有新增目标时拒绝有损降级；
 - 会话保存前台角色与两个角色各自的方案/运行引用；迁移将旧 Work 运行归属预处理。统计运行及绑定共用 writer 事务；客户端缓存不承担任务持久化。
 - 数据集只读扫描、文件哈希和允许根目录路径策略；
 - 快速概况附带基于相对路径、文件大小、时间戳及顶层目录的 `metadata_revision`，用于发现规划输入变化；它不进入冻结清单，也不能替代执行前完整内容哈希。保留或伪造时间戳的内容变化仍由冻结与 Worker 校验识别。
