@@ -403,7 +403,7 @@ def _verified_analysis_summary(
 ) -> str | None:
     """Return bounded human text only from the exact persisted intent message."""
 
-    matches: list[str] = []
+    matches: set[str] = set()
     for message in messages:
         if message.conversation_id != goal.conversation_id or message.role != "assistant":
             continue
@@ -420,10 +420,10 @@ def _verified_analysis_summary(
             or content_hash(request) != goal.analysis_request_hash
         ):
             continue
-        matches.append(request)
+        matches.add(request)
     if len(matches) != 1:
         return None
-    summary = " ".join(matches[0].split())
+    summary = " ".join(next(iter(matches)).split())
     if not summary:
         return None
     if len(summary) > 160:

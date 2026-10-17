@@ -6,9 +6,13 @@
 - 更新日期：2026-10-16
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-17 分析目标身份继承修复
+
+`test_consumed_analysis_intent.py`、摘要、复合进度及两角色交接回归共 51 项通过。覆盖自动缺项草稿补齐、连续参数修订、模型不能修改目标身份、来源冲突不调用模型或写消息、分析补充 ALFF 路由、无关预处理运行和其他目标完成消息隔离。摘要对相同原请求的重复快照去重。未调用真实 Provider、MATLAB 或 DPABI；本记录不证明目标选择入口或完整计划 0014 已完成。
+
 ## 2026-10-16 复合目标摘要及来源登记回归
 
-当前流程卡片可显示原分析请求的有界摘要。应用层只接受同一 snapshot 中唯一匹配 intent、会话、项目、任务类型与请求 hash 的 assistant 消息；歧义、hash 或身份错配时返回空值。显式来源登记和共享来源 fanout 已在后续切片接通，下面 2026-10-15 基础验证中“尚无前台登记入口”的限制是当时状态。
+当前流程卡片可显示原分析请求的有界摘要。应用层只接受同一 snapshot 中可唯一核验、匹配 intent、会话、项目、任务类型与请求 hash 的原请求；相同请求可在续接快照中重复，歧义、hash 或身份错配时返回空值。显式来源登记和共享来源 fanout 已在后续切片接通，下面 2026-10-15 基础验证中“尚无前台登记入口”的限制是当时状态。
 
 本次执行 `test_api.py::test_health_openapi_and_error_envelope`、`test_composite_goal_summary.py`、`test_composite_goal.py` 和 `test_work_task_conversation_bindings.py`：14 项通过，包含 API 字段合同、摘要长度/空白与身份拒绝、复合进度和来源登记纵向回归。文档规范检查通过 84 份 Markdown，差异空白检查通过。只有既有 Starlette/httpx deprecation warning；未运行真实 Provider、MATLAB 或 DPABI。多目标的明确选择与继续交互、通用目标级恢复仍未验证或完成，不能由这些定向测试推断整体自动化验收通过。
 

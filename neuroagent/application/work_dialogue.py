@@ -6,8 +6,8 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import replace
-from typing import Any, cast
+from dataclasses import dataclass, replace
+from typing import Any, NoReturn, cast
 
 from pydantic import ValidationError
 
@@ -368,6 +368,147 @@ def _work_failure_details(
     return diagnostic, reason
 
 
+@dataclass(frozen=True)
+class _ConsumedAnalysisIntent:
+    intent_task_id: str
+    request_hash: str
+    source_run_id: str
+    dependency: dict[str, Any]
+    envelope: dict[str, Any]
+
+
+def _consumed_analysis_intent(
+    conversation: ConversationView,
+    request: ConversationTurnCreate,
+    *,
+    project_id: str | None,
+) -> _ConsumedAnalysisIntent | None:
+    """Recover identity only from the current server-persisted analysis draft.
+
+    A consumed envelope ends automatic proposal generation, not the user's
+    ability to finish its scientific choices. It must never revive a different
+    target, a completed target, or a draft whose internal source was changed.
+    """
+    if (
+        conversation.mode.value != "work"
+        or conversation.foreground_agent_role is not WorkAgentRole.ANALYSIS
+        or request.agent_role not in {None, WorkAgentRole.ANALYSIS}
+        or project_id is None
+        or conversation.project_id != project_id
+        or request.project_id not in {None, project_id}
+        or request.external_analysis_import_id is not None
+        or analysis_dependency_for_request(
+            request.content, project_id, conversation.conversation_id, ""
+        )
+        is not None
+    ):
+        return None
+
+    def conflict() -> NoReturn:
+        raise ConflictError(
+            "analysis_intent_resume_conflict",
+            "当前分析草稿与原自动化目标的身份或来源证据不一致，草稿已保留。请核对来源后继续。",
+        )
+
+    saved = latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
+    if saved is None:
+        return None
+    intent_id = saved.get("analysis_intent_task_id")
+    request_hash = saved.get("analysis_request_hash")
+    if intent_id is None and request_hash is None:
+        return None
+    if (
+        not isinstance(intent_id, str)
+        or not intent_id
+        or not isinstance(request_hash, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", request_hash)
+    ):
+        conflict()
+    envelope: dict[str, Any] | None = None
+    for message in reversed(conversation.messages):
+        candidate = message.payload.get("analysis_intent_envelope")
+        if message.role.value != "assistant" or not isinstance(candidate, dict):
+            continue
+        if candidate.get("status") == "cleared" and candidate.get("task_id") is None:
+            return None
+        if candidate.get("task_id") == intent_id:
+            envelope = candidate
+            break
+    if envelope is None:
+        conflict()
+    if envelope.get("status") != "consumed":
+        return None
+    if (
+        envelope.get("conversation_id") != conversation.conversation_id
+        or envelope.get("project_id") != project_id
+        or envelope.get("analysis_request_hash") != request_hash
+    ):
+        conflict()
+    try:
+        draft = StatisticsDraft.model_validate(saved.get("draft"))
+    except ValidationError:
+        conflict()
+    role_task = next(
+        (task for task in conversation.work_tasks if task.agent_role is WorkAgentRole.ANALYSIS),
+        None,
+    )
+    if (
+        role_task is None
+        or role_task.draft_hash != saved.get("hash")
+        or saved.get("hash") != statistics_draft_hash(draft)
+        or draft.external_import_id is not None
+    ):
+        conflict()
+
+    # Repeated server snapshots may carry the same original request. Any
+    # conflicting request/context for this exact intent makes it ambiguous.
+    dependency: dict[str, Any] | None = None
+    source_run_ids: set[str] = set()
+    for message in conversation.messages:
+        if message.role.value != "assistant":
+            continue
+        candidate = message.payload.get("analysis_dependency")
+        if isinstance(candidate, dict) and candidate.get("task_id") == intent_id:
+            original = candidate.get("analysis_request")
+            if (
+                candidate.get("task_kind") != "preprocess_then_analyze"
+                or candidate.get("conversation_id") != conversation.conversation_id
+                or candidate.get("project_id") != project_id
+                or not isinstance(original, str)
+                or content_hash(original.strip()) != request_hash
+            ):
+                conflict()
+            dependency = dict(candidate)
+        continuation = message.payload.get("analysis_outbox_continuation")
+        if isinstance(continuation, dict) and continuation.get("intent_task_id") == intent_id:
+            source = continuation.get("run_id")
+            if (
+                continuation.get("analysis_request_hash") != request_hash
+                or not isinstance(source, str)
+                or not source
+            ):
+                conflict()
+            source_run_ids.add(source)
+    if dependency is None or len(source_run_ids) != 1:
+        conflict()
+    source_run_id = next(iter(source_run_ids))
+    if (
+        draft.source_run_id not in {None, source_run_id}
+        or saved.get("source_run_id") not in {None, source_run_id}
+        or envelope.get("source_run_id") not in {None, source_run_id}
+    ):
+        conflict()
+    if request.target_run_id is not None and request.target_run_id != source_run_id:
+        return None
+    return _ConsumedAnalysisIntent(
+        intent_task_id=intent_id,
+        request_hash=request_hash,
+        source_run_id=source_run_id,
+        dependency=dependency,
+        envelope={**envelope, "source_run_id": source_run_id},
+    )
+
+
 class WorkDialogue:
     def __init__(
         self,
@@ -566,8 +707,24 @@ class WorkDialogue:
                 analysis_ready=analysis_ready,
             )
         )
+        # Metric names also appear in preprocessing routing. A supplement to a
+        # verified consumed analysis draft keeps its role unless the user
+        # explicitly selects a role or asks for a new preprocessing goal.
+        if (
+            role is WorkAgentRole.PREPROCESSING
+            and requested_role is None
+            and conversation.foreground_agent_role is WorkAgentRole.ANALYSIS
+            and not starts_new_preprocessing_task(request.content)
+            and _consumed_analysis_intent(conversation, request, project_id=project_id) is not None
+        ):
+            role = WorkAgentRole.ANALYSIS
         agent_spec = resolve_work_agent(role)
         request = request.model_copy(update={"agent_role": role})
+        consumed_intent = (
+            _consumed_analysis_intent(conversation, request, project_id=project_id)
+            if role is WorkAgentRole.ANALYSIS
+            else None
+        )
         received_handoff: WorkPreprocessingHandoff | None = None
 
         def reply(text: str, payload: dict[str, Any] | None = None) -> WorkActionResult:
@@ -722,11 +879,20 @@ class WorkDialogue:
                 ):
                     analysis_draft["analysis_intent_task_id"] = active_intent_id
                     analysis_draft["analysis_request_hash"] = active_request_hash
+                elif consumed_intent is not None:
+                    analysis_draft["analysis_intent_task_id"] = consumed_intent.intent_task_id
+                    analysis_draft["analysis_request_hash"] = consumed_intent.request_hash
+                    body["analysis_dependency"] = dict(consumed_intent.dependency)
+                    body["analysis_intent_envelope"] = dict(consumed_intent.envelope)
                 else:
                     analysis_draft.pop("analysis_intent_task_id", None)
                     analysis_draft.pop("analysis_request_hash", None)
                 body["analysis_draft"] = analysis_draft
-            if explicit_dependency is None and starts_new_preprocessing_task(request.content):
+            if (
+                role is WorkAgentRole.PREPROCESSING
+                and explicit_dependency is None
+                and starts_new_preprocessing_task(request.content)
+            ):
                 clear_analysis_intent_envelope(
                     body,
                     conversation_id=conversation.conversation_id,
@@ -2172,6 +2338,7 @@ class WorkDialogue:
                     "conversation_id": source.conversation_id,
                     "project_id": source.project_id,
                     "analysis_request_hash": content_hash(source.analysis_request),
+                    "source_run_id": source.run_id,
                 },
                 "analysis_outbox_continuation": {
                     "intent_task_id": source.intent_task_id,
@@ -2331,13 +2498,31 @@ class WorkDialogue:
             if proposal_only_continuation
             else latest_agent_payload(conversation, "analysis_draft", WorkAgentRole.ANALYSIS)
         )
+        consumed_intent = (
+            _consumed_analysis_intent(conversation, request, project_id=project_id)
+            if not proposal_only_continuation
+            else None
+        )
         composite_intent_task_id = (
-            continuation_source.intent_task_id if continuation_source is not None else None
+            continuation_source.intent_task_id
+            if continuation_source is not None
+            else consumed_intent.intent_task_id
+            if consumed_intent is not None
+            else None
         )
         composite_request_hash = (
             content_hash(continuation_source.analysis_request)
             if continuation_source is not None
+            else consumed_intent.request_hash
+            if consumed_intent is not None
             else None
+        )
+        analysis_source_run_id = (
+            continuation_source.run_id
+            if continuation_source is not None
+            else consumed_intent.source_run_id
+            if consumed_intent is not None
+            else preprocessing_source_run(conversation, request.target_run_id)
         )
         try:
             saved_draft_data = saved.get("draft", {}) if saved else {}
@@ -2556,6 +2741,8 @@ class WorkDialogue:
                 "project_id": continuation_source.project_id,
             }
             if continuation_source is not None
+            else consumed_intent.dependency
+            if consumed_intent is not None
             else latest_analysis_dependency(conversation)
         )
         if continuation_source is not None:
@@ -2626,10 +2813,12 @@ class WorkDialogue:
                     allowed_run_ids=frozenset(
                         value
                         for value in (
-                            continuation_source.run_id
-                            if continuation_source is not None
+                            analysis_source_run_id
+                            if continuation_source is not None or consumed_intent is not None
                             else request.target_run_id,
-                            None if continuation_source is not None else conversation.active_run_id,
+                            None
+                            if continuation_source is not None or consumed_intent is not None
+                            else conversation.active_run_id,
                         )
                         if value
                     ),
@@ -2699,11 +2888,7 @@ class WorkDialogue:
             }
             if not issues:
                 dry_run_called = False
-                run_id = (
-                    None
-                    if external_id
-                    else preprocessing_source_run(conversation, request.target_run_id)
-                )
+                run_id = None if external_id else analysis_source_run_id
                 source_args: dict[str, Any] = (
                     {"external_import_id": external_id, "project_id": project_id}
                     if external_id
@@ -2941,9 +3126,7 @@ class WorkDialogue:
                 proof = self.prepare_preprocessing_handoff(
                     conversation_id=conversation.conversation_id,
                     project_id=project_id,
-                    run_id=None
-                    if external_id
-                    else preprocessing_source_run(conversation, request.target_run_id),
+                    run_id=None if external_id else analysis_source_run_id,
                     external_import_id=external_id,
                     reason=interpreted.handoff_reason or interpreted.answer,
                     required_outputs=interpreted.required_preprocessing_outputs,

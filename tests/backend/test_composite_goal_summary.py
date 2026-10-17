@@ -66,6 +66,12 @@ def test_summary_is_bounded() -> None:
     assert summary.endswith("…")
 
 
+def test_summary_keeps_identical_intent_snapshots_across_continuations() -> None:
+    request = "Compare ALFF between groups."
+
+    assert _summary(request, _message(request=request), _message(request=request)) == request
+
+
 def test_summary_is_null_when_exact_identity_or_hash_cannot_be_verified() -> None:
     request = "Compare ALFF between groups."
 
@@ -79,11 +85,3 @@ def test_summary_is_null_when_exact_identity_or_hash_cannot_be_verified() -> Non
     )
     assert _summary(request, _message(request=request, project_id="another-project")) is None
     assert _summary(request, _message(request="different request")) is None
-    assert (
-        _summary(
-            request,
-            _message(request=request),
-            _message(request=request),
-        )
-        is None
-    )
