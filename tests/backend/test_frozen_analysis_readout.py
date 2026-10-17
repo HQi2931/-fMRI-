@@ -39,7 +39,7 @@ def _latest_analysis_message(conversation):
     )
 
 
-def test_frozen_plan_without_run_returns_readonly_status(
+def test_frozen_plan_without_run_returns_deterministic_status_without_model_results(
     service, source_root, work_root, monkeypatch
 ):
     conversation_id, source, plan, run, interpreter = _frozen(
@@ -56,10 +56,9 @@ def test_frozen_plan_without_run_returns_readonly_status(
         lambda *_: pytest.fail("there is no Run from which to read facts"),
     )
     interpreter.return_value = _reply(
-        "Unsupported proposal.",
-        action="prepare_statistical_analysis",
-        analysis_patch={"correction_parameters": {"q_threshold": 0.01}},
+        "发现 p<0.05 的显著簇，建议采用 FDR 校正。", action="conversation"
     )
+    interpreter.reset_mock()
 
     response = asyncio.run(
         service.conversations.send_conversation_turn(
@@ -87,11 +86,10 @@ def test_frozen_plan_without_run_returns_readonly_status(
         "run_id": None,
         "read_only": True,
     }
-    assert interpreter.call_args.kwargs["allow_tools"] is False
-    assert interpreter.call_args.kwargs["execution_context"].allowed_run_ids == frozenset()
-    model_input = json.dumps(interpreter.call_args.args[0], ensure_ascii=False)
-    assert source_root.as_posix() not in model_input
-    assert "design_matrix" not in model_input
+    interpreter.assert_not_called()
+    assert "p<0.05" not in response.assistant_message.content
+    assert "显著簇" not in response.assistant_message.content
+    assert "FDR" not in response.assistant_message.content
     after = service.conversations.get_conversation(conversation_id)
     assert work_task(after, WorkAgentRole.ANALYSIS) == before_task
     assert service.automation.get_task(task.task_id) == task

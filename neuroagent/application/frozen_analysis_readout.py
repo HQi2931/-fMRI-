@@ -114,7 +114,11 @@ async def respond_frozen_analysis(
         project_id=plan.project_id,
         active_run_id=selected.run_id,
     )
-    if not has_profiles:
+    # A frozen Plan without a Run has no verified statistical results to
+    # interpret. Keep the response deterministic so a provider cannot invent
+    # findings while answering a result, progress, or QC question. The method
+    # review above is generated from the validated frozen draft on the server.
+    if selected.run_id is None or not has_profiles:
         return result
 
     # Only bounded, aggregate method/result facts reach the model. Frozen
