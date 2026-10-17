@@ -172,6 +172,31 @@ def test_frozen_goal_restores_original_identity_without_environment_or_writes(
     }
 
 
+def test_frozen_composite_task_without_intent_identity_fails_closed(
+    service, source_root, work_root, monkeypatch
+):
+    conversation_id, source, _, _, _ = _frozen(
+        service, source_root, work_root, monkeypatch, "queued"
+    )
+    selected = _select(service, conversation_id, source.intent_task_id, "restore-missing-intent")
+    analysis = work_task(selected, WorkAgentRole.ANALYSIS)
+    assert analysis is not None and analysis.work_task_id is not None
+    without_intent = analysis.model_copy(update={"analysis_intent_task_id": None})
+    broken = selected.model_copy(
+        update={
+            "work_tasks": tuple(
+                without_intent if task.agent_role is WorkAgentRole.ANALYSIS else task
+                for task in selected.work_tasks
+            )
+        }
+    )
+
+    with pytest.raises(ConflictError) as failure:
+        service.conversations.resolve_selected_frozen_analysis(broken)
+
+    assert failure.value.code == "analysis_goal_selection_conflict"
+
+
 @pytest.mark.parametrize(
     "mutation", ["message", "plan_hash", "plan_design", "step", "run", "project", "request_hash"]
 )

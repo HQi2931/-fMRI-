@@ -6,6 +6,12 @@
 - 更新日期：2026-10-18
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-18 普通分析任务只读结果兼容性
+
+前台只读结果查询现在区分普通 standalone Analysis task 与 CompositeGoal task：没有 `analysis_intent_task_id` 的冻结引用，只有在持久 WorkTask ID 未关联任何复合目标时才保留既有 standalone 查询路径；无法确认任务身份或该任务确属复合目标时仍返回冲突，避免将缺失的目标身份降级为普通分析。
+
+`test_work_task_bindings.py`、`test_frozen_analysis_goal_selection.py` 与 `test_frozen_analysis_readout.py` 定向回归共 32 项通过，覆盖模型/无模型 standalone 只读结果查询，以及真实 CompositeGoal task 丢失 intent 身份时拒绝读取。Ruff check/format、全量 neuroagent Mypy（305 个源文件）、文档规范与差异空白检查通过；测试仅有既有 Starlette/httpx deprecation warning，未调用真实 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-18 复合目标累计模型预算
 
 复合目标根现在拥有独立的持久模型预算和调用预留账本。分析提案自动续接与统计结果解释两个 outbox 共用 intent 级的步数、Gateway invocation 数、token 和累计耗时上限。工具循环每轮及 JSON 单次回退都会在模型分发前原子预留；只有 reservation 状态为 `reserved` 才允许请求。elapsed allowance 预先扣减并限制本地 Gateway await；超时会请求取消，取消清理仍运行的实际观测耗时也计入账本并可形成 overrun；进程退出会保留未结算的预扣。返回的 Provider usage 按实际 token 幂等结算；缺失 usage 时保留估算值，额外报告的 profile failover attempts 以每次一份请求估算 token 收费。预算耗尽时 outbox 转为 `WAITING_USER` 且不开放重试，确保手动 retry 不会重置额度。缺失预算记录、重复 reservation 和异常状态均失败关闭，不会误报成额度耗尽。claim fence 丢失会取消本地生成任务，旧结果不会提交。迁移 0031 为现有根回填精确预处理 WorkTask 的预算上限，0032 加入持久耗时预留字段。

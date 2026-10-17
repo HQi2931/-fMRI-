@@ -271,9 +271,15 @@ class ConversationMixin(BaseServiceMixin):
             return None
         if selected.analysis_intent_task_id is None:
             if selected.plan_revision_id is not None or selected.run_id is not None:
-                raise ConflictError(
-                    "analysis_goal_selection_conflict", "冻结分析引用缺少目标身份。"
-                )
+                composite_goal = None
+                if selected.work_task_id is not None:
+                    composite_goal = self.automation.find_composite_goal_for_analysis_task(
+                        selected.work_task_id
+                    )
+                if selected.work_task_id is None or composite_goal is not None:
+                    raise ConflictError(
+                        "analysis_goal_selection_conflict", "冻结分析引用缺少目标身份。"
+                    )
             return None
         if selected.plan_revision_id is None:
             if selected.run_id is not None:
