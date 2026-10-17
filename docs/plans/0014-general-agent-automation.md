@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-11
 - 更新日期：2026-10-17
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)
 
 ## 目标里程碑
 
@@ -172,6 +172,14 @@ Work 页面现在只在会话绑定到当前工作区/项目，且存在带精�
 按 [ADR 0046](../adr/0046-composite-goal-foreground-selection.md) 增加会话内精确目标选择，角色槽持久保存 intent 指针，无数据库迁移。入口只接受等待用户处理、当前尚无 Plan/Run 的分析目标；恢复最新草稿，完整提案保留原消息 ID，不完整修订清除旧提案资格。后台不同 intent 仍完成其消息/任务/outbox 提交，但不覆盖前台；草稿、来源上下文、历史和交接使用同一目标范围。统计冻结对复合目标强制核对提案消息 ID，防止相同 proposal hash 的跨目标竞态。
 
 本切片不恢复已有 Plan/Run 的目标，也未实现通用多目标 dispatch、目标共享累计模型预算或完整步骤调度。阶段 B 仍为部分完成；真实模型与 MATLAB 验收需独立证据。
+
+### 阶段 B 冻结分析目标恢复与只读查询（2026-10-17）
+
+按 [ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md) 扩展同一目标选择入口：从冻结 Plan 的 `work_context.proposal_message_id` 恢复原提案、草稿和精确 Task/Plan/Run 引用，并核验当前 active attempt、Task/Step、设计与来源哈希。draft、awaiting approval、approved、已绑定运行、等待结果和完成状态均可在权威证据匹配时恢复；选择只改会话的 analysis 角色引用、前台角色与 active Run 投影，不创建或修改 Plan、Approval、Task、Run 或统计结果。
+
+冻结目标的自然语言与显式 READ 查询进入同一只读入口：结果、进度和 QC 读取按选中统计 Run 收口；无 Run 时返回冻结方法与尚未启动状态，拒绝携带其他运行 QC ID。模型不接收设计矩阵、逐受试者路径或值，工具循环关闭，执行上下文只允许精确选中的统计 Run；模型产生的分析/草稿修改被丢弃。切换目标、请求来源冲突、历史身份不完整或冻结记录改变时失败关闭。前端恢复仍按绑定 Plan/Run 读取，错误不退化为新建方案或启动操作，晚到响应不能覆盖新选择。
+
+新增冻结选择与只读回归 43 项通过，覆盖六类生命周期状态、身份错配、后续草稿与只读快照、精确 Run 结果读取、无 Run 不触发项目级结果查询、显式进度保留分析角色，以及拒绝跨 Run 查询。完成态夹具只核验持久身份，不声称生成真实统计结果。前端 AgentPage/提案操作定向测试 73 项通过，TypeScript 和相关四个文件的 ESLint 检查通过。验证使用合成记录、Mock 模型与执行器；没有真实 Provider、MATLAB 或 DPABI 运行。计划 0014 的通用目标 dispatch、累计预算、多目标自动拆分与完整多步骤调度仍未完成。
 
 最终相关后端回归 210 项、AgentPage 前端测试 52 项通过；Ruff、Mypy、前端类型/静态检查及构建、文档检查通过。详细验证范围与限制见 [MVP 记录](../development/mvp-verification.md)。下一步先接冻结 Plan/Run 的精确恢复：以冻结 work_context 原消息为权威，保留当前审批/启动门禁和已存在 Run 的禁止重复创建语义，再推进通用目标 dispatch 与累计预算。
 

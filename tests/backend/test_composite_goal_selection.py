@@ -255,7 +255,7 @@ def test_new_incomplete_revision_cannot_restore_older_proposal(
 
 
 @pytest.mark.parametrize("phase", ["plan", "run"])
-def test_goal_selection_rejects_formal_plan_or_run_context(
+def test_goal_selection_restores_formal_plan_or_run_context(
     service, source_root, work_root, monkeypatch, phase
 ):
     conversation_id, source, _ = _seed(service, source_root, work_root, monkeypatch, complete=True)
@@ -280,13 +280,10 @@ def test_goal_selection_rejects_formal_plan_or_run_context(
             "select-mock-run",
         )
     before = service.conversations.get_conversation(conversation_id)
-    with pytest.raises(ConflictError) as failure:
-        _select(service, conversation_id, source.intent_task_id, "select-formal-context")
-    assert failure.value.code in {
-        "analysis_goal_selection_conflict",
-        "analysis_goal_not_selectable",
-    }
-    assert service.conversations.get_conversation(conversation_id) == before
+    selected = _select(service, conversation_id, source.intent_task_id, "select-formal-context")
+    assert work_task(selected, WorkAgentRole.ANALYSIS) == work_task(before, WorkAgentRole.ANALYSIS)
+    assert selected.active_run_id == work_task(before, WorkAgentRole.ANALYSIS).run_id
+    assert selected.messages == before.messages
 
 
 def test_background_goal_continuation_preserves_selected_slot_and_foreground(

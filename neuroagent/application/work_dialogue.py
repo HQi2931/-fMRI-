@@ -23,14 +23,20 @@ from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationTurnCreate,
     ConversationView,
+    ConversationWorkTaskView,
     WorkspaceCitation,
 )
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
-from neuroagent.application.contracts.plans import SkillPlanResolveRequest, ValidationIssue
+from neuroagent.application.contracts.plans import (
+    PlanRevisionView,
+    SkillPlanResolveRequest,
+    ValidationIssue,
+)
 from neuroagent.application.contracts.projects import ExternalDemographicsRevisionView
 from neuroagent.application.contracts.runs import QcExecutionMode
 from neuroagent.application.conversation_work import ConversationWorkCoordinator, WorkActionResult
 from neuroagent.application.errors import ApplicationError, ConflictError
+from neuroagent.application.frozen_analysis_readout import respond_frozen_analysis
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.planning_feedback import (
     FeedbackDisposition,
@@ -106,7 +112,7 @@ from neuroagent.application.work_presentation import (
     pending_review_questions,
     set_value,
 )
-from neuroagent.application.work_tasks import preprocessing_source_run
+from neuroagent.application.work_tasks import preprocessing_source_run, work_task
 from neuroagent.application.work_tools import AgentExecutionContext, WorkToolRunner
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
@@ -532,6 +538,10 @@ class WorkDialogue:
         prepare_preprocessing_handoff: Callable[..., WorkPreprocessingHandoff] | None = None,
         dry_run_skill_plan: Callable[[SkillPlanResolveRequest], Any] | None = None,
         get_result_facts: Callable[[str, bool], list[dict[str, Any]]] | None = None,
+        resolve_frozen_analysis: Callable[
+            [ConversationView], tuple[ConversationWorkTaskView, PlanRevisionView] | None
+        ]
+        | None = None,
         model_budget: AgentLoopBudget | None = None,
     ) -> None:
         self.coordinator = coordinator
@@ -547,6 +557,7 @@ class WorkDialogue:
         self.prepare_preprocessing_handoff = prepare_preprocessing_handoff
         self.dry_run_skill_plan = dry_run_skill_plan
         self.get_result_facts = get_result_facts
+        self.resolve_frozen_analysis = resolve_frozen_analysis
         self.model_budget = model_budget or AgentLoopBudget()
         self.model_runtime = WorkModelRuntime(
             generate=self.generate,
@@ -724,6 +735,38 @@ class WorkDialogue:
             role = WorkAgentRole.ANALYSIS
         agent_spec = resolve_work_agent(role)
         request = request.model_copy(update={"agent_role": role})
+        if role is WorkAgentRole.ANALYSIS and request.external_analysis_import_id is None:
+            selected_binding = work_task(conversation, WorkAgentRole.ANALYSIS)
+            if (
+                selected_binding is not None
+                and (
+                    selected_binding.plan_revision_id is not None
+                    or selected_binding.run_id is not None
+                )
+                and self.resolve_frozen_analysis is None
+            ):
+                raise ConflictError(
+                    "analysis_goal_selection_unavailable", "冻结目标只读查询服务不可用。"
+                )
+            bound = (
+                self.resolve_frozen_analysis(conversation) if self.resolve_frozen_analysis else None
+            )
+            if bound is not None:
+                frozen_role, frozen_plan = bound
+                return await respond_frozen_analysis(
+                    conversation=conversation,
+                    request=request,
+                    packet=packet,
+                    selected=frozen_role,
+                    plan=frozen_plan,
+                    coordinator=self.coordinator,
+                    interpret=self._interpret,
+                    get_result_facts=self.get_result_facts,
+                    workspace_path=workspace_path,
+                    preferred_profile_id=preferred_profile_id,
+                    idempotency_key=idempotency_key,
+                    has_profiles=has_profiles,
+                )
         consumed_intent = (
             _consumed_analysis_intent(conversation, request, project_id=project_id)
             if role is WorkAgentRole.ANALYSIS

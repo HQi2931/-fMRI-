@@ -436,6 +436,149 @@ describe("agent workbench page", () => {
     await waitFor(() => expect(create).toHaveBeenCalledOnce());
   });
 
+  it.each(["frozen", "running", "completed"])("restores a %s statistical target without creating or approving work", async (stage) => {
+    const proposal = { proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const runId = stage === "frozen" ? null : "existing-run";
+    const current = conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, analysis_intent_task_id: "existing-goal", proposal_message_id: "existing-message", plan_revision_id: "existing-plan", run_id: runId }] }) as unknown as Conversation;
+    const mutations = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (init?.method === "POST") { mutations(); return notFound(); }
+      if (pathOf(input).endsWith("/statistical-designs/existing-plan")) return json({ plan_revision: { plan_revision_id: "existing-plan", state: "awaiting_approval", version: 2 } });
+      if (pathOf(input).endsWith("/runs/existing-run")) return json({ run_id: runId, plan_revision_id: "existing-plan", state: stage === "completed" ? "succeeded" : "running" });
+      return notFound();
+    });
+    render(<AnalysisProposalActions proposal={proposal} conversation={current} isCurrent onTaskChange={async () => {}} onRunChange={() => {}} />);
+    expect(await screen.findByText("existing-plan")).toBeInTheDocument();
+    if (runId) expect(screen.getByText(/统计运行已创建/)).toHaveTextContent(runId);
+    expect(screen.queryByRole("button", { name: "建立并校验正式统计设计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /启动.*统计/ })).not.toBeInTheDocument();
+    expect(mutations).not.toHaveBeenCalled();
+  });
+
+  it("clears an earlier goal's design and run while restoring a same-hash target and then a draft", async () => {
+    const proposal = { proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const target = (id: string, frozen = true) => conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, analysis_intent_task_id: id, proposal_message_id: `message-${id}`, plan_revision_id: frozen ? `plan-${id}` : null, run_id: frozen ? `run-${id}` : null }] }) as unknown as Conversation;
+    let finishSecond!: (response: Response) => void;
+    const pendingSecond = new Promise<Response>((resolve) => { finishSecond = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const path = pathOf(input);
+      if (path.endsWith("/statistical-designs/plan-B")) return pendingSecond;
+      if (path.includes("/statistical-designs/plan-")) return json({ plan_revision: { plan_revision_id: "plan-A", state: "approved" } });
+      if (path.includes("/runs/run-")) { const id = path.endsWith("run-B") ? "B" : "A"; return json({ run_id: `run-${id}`, plan_revision_id: `plan-${id}`, state: "succeeded" }); }
+      if (path.endsWith("/statistics/atlases")) return json([]);
+      return notFound();
+    });
+    const props = { proposal, isCurrent: true, onTaskChange: async () => {}, onRunChange: () => {} };
+    const rendered = render(<AnalysisProposalActions {...props} conversation={target("A")} />);
+    expect(await screen.findByText("plan-A")).toBeInTheDocument();
+    expect(screen.getByText(/统计运行已创建/)).toHaveTextContent("run-A");
+    rendered.rerender(<AnalysisProposalActions {...props} conversation={target("B")} />);
+    expect(screen.queryByText("plan-A")).not.toBeInTheDocument();
+    expect(screen.queryByText(/统计运行已创建/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在恢复");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    await act(async () => { finishSecond(await json({ plan_revision: { plan_revision_id: "plan-B", state: "approved" } })); });
+    expect(await screen.findByText("plan-B")).toBeInTheDocument();
+    expect(screen.getByText(/统计运行已创建/)).toHaveTextContent("run-B");
+    rendered.rerender(<AnalysisProposalActions {...props} conversation={target("C", false)} />);
+    expect(screen.queryByText("plan-B")).not.toBeInTheDocument();
+    expect(screen.queryByText(/统计运行已创建/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "建立并校验正式统计设计" })).toBeEnabled());
+  });
+
+  it.each(["network", "mismatched_run"])("fails closed on %s recovery and retries the exact saved plan and run", async (failure) => {
+    const proposal = { proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const current = conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, analysis_intent_task_id: "goal-selected", plan_revision_id: "plan-selected", run_id: "run-selected" }] }) as unknown as Conversation;
+    let retry = false;
+    const mutate = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (init?.method === "POST") { mutate(); return notFound(); }
+      if (pathOf(input).endsWith("/statistical-designs/plan-selected")) {
+        if (!retry && failure === "network") return json({ error: { code: "unavailable", message: "暂时无法读取方案", details: {}, trace_id: null } }, 503);
+        return json({ plan_revision: { plan_revision_id: "plan-selected", state: "approved" } });
+      }
+      if (pathOf(input).endsWith("/runs/run-selected")) return json({ run_id: "run-selected", plan_revision_id: !retry && failure === "mismatched_run" ? "another-plan" : "plan-selected", state: "succeeded" });
+      return notFound();
+    });
+    render(<AnalysisProposalActions proposal={proposal} conversation={current} isCurrent onTaskChange={async () => {}} onRunChange={() => {}} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法恢复已保存的统计分析");
+    expect(screen.queryByRole("button", { name: "建立并校验正式统计设计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "批准统计设计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /启动.*统计/ })).not.toBeInTheDocument();
+    retry = true;
+    fireEvent.click(screen.getByRole("button", { name: "重新读取统计分析" }));
+    expect(await screen.findByText("plan-selected")).toBeInTheDocument();
+    expect(screen.getByText(/统计运行已创建/)).toHaveTextContent("run-selected");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("ignores an earlier target's late run-start response after switching targets", async () => {
+    const proposal = { project_id: "project-1", proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const target = (id: string) => conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, analysis_intent_task_id: id, proposal_message_id: `message-${id}`, plan_revision_id: `plan-${id}`, run_id: id === "B" ? "run-B" : null }] }) as unknown as Conversation;
+    let finishStart!: (response: Response) => void;
+    const pendingStart = new Promise<Response>((resolve) => { finishStart = resolve; });
+    const started = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const path = pathOf(input);
+      if (path.endsWith("/statistics/runs")) return pendingStart;
+      if (path.includes("/statistical-designs/plan-")) return json({ plan_revision: { plan_revision_id: path.endsWith("plan-B") ? "plan-B" : "plan-A", state: "approved", plan_hash: "b".repeat(64) } });
+      if (path.endsWith("/runs/run-B")) return json({ run_id: "run-B", plan_revision_id: "plan-B", state: "running" });
+      return notFound();
+    });
+    const props = { proposal, isCurrent: true, onTaskChange: async () => {}, onRunChange: started };
+    const rendered = render(<AnalysisProposalActions {...props} conversation={target("A")} />);
+    fireEvent.click(await screen.findByRole("button", { name: "启动模拟统计" }));
+    rendered.rerender(<AnalysisProposalActions {...props} conversation={target("B")} />);
+    expect(await screen.findByText("plan-B")).toBeInTheDocument();
+    await act(async () => { finishStart(await json({ run_id: "late-run-A", plan_revision_id: "plan-A", state: "queued" })); });
+    expect(started).not.toHaveBeenCalled();
+    expect(screen.getByText(/统计运行已创建/)).toHaveTextContent("run-B");
+    expect(screen.queryByText(/late-run-A/)).not.toBeInTheDocument();
+  });
+
+  it("refreshes new design bindings after validation finishes", async () => {
+    const proposal = { project_id: "project-1", project_version: 1, input_manifest_hash: "b".repeat(64), proposal_hash: "a".repeat(64), design: { test: "one_sample_t" } };
+    const current = conversation({ work_tasks: [{ agent_role: "analysis", proposal_hash: proposal.proposal_hash, proposal_message_id: "proposal-message" }] }) as unknown as Conversation;
+    let finishValidation!: (response: Response) => void;
+    const pendingValidation = new Promise<Response>((resolve) => { finishValidation = resolve; });
+    const refresh = vi.fn(async () => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const path = pathOf(input);
+      if (path.endsWith("/statistics/atlases")) return json([]);
+      if (path.endsWith("/statistical-designs")) return json({ plan_revision: { plan_revision_id: "new-plan", version: 1, state: "draft" } });
+      if (path.endsWith("/validate")) return pendingValidation;
+      return notFound();
+    });
+    render(<AnalysisProposalActions proposal={proposal} conversation={current} isCurrent onTaskChange={refresh} onRunChange={() => {}} />);
+    const button = await screen.findByRole("button", { name: "建立并校验正式统计设计" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByText("new-plan")).toBeInTheDocument();
+    expect(refresh).not.toHaveBeenCalled();
+    await act(async () => { finishValidation(await json({ plan_revision: { plan_revision_id: "new-plan", version: 2, state: "awaiting_approval" } })); });
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: "批准统计设计" })).toBeEnabled();
+  });
+
+  it("offers saved analysis targets across lifecycle stages while hiding preprocessing-only decisions", async () => {
+    const goals = [
+      { ...compositeGoal("waiting_user", "goal-frozen"), analysis_status: "waiting_user" },
+      { ...compositeGoal("waiting_analysis", "goal-running"), analysis_status: "waiting_run" },
+      { ...compositeGoal("waiting_result_interpretation", "goal-result"), analysis_status: "completed" },
+      { ...compositeGoal("completed", "goal-complete"), analysis_status: "completed" },
+      { ...compositeGoal("waiting_user", "prep-only"), analysis_work_task_id: null, analysis_proposal_status: "pending", analysis_status: null },
+    ];
+    const select = vi.fn(() => json(conversation({ foreground_agent_role: "analysis" })));
+    installFetch({ compositeGoals: () => json(goals), selectCompositeGoal: select });
+    render(<AgentPage />);
+    expect(await screen.findAllByRole("button", { name: "查看此分析" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "继续此分析" })).toHaveLength(1);
+    expect(within(screen.getAllByRole("article")[4]).queryByRole("button")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "查看此分析" })[2]);
+    await waitFor(() => expect(select).toHaveBeenCalledWith("goal-complete", expect.anything()));
+  });
+
   it("keeps progress API errors separate from the conversation error and lets the user retry", async () => {
     const loadGoals = vi.fn(() => json({ error: { code: "unavailable", message: "backend error", details: {}, trace_id: null } }, 503));
     installFetch({ compositeGoals: loadGoals });

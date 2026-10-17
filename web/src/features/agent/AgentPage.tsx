@@ -154,10 +154,11 @@ function CompositeGoalProgressPanel({
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
-            {goal.status === "waiting_user"
+            {["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
               && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
-              && (!goal.analysis_status || goal.analysis_status === "waiting_user")
-              && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>继续此分析</button>}
+              && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
+              && !["blocked", "cancelled"].includes(goal.analysis_status ?? "")
+              && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>{!goal.analysis_status || goal.analysis_status === "waiting_user" ? "继续此分析" : "查看此分析"}</button>}
           </article>
         </li>;
       })}

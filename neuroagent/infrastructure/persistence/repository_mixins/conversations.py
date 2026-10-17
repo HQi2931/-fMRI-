@@ -73,15 +73,32 @@ class ConversationMixin(RepositoryBaseMixin):
                 or row.project_id != project_id
                 or task.agent_role is not WorkAgentRole.ANALYSIS
                 or task.analysis_intent_task_id is None
-                or task.plan_revision_id is not None
-                or task.run_id is not None
+                or (task.run_id is not None and task.plan_revision_id is None)
             ):
                 raise ConflictError("analysis_goal_selection_conflict", "分析目标上下文已变化。")
+            if task.plan_revision_id is not None:
+                plan = session.get(PlanRevisionRow, task.plan_revision_id)
+                run = session.get(WorkflowRunRow, task.run_id) if task.run_id is not None else None
+                if (
+                    plan is None
+                    or plan.project_id != project_id
+                    or (
+                        task.run_id is not None
+                        and (
+                            run is None
+                            or run.project_id != project_id
+                            or run.plan_revision_id != task.plan_revision_id
+                        )
+                    )
+                ):
+                    raise ConflictError(
+                        "analysis_goal_selection_conflict", "统计方案或运行身份已变化。"
+                    )
             tasks = _load(row.work_tasks_json, {})
             tasks["analysis"] = task.model_dump(mode="json")
             row.work_tasks_json = canonical_json(tasks)
             row.foreground_agent_role = WorkAgentRole.ANALYSIS.value
-            row.active_run_id = None
+            row.active_run_id = task.run_id
             row.version += 1
             session.flush()
             return self._conversation_view(session, row)

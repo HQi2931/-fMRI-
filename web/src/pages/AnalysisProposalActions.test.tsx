@@ -1,14 +1,17 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type Conversation, type StatisticalAtlas, type StatisticalDesign, type Run } from "../api/client";
+import type { Conversation, StatisticalAtlas, StatisticalDesign, Run } from "../api/types";
+import { plansApi } from "../api/plans";
+import { runsApi } from "../api/runs";
+import { statisticsApi } from "../api/statistics";
 import { AnalysisProposalActions } from "./AgentPage";
 
-vi.mock("../api/client", async (original) => ({
-  ...await original<typeof import("../api/client")>(),
-  api: { statisticalDesign: vi.fn(), run: vi.fn(), createStatisticalDesign: vi.fn(),
-    validateStatisticalDesign: vi.fn(), approvePlan: vi.fn(), createStatisticsRun: vi.fn(), statisticalAtlases: vi.fn() },
-}));
+vi.mock("../api/plans", () => ({ plansApi: { approvePlan: vi.fn() } }));
+vi.mock("../api/runs", () => ({ runsApi: { run: vi.fn() } }));
+vi.mock("../api/statistics", () => ({ statisticsApi: { statisticalDesign: vi.fn(), createStatisticalDesign: vi.fn(),
+  validateStatisticalDesign: vi.fn(), createStatisticsRun: vi.fn(), statisticalAtlases: vi.fn() } }));
+const api = { ...plansApi, ...runsApi, ...statisticsApi };
 
 const proposal = { project_id: "project-1", project_version: 1, input_manifest_hash: "b".repeat(64),
   proposal_hash: "a".repeat(64), design: { test: "independent_two_sample_t" }, correction: { method: "fdr", q_threshold: 0.05 } };
@@ -52,7 +55,7 @@ describe("server-bound statistical task actions", () => {
     render(<AnalysisProposalActions proposal={proposal} conversation={empty} isCurrent onRunChange={vi.fn()} onTaskChange={refresh} />);
     fireEvent.click(await screen.findByRole("button", { name: "建立并校验正式统计设计" }));
     await waitFor(() => expect(api.createStatisticalDesign).toHaveBeenCalledWith(expect.objectContaining({
-      work_context: { conversation_id: "work-1", proposal_hash: proposal.proposal_hash },
+      work_context: { conversation_id: "work-1", proposal_hash: proposal.proposal_hash, proposal_message_id: "proposal-1" },
     })));
     expect(await screen.findByRole("button", { name: "批准统计设计" })).toBeInTheDocument();
     expect(refresh).toHaveBeenCalledOnce();
@@ -60,9 +63,8 @@ describe("server-bound statistical task actions", () => {
 
   it("shows the server rejection when the current draft changes before approval", async () => {
     vi.mocked(api.statisticalDesign).mockResolvedValue(design);
-    vi.mocked(api.run).mockResolvedValue({ ...run, plan_revision_id: "old-plan" });
     vi.mocked(api.approvePlan).mockRejectedValue(new Error("统计草稿已变化，请审查当前统计方案。"));
-    render(<AnalysisProposalActions proposal={proposal} conversation={conversation} isCurrent onRunChange={vi.fn()} onTaskChange={vi.fn()} />);
+    render(<AnalysisProposalActions proposal={proposal} conversation={{ ...conversation, work_tasks: [{ ...conversation.work_tasks![0], run_id: null }] }} isCurrent onRunChange={vi.fn()} onTaskChange={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "批准统计设计" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("统计草稿已变化");
     expect(api.createStatisticsRun).not.toHaveBeenCalled();
@@ -143,12 +145,65 @@ describe("server-bound statistical task actions", () => {
     vi.mocked(api.statisticalDesign).mockReturnValue(new Promise((done) => { resolve = done; }));
     vi.mocked(api.run).mockResolvedValue(run);
     const view = render(<AnalysisProposalActions proposal={proposal} conversation={conversation} isCurrent onRunChange={vi.fn()} onTaskChange={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "正在恢复已建统计设计…" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("正在恢复已建统计设计与运行…");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
     view.rerender(<AnalysisProposalActions proposal={proposal} conversation={conversation} isCurrent={false} onRunChange={vi.fn()} onTaskChange={vi.fn()} />);
     resolve(design);
     await waitFor(() => expect(screen.getByText(/历史统计预览或其他 Agent 的方案/)).toBeInTheDocument());
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(api.approvePlan).not.toHaveBeenCalled();
     expect(api.createStatisticsRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a saved Run bound to another Plan instead of offering replacement work", async () => {
+    vi.mocked(api.statisticalDesign).mockResolvedValue(design);
+    vi.mocked(api.run).mockResolvedValue({ ...run, plan_revision_id: "old-plan" });
+    render(<AnalysisProposalActions proposal={proposal} conversation={conversation} isCurrent onRunChange={vi.fn()} onTaskChange={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("关联不一致");
+    expect(screen.getByRole("button", { name: "重新读取统计分析" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "批准统计设计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "建立并校验正式统计设计" })).not.toBeInTheDocument();
+    expect(api.approvePlan).not.toHaveBeenCalled();
+    expect(api.createStatisticalDesign).not.toHaveBeenCalled();
+    expect(api.createStatisticsRun).not.toHaveBeenCalled();
+  });
+
+  it("retains failed saved identities and retries reading both objects without mutations", async () => {
+    vi.mocked(api.statisticalDesign).mockRejectedValueOnce(new Error("读取暂时中断")).mockResolvedValueOnce(design);
+    vi.mocked(api.run).mockResolvedValue(run);
+    const changed = vi.fn();
+    render(<AnalysisProposalActions proposal={proposal} conversation={conversation} isCurrent onRunChange={changed} onTaskChange={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("读取暂时中断");
+    expect(screen.queryByRole("button", { name: "建立并校验正式统计设计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /启动.*统计/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新读取统计分析" }));
+    expect(await screen.findByText(/统计运行已创建/)).toHaveTextContent("run-1");
+    expect(api.statisticalDesign).toHaveBeenNthCalledWith(2, "plan-1");
+    expect(api.run).toHaveBeenNthCalledWith(2, "run-1");
+    expect(changed).not.toHaveBeenCalled();
+    expect(api.createStatisticalDesign).not.toHaveBeenCalled();
+    expect(api.approvePlan).not.toHaveBeenCalled();
+    expect(api.createStatisticsRun).not.toHaveBeenCalled();
+  });
+
+  it("discards a late startup response after switching to a same-hash goal", async () => {
+    const approved = { ...design, plan_revision: { ...design.plan_revision, state: "approved" } } as StatisticalDesign;
+    const nextDesign = { ...approved, plan_revision: { ...approved.plan_revision, plan_revision_id: "next-plan" } };
+    vi.mocked(api.statisticalDesign).mockResolvedValueOnce(approved).mockResolvedValueOnce(nextDesign);
+    vi.mocked(api.run).mockResolvedValue({ ...run, run_id: "next-run", plan_revision_id: "next-plan" });
+    let finishStartup!: (value: Run) => void;
+    vi.mocked(api.createStatisticsRun).mockReturnValue(new Promise((resolve) => { finishStartup = resolve; }));
+    const changed = vi.fn();
+    const refresh = vi.fn();
+    const initial = { ...conversation, work_tasks: [{ ...conversation.work_tasks![0], analysis_intent_task_id: "first-goal", run_id: null }] };
+    const next = { ...conversation, work_tasks: [{ ...conversation.work_tasks![0], analysis_intent_task_id: "next-goal", plan_revision_id: "next-plan", run_id: "next-run" }] };
+    const view = render(<AnalysisProposalActions proposal={proposal} conversation={initial} isCurrent onRunChange={changed} onTaskChange={refresh} />);
+    fireEvent.click(await screen.findByRole("button", { name: "启动模拟统计" }));
+    view.rerender(<AnalysisProposalActions proposal={proposal} conversation={next} isCurrent onRunChange={changed} onTaskChange={refresh} />);
+    expect(await screen.findByText(/统计运行已创建/)).toHaveTextContent("next-run");
+    await act(async () => { finishStartup(run); });
+    expect(screen.getByText(/统计运行已创建/)).toHaveTextContent("next-run");
+    expect(changed).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
   });
 });

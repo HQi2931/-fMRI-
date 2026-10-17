@@ -411,6 +411,7 @@ class ApplicationServices:
             prepare_preprocessing_handoff=self.statistics.prepare_work_preprocessing_handoff,
             dry_run_skill_plan=self.skills.dry_run_skill_plan,
             get_result_facts=self._analysis_result_facts,
+            resolve_frozen_analysis=self.conversations.resolve_selected_frozen_analysis,
             model_budget=AgentLoopBudget(
                 max_steps=settings.agent_max_tool_steps,
                 max_seconds=settings.agent_max_tool_seconds,

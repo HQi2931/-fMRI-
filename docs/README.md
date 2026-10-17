@@ -144,6 +144,7 @@
 - [ADR 0044：WorkTask 步骤 readiness 检查器与收口边界](adr/0044-worktask-step-readiness-handlers.md)
 - [ADR 0045：WorkTask 有界线性步骤调度（提议）](adr/0045-bounded-linear-worktask-step-scheduling.md)
 - [ADR 0046：复合分析目标的前台选择与草稿隔离](adr/0046-composite-goal-foreground-selection.md)
+- [ADR 0047：冻结分析目标的精确上下文恢复](adr/0047-frozen-analysis-goal-restoration.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

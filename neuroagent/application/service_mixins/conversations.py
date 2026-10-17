@@ -41,6 +41,7 @@ from neuroagent.application.contracts.conversations import (
     ConversationTurnCreate,
     ConversationTurnView,
     ConversationView,
+    ConversationWorkTaskView,
     MemoryCreate,
     MemoryUpdate,
     MemoryView,
@@ -67,7 +68,10 @@ from neuroagent.application.errors import ApplicationError, ConflictError, Input
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
-from neuroagent.application.work_agents import handoff_identity, work_agent_role_for_turn
+from neuroagent.application.work_agents import (
+    handoff_identity,
+    work_agent_role_for_turn,
+)
 from neuroagent.application.work_dialogue import (
     STAGE_CONFIRMATION_PATTERN,
     WorkDialogue,
@@ -134,9 +138,14 @@ class ConversationMixin(BaseServiceMixin):
             conversation = self.repository.get_conversation(conversation_id)
             goal = self.automation.get_composite_goal(conversation_id, intent_task_id)
             progress = self.automation.get_composite_goal_progress(conversation_id, intent_task_id)
-            if progress.status.value != "waiting_user":
+            if progress.status.value not in {
+                "waiting_user",
+                "waiting_analysis",
+                "waiting_result_interpretation",
+                "completed",
+            }:
                 raise ConflictError(
-                    "analysis_goal_not_selectable", "当前目标不在等待分析草稿审查阶段。"
+                    "analysis_goal_not_selectable", "当前目标状态或权威证据尚不可恢复。"
                 )
             outbox = self.automation.get_analysis_outbox(intent_task_id)
             task = (
@@ -144,11 +153,26 @@ class ConversationMixin(BaseServiceMixin):
                 if goal.analysis_work_task_id is not None
                 else None
             )
+            try:
+                plan = (
+                    self.get_plan(task.authority_refs.plan_revision_id)
+                    if task is not None and task.authority_refs.plan_revision_id is not None
+                    else None
+                )
+                run = (
+                    self.get_run(task.authority_refs.workflow_run_id)
+                    if task is not None and task.authority_refs.workflow_run_id is not None
+                    else None
+                )
+            except ApplicationError as exc:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "目标绑定的统计方案或运行无法读取。"
+                ) from exc
             selected = self.repository.select_analysis_goal(
                 conversation_id,
                 project_id=goal.project_id,
                 expected_version=request.expected_version,
-                task=analysis_selection(conversation, goal, outbox, task),
+                task=analysis_selection(conversation, goal, outbox, task, plan=plan, run=run),
             )
             self.event_store.append_event(
                 project_id=goal.project_id,
@@ -166,6 +190,68 @@ class ConversationMixin(BaseServiceMixin):
             response_type=ConversationView,
             action=action,
         )
+
+    def resolve_selected_frozen_analysis(
+        self, conversation: ConversationView
+    ) -> tuple[ConversationWorkTaskView, PlanRevisionView] | None:
+        """Recheck the selected frozen identity in a short read-only Unit of Work."""
+        selected = conversation_work_task(conversation, WorkAgentRole.ANALYSIS)
+        if selected is None:
+            return None
+        if selected.analysis_intent_task_id is None:
+            if selected.plan_revision_id is not None or selected.run_id is not None:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "冻结分析引用缺少目标身份。"
+                )
+            return None
+        if selected.plan_revision_id is None:
+            if selected.run_id is not None:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "统计运行引用缺少冻结方案身份。"
+                )
+            return None
+        with self.idempotency_store.atomic():
+            current = self.repository.get_conversation(conversation.conversation_id)
+            if (
+                current.version != conversation.version
+                or conversation_work_task(current, WorkAgentRole.ANALYSIS) != selected
+            ):
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前分析目标在读取期间已变化。"
+                )
+            intent_id = selected.analysis_intent_task_id
+            goal = self.automation.get_composite_goal(current.conversation_id, intent_id)
+            progress = self.automation.get_composite_goal_progress(
+                current.conversation_id, intent_id
+            )
+            if progress.status.value not in {
+                "waiting_user",
+                "waiting_analysis",
+                "waiting_result_interpretation",
+                "completed",
+            }:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前目标的权威证据尚不可读取。"
+                )
+            outbox = self.automation.get_analysis_outbox(intent_id)
+            if goal.analysis_work_task_id is None:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前目标缺少统计任务身份。"
+                )
+            task = self.automation.get_task(goal.analysis_work_task_id)
+            try:
+                plan = self.get_plan(selected.plan_revision_id)
+                run = self.get_run(selected.run_id) if selected.run_id is not None else None
+            except ApplicationError as exc:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前目标绑定的统计方案或运行无法读取。"
+                ) from exc
+            restored = analysis_selection(current, goal, outbox, task, plan=plan, run=run)
+            if restored != selected:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前角色引用与冻结目标身份不一致。"
+                )
+            return restored, plan
 
     def select_work_agent(
         self,
@@ -1668,6 +1754,25 @@ class ConversationMixin(BaseServiceMixin):
             active_run_id = request.target_run_id or run_for_agent_context(
                 conversation, selected_role
             )
+            frozen_analysis = (
+                self.resolve_selected_frozen_analysis(conversation)
+                if selected_role is WorkAgentRole.ANALYSIS
+                and request.external_analysis_import_id is None
+                else None
+            )
+            selected_plan_id = request.plan_revision_id
+            if frozen_analysis is not None:
+                frozen_role, frozen_plan = frozen_analysis
+                if (
+                    project_id != frozen_plan.project_id
+                    or request.target_run_id not in {None, frozen_role.run_id}
+                    or request.plan_revision_id not in {None, frozen_role.plan_revision_id}
+                ):
+                    raise ConflictError(
+                        "analysis_goal_selection_conflict", "请求来源与当前选中的统计目标不一致。"
+                    )
+                active_run_id = frozen_role.run_id
+                selected_plan_id = frozen_role.plan_revision_id
             # This turn's context must use the selected role's run, while the
             # persisted conversation retains both roles' independent references.
             if active_run_id is not None:
@@ -1701,7 +1806,7 @@ class ConversationMixin(BaseServiceMixin):
                     preferred_profile_id=preferred_profile_id,
                     project_id=project_id,
                     active_run_id=active_run_id,
-                    plan_revision_id=request.plan_revision_id,
+                    plan_revision_id=selected_plan_id,
                     workspace_stage_candidates=workspace_stage_candidates,
                 )
                 work_packet = prepared_context.packet
@@ -1712,7 +1817,7 @@ class ConversationMixin(BaseServiceMixin):
                     "context_input_too_large", "当前消息超过所选模型的上下文预算。"
                 ) from exc
 
-            if request.action is ConversationAction.AUTO:
+            if request.action is ConversationAction.AUTO or frozen_analysis is not None:
                 action_result = await self.work_dialogue.respond(
                     conversation,
                     request,
