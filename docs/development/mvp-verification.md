@@ -6,6 +6,14 @@
 - 更新日期：2026-10-18
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-18 analysis-only 结果解释续接与进度投影
+
+已有外部来源的 analysis-only CompositeGoal 在真实统计 WorkTask 完成后绑定同一任务的结果解释 outbox；结果消费者继续使用目标累计模型预算。绑定和消费前后重核当前外部来源 revision、批准的统计 Plan、活动分析尝试、Run、唯一真实 StatisticalResult 及其登记 Artifact；解释消息写入时再次核对 intent、task、result ID/version。conversation-scoped 进度查询现在投影此类目标，并在 Work 页面显示“统计分析/结果解释”阶段。来源变化会阻断，缺少草稿或用户决定时保持等待；用户仍负责审查统计方案、批准并启动 Run。
+
+`test_analysis_only_result_continuation.py` 后端定向回归 13 项通过；`AgentPage.test.tsx` 64 项通过。后端 Ruff 对本切片文件通过，Mypy 307 个 Python 源文件通过；前端 OpenAPI 类型重新生成后 TypeScript 检查与 ESLint 通过；文档规范检查覆盖 89 份 Markdown，`git diff --check` 通过。验证未运行全量后端或前端测试，也未调用真实 Provider、MATLAB 或 DPABI。设计边界见 [ADR 0050](../adr/0050-analysis-only-result-continuation.md)。
+
+本切片仅覆盖用户明确选定的单个外部来源及现有统计能力。它没有完成通用目标调度、多来源/多指标自动拆分、跨 Run/session 编排、FC、任意 DAG 或整个计划 0014。
+
 ## 2026-10-18 普通分析任务只读结果兼容性
 
 前台只读结果查询现在区分普通 standalone Analysis task 与 CompositeGoal task：没有 `analysis_intent_task_id` 的冻结引用，只有在持久 WorkTask ID 未关联任何复合目标时才保留既有 standalone 查询路径；无法确认任务身份或该任务确属复合目标时仍返回冲突，避免将缺失的目标身份降级为普通分析。

@@ -62,7 +62,16 @@ class CompositeGoalProgressView(StrictModel):
     conversation_id: str
     project_id: str
     analysis_request_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    preprocessing_task_id: str
+    goal_kind: Literal["preprocess_then_analyze", "analysis_only_external_import"] = (
+        "preprocess_then_analyze"
+    )
+    preprocessing_task_id: str | None = None
+    source_external_import_id: str | None = None
+    source_import_version: int | None = None
+    source_tree_hash: str | None = None
+    source_inclusion_hash: str | None = None
+    source_manifest_hash: str | None = None
+    source_revision_hash: str | None = None
     analysis_proposal_outbox_intent_task_id: str | None = None
     analysis_work_task_id: str | None = None
     result_interpretation_outbox_task_id: str | None = None

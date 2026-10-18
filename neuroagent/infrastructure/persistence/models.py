@@ -275,7 +275,9 @@ class CompositeGoalLinkRow(Base):
             "AND source_tree_hash IS NOT NULL AND source_inclusion_hash IS NOT NULL "
             "AND source_manifest_hash IS NOT NULL AND source_revision_hash IS NOT NULL "
             "AND analysis_proposal_outbox_intent_task_id IS NULL "
-            "AND result_interpretation_outbox_task_id IS NULL)",
+            "AND (result_interpretation_outbox_task_id IS NULL "
+            "OR (analysis_work_task_id IS NOT NULL "
+            "AND result_interpretation_outbox_task_id = analysis_work_task_id)))",
             name="ck_composite_goal_source_kind",
         ),
     )

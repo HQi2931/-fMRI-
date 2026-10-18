@@ -877,6 +877,15 @@
             "title": "Conversation Id",
             "type": "string"
           },
+          "goal_kind": {
+            "default": "preprocess_then_analyze",
+            "enum": [
+              "preprocess_then_analyze",
+              "analysis_only_external_import"
+            ],
+            "title": "Goal Kind",
+            "type": "string"
+          },
           "intent_task_id": {
             "title": "Intent Task Id",
             "type": "string"
@@ -893,8 +902,15 @@
             "title": "Preprocessing Status"
           },
           "preprocessing_task_id": {
-            "title": "Preprocessing Task Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preprocessing Task Id"
           },
           "project_id": {
             "title": "Project Id",
@@ -933,6 +949,72 @@
             ],
             "title": "Result Interpretation Status"
           },
+          "source_external_import_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source External Import Id"
+          },
+          "source_import_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Import Version"
+          },
+          "source_inclusion_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Inclusion Hash"
+          },
+          "source_manifest_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Manifest Hash"
+          },
+          "source_revision_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Hash"
+          },
+          "source_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Tree Hash"
+          },
           "status": {
             "$ref": "#/components/schemas/CompositeGoalProgressStatus"
           }
@@ -942,7 +1024,6 @@
           "conversation_id",
           "project_id",
           "analysis_request_hash",
-          "preprocessing_task_id",
           "status"
         ],
         "title": "CompositeGoalProgressView",

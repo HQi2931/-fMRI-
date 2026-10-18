@@ -5,7 +5,7 @@
 - 维护者：system_architect
 - 创建日期：2026-10-11
 - 更新日期：2026-10-18
-- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)
+- 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)
 
 ## 目标里程碑
 
@@ -261,7 +261,17 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 按 [ADR 0049](../adr/0049-analysis-only-external-import-goals.md)，Work 可以对用户明确选择、当前项目中已纳入且 revision 可核验的单个外部指标来源建立独立统计目标。目标身份绑定 Work conversation、原始请求 hash 与外部导入版本/源树/inclusion/manifest revision；数据库不伪造 preprocessing task 或 Run。持久 root 与累计模型预算在第一次草稿模型调用前创建，之后冻结的统计 proposal 绑定到同一分析 intent 的 Statistical WorkTask，并沿已有 Plan review、显式 Approval 与 Run 创建门禁继续。普通无来源分析和原有 `preprocess_then_analyze` 复合目标保留原路径。
 
-范围限定为当前外部导入和统计设计装配器已经支持的单会话、单个明确来源组合；没有添加科学方法或从来源推断参数。analysis-only root 暂不出现在只面向 preprocessing 复合目标的统一进度列表，也没有自己的 outbox、后台续接或完成投影；本切片打通的是前台首个模型调用预算、Statistical WorkTask 和用户审查/Run 授权链，不是通用目标 dispatcher。它不覆盖多 Run/session、多个指标自动拆分、FC 或任意 DAG。迁移 0033 保留旧根及预算调用账本，并对降级时存在的新目标拒绝有损回退。
+范围限定为当前外部导入和统计设计装配器已经支持的单会话、单个明确来源组合；没有添加科学方法或从来源推断参数。该切片交付时，analysis-only root 尚未出现在只面向 preprocessing 复合目标的统一进度列表，也没有后台结果续接或完成投影；本阶段补充见下节。它不覆盖多 Run/session、多个指标自动拆分、FC 或任意 DAG。迁移 0033 保留旧根及预算调用账本，并对降级时存在的新目标拒绝有损回退。
+
+### 阶段 B analysis-only 结果解释续接与进度投影（2026-10-18）
+
+analysis-only 外部来源目标现复用既有 `StatisticalResultInterpretationOutbox`。只有统计 WorkTask 完成器核验真实、非占位的唯一 `StatisticalResult` 后，才在同一 Unit of Work 中把该 outbox 与 CompositeGoal root 绑定到同一个 `analysis_work_task_id`。根仍不伪造 preprocessing task，也不创建 proposal outbox。迁移 0034 将来源类型检查约束扩展为允许这一精确结果 outbox 关联，并保留目标、尝试、累计预算和 reservation 账本；当已有此类链接时拒绝有损降级。
+
+结果续接的权威链要求一致：当前已纳入外部来源及其版本、源树、纳入声明、manifest 和 revision hash；已批准统计 Plan 的项目、manifest、冻结 design/source 与 Plan hash；当前活动 proposal attempt、Task/Step、Run；唯一真实 StatisticalResult 的 ID、design revision、bundle hash 和 version。服务在绑定、消费前和结果提交前重核这些身份；来源变化阻断，计划、尝试、结果或 outbox 关联矛盾时不生成或提交解释。模型生成继续经同一 CompositeGoal 累计预算账本，不因切换到结果解释阶段重置额度。最终只有与该 intent、会话、Task、result ID/version 对应的 assistant continuation 才能使进度成为已完成。约束见 [ADR 0050](../adr/0050-analysis-only-result-continuation.md)；统计结果解释 outbox 的一般消费合同仍见 [ADR 0042](../adr/0042-statistical-result-interpretation-outbox.md)。
+
+conversation-scoped CompositeGoal progress API 现在列出两类 root，并在响应中返回 `goal_kind` 与可空 `preprocessing_task_id`。analysis-only 状态从外部来源、统计 WorkTask、结果 outbox 和 assistant continuation 的一致快照投影；页面将其显示为“外部指标分析”，只呈现“统计分析”和“结果解释”两阶段，不显示不存在的预处理或分析方案阶段。没有可绑定的统计任务时目标等待用户补充/确认草稿（`analysis_draft_user_decision`）；统计任务等待用户决定或结果解释 outbox 要求用户决定时显示相应等待原因。来源 revision 已变化会阻断；任务、Plan、活动尝试、结果或 continuation 身份不一致会以待核验状态收口，不冒充完成。仍需用户审查统计方案、显式批准并启动 Run；结果解释只提交可审查的 assistant 草稿。
+
+本切片范围仍是 Work 中用户明确选定的单个已纳入外部指标来源及现有统计能力。它没有实现通用 CompositeGoal dispatcher、多来源/多指标自动拆分、多 Run/session、FC、任意 DAG 或计划 0014 的完整跨步骤自动化。验证记录见 [MVP 验证记录](../development/mvp-verification.md)：analysis-only 结果续接后端定向回归 13 项、Agent 页面 64 项通过；Ruff、307 个 Python 源文件 Mypy、前端 TypeScript/ESLint、89 份 Markdown 文档校验及差异空白检查通过。未运行真实 Provider、MATLAB 或 DPABI，也未据此声称全量后端/前端测试或计划 0014 完成。
 
 阶段 B 复合意图关联修复（2026-10-14）：intent ID 由 conversation、原始请求和 HTTP 幂等键共同确定；复合请求先写入 active envelope，并随 `work_draft` 的参数补充、审查和重新编译传递，之后写入预处理 WorkTask/TaskStep 引用。启动只按 Task 中的 ID、conversation/project 和请求正文 hash 精确解析，不再从历史消息按项目猜测。后续独立的普通预处理目标会 tombstone active envelope，不会继承历史 intent；已经建立复合根记录的预处理任务不可清理或复用为不同目标。该切片当时仍只支持一个分析 intent/outbox；后续显式来源注册切片已允许多个独立 intent 共享来源。
 

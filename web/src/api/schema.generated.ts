@@ -1927,12 +1927,18 @@ export interface components {
             continuation_message_id?: string | null;
             /** Conversation Id */
             conversation_id: string;
+            /**
+             * Goal Kind
+             * @default preprocess_then_analyze
+             * @enum {string}
+             */
+            goal_kind: "preprocess_then_analyze" | "analysis_only_external_import";
             /** Intent Task Id */
             intent_task_id: string;
             /** Preprocessing Status */
             preprocessing_status?: string | null;
             /** Preprocessing Task Id */
-            preprocessing_task_id: string;
+            preprocessing_task_id?: string | null;
             /** Project Id */
             project_id: string;
             /** Reason Code */
@@ -1941,6 +1947,18 @@ export interface components {
             result_interpretation_outbox_task_id?: string | null;
             /** Result Interpretation Status */
             result_interpretation_status?: string | null;
+            /** Source External Import Id */
+            source_external_import_id?: string | null;
+            /** Source Import Version */
+            source_import_version?: number | null;
+            /** Source Inclusion Hash */
+            source_inclusion_hash?: string | null;
+            /** Source Manifest Hash */
+            source_manifest_hash?: string | null;
+            /** Source Revision Hash */
+            source_revision_hash?: string | null;
+            /** Source Tree Hash */
+            source_tree_hash?: string | null;
             status: components["schemas"]["CompositeGoalProgressStatus"];
         };
         /** CompositeGoalSelection */

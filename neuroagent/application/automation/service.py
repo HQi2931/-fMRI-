@@ -100,6 +100,7 @@ from neuroagent.application.repository_ports import (
     RunRepositoryPort,
 )
 from neuroagent.application.statistical_result_facts import (
+    build_method_summary,
     render_result_readout,
     result_model_facts,
     verified_result_design,
@@ -1490,6 +1491,15 @@ class WorkTaskApplicationService:
         snapshot: CompositeGoalSnapshot, conversation_id: str, intent_task_id: str
     ) -> None:
         goal = snapshot.goal
+        if goal.goal_kind == "analysis_only_external_import":
+            if (
+                goal.conversation_id != conversation_id
+                or goal.intent_task_id != intent_task_id
+                or snapshot.conversation_mode != ConversationMode.WORK.value
+                or snapshot.conversation_project_id not in {None, goal.project_id}
+            ):
+                raise NotFoundError("复合自动化目标", f"{conversation_id}:{intent_task_id}")
+            return
         task = snapshot.preprocessing_task
         refs = task.authority_refs if task is not None else None
         preprocessing_root_matches = bool(
@@ -1643,6 +1653,7 @@ class WorkTaskApplicationService:
     ) -> VerifiedResultInterpretationSource:
         """Re-read the full completed WorkTask → Run/Plan → result → Artifact chain."""
         for _attempt in range(3):
+            self._repository.verify_result_interpretation_goal_binding(outbox)
             task = self._repository.get_task(outbox.task_id)
             refs = task.authority_refs
             step = self._statistical_step(task)
@@ -1740,6 +1751,7 @@ class WorkTaskApplicationService:
                     "result_interpretation_evidence_changed",
                     "统计结果或其冻结 Artifact 证据与续接记录不一致。",
                 )
+            detail = detail.model_copy(update={"method_summary": build_method_summary(detail)})
             facts = result_model_facts(detail)
             # Only aggregate design and result evidence enters model context. The
             # registered IDs, hashes, paths, report body and subject rows remain

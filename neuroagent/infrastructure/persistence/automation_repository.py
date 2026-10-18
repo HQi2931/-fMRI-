@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any, cast
 from uuid import uuid4
 
@@ -921,8 +921,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             rows = session.execute(
                 text(
                     "SELECT intent_task_id FROM composite_goal_links "
-                    "WHERE conversation_id=:conversation_id "
-                    "AND goal_kind='preprocess_then_analyze' ORDER BY intent_task_id"
+                    "WHERE conversation_id=:conversation_id ORDER BY intent_task_id"
                 ),
                 {"conversation_id": conversation_id},
             ).scalars()
@@ -1108,7 +1107,19 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                                     message_payload if isinstance(message_payload, dict) else {}
                                 ),
                             )
+            source_valid = (
+                goal.goal_kind == "analysis_only_external_import"
+                and self._analysis_only_source_matches(session, goal)
+            )
+            result_binding_valid = False
+            if interpretation is not None and goal.goal_kind == "analysis_only_external_import":
+                with suppress(ConflictError):
+                    result_binding_valid = (
+                        self._validate_composite_result_binding(session, interpretation) == goal
+                    )
             return CompositeGoalSnapshot(
+                analysis_source_valid=source_valid,
+                analysis_result_binding_valid=result_binding_valid,
                 goal=goal,
                 analysis_intent_messages=tuple(intent_messages),
                 conversation_mode=(conversation_row["mode"] if conversation_row else None),
@@ -2204,6 +2215,51 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 self._link_result_outbox_to_goal(session, composite_goal, record.task_id)
             return self._result_interpretation_from_row(row)
 
+    @staticmethod
+    def _analysis_only_source_matches(session: Session, goal: CompositeGoalIdentity) -> bool:
+        imported = (
+            session.execute(
+                text(
+                    "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                    "FROM external_analysis_imports WHERE import_id=:import_id"
+                ),
+                {"import_id": goal.source_external_import_id},
+            )
+            .mappings()
+            .first()
+        )
+        return bool(
+            imported is not None
+            and imported["project_id"] == goal.project_id
+            and imported["status"] == "included"
+            and imported["version"] == goal.source_import_version
+            and imported["source_tree_hash"] == goal.source_tree_hash
+            and imported["inclusion_hash"] == goal.source_inclusion_hash
+            and external_analysis_manifest_hash(
+                str(goal.source_external_import_id),
+                str(imported["source_tree_hash"]),
+                str(imported["inclusion_hash"]),
+            )
+            == goal.source_manifest_hash
+            and content_hash(
+                {
+                    "external_import_id": goal.source_external_import_id,
+                    "import_version": imported["version"],
+                    "source_tree_hash": imported["source_tree_hash"],
+                    "inclusion_hash": imported["inclusion_hash"],
+                    "input_manifest_hash": goal.source_manifest_hash,
+                }
+            )
+            == goal.source_revision_hash
+        )
+
+    def verify_result_interpretation_goal_binding(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> None:
+        """Recheck current goal/attempt/source identity before dispatch or commit."""
+        with self._read_session() as session:
+            self._validate_composite_result_binding(session, record)
+
     def _validate_composite_result_binding(
         self, session: Session, record: StatisticalResultInterpretationOutbox
     ) -> CompositeGoalIdentity | None:
@@ -2217,7 +2273,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         attempt = (
             session.execute(
                 text(
-                    """SELECT goal.* FROM composite_goal_analysis_attempts AS attempt
+                    """SELECT goal.*, attempt.attempt_number AS active_attempt_number,
+                        attempt.proposal_hash AS active_proposal_hash
+                    FROM composite_goal_analysis_attempts AS attempt
                     JOIN composite_goal_links AS goal
                       ON goal.intent_task_id=attempt.intent_task_id
                     WHERE attempt.work_task_id=:task_id"""
@@ -2259,14 +2317,6 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             .mappings()
             .first()
         )
-        proposal_outbox = (
-            session.execute(
-                text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
-                {"intent_id": goal.intent_task_id},
-            )
-            .mappings()
-            .first()
-        )
         if (
             goal.analysis_work_task_id != record.task_id
             or goal.conversation_id != record.conversation_id
@@ -2284,13 +2334,104 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             or run is None
             or run["project_id"] != goal.project_id
             or run["plan_revision_id"] != record.plan_revision_id
-            or proposal_outbox is None
-            or not self._outbox_matches_goal(proposal_outbox, goal)
             or goal.result_interpretation_outbox_task_id not in {None, record.task_id}
         ):
             raise ConflictError(
                 "composite_goal_result_binding_mismatch",
                 "统计结果解释 outbox 未绑定当前目标的会话、项目、活动尝试、Plan 或 Run。",
+            )
+        if goal.goal_kind == "analysis_only_external_import":
+            plan_row = (
+                session.execute(
+                    text(
+                        "SELECT project_id, state, manifest_hash, plan_json, plan_hash, "
+                        "environment_hash "
+                        "FROM plan_revisions WHERE plan_revision_id=:plan_id"
+                    ),
+                    {"plan_id": record.plan_revision_id},
+                )
+                .mappings()
+                .first()
+            )
+            statistical_steps = tuple(step for step in task.steps if step.kind == "statistical_run")
+            try:
+                plan_content = json.loads(plan_row["plan_json"]) if plan_row is not None else None
+            except (TypeError, json.JSONDecodeError):
+                plan_content = None
+            design = plan_content.get("design") if isinstance(plan_content, dict) else None
+            work_context = (
+                plan_content.get("work_context") if isinstance(plan_content, dict) else None
+            )
+            source_valid = self._analysis_only_source_matches(session, goal)
+            plan_valid = bool(
+                plan_row is not None
+                and plan_row["project_id"] == goal.project_id
+                and plan_row["state"] == "approved"
+                and plan_row["manifest_hash"] == goal.source_manifest_hash
+                and content_hash(
+                    {
+                        "plan": plan_content,
+                        "manifest_hash": plan_row["manifest_hash"],
+                        "environment_hash": plan_row["environment_hash"],
+                    }
+                )
+                == plan_row["plan_hash"]
+                and isinstance(design, dict)
+                and design.get("external_import_id") == goal.source_external_import_id
+                and design.get("external_import_hash") == goal.source_inclusion_hash
+                and isinstance(work_context, dict)
+                and work_context.get("conversation_id") == goal.conversation_id
+                and work_context.get("proposal_hash") == attempt["active_proposal_hash"]
+                and work_context.get("draft_hash") == refs.input_revision
+            )
+            result_rows = (
+                session.execute(
+                    text(
+                        "SELECT result_id, project_id, design_revision_id, mode, non_scientific, "
+                        "bundle_hash, version FROM statistical_results WHERE run_id=:run_id"
+                    ),
+                    {"run_id": record.run_id},
+                )
+                .mappings()
+                .all()
+            )
+            result_valid = bool(
+                len(result_rows) == 1
+                and result_rows[0]["result_id"] == record.result_id
+                and result_rows[0]["project_id"] == goal.project_id
+                and isinstance(design, dict)
+                and result_rows[0]["design_revision_id"] == design.get("revision_id")
+                and result_rows[0]["mode"] == "real"
+                and not result_rows[0]["non_scientific"]
+                and result_rows[0]["bundle_hash"] == record.result_bundle_hash
+                and result_rows[0]["version"] == record.result_version
+            )
+            if (
+                not source_valid
+                or not plan_valid
+                or not result_valid
+                or len(statistical_steps) != 1
+                or statistical_steps[0].input_version != attempt["active_proposal_hash"]
+                or attempt["active_attempt_number"] < 1
+            ):
+                raise ConflictError(
+                    "analysis_goal_result_source_mismatch",
+                    "统计结果解释没有绑定当前活动提案及其冻结外部导入来源。",
+                )
+            return goal
+
+        proposal_outbox = (
+            session.execute(
+                text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                {"intent_id": goal.intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if proposal_outbox is None or not self._outbox_matches_goal(proposal_outbox, goal):
+            raise ConflictError(
+                "composite_goal_result_binding_mismatch",
+                "统计结果解释 outbox 未绑定复合目标的精确提案来源。",
             )
         return goal
 
@@ -2508,6 +2649,9 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     )
                     .mappings()
                     .one()
+                )
+                self._validate_composite_result_binding(
+                    session, self._result_interpretation_from_row(result_row)
                 )
                 task = self._task_from_session(session, claim.task_id)
                 attempt = (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -69,7 +70,6 @@ class CompositeGoalIdentity(BaseModel):
             self.preprocessing_task_id is not None
             or any(item is None for item in source_fields)
             or self.analysis_proposal_outbox_intent_task_id is not None
-            or self.result_interpretation_outbox_task_id is not None
         ):
             raise ValueError("analysis-only goals require an exact external import source")
         if (
@@ -125,6 +125,8 @@ class CompositeGoalSnapshot(BaseModel):
     analysis_intent_messages: tuple[CompositeGoalIntentMessage, ...] = Field(
         default=(), max_length=2
     )
+    analysis_source_valid: bool = False
+    analysis_result_binding_valid: bool = False
     conversation_mode: str | None = None
     conversation_project_id: str | None = None
     preprocessing_plan_revision_id: str | None = None
@@ -182,6 +184,9 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             continuation_message_id=continuation_message_id,
             reason_code=reason,
         )
+
+    if goal.goal_kind == "analysis_only_external_import":
+        return _project_analysis_only_external_goal(snapshot, result)
 
     if prep is None or prep.task_id != goal.preprocessing_task_id:
         return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_task_missing")
@@ -419,6 +424,149 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     )
 
 
+def _project_analysis_only_external_goal(
+    snapshot: CompositeGoalSnapshot,
+    result: Callable[..., CompositeGoalProgress],
+) -> CompositeGoalProgress:
+    """Project a direct external-import analysis without inventing a prep child."""
+
+    goal = snapshot.goal
+    task = snapshot.analysis_task
+    outbox = snapshot.result_interpretation_outbox
+    if (
+        goal.preprocessing_task_id is not None
+        or goal.analysis_proposal_outbox_intent_task_id is not None
+        or snapshot.preprocessing_task is not None
+        or snapshot.analysis_proposal_outbox is not None
+    ):
+        return result(CompositeGoalStatus.INDETERMINATE, "analysis_only_child_binding_mismatch")
+    if snapshot.conversation_mode != "work" or snapshot.conversation_project_id not in {
+        None,
+        goal.project_id,
+    }:
+        return result(CompositeGoalStatus.INDETERMINATE, "analysis_only_conversation_mismatch")
+    if not snapshot.analysis_source_valid:
+        return result(CompositeGoalStatus.BLOCKED, "analysis_only_source_changed")
+    if task is None:
+        if snapshot.analysis_attempts or goal.analysis_work_task_id is not None:
+            return result(CompositeGoalStatus.INDETERMINATE, "analysis_task_missing")
+        return result(CompositeGoalStatus.WAITING_USER, "analysis_draft_user_decision")
+    if (
+        task.task_id != goal.analysis_work_task_id
+        or not _analysis_task_matches(task, goal)
+        or len(snapshot.analysis_attempts) == 0
+        or snapshot.analysis_attempts[-1].work_task_id != task.task_id
+        or not _analysis_task_has_proposal(task, snapshot.analysis_attempts[-1].proposal_hash)
+    ):
+        return result(
+            CompositeGoalStatus.INDETERMINATE,
+            "analysis_task_reference_mismatch",
+            analysis_status=task.status.value,
+        )
+    if task.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
+        return result(
+            CompositeGoalStatus.BLOCKED,
+            "analysis_terminal_block",
+            analysis_status=task.status.value,
+        )
+    if task.status is TaskStatus.WAITING_USER:
+        return result(
+            CompositeGoalStatus.WAITING_USER,
+            "analysis_user_decision",
+            analysis_status=task.status.value,
+        )
+    if task.status is not TaskStatus.COMPLETED:
+        return result(
+            CompositeGoalStatus.WAITING_ANALYSIS,
+            "analysis_in_progress",
+            analysis_status=task.status.value,
+        )
+
+    if (
+        not snapshot.analysis_result_binding_valid
+        or goal.result_interpretation_outbox_task_id != task.task_id
+        or outbox is None
+        or outbox.task_id != task.task_id
+        or outbox.conversation_id != goal.conversation_id
+        or outbox.project_id != goal.project_id
+        or outbox.plan_revision_id != task.authority_refs.plan_revision_id
+        or outbox.run_id != task.authority_refs.workflow_run_id
+    ):
+        return result(
+            CompositeGoalStatus.INDETERMINATE,
+            "result_interpretation_binding_missing",
+            analysis_status=task.status.value,
+            result_status=outbox.status.value if outbox is not None else None,
+        )
+    return _project_result_interpretation(
+        goal=goal,
+        task=task,
+        outbox=outbox,
+        message=snapshot.result_continuation_message,
+        result=result,
+        proposal_status=None,
+    )
+
+
+def _project_result_interpretation(
+    *,
+    goal: CompositeGoalIdentity,
+    task: WorkTask,
+    outbox: StatisticalResultInterpretationOutbox,
+    message: CompositeGoalContinuationMessage | None,
+    result: Callable[..., CompositeGoalProgress],
+    proposal_status: str | None,
+) -> CompositeGoalProgress:
+    result_status = outbox.status.value
+    if result_status == "blocked":
+        status, reason = CompositeGoalStatus.BLOCKED, "result_interpretation_blocked"
+    elif result_status == "waiting_user":
+        status, reason = CompositeGoalStatus.WAITING_USER, "result_interpretation_user_decision"
+    elif result_status == "completed" and outbox.continuation_message_id:
+        message_payload = message.payload if message is not None else {}
+        completion = message_payload.get("statistical_result_interpretation")
+        envelope = message_payload.get("analysis_intent_envelope")
+        if (
+            not isinstance(envelope, dict)
+            or (
+                envelope.get("status") != "completed"
+                or envelope.get("task_id") != goal.intent_task_id
+                or envelope.get("conversation_id") != goal.conversation_id
+                or envelope.get("project_id") != goal.project_id
+                or envelope.get("analysis_request_hash") != goal.analysis_request_hash
+            )
+            or not isinstance(completion, dict)
+            or (
+                message is None
+                or message.message_id != outbox.continuation_message_id
+                or message.conversation_id != goal.conversation_id
+                or message.role != "assistant"
+                or completion.get("task_id") != task.task_id
+                or completion.get("status") != "completed"
+                or completion.get("result_id") != outbox.result_id
+                or completion.get("result_version") != outbox.result_version
+            )
+        ):
+            status, reason = CompositeGoalStatus.INDETERMINATE, "result_continuation_mismatch"
+        else:
+            status, reason = CompositeGoalStatus.COMPLETED, "result_interpretation_delivered"
+    elif result_status == "ready":
+        status, reason = (
+            CompositeGoalStatus.WAITING_RESULT_INTERPRETATION,
+            "result_interpretation_pending",
+        )
+    else:
+        status, reason = CompositeGoalStatus.INDETERMINATE, "result_interpretation_incomplete"
+    return result(
+        status,
+        reason,
+        analysis_status=task.status.value,
+        proposal_status=proposal_status,
+        result_status=result_status,
+        continuation_message_id=outbox.continuation_message_id,
+    )
+
+
 def _analysis_task_matches(task: WorkTask, goal: CompositeGoalIdentity) -> bool:
     return (
         task.authority_refs.conversation_id == goal.conversation_id
@@ -442,7 +590,7 @@ def _verified_analysis_summary(
             continue
         request = dependency.get("analysis_request")
         if (
-            dependency.get("task_kind") != "preprocess_then_analyze"
+            dependency.get("task_kind") != goal.goal_kind
             or dependency.get("task_id") != goal.intent_task_id
             or dependency.get("conversation_id") != goal.conversation_id
             or dependency.get("project_id") != goal.project_id

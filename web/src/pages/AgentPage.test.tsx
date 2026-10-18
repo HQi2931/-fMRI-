@@ -61,6 +61,17 @@ function compositeGoal(status: string, intentTaskId: string, reasonCode: string 
   };
 }
 
+function externalAnalysisGoal(status: string, intentTaskId: string, reasonCode: string | null = null) {
+  return {
+    ...compositeGoal(status, intentTaskId, reasonCode),
+    goal_kind: "analysis_only_external_import",
+    preprocessing_task_id: null,
+    preprocessing_status: null,
+    analysis_proposal_outbox_intent_task_id: null,
+    analysis_proposal_status: null,
+  };
+}
+
 function message(id: string, role: "user" | "assistant", content: string, payload = {}) {
   return {
     message_id: id,
@@ -325,6 +336,42 @@ describe("agent workbench page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
     await waitFor(() => expect(loadGoals).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows mixed goal types with only their recorded stages and supported actions", async () => {
+    const goals = [
+      { ...compositeGoal("waiting_user", "prep-goal"), analysis_status: "waiting_user" },
+      { ...externalAnalysisGoal("waiting_user", "external-user", "analysis_user_decision"), analysis_status: "waiting_user" },
+      { ...externalAnalysisGoal("waiting_result_interpretation", "external-result", "result_interpretation_pending"), analysis_status: "completed", result_interpretation_status: "ready" },
+      { ...externalAnalysisGoal("completed", "external-complete", "result_interpretation_delivered"), analysis_status: "completed", result_interpretation_status: "completed", continuation_message_id: "delivered" },
+      { ...externalAnalysisGoal("waiting_analysis", "external-draft", "analysis_task_not_created"), analysis_work_task_id: null, analysis_status: null },
+      { ...externalAnalysisGoal("waiting_user", "external-draft-user", "analysis_draft_user_decision"), analysis_work_task_id: null, analysis_status: null },
+      { ...externalAnalysisGoal("blocked", "external-source-changed", "analysis_only_source_changed"), analysis_status: "blocked" },
+    ];
+    installFetch({ compositeGoals: () => json(goals) });
+    render(<AgentPage />);
+    await screen.findByRole("region", { name: "自动化流程进度" });
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[0]).getByText("预处理与分析")).toBeInTheDocument();
+    expect(within(cards[0]).getAllByRole("listitem")).toHaveLength(4);
+    expect(within(cards[0]).getByRole("button", { name: "继续此分析" })).toBeInTheDocument();
+    for (const card of cards.slice(1)) {
+      expect(within(card).getByText("外部指标分析")).toBeInTheDocument();
+      expect(within(card).getAllByRole("listitem")).toHaveLength(2);
+      expect(within(card).queryByText("预处理：")).not.toBeInTheDocument();
+      expect(within(card).queryByText("分析方案：")).not.toBeInTheDocument();
+      expect(within(card).queryByRole("button")).not.toBeInTheDocument();
+    }
+    expect(within(cards[1]).getByText("统计分析需要你的决定。")).toBeInTheDocument();
+    expect(within(cards[2]).getByText("已就绪")).toBeInTheDocument();
+    expect(within(cards[3]).getByText("结果说明已送达当前会话。")).toBeInTheDocument();
+    expect(within(cards[4]).getByText("正在准备统计分析草稿。")).toBeInTheDocument();
+    expect(within(cards[4]).getAllByText("尚未进入")).toHaveLength(2);
+    expect(within(cards[5]).getByText("统计分析草稿需要你补充或确认。")).toBeInTheDocument();
+    expect(within(cards[6]).getByText("外部指标的纳入修订已变化，请重新核实分析来源。")).toBeInTheDocument();
+    expect(screen.queryByText("等待预处理")).not.toBeInTheDocument();
+    expect(screen.queryByText("external-user")).not.toBeInTheDocument();
+    expect(screen.queryByText("external-complete")).not.toBeInTheDocument();
   });
 
   it("selects an exact analysis goal and uses its saved source instead of a newer unrelated draft", async () => {
@@ -600,7 +647,7 @@ describe("agent workbench page", () => {
         firstSignal = signal ?? null;
         return firstResponse;
       }
-      return json([compositeGoal("completed", "current-goal", "result_interpretation_delivered")]);
+      return json([{ ...externalAnalysisGoal("completed", "current-goal", "result_interpretation_delivered"), analysis_status: "completed", result_interpretation_status: "completed" }]);
     });
     installFetch({
       conversations: () => json([conversation(), conversation({ conversation_id: "work-2", title: "第二个 Work 会话" })]),
@@ -612,6 +659,7 @@ describe("agent workbench page", () => {
     fireEvent.change(screen.getByLabelText("当前会话"), { target: { value: "work-2" } });
 
     expect(await screen.findByRole("heading", { name: "自动化流程 1 已完成" })).toBeInTheDocument();
+    expect(screen.getByText("外部指标分析")).toBeInTheDocument();
     await waitFor(() => expect(firstSignal?.aborted).toBe(true));
     await act(async () => {
       finishFirstRequest(await json([compositeGoal("waiting_user", "old-goal", "analysis_decision_required")]));
@@ -620,7 +668,29 @@ describe("agent workbench page", () => {
     });
 
     expect(screen.queryByText("需要你处理", { selector: "span" })).not.toBeInTheDocument();
+    expect(screen.queryByText("预处理与分析")).not.toBeInTheDocument();
     expect(loadGoals).toHaveBeenCalledWith("work-2", expect.any(AbortSignal));
+  });
+
+  it.each(["waiting_user", "completed"])("stops external analysis polling after interpretation reaches %s", async (terminalStatus) => {
+    let settled = false;
+    const loadGoals = vi.fn(() => json([settled
+      ? { ...externalAnalysisGoal(terminalStatus, "external-poll"), analysis_status: "completed", result_interpretation_status: terminalStatus }
+      : { ...externalAnalysisGoal("waiting_result_interpretation", "external-poll", "result_interpretation_pending"), analysis_status: "completed", result_interpretation_status: "ready" }]));
+    installFetch({ compositeGoals: loadGoals });
+    render(<AgentPage />);
+    expect(await screen.findByText("等待结果解释", { selector: "span" })).toBeInTheDocument();
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(loadGoals).toHaveBeenCalledTimes(2);
+    settled = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(loadGoals).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("heading", { name: `自动化流程 1 ${terminalStatus === "completed" ? "已完成" : "需要你处理"}` })).toBeInTheDocument();
+    expect(screen.queryByText("进行中的任务每 10 秒自动更新。")).not.toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(loadGoals).toHaveBeenCalledTimes(3);
   });
 
   it("periodically refreshes only while the composite goal is active", async () => {

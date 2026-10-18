@@ -96,6 +96,12 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
     analysis_terminal_block: "统计分析已停止，需检查后再继续。",
     analysis_user_decision: "统计分析需要你的决定。",
     analysis_in_progress: "统计分析仍在进行。",
+    analysis_only_child_binding_mismatch: "外部指标分析的任务关联需要核验。",
+    analysis_only_conversation_mismatch: "外部指标分析与当前会话的关联需要核验。",
+    analysis_only_source_changed: "外部指标的纳入修订已变化，请重新核实分析来源。",
+    analysis_task_not_created: "正在准备统计分析草稿。",
+    analysis_draft_user_decision: "统计分析草稿需要你补充或确认。",
+    analysis_task_missing: "找不到对应的统计分析任务。",
     result_interpretation_binding_missing: "结果解释任务的关联信息需要核验。",
     result_interpretation_blocked: "生成结果解释时遇到阻断。",
     result_interpretation_user_decision: "结果解释需要你的决定。",
@@ -143,18 +149,20 @@ function CompositeGoalProgressPanel({
       {view.goals.map((goal, index) => {
         const status = compositeGoalStatusView(goal.status);
         const reason = compositeGoalReasonView(goal.reason_code);
+        const analysisOnly = goal.goal_kind === "analysis_only_external_import";
         return <li key={goal.intent_task_id}>
           <article className="composite-goal-card">
             <h3>自动化流程 {index + 1} <span className={`status-pill status-${status.tone}`}>{status.label}</span></h3>
+            <p><strong>流程类型：</strong>{analysisOnly ? "外部指标分析" : "预处理与分析"}</p>
             {goal.analysis_summary && <p className="composite-goal-summary"><strong>分析目标：</strong>{goal.analysis_summary}</p>}
             <p>{reason ?? status.detail}</p>
             <ol aria-label={`自动化流程 ${index + 1} 的处理阶段`}>
-              <li><strong>预处理：</strong>{compositeGoalStageView(goal.preprocessing_status)}</li>
-              <li><strong>分析方案：</strong>{compositeGoalStageView(goal.analysis_proposal_status)}</li>
+              {!analysisOnly && <li><strong>预处理：</strong>{compositeGoalStageView(goal.preprocessing_status)}</li>}
+              {!analysisOnly && <li><strong>分析方案：</strong>{compositeGoalStageView(goal.analysis_proposal_status)}</li>}
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
-            {["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
+            {!analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
               && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
               && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
               && !["blocked", "cancelled"].includes(goal.analysis_status ?? "")

@@ -288,9 +288,7 @@ def test_work_statistics_persists_plan_run_and_role_without_browser_cache(
         fresh.close()
 
 
-def test_external_analysis_target_persists_budget_before_provider_and_binds_review_chain(
-    service, source_root, work_root, monkeypatch
-):
+def _external_analysis_target(service, source_root, work_root, monkeypatch):
     _old_conversation_id, _old_request, source_proposal_payload = _proposal(
         service, source_root, work_root
     )
@@ -471,6 +469,13 @@ def test_external_analysis_target_persists_budget_before_provider_and_binds_revi
     )
     assert run.project_id == project_id
     assert len(service.runs.list_runs(project_id=project_id)) == 1
+    return goal, role_task, run, payload
+
+
+def test_external_analysis_target_persists_budget_before_provider_and_binds_review_chain(
+    service, source_root, work_root, monkeypatch
+):
+    _external_analysis_target(service, source_root, work_root, monkeypatch)
 
 
 @pytest.mark.parametrize("operation", ["validate", "approve", "run"])

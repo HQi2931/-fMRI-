@@ -4,7 +4,7 @@
 - 文档类型：Development
 - 维护者：documentation_maintainer
 - 创建日期：2026-09-23
-- 更新日期：2026-10-17
+- 更新日期：2026-10-18
 - 适用范围：`docs/` 全部文档的导航、权威来源与归档登记
 - 关联：[文档规范](development/documentation-standard.md)
 
@@ -36,6 +36,7 @@
 | 长任务与错误诊断 | [长任务等待、恢复与错误诊断](operations/long-running-jobs.md) | |
 | Provider 配置 | [Provider 配置与 smoke](operations/provider-setup.md) | |
 | 数据外发策略 | [模型数据外发策略](security/data-egress.md) | |
+| 已纳入外部指标目标的结果续接与身份边界 | [ADR 0050](adr/0050-analysis-only-result-continuation.md) | 补充 [ADR 0049](adr/0049-analysis-only-external-import-goals.md) 的结果 outbox 关联决策 |
 | 验证事实与已知限制 | [MVP 验证与已知限制](development/mvp-verification.md) | 计划文档中的进度描述不得与之冲突 |
 | 开发与阶段流程 | [阶段审查与阶段关门](development/release-process.md) | |
 | 文档规范 | [文档规范](development/documentation-standard.md) | |
@@ -147,6 +148,7 @@
 - [ADR 0047：冻结分析目标的精确上下文恢复](adr/0047-frozen-analysis-goal-restoration.md)
 - [ADR 0048：复合目标共享模型调用预算](adr/0048-composite-goal-model-call-budget.md)
 - [ADR 0049：已有外部指标的独立统计目标](adr/0049-analysis-only-external-import-goals.md)
+- [ADR 0050：analysis-only 外部来源目标的结果续接](adr/0050-analysis-only-result-continuation.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

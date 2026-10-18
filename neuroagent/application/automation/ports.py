@@ -182,6 +182,10 @@ class WorkTaskRepositoryPort(Protocol):
         self, record: StatisticalResultInterpretationOutbox
     ) -> StatisticalResultInterpretationOutbox: ...
 
+    def verify_result_interpretation_goal_binding(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> None: ...
+
     def get_result_interpretation_outbox(
         self, task_id: str
     ) -> StatisticalResultInterpretationOutbox: ...
