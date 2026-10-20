@@ -20,6 +20,7 @@ from neuroagent.domain.fmri.preprocessing import (
     NormalizationTiming,
     PreprocessingParameters,
     ScrubbingMethod,
+    unsupported_result_normalization_with_metrics,
 )
 from neuroagent.domain.fmri.preprocessing_outputs import (
     enumerate_dpabi_preprocessing_outputs,
@@ -198,7 +199,11 @@ def compile_preprocessing(
             or parameters.smoothing.timing is SmoothingTiming.ON_RESULTS
         ):
             raise ValueError("result-stage operations require a requested metric output")
-        if metrics_requested and parameters.normalization.timing is NormalizationTiming.ON_RESULTS:
+        if unsupported_result_normalization_with_metrics(
+            request_preprocessing=True,
+            metrics_requested=metrics_requested,
+            normalization_timing=parameters.normalization.timing,
+        ):
             raise ValueError("result normalization with metrics requires separate mask spaces")
         if reho is not None and parameters.scrubbing.method is ScrubbingMethod.CUT:
             raise ValueError("CUT scrubbing requires a verified checkpoint before a ReHo plan")

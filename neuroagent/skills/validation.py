@@ -14,7 +14,10 @@ from neuroagent.domain.fmri.metrics import (
     validate_frequency_resolution,
     validate_reho_input,
 )
-from neuroagent.domain.fmri.preprocessing import ScrubbingMethod
+from neuroagent.domain.fmri.preprocessing import (
+    ScrubbingMethod,
+    unsupported_result_normalization_with_metrics,
+)
 from neuroagent.skills.loader import SkillLoader, SkillLoadError
 from neuroagent.skills.models import (
     IssueSeverity,
@@ -129,6 +132,33 @@ class SkillValidator:
                     )
                 )
         requested = set(request.requested_metrics)
+        metrics_requested = request.alff_falff is not None or request.reho is not None
+        if unsupported_result_normalization_with_metrics(
+            request_preprocessing=request.request_preprocessing,
+            metrics_requested=metrics_requested,
+            normalization_timing=(
+                request.preprocessing.normalization.timing
+                if request.preprocessing is not None
+                else None
+            ),
+        ):
+            issues.append(
+                SkillValidationIssue(
+                    code="RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED",
+                    severity=IssueSeverity.BLOCKING,
+                    message=(
+                        "当前 DPARSFA 执行合同只有一个指标掩膜绑定，无法表达 ON_RESULTS "  # noqa: RUF001
+                        "标准化与指标输出所需的独立 mask-space 输入；"  # noqa: RUF001
+                        "此能力提示不判断真实图像或掩膜空间。"
+                    ),
+                    path="preprocessing.normalization.timing",
+                    remediation=(
+                        "请由研究者决定是否改用受支持的标准化阶段，"  # noqa: RUF001
+                        "或调整为符合当前单掩膜绑定合同的方案，"  # noqa: RUF001
+                        "再重新运行预检。"
+                    ),
+                )
+            )
         if request.request_preprocessing and request.preprocessing is not None:
             issues.extend(
                 self.validate_parameter_payload(

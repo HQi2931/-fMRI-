@@ -202,6 +202,30 @@ def test_preprocessing_session_scope_is_a_capability_boundary() -> None:
     assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
 
 
+def test_result_normalization_mask_space_limit_is_a_capability_boundary() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED",
+                message="当前执行合同只有一个指标掩膜绑定。",
+                severity="blocking",
+                path="preprocessing.normalization.timing",
+                remediation="请由研究者决定是否调整方案后重新预检。",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "unsupported_capability"
+    assert issue.target == "preprocessing.normalization.timing"
+    assert issue.requires_user_decision is False
+    assert issue.repairs[0].action.value == "none"
+    assert "请由研究者决定" in issue.message
+    assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
 def test_unknown_skill_blocker_fails_closed_without_claiming_scientific_choice() -> None:
     feedback = planning_feedback_for_skill_issues(
         (

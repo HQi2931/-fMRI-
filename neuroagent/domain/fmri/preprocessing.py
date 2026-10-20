@@ -86,6 +86,26 @@ class NormalizationTiming(StrEnum):
     ON_RESULTS = "on_results"
 
 
+def unsupported_result_normalization_with_metrics(
+    *,
+    request_preprocessing: bool,
+    metrics_requested: bool,
+    normalization_timing: NormalizationTiming | None,
+) -> bool:
+    """Return whether the current DPARSFA contract cannot represent this combination.
+
+    The executor has one mask binding for metric outputs.  This predicate
+    describes that implementation boundary; it does not infer mask or image
+    compatibility from input data.
+    """
+
+    return (
+        request_preprocessing
+        and metrics_requested
+        and normalization_timing is NormalizationTiming.ON_RESULTS
+    )
+
+
 class AffineRegularization(StrEnum):
     MNI = "mni"
     EASTERN = "eastern"

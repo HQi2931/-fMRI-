@@ -5366,6 +5366,8 @@ export interface components {
             message: string;
             /** Path */
             path?: string | null;
+            /** Remediation */
+            remediation?: string | null;
             /** Severity */
             severity: string;
         };

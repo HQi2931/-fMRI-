@@ -455,6 +455,7 @@ class SkillPlanMixin(BaseServiceMixin):
                     message=issue.message,
                     severity=issue.severity.value,
                     path=issue.path,
+                    remediation=issue.remediation,
                 )
                 for issue in prepared.issues
             ),
@@ -559,6 +560,7 @@ class SkillPlanMixin(BaseServiceMixin):
                 ),
                 severity=issue.severity.value,
                 path=issue.path,
+                remediation=issue.remediation,
             )
             for issue in (*report.issues, *format_issues)
             if issue.severity is not IssueSeverity.BLOCKING
@@ -610,6 +612,7 @@ class SkillPlanMixin(BaseServiceMixin):
                 message=issue.message,
                 severity=issue.severity.value,
                 path=issue.path,
+                remediation=issue.remediation,
             )
             for issue in (*report.issues, *format_issues)
         )

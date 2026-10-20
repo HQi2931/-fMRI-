@@ -6,6 +6,12 @@
 - 更新日期：2026-10-20
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-20 Work `ON_RESULTS` 指标归一化能力预检
+
+Skill Validator 与执行编译器现在共用一个纯领域谓词：只有同时请求 preprocessing、至少一个指标参数（按执行层定义，ALFF/fALFF 或 ReHo 参数存在）且 normalization timing 为 `ON_RESULTS` 时，才以 `RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED` 阻断。单指标也会阻断；disabled normalization、无 metric 和 metric-only 不触发此新 gate。原因是当前执行合同只承载一个 metric mask binding，不能表达所需的独立 mask-space 输入。这是当前执行能力边界，不代表检查了真实图像或掩膜空间，也不声称是普遍科学规则。执行编译器保留原有拒绝防线；Work dry-run 在不写入 Plan/Approval/Run 的情况下返回 `ready=false`、字段路径与独立 remediation，正式 resolve 在 Plan 写入前失败，Work 反馈为 `BLOCKED_CAPABILITY` 且不自动修订科学选择。
+
+定向测试命令 `uv run python -m pytest tests/science/test_skill_compiler.py tests/science/test_preprocessing_compilation.py tests/backend/test_skill_plan_dry_run.py tests/backend/test_work_preflight_feedback.py tests/backend/test_work_dialogue_feedback.py -q -o addopts='' --basetemp D:\rs\pytest-on-results-20261020-e` 得到 60 passed，含单指标阻断、disabled/no-metric/metric-only 不触发、执行层旧拒绝、dry-run 与正式 resolve 无 Plan 写入，以及 capability feedback/no repair。Ruff check/format、7 个源文件 Mypy、91 份 Markdown 文档规范、前端 TypeScript 类型检查和 `git diff --check` 通过；OpenAPI 与生成 TypeScript schema 同步增加可选 remediation 字段。存在一项既有 Starlette/httpx deprecation warning。未运行真实影像、Provider、MATLAB 或 DPABI。
+
 ## 2026-10-20 CompositeGoal 阶段交接判定
 
 `CompositeGoalSnapshot` 在同一只读 SQLite 快照内加入目标关联的最小 Plan、Run 与 QC 状态。纯 handoff decision 被 conversation progress 和两个既有 outbox consumer 共用：只有 Task wait reference、Plan/Run 项目、输入修订及绑定身份、活跃 Run 状态和 QC review 事实一致时，才细化为“等待审查”或“等待 Run”；错绑、未知或缺失证据不会据此放行。分析提案和统计结果解释 worker 只在当前 root 与 claim 精确匹配、各自 outbox 为 ready、action 对应目标一致时调用模型。阶段暂不可交接时不调用模型；proposal handoff 自动尝试达到五次后转为可人工重试的 `WAITING_USER`，不无限重试。来源复核、共享累计预算、worker 租约和 fencing 保持原有执行边界。

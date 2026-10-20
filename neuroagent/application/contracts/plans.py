@@ -50,6 +50,7 @@ class ValidationIssue(StrictModel):
     message: str
     severity: str = Field(pattern="^(info|warning|blocking)$")
     path: str | None = None
+    remediation: str | None = None
 
 
 class PlanValidationRequest(StrictModel):

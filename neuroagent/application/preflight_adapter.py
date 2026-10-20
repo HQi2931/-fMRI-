@@ -39,6 +39,7 @@ _SKILL_CAPABILITY_BLOCKER_CODES = frozenset(
         "UNSUPPORTED_METRIC_REQUEST",
         "MANIFEST_DICOM_INVENTORY_ONLY",
         "MANIFEST_PREPROCESSING_SESSION_UNSUPPORTED",
+        "RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED",
         "REVIEWED_SKILL_WITHOUT_EVIDENCE",
         "SCIENTIFIC_SKILL_WITHOUT_METHODOLOGIST_REVIEW",
     }
@@ -253,7 +254,7 @@ def planning_feedback_for_skill_issues(
             code=f"skill_preflight_{item.code.casefold()}",
             kind=kind,
             target=target,
-            message=item.message,
+            message=(f"{item.message} {item.remediation}" if item.remediation else item.message),
             missing_evidence=(target,)
             if kind is PlanningIssueKind.SCIENTIFIC_DECISION_REQUIRED
             else (),

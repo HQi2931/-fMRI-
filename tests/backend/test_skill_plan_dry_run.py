@@ -14,6 +14,7 @@ from neuroagent.application.work_draft import (
     draft_hash,
     preflight_skill_intent,
 )
+from neuroagent.domain.fmri.metrics import MetricKind
 from tests.backend.conftest import make_bids_dataset, make_project
 from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
 
@@ -24,6 +25,38 @@ def _complete_preprocessing_draft() -> WorkDraft:
     return WorkDraft(
         preprocessing=values,
         primary_outputs=["preprocessed_bold"],
+        qc_mode="skip",
+    )
+
+
+def _on_results_metric_draft() -> WorkDraft:
+    preprocessing = _minimal_preprocessing_payload()
+    preprocessing.pop("provenance")
+    normalization = preprocessing["normalization"]
+    assert isinstance(normalization, dict)
+    normalization.update(
+        {
+            "mode": 1,
+            "timing": "on_results",
+            "bounding_box_mm": [[-90.0, -126.0, -72.0], [90.0, 90.0, 108.0]],
+            "voxel_size_mm": [3.0, 3.0, 3.0],
+        }
+    )
+    return WorkDraft(
+        preprocessing=preprocessing,
+        alff_falff={
+            "tr_seconds": 2.0,
+            "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+            "requested_metrics": ["alff"],
+            "requested_scalings": ["z_score"],
+            "mask_source": "registered_artifact",
+            "mask_artifact_id": "mask-001",
+            "filter_timing": "disabled",
+            "result_smoothing": False,
+            "result_smoothing_fwhm_mm": None,
+        },
+        requested_metrics=[MetricKind.ALFF],
+        primary_outputs=["zALFF"],
         qc_mode="skip",
     )
 
@@ -203,6 +236,55 @@ def test_two_session_bids_preflight_blocks_before_plan_persistence_and_without_w
     assert raised.value.code == "manifest_preprocessing_session_unsupported"
     assert raised.value.details["path"] == "manifest.subjects.session_id"
     assert "remediation" in raised.value.details
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+def test_result_normalization_with_single_metric_blocks_dry_run_and_resolve_before_plan_write(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    project, dataset, manifest = _scanned_dataset(service, source_root, work_root)
+    request = _request(project, dataset, manifest, _on_results_metric_draft())
+    before = _table_counts(service)
+    work_files_before = sorted(path.relative_to(work_root) for path in work_root.rglob("*"))
+
+    result = service.skills.dry_run_skill_plan(request)
+
+    assert result.ready is False
+    assert result.plan_hash is None
+    issue = next(
+        item
+        for item in result.issues
+        if item.code == "RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED"
+    )
+    assert issue.severity == "blocking"
+    assert issue.path == "preprocessing.normalization.timing"
+    assert "不判断真实图像或掩膜空间" in issue.message
+    assert issue.remediation is not None
+    assert "研究者决定" in issue.remediation
+    assert _table_counts(service) == before
+    assert sorted(path.relative_to(work_root) for path in work_root.rglob("*")) == work_files_before
+
+    snapshot = service.skills._configured_environment_snapshot()
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: SimpleNamespace(snapshot=snapshot),
+    )
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(request, "on-results-metric-blocked")
+
+    assert raised.value.code == "skill_plan_blocked"
+    assert any(
+        item["code"] == "RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED"
+        and item["path"] == "preprocessing.normalization.timing"
+        and item["remediation"]
+        for item in raised.value.details["issues"]
+    )
     assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
 
 

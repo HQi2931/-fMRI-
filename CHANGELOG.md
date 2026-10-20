@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-20
+
+- Work Skill preflight now blocks preprocessing plans that request any metric with `ON_RESULTS` normalization before Plan persistence. The shared predicate preserves the executor's existing rejection; dry-run includes a remediation field, and Work feedback reports `BLOCKED_CAPABILITY` without automatic repair. The message describes the current single-mask execution contract, not a scientific rule or an inference about actual image/mask spaces.
+
 本文件记录项目中对用户和开发者可见的重要变化。
 
 ## Unreleased
