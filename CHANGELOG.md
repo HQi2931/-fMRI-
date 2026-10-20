@@ -2,6 +2,7 @@
 
 ## 2026-10-20
 
+- Work Skill preflight now blocks a single preprocessing plan that combines ReHo with `CUT` scrubbing because the current DPARSFA executor cannot materialize and verify the retained-volume checkpoint before ReHo. The issue points to `preprocessing.scrubbing.method`; ALFF-only plans and metric-only ReHo remain outside this gate. Dry-run reports remediation, resolve rejects before Plan persistence, feedback is `BLOCKED_CAPABILITY`, and the existing executor guard remains.
 - Work Skill preflight now blocks preprocessing-only plans that enable `ON_RESULTS` normalization or smoothing without any metric output. Issues point to the active timing field(s); dry-run returns remediation, resolve rejects before Plan persistence, and Work feedback reports `BLOCKED_CAPABILITY`. The execution compiler uses the same pure predicate and keeps its existing guard.
 - Work Skill preflight now blocks preprocessing plans that request any metric with `ON_RESULTS` normalization before Plan persistence. The shared predicate preserves the executor's existing rejection; dry-run includes a remediation field, and Work feedback reports `BLOCKED_CAPABILITY` without automatic repair. The message describes the current single-mask execution contract, not a scientific rule or an inference about actual image/mask spaces.
 

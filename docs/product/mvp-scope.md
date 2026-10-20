@@ -25,7 +25,7 @@ rs-fMRI Agent 是 Windows 本地优先、单用户的静息态 fMRI 科研工作
 | --- | --- | --- |
 | 项目、数据集与只读扫描 | 已实现 | 扫描生成元数据和 manifest，不修改源目录 |
 | 人口学导入与数据集划分 | 已实现 | 需显式字段映射；划分以 subject 为单位 |
-| Skill Registry/Resolver/Validator/Compiler | 已实现 | Work 预检会在 Plan 写入前阻断当前执行器不能表达的 preprocessing + metric + `ON_RESULTS` normalization，以及 preprocessing + 无 metric + `ON_RESULTS` normalization/smoothing 组合；前者源于单一 mask binding，后者源于结果阶段操作要求指标输出，均为执行能力边界，不代表检查真实图像或掩膜 |
+| Skill Registry/Resolver/Validator/Compiler | 已实现 | Work 预检会在 Plan 写入前阻断当前执行器不能表达的 preprocessing + metric + `ON_RESULTS` normalization、无 metric 的 `ON_RESULTS` normalization/smoothing，以及同计划 ReHo + CUT scrubbing；这些均为执行能力边界，不代表检查真实图像或掩膜。ReHo + CUT 需先核验 retained-volume checkpoint |
 | 计划审批、SQLite 队列、SSE 与恢复 | 已实现 | Worker 通过统一 ToolRuntime 路由 Mock 或受控 MATLAB |
 | 用户选择 MATLAB/SPM/DPABI 路径与环境探测 | 已接线 | 路径保存于本机工作目录；版本标签不代表通用兼容 |
 | DPABI 受控 Cfg 投影与 MATLAB 固定模板 | 已接线 | 以用户选定目录中的受控入口为准，真实 smoke 仍需本机环境与人工授权 |

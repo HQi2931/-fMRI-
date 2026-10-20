@@ -336,6 +336,8 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 当前状态：预处理编译结果附带一次 `DPARSFA_run` 的 `ExecutionUnit` 映射；MATLAB Executor 在创建 attempt 和 staging 前，会对计划执行穷尽 capability 覆盖校验，并对受支持单元重建、逐项比对其与冻结 SkillPlan/JobSpec。四种 DPARSFA 计算能力映射到一次调用，metadata verification 作为该单元调用后 gate；只读检查、manifest 核验、输入 staging 和 QC gate 明确留在单元外；统计等不同执行合同及任何未分类能力都会失败关闭。有逻辑步骤的计划必须包含至少一个 DPARSFA 单元能力；空逻辑步骤旧编译路径仍保持兼容。Work 预检和正式 Skill resolve 现复用执行端相同的 subject-scope 校验：仅实际请求 DPARSFA preprocessing 时，在编译/持久化前拒绝跨 session manifest；metric-only 路径不受此 gate 影响，同 session 多 subject 仍允许。另由同一纯领域谓词在预检和执行编译器拒绝“请求 preprocessing + 至少一个指标 + normalization `ON_RESULTS`”组合；单指标同样命中，disabled normalization、无指标和 metric-only 不命中新 gate。还会拒绝“请求 preprocessing + 无指标参数 + normalization 或 smoothing 使用 `ON_RESULTS`”组合，分别定位到 `preprocessing.normalization.timing` 与 `preprocessing.smoothing.timing`；两者都启用时返回两个问题。非 `ON_RESULTS`、带任一指标参数及 metric-only 不命中新 gate。执行编译器保留原拒绝防线；Work dry-run 返回 `ready=false` 与独立 remediation，正式 resolve 在 Plan 写入前失败，Work 反馈分类为 `BLOCKED_CAPABILITY`。这是当前执行合同对结果阶段操作的能力边界，不检查真实图像或掩膜，也不声称是普遍科学规则。当前只校验一次完整 `DPARSFA_run` 执行边界和输入组合，尚未实现 Worker 消费多个执行单元、可物化 checkpoint、调用内暂停或分段恢复。
 
+阶段 D 另共享一个 ReHo/CUT checkpoint capability 谓词：仅请求 preprocessing、ReHo 参数存在且 `scrubbing.method=CUT` 时，阻断该同计划组合，问题路径为 `preprocessing.scrubbing.method`。当前 DPARSFA 调用无法在同一计划中先物化并验证 CUT 后的 retained-volume checkpoint 再计算 ReHo；Work dry-run 返回 `ready=false` 和 remediation，正式 resolve 在 Plan 写入前拒绝，feedback 为 `BLOCKED_CAPABILITY` 且不自动修改参数。ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不命中新 gate。既有 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学/证据提示保留，用于说明实际保留时间点数仍须由 verified Artifact 确认；execution 原拒绝防线也保留。
+
 目标是在已审核科学范围内，按输入的真实状态寻找不同合法路径，而不是继续增加 WorkDialogue 特例。
 
 任务：

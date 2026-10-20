@@ -129,6 +129,26 @@ def unsupported_result_stage_operations_without_metric_output(
     )
 
 
+def reho_cut_requires_verified_checkpoint_before_metric_plan(
+    *,
+    request_preprocessing: bool,
+    reho_requested: bool,
+    preprocessing: PreprocessingParameters | None,
+) -> bool:
+    """Return whether CUT preprocessing and ReHo share an unsupported plan.
+
+    The current executor cannot materialize and verify the retained-volume
+    checkpoint between CUT scrubbing and ReHo calculation in one plan.
+    """
+
+    return (
+        request_preprocessing
+        and reho_requested
+        and preprocessing is not None
+        and preprocessing.scrubbing.method is ScrubbingMethod.CUT
+    )
+
+
 class AffineRegularization(StrEnum):
     MNI = "mni"
     EASTERN = "eastern"

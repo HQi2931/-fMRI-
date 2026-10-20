@@ -6,6 +6,12 @@
 - 更新日期：2026-10-20
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-20 Work ReHo 与 CUT checkpoint 能力预检
+
+Skill Validator 与执行编译器共用纯领域谓词：仅当请求 preprocessing、ReHo 参数存在、preprocessing 存在且 `scrubbing.method=CUT` 时，以 `REHO_CUT_CHECKPOINT_UNSUPPORTED` 阻断同计划组合，并指向 `preprocessing.scrubbing.method`。当前 DPARSFA 执行单元无法在同一计划中先生成并验证 CUT 后的 retained-volume checkpoint 再计算 ReHo。ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不触发该 gate；executor 原 `ValueError` 防线保留。Work dry-run 返回 `ready=false` 和 remediation，正式 resolve 在 Plan 写入前拒绝，Work feedback 为 `BLOCKED_CAPABILITY` 且不自动修改参数。独立的 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学/证据提示仍保留，以说明保留时间点数须由后续 verified Artifact 确认。
+
+科学、编译（包括原 executor guard）、dry-run/resolve、Work feedback 与 dialogue 定向回归共 68 项通过，测试使用 `D:\rs` 下新建的随机 basetemp。Ruff check/format、308 个 Python 源文件的 Mypy、91 份 Markdown 文档规范和 `git diff --check` 均通过；存在一项既有 Starlette/httpx deprecation warning。未调用真实 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-20 Work 无指标的 `ON_RESULTS` 能力预检
 
 Skill Validator 与执行编译器共用一个纯领域谓词：仅当 `request_preprocessing=true`、ALFF/fALFF 与 ReHo 参数都不存在、存在 preprocessing，且 normalization 或 smoothing 的 timing 为 `ON_RESULTS` 时，才以 `RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED` 阻断。问题分别指向 `preprocessing.normalization.timing` 或 `preprocessing.smoothing.timing`；两个字段都启用时各返回一项。请求任一指标参数、非 `ON_RESULTS` 以及 metric-only 不触发此 gate。执行编译器保留原拒绝防线；Work dry-run 返回 `ready=false` 和独立 remediation，正式 resolve 在 Plan 写入前失败，Work 反馈为 `BLOCKED_CAPABILITY` 且不自动修订。它说明当前执行能力边界，不推断实际影像或掩膜，也不声称是普遍科学规则。

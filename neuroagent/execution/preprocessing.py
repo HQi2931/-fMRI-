@@ -17,7 +17,7 @@ from neuroagent.domain.fmri.metrics import (
 from neuroagent.domain.fmri.preprocessing import (
     NormalizationMode,
     PreprocessingParameters,
-    ScrubbingMethod,
+    reho_cut_requires_verified_checkpoint_before_metric_plan,
     unsupported_result_normalization_with_metrics,
     unsupported_result_stage_operations_without_metric_output,
 )
@@ -205,7 +205,11 @@ def compile_preprocessing(
             normalization_timing=parameters.normalization.timing,
         ):
             raise ValueError("result normalization with metrics requires separate mask spaces")
-        if reho is not None and parameters.scrubbing.method is ScrubbingMethod.CUT:
+        if reho_cut_requires_verified_checkpoint_before_metric_plan(
+            request_preprocessing=True,
+            reho_requested=reho is not None,
+            preprocessing=parameters,
+        ):
             raise ValueError("CUT scrubbing requires a verified checkpoint before a ReHo plan")
         staging_plan = _staging_plan(plan, manifest, manifest_content, parameters)
         projection = adapter.project_pipeline_cfg(

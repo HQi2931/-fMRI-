@@ -256,6 +256,28 @@ def test_result_stage_without_metric_limit_is_a_capability_boundary() -> None:
         assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
 
 
+def test_reho_cut_checkpoint_limit_is_a_capability_boundary() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="REHO_CUT_CHECKPOINT_UNSUPPORTED",
+                message="CUT preprocessing and ReHo require a verified checkpoint.",
+                severity="blocking",
+                path="preprocessing.scrubbing.method",
+                remediation="Complete and verify the checkpoint before planning ReHo.",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "unsupported_capability"
+    assert issue.requires_user_decision is False
+    assert issue.repairs[0].action.value == "none"
+    assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
 def test_unknown_skill_blocker_fails_closed_without_claiming_scientific_choice() -> None:
     feedback = planning_feedback_for_skill_issues(
         (

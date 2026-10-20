@@ -88,6 +88,50 @@ def _result_stage_without_metric_draft(*, normalization: bool, smoothing: bool) 
     )
 
 
+def _reho_cut_draft() -> WorkDraft:
+    preprocessing = _minimal_preprocessing_payload()
+    preprocessing.pop("provenance")
+    preprocessing["realignment"] = {
+        "enabled": True,
+        "options_source": "dpabi_v82_jobmat",
+    }
+    preprocessing["temporal_filter"] = {
+        "timing": "after_normalize",
+        "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+        "add_mean_back": True,
+    }
+    preprocessing["scrubbing"] = {
+        "enabled": True,
+        "timing": "after_preprocessing",
+        "censoring": {
+            "fd_type": "fd_jenkinson",
+            "fd_threshold_mm": 0.2,
+            "previous_points": 1,
+            "later_points": 2,
+        },
+        "method": "cut",
+    }
+    return WorkDraft(
+        preprocessing=preprocessing,
+        reho={
+            "tr_seconds": 2.0,
+            "temporal_filter_band": {"low_hz": 0.01, "high_hz": 0.08},
+            "temporal_filter_add_mean_back": True,
+            "cluster_voxels": 27,
+            "mask_source": "registered_artifact",
+            "mask_artifact_id": "mask-001",
+            "requested_scalings": ["z_score"],
+            "smooth_reho": False,
+            "smooth_reho_fwhm_mm": None,
+            "global_result_smoothing": False,
+            "global_result_smoothing_fwhm_mm": None,
+        },
+        requested_metrics=[MetricKind.REHO],
+        primary_outputs=["zReHo"],
+        qc_mode="skip",
+    )
+
+
 def _scanned_dataset(
     service: ApplicationServices,
     source_root: Path,
@@ -382,6 +426,50 @@ def test_result_stage_without_metric_blocks_dry_run_and_resolve_before_plan_writ
     ]
     assert {item["path"] for item in resolve_issues} == expected_paths
     assert all(item["remediation"] for item in resolve_issues)
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+def test_reho_cut_checkpoint_gate_blocks_dry_run_and_resolve_before_plan_write(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    project, dataset, manifest = _scanned_dataset(service, source_root, work_root)
+    request = _request(project, dataset, manifest, _reho_cut_draft())
+    before = _table_counts(service)
+    result = service.skills.dry_run_skill_plan(request)
+
+    assert result.ready is False
+    assert result.plan_hash is None
+    blockers = [issue for issue in result.issues if issue.code == "REHO_CUT_CHECKPOINT_UNSUPPORTED"]
+    assert len(blockers) == 1
+    assert blockers[0].path == "preprocessing.scrubbing.method"
+    assert blockers[0].severity == "blocking"
+    assert blockers[0].remediation
+    assert any(issue.code == "EFFECTIVE_VOLUME_COUNT_UNKNOWN" for issue in result.issues)
+    assert _table_counts(service) == before
+
+    snapshot = service.skills._configured_environment_snapshot()
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: SimpleNamespace(snapshot=snapshot),
+    )
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(request, "reho-cut-checkpoint-preflight")
+
+    assert raised.value.code == "skill_plan_blocked"
+    resolve_issues = [
+        item
+        for item in raised.value.details["issues"]
+        if item["code"] == "REHO_CUT_CHECKPOINT_UNSUPPORTED"
+    ]
+    assert len(resolve_issues) == 1
+    assert resolve_issues[0]["path"] == "preprocessing.scrubbing.method"
+    assert resolve_issues[0]["remediation"]
     assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
 
 

@@ -17,6 +17,7 @@ from neuroagent.domain.fmri.metrics import (
 from neuroagent.domain.fmri.preprocessing import (
     NormalizationTiming,
     ScrubbingMethod,
+    reho_cut_requires_verified_checkpoint_before_metric_plan,
     unsupported_result_normalization_with_metrics,
     unsupported_result_stage_operations_without_metric_output,
 )
@@ -185,6 +186,23 @@ class SkillValidator:
                         remediation=remediation,
                     )
                 )
+        if reho_cut_requires_verified_checkpoint_before_metric_plan(
+            request_preprocessing=request.request_preprocessing,
+            reho_requested=request.reho is not None,
+            preprocessing=request.preprocessing,
+        ):
+            issues.append(
+                SkillValidationIssue(
+                    code="REHO_CUT_CHECKPOINT_UNSUPPORTED",
+                    severity=IssueSeverity.BLOCKING,
+                    message="当前执行器无法在同一计划中物化并核验 ReHo 所需 checkpoint。",
+                    path="preprocessing.scrubbing.method",
+                    remediation=(
+                        "请先完成并核验 CUT 预处理 checkpoint。之后再创建 ReHo 计划。"
+                        "系统不会自动修改 scrubbing 选择。"
+                    ),
+                )
+            )
         if request.request_preprocessing and request.preprocessing is not None:
             issues.extend(
                 self.validate_parameter_payload(

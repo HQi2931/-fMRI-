@@ -442,3 +442,63 @@ def test_result_stage_without_metric_gate_reports_each_on_results_field(
     assert "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED" not in {
         item.code for item in validator.validate_resolution(metric_only_resolution).issues
     }
+
+
+def test_reho_cut_checkpoint_capability_gate_has_exact_trigger_and_path(
+    base_lineage: ArtifactLineage,
+) -> None:
+    base_request = request(base_lineage)
+    validator = SkillValidator()
+    cut_values = preprocessing_parameters().model_dump(mode="json")
+    cut_values["scrubbing"]["method"] = "cut"
+    cut_preprocessing = PreprocessingParameters.model_validate(cut_values)
+
+    combined = _skill_request_with(
+        base_request,
+        request_preprocessing=True,
+        preprocessing=cut_preprocessing,
+        base_cfg_artifact_id="cfg-base-001",
+    )
+    combined_resolution = SkillResolver(build_builtin_registry()).resolve(combined, environment())
+    combined_issues = validator.validate_resolution(combined_resolution).issues
+    capability_issues = [
+        item for item in combined_issues if item.code == "REHO_CUT_CHECKPOINT_UNSUPPORTED"
+    ]
+    assert len(capability_issues) == 1
+    assert capability_issues[0].path == "preprocessing.scrubbing.method"
+    assert capability_issues[0].severity.value == "blocking"
+    assert capability_issues[0].remediation
+    assert any(item.code == "EFFECTIVE_VOLUME_COUNT_UNKNOWN" for item in combined_issues)
+
+    assert base_request.alff_falff is not None
+    alff = base_request.alff_falff.model_copy(update={"requested_metrics": (MetricKind.ALFF,)})
+    alff_only_cut = _skill_request_with(
+        base_request,
+        requested_metrics=(MetricKind.ALFF,),
+        primary_outputs=("zALFF",),
+        alff_falff=alff,
+        reho=None,
+        request_preprocessing=True,
+        preprocessing=cut_preprocessing,
+        base_cfg_artifact_id="cfg-base-001",
+    )
+    alff_resolution = SkillResolver(build_builtin_registry()).resolve(alff_only_cut, environment())
+    assert "REHO_CUT_CHECKPOINT_UNSUPPORTED" not in {
+        item.code for item in validator.validate_resolution(alff_resolution).issues
+    }
+
+    reho_metric_only = _skill_request_with(
+        base_request,
+        requested_metrics=(MetricKind.REHO,),
+        primary_outputs=("zReHo",),
+        alff_falff=None,
+        request_preprocessing=False,
+        preprocessing=None,
+        base_cfg_artifact_id=None,
+    )
+    metric_only_resolution = SkillResolver(build_builtin_registry()).resolve(
+        reho_metric_only, environment()
+    )
+    assert "REHO_CUT_CHECKPOINT_UNSUPPORTED" not in {
+        item.code for item in validator.validate_resolution(metric_only_resolution).issues
+    }
