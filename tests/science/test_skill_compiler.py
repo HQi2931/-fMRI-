@@ -331,3 +331,114 @@ def test_result_normalization_metric_gate_does_not_expand_to_neighboring_paths(
     assert "RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED" not in {
         item.code for item in validator.validate_resolution(metric_only_resolution).issues
     }
+
+
+def test_result_stage_without_metric_gate_reports_each_on_results_field(
+    base_lineage: ArtifactLineage,
+) -> None:
+    base_request = request(base_lineage)
+    validator = SkillValidator()
+
+    def preprocessing_with_result_stages(
+        *, normalization: bool = False, smoothing: bool = False
+    ) -> PreprocessingParameters:
+        values = preprocessing_parameters().model_dump(mode="json")
+        values["scrubbing"]["method"] = "nearest"
+        if normalization:
+            values["nuisance"]["timing"] = "after_realign"
+            values["normalization"]["timing"] = "on_results"
+        if smoothing:
+            values["smoothing"] = {
+                "timing": "on_results",
+                "method": 1,
+                "fwhm_mm": [6.0, 6.0, 6.0],
+            }
+        return PreprocessingParameters.model_validate(values)
+
+    expected_paths = {
+        (True, False): {"preprocessing.normalization.timing"},
+        (False, True): {"preprocessing.smoothing.timing"},
+        (True, True): {
+            "preprocessing.normalization.timing",
+            "preprocessing.smoothing.timing",
+        },
+    }
+    for (normalization, smoothing), paths in expected_paths.items():
+        request_without_metrics = _skill_request_with(
+            base_request,
+            requested_metrics=(),
+            primary_outputs=("timeseries.preprocessed",),
+            alff_falff=None,
+            reho=None,
+            request_preprocessing=True,
+            preprocessing=preprocessing_with_result_stages(
+                normalization=normalization,
+                smoothing=smoothing,
+            ),
+            base_cfg_artifact_id="cfg-base-001",
+        )
+        resolution = SkillResolver(build_builtin_registry()).resolve(
+            request_without_metrics, environment()
+        )
+        report = validator.validate_resolution(resolution)
+        blockers = [
+            item
+            for item in report.issues
+            if item.code == "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED"
+        ]
+        assert {item.path for item in blockers} == paths
+        assert all(item.severity.value == "blocking" for item in blockers)
+        assert all(item.remediation for item in blockers)
+
+    non_result_stage_request = _skill_request_with(
+        base_request,
+        requested_metrics=(),
+        primary_outputs=("timeseries.preprocessed",),
+        alff_falff=None,
+        reho=None,
+        request_preprocessing=True,
+        preprocessing=preprocessing_with_result_stages(),
+        base_cfg_artifact_id="cfg-base-001",
+    )
+    non_result_stage_resolution = SkillResolver(build_builtin_registry()).resolve(
+        non_result_stage_request, environment()
+    )
+    assert "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED" not in {
+        item.code for item in validator.validate_resolution(non_result_stage_resolution).issues
+    }
+
+    assert base_request.alff_falff is not None
+    alff = base_request.alff_falff.model_copy(update={"requested_metrics": (MetricKind.ALFF,)})
+    smoothing_with_metric = _skill_request_with(
+        base_request,
+        requested_metrics=(MetricKind.ALFF,),
+        primary_outputs=("zALFF",),
+        alff_falff=alff,
+        reho=None,
+        request_preprocessing=True,
+        preprocessing=preprocessing_with_result_stages(smoothing=True),
+        base_cfg_artifact_id="cfg-base-001",
+    )
+    smoothing_resolution = SkillResolver(build_builtin_registry()).resolve(
+        smoothing_with_metric, environment()
+    )
+    assert "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED" not in {
+        item.code for item in validator.validate_resolution(smoothing_resolution).issues
+    }
+
+    metric_only = _skill_request_with(
+        base_request,
+        requested_metrics=(MetricKind.ALFF,),
+        primary_outputs=("zALFF",),
+        alff_falff=alff,
+        reho=None,
+        request_preprocessing=False,
+        preprocessing=None,
+        base_cfg_artifact_id=None,
+    )
+    metric_only_resolution = SkillResolver(build_builtin_registry()).resolve(
+        metric_only, environment()
+    )
+    assert "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED" not in {
+        item.code for item in validator.validate_resolution(metric_only_resolution).issues
+    }

@@ -106,6 +106,29 @@ def unsupported_result_normalization_with_metrics(
     )
 
 
+def unsupported_result_stage_operations_without_metric_output(
+    *,
+    request_preprocessing: bool,
+    metrics_requested: bool,
+    preprocessing: PreprocessingParameters | None,
+) -> bool:
+    """Return whether the executor's result-stage operations lack a metric output.
+
+    This reports an execution capability boundary for the frozen preprocessing
+    contract; it does not infer scientific or image facts from the input data.
+    """
+
+    return (
+        request_preprocessing
+        and not metrics_requested
+        and preprocessing is not None
+        and (
+            preprocessing.normalization.timing is NormalizationTiming.ON_RESULTS
+            or preprocessing.smoothing.timing is SmoothingTiming.ON_RESULTS
+        )
+    )
+
+
 class AffineRegularization(StrEnum):
     MNI = "mni"
     EASTERN = "eastern"

@@ -226,6 +226,36 @@ def test_result_normalization_mask_space_limit_is_a_capability_boundary() -> Non
     assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
 
 
+def test_result_stage_without_metric_limit_is_a_capability_boundary() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED",
+                message="当前执行器要求结果阶段操作对应已请求的指标输出。",
+                severity="blocking",
+                path="preprocessing.normalization.timing",
+                remediation="请停用结果阶段操作后重新预检。",
+            ),
+            ValidationIssue(
+                code="RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED",
+                message="当前执行器要求结果阶段操作对应已请求的指标输出。",
+                severity="blocking",
+                path="preprocessing.smoothing.timing",
+                remediation="请停用结果阶段操作后重新预检。",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    assert len(feedback) == 2
+    for issue, decision in feedback:
+        assert issue.kind.value == "unsupported_capability"
+        assert issue.requires_user_decision is False
+        assert issue.repairs[0].action.value == "none"
+        assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
 def test_unknown_skill_blocker_fails_closed_without_claiming_scientific_choice() -> None:
     feedback = planning_feedback_for_skill_issues(
         (

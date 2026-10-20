@@ -13,14 +13,13 @@ from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
     MetricMaskSource,
     RehoParameters,
-    SmoothingTiming,
 )
 from neuroagent.domain.fmri.preprocessing import (
     NormalizationMode,
-    NormalizationTiming,
     PreprocessingParameters,
     ScrubbingMethod,
     unsupported_result_normalization_with_metrics,
+    unsupported_result_stage_operations_without_metric_output,
 )
 from neuroagent.domain.fmri.preprocessing_outputs import (
     enumerate_dpabi_preprocessing_outputs,
@@ -194,9 +193,10 @@ def compile_preprocessing(
             and not parameters.realignment.enabled
         ):
             raise ValueError("EPI template normalization requires realignment mean-image evidence")
-        if not metrics_requested and (
-            parameters.normalization.timing is NormalizationTiming.ON_RESULTS
-            or parameters.smoothing.timing is SmoothingTiming.ON_RESULTS
+        if unsupported_result_stage_operations_without_metric_output(
+            request_preprocessing=True,
+            metrics_requested=metrics_requested,
+            preprocessing=parameters,
         ):
             raise ValueError("result-stage operations require a requested metric output")
         if unsupported_result_normalization_with_metrics(

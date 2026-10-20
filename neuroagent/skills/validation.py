@@ -15,8 +15,10 @@ from neuroagent.domain.fmri.metrics import (
     validate_reho_input,
 )
 from neuroagent.domain.fmri.preprocessing import (
+    NormalizationTiming,
     ScrubbingMethod,
     unsupported_result_normalization_with_metrics,
+    unsupported_result_stage_operations_without_metric_output,
 )
 from neuroagent.skills.loader import SkillLoader, SkillLoadError
 from neuroagent.skills.models import (
@@ -159,6 +161,30 @@ class SkillValidator:
                     ),
                 )
             )
+        if unsupported_result_stage_operations_without_metric_output(
+            request_preprocessing=request.request_preprocessing,
+            metrics_requested=metrics_requested,
+            preprocessing=request.preprocessing,
+        ):
+            remediation = (
+                "请由研究者确认是否需要指标输出。若仅做预处理请停用 ON_RESULTS 阶段操作后重新预检。"
+            )
+            active_paths = []
+            if request.preprocessing is not None:
+                if request.preprocessing.normalization.timing is NormalizationTiming.ON_RESULTS:
+                    active_paths.append("preprocessing.normalization.timing")
+                if request.preprocessing.smoothing.timing is SmoothingTiming.ON_RESULTS:
+                    active_paths.append("preprocessing.smoothing.timing")
+            for path in active_paths:
+                issues.append(
+                    SkillValidationIssue(
+                        code="RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED",
+                        severity=IssueSeverity.BLOCKING,
+                        message="执行器要求 ON_RESULTS 操作有指标输出。本方案未请求指标输出。",
+                        path=path,
+                        remediation=remediation,
+                    )
+                )
         if request.request_preprocessing and request.preprocessing is not None:
             issues.extend(
                 self.validate_parameter_payload(

@@ -6,6 +6,12 @@
 - 更新日期：2026-10-20
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-20 Work 无指标的 `ON_RESULTS` 能力预检
+
+Skill Validator 与执行编译器共用一个纯领域谓词：仅当 `request_preprocessing=true`、ALFF/fALFF 与 ReHo 参数都不存在、存在 preprocessing，且 normalization 或 smoothing 的 timing 为 `ON_RESULTS` 时，才以 `RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED` 阻断。问题分别指向 `preprocessing.normalization.timing` 或 `preprocessing.smoothing.timing`；两个字段都启用时各返回一项。请求任一指标参数、非 `ON_RESULTS` 以及 metric-only 不触发此 gate。执行编译器保留原拒绝防线；Work dry-run 返回 `ready=false` 和独立 remediation，正式 resolve 在 Plan 写入前失败，Work 反馈为 `BLOCKED_CAPABILITY` 且不自动修订。它说明当前执行能力边界，不推断实际影像或掩膜，也不声称是普遍科学规则。
+
+科学、编译、dry-run/resolve、Work feedback 与 dialogue 定向回归共 65 项通过，含 normalization/smoothing 分别与同时启用、负例及 Plan 无写入检查。Ruff check/format、308 个 Python 源文件的 Mypy、91 份 Markdown 文档规范和 `git diff --check` 通过；测试使用 `D:\rs` 下新建的随机 basetemp，未调用真实 Provider、MATLAB 或 DPABI。存在一项既有 Starlette/httpx deprecation warning。
+
 ## 2026-10-20 Work `ON_RESULTS` 指标归一化能力预检
 
 Skill Validator 与执行编译器现在共用一个纯领域谓词：只有同时请求 preprocessing、至少一个指标参数（按执行层定义，ALFF/fALFF 或 ReHo 参数存在）且 normalization timing 为 `ON_RESULTS` 时，才以 `RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED` 阻断。单指标也会阻断；disabled normalization、无 metric 和 metric-only 不触发此新 gate。原因是当前执行合同只承载一个 metric mask binding，不能表达所需的独立 mask-space 输入。这是当前执行能力边界，不代表检查了真实图像或掩膜空间，也不声称是普遍科学规则。执行编译器保留原有拒绝防线；Work dry-run 在不写入 Plan/Approval/Run 的情况下返回 `ready=false`、字段路径与独立 remediation，正式 resolve 在 Plan 写入前失败，Work 反馈为 `BLOCKED_CAPABILITY` 且不自动修订科学选择。

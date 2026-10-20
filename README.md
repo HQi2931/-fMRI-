@@ -27,7 +27,7 @@
 - 已完成本机真实统计 smoke：六类 DPABI 统计入口、FDR/GRF、效应量、分正负的 26 邻接簇表、软件版本证据和报告合同，见 [验证记录](docs/development/mvp-verification.md)。统计结果支持簇定位、切片联动与报告下载；外部 DPABI 目录导入及独立纳入确认仍未实现。
 - 已实现为本地确定性预览：长任务阶段事件与失败诊断、ROI 长宽表合同、DPABI 整理预览、CSV/TSV/XLSX 检查、subject-level ML 模板和 cluster 坐标匹配。Chat 可用本地证据问答，也可将脱敏后的问题与证据交给已配置 LLM；联网搜索必须由用户逐次开启，并要求模型 Profile 声明 `web_search` 能力。
 - Work 对话只绑定用户选择的本机工作区，目录中的 DPABI 输入文件由用户自行准备。建立项目时冻结当前文件清单用于审计，并可用完整类型化参数编译纯预处理或指标计划。当前提供一个受控的 DemoData 单受试者 ALFF 自然语言路径：先展示固定冒烟参数和计划哈希，用户按精确语句确认后才批准并排队真实 MATLAB/DPABI。活动运行由页面自动恢复并显示进度，QC revision 与统计结果可从 Work 只读查询。
-- Work 预处理 Skill dry-run 会在方案持久化前报告已知执行能力边界：当前单一 metric mask binding 无法表达 preprocessing 与指标同时使用 `ON_RESULTS` normalization 所需的独立 mask-space 输入。该限制不代表真实影像/掩膜被检查或判为不兼容；科学选择仍由研究者决定。
+- Work 预处理 Skill dry-run 会在方案持久化前报告已知执行能力边界：当前单一 metric mask binding 无法表达 preprocessing 与指标同时使用 `ON_RESULTS` normalization 所需的独立 mask-space 输入；此外，无指标输出时无法执行 `ON_RESULTS` normalization 或 smoothing。两类问题都按具体 timing 字段返回 remediation 并归类为 `BLOCKED_CAPABILITY`，不会推断真实影像/掩膜兼容性或替研究者决定科学选择。
 - Chat Mode Phase 1 已增加独立 ChatAgent 和 PDF 文献摄取基础设施：逐页解析、section 识别和可追溯 chunks。另按要求直接复用 fMRIAnalysis 的 DashScope/Chroma RAG（可选安装 `uv sync --extra rag`）；配置 `RSFMRI_RAG_DB_DIR` 和 `DASHSCOPE_API_KEY` 后启用。上传后点击“加入知识库”才会将脱敏文本发送到 DashScope 并建立独立索引；支持选择论文、连续追问和逐消息引用定位，旧索引缺失页码保持未知。详情见 [实施报告](docs/development/rsfmri-chat-phase1-implementation-report.md)。
 - 已完成一个真实 Provider 轻量 smoke（无受试者信息）。运行页默认 Mock，MATLAB 选项仍需要不可跳过的逐次确认；这些小型验证不代表所有本机配置、数据形态或 DPABI 功能均已兼容。
 

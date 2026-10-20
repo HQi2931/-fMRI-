@@ -61,6 +61,33 @@ def _on_results_metric_draft() -> WorkDraft:
     )
 
 
+def _result_stage_without_metric_draft(*, normalization: bool, smoothing: bool) -> WorkDraft:
+    preprocessing = _minimal_preprocessing_payload()
+    preprocessing.pop("provenance")
+    if normalization:
+        normalization_values = preprocessing["normalization"]
+        assert isinstance(normalization_values, dict)
+        normalization_values.update(
+            {
+                "mode": 1,
+                "timing": "on_results",
+                "bounding_box_mm": [[-90.0, -126.0, -72.0], [90.0, 90.0, 108.0]],
+                "voxel_size_mm": [3.0, 3.0, 3.0],
+            }
+        )
+    if smoothing:
+        preprocessing["smoothing"] = {
+            "timing": "on_results",
+            "method": 1,
+            "fwhm_mm": [6.0, 6.0, 6.0],
+        }
+    return WorkDraft(
+        preprocessing=preprocessing,
+        primary_outputs=["preprocessed_bold"],
+        qc_mode="skip",
+    )
+
+
 def _scanned_dataset(
     service: ApplicationServices,
     source_root: Path,
@@ -285,6 +312,76 @@ def test_result_normalization_with_single_metric_blocks_dry_run_and_resolve_befo
         and item["remediation"]
         for item in raised.value.details["issues"]
     )
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+@pytest.mark.parametrize(
+    ("normalization", "smoothing", "expected_paths"),
+    [
+        (True, False, {"preprocessing.normalization.timing"}),
+        (False, True, {"preprocessing.smoothing.timing"}),
+        (
+            True,
+            True,
+            {
+                "preprocessing.normalization.timing",
+                "preprocessing.smoothing.timing",
+            },
+        ),
+    ],
+)
+def test_result_stage_without_metric_blocks_dry_run_and_resolve_before_plan_write(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    normalization: bool,
+    smoothing: bool,
+    expected_paths: set[str],
+) -> None:
+    from types import SimpleNamespace
+
+    project, dataset, manifest = _scanned_dataset(service, source_root, work_root)
+    draft = _result_stage_without_metric_draft(
+        normalization=normalization,
+        smoothing=smoothing,
+    )
+    request = _request(project, dataset, manifest, draft)
+    before = _table_counts(service)
+    result = service.skills.dry_run_skill_plan(request)
+
+    assert result.ready is False
+    assert result.plan_hash is None
+    blockers = [
+        issue
+        for issue in result.issues
+        if issue.code == "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED"
+    ]
+    assert {issue.path for issue in blockers} == expected_paths
+    assert all(issue.severity == "blocking" for issue in blockers)
+    assert all(issue.remediation is not None for issue in blockers)
+    assert all("指标输出" in issue.message for issue in blockers)
+    assert _table_counts(service) == before
+
+    snapshot = service.skills._configured_environment_snapshot()
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: SimpleNamespace(snapshot=snapshot),
+    )
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(
+            request, f"result-stage-no-metric-{normalization}-{smoothing}"
+        )
+
+    assert raised.value.code == "skill_plan_blocked"
+    resolve_issues = [
+        item
+        for item in raised.value.details["issues"]
+        if item["code"] == "RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED"
+    ]
+    assert {item["path"] for item in resolve_issues} == expected_paths
+    assert all(item["remediation"] for item in resolve_issues)
     assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
 
 
