@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, describeError, type ConversationStreamEvent, type ConversationTurn } from "./client";
+import { api, ApiError, describeError, type ConversationStreamEvent, type ConversationTurn, type SkillPlanResolveBody } from "./client";
 
 describe("API client", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -29,6 +29,57 @@ describe("API client", () => {
     expect(init?.method).toBe("PATCH");
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
     expect(JSON.parse(String(init?.body))).toEqual({ base_hash: "hash", patch: { preprocessing: { detrend: false } } });
+  });
+
+  it("posts a metric-only Skill dry-run with the explicit request and abort signal", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ready: true,
+        manifest_id: "manifest-1",
+        manifest_hash: "b".repeat(64),
+        plan_hash: "c".repeat(64),
+        scope: "skill_contract_compile_only",
+        environment_probed: false,
+        issues: [],
+      }), { status: 200 }),
+    );
+    const controller = new AbortController();
+    const body: SkillPlanResolveBody = {
+      expected_project_version: 7,
+      validation_mode: "strict" as const,
+      request: {
+        project_id: "project-1",
+        dataset_ref: "dataset-1",
+        input_manifest_hash: "a".repeat(64),
+        input_artifact_id: "artifact-1",
+        request_preprocessing: false,
+        requested_metrics: ["alff"],
+        primary_outputs: ["alff"],
+        alff_falff: {
+          filter_timing: "disabled",
+          frequency_band: { low_hz: 0.01, high_hz: 0.08 },
+          mask_source: "dpabi_auto",
+          provenance: [{ name: "TR", source: "user", evidence_ref: "explicit-test-input" }],
+          requested_metrics: ["alff"],
+          requested_scalings: ["raw"],
+          result_smoothing: false,
+          result_smoothing_fwhm_mm: null,
+          tr_seconds: 2,
+        },
+      },
+    };
+
+    await expect(api.dryRunSkillPlan(body, controller.signal)).resolves.toMatchObject({
+      ready: true,
+      scope: "skill_contract_compile_only",
+      environment_probed: false,
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/skill-plans/dry-run");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST",
+      signal: controller.signal,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(body);
   });
 
   it("converts a failed response to ApiError", async () => {

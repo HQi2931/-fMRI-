@@ -6,6 +6,8 @@ type Schemas = components["schemas"];
 
 export const plansApi = {
   skills: (signal?: AbortSignal) => request<Skill[]>("/skills", { signal }),
+  dryRunSkillPlan: (body: SkillPlanResolveBody, signal?: AbortSignal) =>
+    post<Schemas["SkillPlanDryRunView"]>("/skill-plans/dry-run", body, signal),
   resolveSkillPlan: (body: SkillPlanResolveBody, signal?: AbortSignal) =>
     post<Schemas["SkillPlanResolveView"]>("/skill-plans/resolve", body, signal),
   plan: (revisionId: string, signal?: AbortSignal) =>
