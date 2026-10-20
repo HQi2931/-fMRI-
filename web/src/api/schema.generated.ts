@@ -1902,7 +1902,7 @@ export interface components {
          * CompositeGoalProgressStatus
          * @enum {string}
          */
-        CompositeGoalProgressStatus: "waiting_preprocessing" | "waiting_analysis" | "waiting_result_interpretation" | "waiting_user" | "blocked" | "completed" | "indeterminate";
+        CompositeGoalProgressStatus: "waiting_preprocessing" | "waiting_review" | "waiting_run" | "waiting_analysis" | "waiting_result_interpretation" | "waiting_user" | "blocked" | "completed" | "indeterminate";
         /**
          * CompositeGoalProgressView
          * @description Conversation-scoped stable identity and current composite-goal projection.

@@ -39,6 +39,8 @@ class ConversationRole(StrEnum):
 
 class CompositeGoalProgressStatus(StrEnum):
     WAITING_PREPROCESSING = "waiting_preprocessing"
+    WAITING_REVIEW = "waiting_review"
+    WAITING_RUN = "waiting_run"
     WAITING_ANALYSIS = "waiting_analysis"
     WAITING_RESULT_INTERPRETATION = "waiting_result_interpretation"
     WAITING_USER = "waiting_user"

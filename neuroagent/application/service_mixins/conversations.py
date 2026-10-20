@@ -17,7 +17,10 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxRetryRequest,
     AnalysisOutboxStatus,
 )
-from neuroagent.application.automation.composite_goal import CompositeGoalIdentity
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalHandoffAction,
+    CompositeGoalIdentity,
+)
 from neuroagent.application.automation.goal_selection import analysis_selection
 from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationRetryRequest,
@@ -777,6 +780,25 @@ class ConversationMixin(BaseServiceMixin):
                         ),
                         error_code="composite_goal_model_budget_missing",
                     )
+                handoff = self.automation.get_composite_goal_handoff(
+                    outbox.conversation_id, outbox.intent_task_id
+                )
+                if (
+                    handoff.action is not CompositeGoalHandoffAction.PREPARE_ANALYSIS_PROPOSAL
+                    or handoff.target_id != outbox.intent_task_id
+                ):
+                    if outbox.attempt_count + 1 >= MAX_ANALYSIS_OUTBOX_ATTEMPTS:
+                        await stop_heartbeat()
+                        return bounded_waiting_user(
+                            expected_version=conversation.version,
+                            error_code="analysis_outbox_handoff_retry_exhausted",
+                            content=(
+                                "分析续接连续多次无法核验当前目标阶段，自动重试已暂停。"
+                                "请检查并刷新目标进度，确认阶段证据恢复一致后再手动重试；"
+                                "系统不会替你创建统计方案或运行。"
+                            ),
+                        )
+                    return defer("composite_goal_handoff_not_ready")
                 model_budget = _CompositeGoalModelBudgetSession(
                     self.automation,
                     intent_task_id=outbox.intent_task_id,
@@ -1270,6 +1292,14 @@ class ConversationMixin(BaseServiceMixin):
                         error_code="composite_goal_model_budget_missing",
                         retry_available=False,
                     )
+                handoff = self.automation.get_composite_goal_handoff(
+                    outbox.conversation_id, composite_goal.intent_task_id
+                )
+                if (
+                    handoff.action is not CompositeGoalHandoffAction.PREPARE_RESULT_INTERPRETATION
+                    or handoff.target_id != outbox.task_id
+                ):
+                    return defer("composite_goal_handoff_not_ready")
                 model_budget = _CompositeGoalModelBudgetSession(
                     self.automation,
                     intent_task_id=composite_goal.intent_task_id,
@@ -1922,9 +1952,7 @@ class ConversationMixin(BaseServiceMixin):
             else None
         )
         durable_idempotency_key = (
-            idempotency_key_hash
-            if conversation.mode is ConversationMode.WORK
-            else idempotency_key
+            idempotency_key_hash if conversation.mode is ConversationMode.WORK else idempotency_key
         )
         if (
             request.analysis_intent_task_id is not None
@@ -2012,9 +2040,7 @@ class ConversationMixin(BaseServiceMixin):
                 if selected_intent_id is not None
                 else None
             )
-            turn_selected_goal = (
-                selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
-            )
+            turn_selected_goal = selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
             if request.start_new_analysis_goal and _confirmation is not None:
                 raise InputValidationError(
                     "analysis_goal_confirmation_not_supported",
@@ -2096,9 +2122,7 @@ class ConversationMixin(BaseServiceMixin):
                 analysis_goal = turn_selected_goal
 
             if analysis_goal is not None:
-                imported = read_external_source(
-                    analysis_goal.source_external_import_id or ""
-                )
+                imported = read_external_source(analysis_goal.source_external_import_id or "")
                 _verify_analysis_only_external_source(analysis_goal, imported)
                 analysis_original_request = _analysis_goal_original_request(
                     conversation,
@@ -2241,10 +2265,7 @@ class ConversationMixin(BaseServiceMixin):
                 if selected_role is WorkAgentRole.ANALYSIS
                 and (
                     request.external_analysis_import_id is None
-                    or (
-                        turn_goal is not None
-                        and selected_intent_id == turn_goal.intent_task_id
-                    )
+                    or (turn_goal is not None and selected_intent_id == turn_goal.intent_task_id)
                 )
                 else None
             )
@@ -2605,9 +2626,7 @@ class ConversationMixin(BaseServiceMixin):
                 prepare=prepare,
                 finalize=finalize,
                 legacy_key=(
-                    idempotency_key
-                    if durable_idempotency_key != idempotency_key
-                    else None
+                    idempotency_key if durable_idempotency_key != idempotency_key else None
                 ),
                 legacy_request_hashes=(
                     (

@@ -396,6 +396,12 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 ## 验证、风险与完成报告
 
+### 阶段 B CompositeGoal 阶段交接判定（2026-10-20）
+
+[ADR 0052](../adr/0052-composite-goal-handoff-decision.md) 已实现一个受限的只读 handoff decision：进度投影和两个已有 outbox consumer 共用同一纯决议函数。CompositeGoal 快照在同一只读 SQLite 一致性边界中加入当前目标对应的最小 Plan、Run 与 QC 事实；只有 Task wait reference、Plan/Run 项目、输入修订和绑定关系、活跃 Run 状态及 QC review 事实均精确匹配时，才显示等待审查或等待已绑定 Run。缺失、未知或错绑证据保持待核验/原等待状态。仅允许现有 `preprocess_then_analyze` proposal outbox 和统计结果解释 outbox 在 handoff action、当前 root、outbox claim ID 一致且状态 ready 时调用模型；原有来源重核、预算、租约、幂等和 fencing 继续有效。阶段暂不可交接不调用模型；proposal handoff 经五次自动尝试仍未就绪时暂停至用户手动重试，避免无限后台重试。
+
+此切片没有创建 Plan/Run、批准 Plan/QC、改变科学选择或引入通用 DAG；零显著结果合同和真实结果/continuation 完成证据不变。定向回归覆盖快照阶段识别、plan/run/QC 身份错配失败关闭、ready proposal/result action、consumer 暂不就绪时不调用模型及 analysis-only 结果续接。最终验证数及其范围记录在 [MVP 验证记录](../development/mvp-verification.md)；未运行真实 Provider、MATLAB 或 DPABI，也没有据此声称计划 0014 已完成。
+
 ### 本轮实现记录（2026-10-12）
 
 本轮形成了四个可独立审查的垂直切片：

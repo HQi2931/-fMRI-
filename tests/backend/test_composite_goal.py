@@ -9,10 +9,14 @@ from neuroagent.application.automation.analysis_outbox import (
 from neuroagent.application.automation.composite_goal import (
     CompositeGoalAnalysisAttempt,
     CompositeGoalContinuationMessage,
+    CompositeGoalHandoffAction,
     CompositeGoalIdentity,
+    CompositeGoalPlanEvidence,
+    CompositeGoalRunEvidence,
     CompositeGoalSnapshot,
     CompositeGoalStatus,
     project_composite_goal,
+    resolve_composite_goal_handoff,
 )
 from neuroagent.application.automation.models import (
     AuthorityReferences,
@@ -180,6 +184,38 @@ def _completed_snapshot() -> CompositeGoalSnapshot:
         preprocessing_plan_revision_id="preprocessing-plan",
         preprocessing_plan_project_id=project_id,
         preprocessing_plan_manifest_hash="d" * 64,
+        preprocessing_plan=CompositeGoalPlanEvidence(
+            plan_revision_id="preprocessing-plan",
+            project_id=project_id,
+            state="approved",
+            manifest_hash="d" * 64,
+            plan_hash="2" * 64,
+            input_revision="d" * 64,
+        ),
+        preprocessing_run=CompositeGoalRunEvidence(
+            run_id="preprocessing-run",
+            project_id=project_id,
+            plan_revision_id="preprocessing-plan",
+            state="succeeded",
+            version=3,
+            qc_status="approved",
+            latest_qc_review_state="approved",
+        ),
+        analysis_plan=CompositeGoalPlanEvidence(
+            plan_revision_id="analysis-plan",
+            project_id=project_id,
+            state="approved",
+            manifest_hash="d" * 64,
+            plan_hash="3" * 64,
+            input_revision="f" * 64,
+        ),
+        analysis_run=CompositeGoalRunEvidence(
+            run_id="analysis-run",
+            project_id=project_id,
+            plan_revision_id="analysis-plan",
+            state="succeeded",
+            version=4,
+        ),
         preprocessing_task=preprocessing,
         analysis_proposal_outbox=proposal_outbox,
         analysis_attempts=(
@@ -285,3 +321,366 @@ def test_scoped_query_accepts_unbound_work_conversation_but_checks_plan_project(
             "conversation-composite",
             "intent-composite",
         )
+
+
+def test_projected_composite_phase_distinguishes_exact_plan_review() -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "goal": snapshot.goal.model_copy(
+                update={
+                    "analysis_proposal_outbox_intent_task_id": None,
+                    "analysis_work_task_id": None,
+                    "result_interpretation_outbox_task_id": None,
+                }
+            ),
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_USER,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.USER_DECISION,
+                        reference="plan:preprocessing-plan",
+                        reason="review the exact Plan",
+                    ),
+                    "authority_refs": prep.authority_refs.model_copy(
+                        update={"workflow_run_id": None}
+                    ),
+                    "steps": tuple(
+                        step.model_copy(
+                            update={
+                                "status": TaskStepStatus.READY,
+                                "authority_refs": step.authority_refs.model_copy(
+                                    update={"workflow_run_id": None}
+                                ),
+                            }
+                        )
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": None,
+            "analysis_proposal_outbox": None,
+            "analysis_attempts": (),
+            "proposal_analysis_task": None,
+            "analysis_task": None,
+            "result_interpretation_outbox": None,
+            "result_continuation_message": None,
+            "preprocessing_plan": snapshot.preprocessing_plan.model_copy(
+                update={"state": "awaiting_approval"}
+            ),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.WAITING_REVIEW
+    assert progress.reason_code == "preprocessing_plan_review"
+
+
+def test_projected_composite_phase_waits_on_the_exact_bound_run() -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_RUN,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference="preprocessing-run",
+                        reason="wait for the existing Run",
+                    ),
+                    "steps": tuple(
+                        step.model_copy(update={"status": TaskStepStatus.WAITING})
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(update={"state": "running"}),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.WAITING_RUN
+    assert progress.reason_code == "preprocessing_run_pending"
+
+
+@pytest.mark.parametrize("run_state", ["qc_review", "succeeded", "failed_terminal", "cancelled"])
+def test_projected_composite_phase_does_not_call_terminal_or_qc_run_waiting(
+    run_state: str,
+) -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_RUN,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference="preprocessing-run",
+                        reason="wait for the bound Run",
+                    ),
+                    "steps": tuple(
+                        step.model_copy(update={"status": TaskStepStatus.WAITING})
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(update={"state": run_state}),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.INDETERMINATE
+    assert progress.reason_code == "preprocessing_run_state_mismatch"
+
+
+@pytest.mark.parametrize(
+    "plan_update",
+    [
+        None,
+        {"project_id": "another-project"},
+        {"input_revision": "e" * 64},
+        {"plan_revision_id": "another-plan"},
+    ],
+)
+def test_projected_composite_phase_fails_closed_without_exact_plan_input(
+    plan_update: dict[str, str] | None,
+) -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    plan = snapshot.preprocessing_plan
+    assert plan is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_RUN,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference="preprocessing-run",
+                        reason="wait for the bound Run",
+                    ),
+                    "steps": tuple(
+                        step.model_copy(update={"status": TaskStepStatus.WAITING})
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(update={"state": "running"}),
+            "preprocessing_plan": (
+                None if plan_update is None else plan.model_copy(update=plan_update)
+            ),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.INDETERMINATE
+    assert progress.reason_code == "preprocessing_run_authority_mismatch"
+
+
+def test_projected_composite_qc_review_requires_qc_review_run_state() -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_USER,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.USER_DECISION,
+                        reference="qc:preprocessing-run",
+                        reason="inspect the QC decision",
+                    ),
+                    "steps": tuple(
+                        step.model_copy(update={"status": TaskStepStatus.WAITING})
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(
+                update={
+                    "state": "qc_review",
+                    "qc_status": "pending",
+                    "latest_qc_review_state": "draft",
+                }
+            ),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.WAITING_REVIEW
+    assert progress.reason_code == "preprocessing_qc_review"
+
+
+def test_projected_composite_does_not_call_succeeded_run_with_pending_qc_reviewable() -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_USER,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.USER_DECISION,
+                        reference="qc:preprocessing-run",
+                        reason="inspect the QC decision",
+                    ),
+                    "steps": tuple(
+                        step.model_copy(update={"status": TaskStepStatus.WAITING})
+                        for step in prep.steps
+                    ),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(
+                update={
+                    "state": "succeeded",
+                    "qc_status": "pending",
+                    "latest_qc_review_state": "draft",
+                }
+            ),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.INDETERMINATE
+    assert progress.reason_code == "preprocessing_qc_review_state_mismatch"
+
+
+def test_projected_composite_phase_fails_closed_on_run_reference_mismatch() -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_RUN,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference="different-run",
+                        reason="stale wait",
+                    ),
+                }
+            ),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.INDETERMINATE
+    assert progress.reason_code == "preprocessing_run_authority_mismatch"
+
+
+@pytest.mark.parametrize("mismatch", ["plan", "run", "input_revision", "step_status"])
+def test_projected_composite_phase_fails_closed_on_task_step_mismatch(
+    mismatch: str,
+) -> None:
+    snapshot = _completed_snapshot()
+    prep = snapshot.preprocessing_task
+    assert prep is not None
+    step = prep.steps[0]
+    step_update: dict[str, object] = {"status": TaskStepStatus.WAITING}
+    if mismatch == "plan":
+        step_update["authority_refs"] = step.authority_refs.model_copy(
+            update={"plan_revision_id": "another-plan"}
+        )
+    elif mismatch == "run":
+        step_update["authority_refs"] = step.authority_refs.model_copy(
+            update={"workflow_run_id": "another-run"}
+        )
+    elif mismatch == "input_revision":
+        step_update["authority_refs"] = step.authority_refs.model_copy(
+            update={"input_revision": "e" * 64}
+        )
+    else:
+        step_update["status"] = TaskStepStatus.READY
+    snapshot = snapshot.model_copy(
+        update={
+            "preprocessing_task": prep.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_RUN,
+                    "waiting_condition": WaitingCondition(
+                        kind=WaitingKind.WORKFLOW_RUN,
+                        reference="preprocessing-run",
+                        reason="wait for the bound Run",
+                    ),
+                    "steps": (step.model_copy(update=step_update),),
+                }
+            ),
+            "preprocessing_run": snapshot.preprocessing_run.model_copy(update={"state": "running"}),
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.INDETERMINATE
+    assert progress.reason_code == "preprocessing_run_authority_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("outbox_status", "expected_action", "expected_phase"),
+    [
+        (
+            AnalysisOutboxStatus.READY,
+            CompositeGoalHandoffAction.PREPARE_ANALYSIS_PROPOSAL,
+            CompositeGoalStatus.WAITING_ANALYSIS,
+        ),
+        (
+            AnalysisOutboxStatus.PROPOSAL_READY,
+            CompositeGoalHandoffAction.NONE,
+            CompositeGoalStatus.COMPLETED,
+        ),
+    ],
+)
+def test_handoff_decision_only_resumes_the_registered_ready_proposal(
+    outbox_status, expected_action, expected_phase
+) -> None:
+    snapshot = _completed_snapshot()
+    proposal = snapshot.analysis_proposal_outbox
+    assert proposal is not None
+    snapshot = snapshot.model_copy(
+        update={"analysis_proposal_outbox": proposal.model_copy(update={"status": outbox_status})}
+    )
+
+    decision = resolve_composite_goal_handoff(snapshot)
+
+    assert decision.phase is expected_phase
+    assert decision.action is expected_action
+    assert decision.target_id == (
+        snapshot.goal.intent_task_id
+        if expected_action is not CompositeGoalHandoffAction.NONE
+        else None
+    )
+
+
+def test_handoff_decision_only_resumes_an_exact_ready_result_interpretation() -> None:
+    snapshot = _completed_snapshot()
+    interpretation = snapshot.result_interpretation_outbox
+    assert interpretation is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "result_interpretation_outbox": interpretation.model_copy(
+                update={"status": ResultInterpretationStatus.READY}
+            )
+        }
+    )
+
+    decision = resolve_composite_goal_handoff(snapshot)
+
+    assert decision.phase is CompositeGoalStatus.WAITING_RESULT_INTERPRETATION
+    assert decision.action is CompositeGoalHandoffAction.PREPARE_RESULT_INTERPRETATION
+    assert decision.target_id == interpretation.task_id

@@ -786,6 +786,8 @@
       "CompositeGoalProgressStatus": {
         "enum": [
           "waiting_preprocessing",
+          "waiting_review",
+          "waiting_run",
           "waiting_analysis",
           "waiting_result_interpretation",
           "waiting_user",

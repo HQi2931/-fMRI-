@@ -20,10 +20,11 @@ from neuroagent.application.automation.analysis_outbox import (
     VerifiedAnalysisOutboxSource,
 )
 from neuroagent.application.automation.composite_goal import (
+    CompositeGoalHandoffDecision,
     CompositeGoalIdentity,
     CompositeGoalProgress,
     CompositeGoalSnapshot,
-    project_composite_goal,
+    resolve_composite_goal_handoff,
 )
 from neuroagent.application.automation.model_budget import (
     CompositeGoalModelBudget,
@@ -1427,9 +1428,16 @@ class WorkTaskApplicationService:
     ) -> CompositeGoalProgress:
         """Read and project one explicitly identified composite goal."""
 
+        return self.get_composite_goal_handoff(conversation_id, intent_task_id).progress
+
+    def get_composite_goal_handoff(
+        self, conversation_id: str, intent_task_id: str
+    ) -> CompositeGoalHandoffDecision:
+        """Read the bounded phase decision shared by progress and workers."""
+
         snapshot = self._repository.get_composite_goal_snapshot(intent_task_id)
         self._require_composite_goal_scope(snapshot, conversation_id, intent_task_id)
-        return project_composite_goal(snapshot)
+        return resolve_composite_goal_handoff(snapshot)
 
     def list_composite_goal_progress(self, conversation_id: str) -> list[CompositeGoalProgress]:
         """List freshly projected composite goals visible to one Work conversation."""

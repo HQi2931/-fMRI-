@@ -42,6 +42,8 @@ type CompositeGoalTone = "good" | "warn" | "danger" | "info" | "neutral";
 function compositeGoalStatusView(status: string): { label: string; tone: CompositeGoalTone; detail: string } {
   switch (status) {
     case "waiting_preprocessing": return { label: "等待预处理", tone: "info", detail: "预处理尚未完成，后续分析会在条件满足后继续。" };
+    case "waiting_review": return { label: "等待审查", tone: "warn", detail: "当前方案或质量控制记录等待你的审查。" };
+    case "waiting_run": return { label: "等待运行完成", tone: "info", detail: "目标已绑定到现有运行，系统会等待并重新核验该运行。" };
     case "waiting_analysis": return { label: "等待分析", tone: "info", detail: "统计分析方案或计算正在推进。" };
     case "waiting_result_interpretation": return { label: "等待结果解释", tone: "info", detail: "统计结果已生成，正在整理结果说明。" };
     case "waiting_user": return { label: "需要你处理", tone: "warn", detail: "流程需要你的确认或补充后才能继续。" };
@@ -77,6 +79,17 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
     preprocessing_not_started: "预处理尚未开始。",
     preprocessing_in_progress: "预处理仍在进行。",
     preprocessing_user_decision: "预处理需要你的决定。",
+    preprocessing_plan_review: "预处理方案等待你的审查。",
+    preprocessing_run_pending: "预处理目标正在等待已绑定的运行。",
+    preprocessing_run_authority_mismatch: "预处理运行关联需要核验。",
+    preprocessing_run_state_unknown: "预处理运行状态不受支持，需要核验。",
+    preprocessing_plan_review_authority_mismatch: "预处理方案审查关联需要核验。",
+    preprocessing_plan_state_unknown: "预处理方案状态不受支持，需要核验。",
+    preprocessing_plan_review_state_mismatch: "预处理方案状态与等待审查记录不一致。",
+    preprocessing_run_start_user: "预处理方案已批准，等待你明确启动运行。",
+    preprocessing_qc_review: "预处理质量控制等待你的审查。",
+    preprocessing_qc_review_authority_mismatch: "预处理质量控制审查关联需要核验。",
+    preprocessing_qc_review_state_mismatch: "预处理质量控制状态与审查记录不一致。",
     preprocessing_terminal_block: "预处理已停止，需检查后再继续。",
     preprocessing_task_missing: "找不到对应的预处理任务。",
     preprocessing_binding_mismatch: "预处理任务与当前目标的关联需要核验。",
@@ -95,6 +108,17 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
     analysis_task_reference_mismatch: "统计分析任务的版本关联需要核验。",
     analysis_terminal_block: "统计分析已停止，需检查后再继续。",
     analysis_user_decision: "统计分析需要你的决定。",
+    analysis_plan_review: "统计方案等待你的审查。",
+    analysis_run_pending: "统计目标正在等待已绑定的运行。",
+    analysis_run_authority_mismatch: "统计运行关联需要核验。",
+    analysis_run_state_unknown: "统计运行状态不受支持，需要核验。",
+    analysis_plan_review_authority_mismatch: "统计方案审查关联需要核验。",
+    analysis_plan_state_unknown: "统计方案状态不受支持，需要核验。",
+    analysis_plan_review_state_mismatch: "统计方案状态与等待审查记录不一致。",
+    analysis_run_start_user: "统计方案已批准，等待你明确启动运行。",
+    analysis_qc_review: "统计质量控制等待你的审查。",
+    analysis_qc_review_authority_mismatch: "统计质量控制审查关联需要核验。",
+    analysis_qc_review_state_mismatch: "统计质量控制状态与审查记录不一致。",
     analysis_in_progress: "统计分析仍在进行。",
     analysis_only_child_binding_mismatch: "外部指标分析的任务关联需要核验。",
     analysis_only_conversation_mismatch: "外部指标分析与当前会话的关联需要核验。",
@@ -114,7 +138,7 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
 }
 
 function compositeGoalIsActive(goal: CompositeGoalProgress): boolean {
-  return ["waiting_preprocessing", "waiting_analysis", "waiting_result_interpretation"].includes(goal.status);
+  return ["waiting_preprocessing", "waiting_run", "waiting_analysis", "waiting_result_interpretation"].includes(goal.status);
 }
 
 function CompositeGoalProgressPanel({

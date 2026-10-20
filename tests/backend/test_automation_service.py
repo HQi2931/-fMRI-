@@ -62,6 +62,7 @@ from neuroagent.domain.fmri import (
 )
 from neuroagent.domain.fmri.preprocessing_outputs import DpabiPreprocessingOutput
 from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.infrastructure.persistence.automation_repository import SqliteWorkTaskRepository
 from neuroagent.infrastructure.persistence.models import (
     AnalysisProposalOutboxRow,
     ConversationRow,
@@ -866,6 +867,20 @@ def _statistical_task(
         ),
     )
     return task
+
+
+def test_composite_goal_statistical_plan_input_revision_uses_frozen_draft_hash() -> None:
+    plan = _statistical_plan(design=_statistical_design())
+    task = _statistical_task()
+
+    input_revision = SqliteWorkTaskRepository._composite_goal_plan_input_revision(
+        task=task,
+        plan_revision_id=plan.plan_revision_id,
+        manifest_hash=plan.manifest_hash,
+        plan_payload=plan.plan,
+    )
+
+    assert input_revision == task.authority_refs.input_revision == "d" * 64
 
 
 def _real_zero_result(
@@ -1686,6 +1701,20 @@ def test_preprocessing_finalizer_fans_out_exact_intents_in_one_unit_of_work(
             conversation_id, str(intent["task_id"])
         )
         assert progress.preprocessing_status == TaskStatus.COMPLETED.value
+        handoff = service.automation.get_composite_goal_handoff(
+            conversation_id, str(intent["task_id"])
+        )
+        assert handoff.progress == progress
+        assert handoff.phase.value == "waiting_analysis"
+        assert handoff.action.value == "prepare_analysis_proposal"
+        assert handoff.target_id == str(intent["task_id"])
+        snapshot = repository.get_composite_goal_snapshot(str(intent["task_id"]))
+        assert snapshot.preprocessing_plan is not None
+        assert snapshot.preprocessing_plan.plan_revision_id == task.authority_refs.plan_revision_id
+        assert snapshot.preprocessing_plan.input_revision == task.authority_refs.input_revision
+        assert snapshot.preprocessing_run is not None
+        assert snapshot.preprocessing_run.run_id == run.run_id
+        assert snapshot.preprocessing_run.plan_revision_id == task.authority_refs.plan_revision_id
     malformed = repository.get_analysis_outbox(str(malformed_intent["task_id"]))
     assert malformed.status.value == "pending"
 

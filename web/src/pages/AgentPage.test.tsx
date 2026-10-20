@@ -318,6 +318,8 @@ describe("agent workbench page", () => {
       { ...compositeGoal("blocked", "goal-blocked", "analysis_terminal_block"), analysis_status: "blocked" },
       { ...compositeGoal("completed", "goal-complete", "result_interpretation_delivered"), analysis_status: "completed", result_interpretation_status: "completed", continuation_message_id: "assistant-result" },
       { ...compositeGoal("indeterminate", "goal-check", "result_continuation_mismatch") },
+      { ...compositeGoal("waiting_review", "goal-review", "preprocessing_plan_review"), preprocessing_status: "waiting_user" },
+      { ...compositeGoal("waiting_run", "goal-run", "analysis_run_pending"), analysis_status: "waiting_run" },
     ];
     const loadGoals = vi.fn(() => json(goals));
     installFetch({ compositeGoals: loadGoals });
@@ -325,9 +327,9 @@ describe("agent workbench page", () => {
     render(<AgentPage />);
 
     expect(await screen.findByRole("region", { name: "自动化流程进度" })).toBeInTheDocument();
-    expect(screen.getAllByRole("article")).toHaveLength(7);
+    expect(screen.getAllByRole("article")).toHaveLength(9);
     expect(within(screen.getAllByRole("article")[0]).getByText("对 ALFF 做两组比较")).toBeInTheDocument();
-    for (const label of ["等待预处理", "等待分析", "等待结果解释", "需要你处理", "已阻断", "已完成", "状态待核验"]) {
+    for (const label of ["等待预处理", "等待审查", "等待运行完成", "等待分析", "等待结果解释", "需要你处理", "已阻断", "已完成", "状态待核验"]) {
       expect(screen.getByText(label, { selector: "span" })).toBeInTheDocument();
     }
     expect(within(screen.getAllByRole("article")[2]).getByText("已就绪")).toBeInTheDocument();
@@ -827,11 +829,11 @@ describe("agent workbench page", () => {
   });
 
   it("periodically refreshes only while the composite goal is active", async () => {
-    const loadGoals = vi.fn(() => json([compositeGoal("waiting_preprocessing", "goal-active", "preprocessing_in_progress")]));
+    const loadGoals = vi.fn(() => json([compositeGoal("waiting_run", "goal-active", "analysis_run_pending")]));
     installFetch({ compositeGoals: loadGoals });
     render(<AgentPage />);
 
-    expect(await screen.findByText("等待预处理", { selector: "span" })).toBeInTheDocument();
+    expect(await screen.findByText("等待运行完成", { selector: "span" })).toBeInTheDocument();
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "刷新进度" }));
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });

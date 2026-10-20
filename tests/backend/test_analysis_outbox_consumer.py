@@ -18,6 +18,10 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisSourceModelFacts,
     VerifiedAnalysisOutboxSource,
 )
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalHandoffAction,
+    CompositeGoalIdentity,
+)
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationMode,
@@ -717,3 +721,62 @@ async def test_conversation_project_switch_is_terminal_and_does_not_mutate_work_
         service.automation.get_analysis_outbox(outbox.intent_task_id).status
         is AnalysisOutboxStatus.BLOCKED
     )
+
+
+@pytest.mark.asyncio
+async def test_proposal_consumer_bounds_retries_when_shared_handoff_is_not_ready(
+    service, source_root, work_root, monkeypatch
+):
+    import neuroagent.infrastructure.persistence.automation_repository as automation_repository
+
+    _project, _conversation, outbox, _source, _proof = seed_ready_outbox(
+        service, source_root, work_root
+    )
+    goal = CompositeGoalIdentity(
+        intent_task_id=outbox.intent_task_id,
+        conversation_id=outbox.conversation_id,
+        project_id=outbox.project_id,
+        analysis_request_hash=outbox.analysis_request_hash,
+        preprocessing_task_id=outbox.preprocessing_task_id,
+        analysis_proposal_outbox_intent_task_id=outbox.intent_task_id,
+    )
+    add_model_profile(service)
+    monkeypatch.setattr(service.automation, "find_composite_goal", lambda _intent: goal)
+    monkeypatch.setattr(
+        service.automation, "get_composite_goal_model_budget", lambda _intent: object()
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_handoff",
+        lambda *_args: SimpleNamespace(
+            action=CompositeGoalHandoffAction.NONE,
+            target_id=None,
+        ),
+    )
+    model = AsyncMock()
+    monkeypatch.setattr(service.work_dialogue, "prepare_analysis_continuation", model)
+    now = [1000.0]
+    monkeypatch.setattr(automation_repository.time, "time", lambda: now[0])
+
+    outcomes = []
+    for _ in range(5):
+        outcomes.append(
+            await service.conversations.consume_next_analysis_outbox(
+                "outbox-worker", lease_seconds=30
+            )
+        )
+        now[0] += 1000
+
+    assert outcomes == ["deferred", "deferred", "deferred", "deferred", "waiting_user"]
+    model.assert_not_awaited()
+    latest = service.automation.get_analysis_outbox(outbox.intent_task_id)
+    assert latest.status is AnalysisOutboxStatus.WAITING_USER
+    assert latest.attempt_count == 5
+    assert latest.last_error_code == "analysis_outbox_handoff_retry_exhausted"
+    conversation = service.repository.get_conversation(outbox.conversation_id)
+    assert conversation.messages[-1].role is ConversationRole.ASSISTANT
+    assert conversation.messages[-1].payload["analysis_outbox_result"] == {
+        "status": AnalysisOutboxStatus.WAITING_USER.value,
+        "error_code": "analysis_outbox_handoff_retry_exhausted",
+        "retry_available": True,
+    }

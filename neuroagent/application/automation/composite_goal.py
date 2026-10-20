@@ -7,16 +7,23 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from neuroagent.application.automation.analysis_outbox import AnalysisProposalOutbox
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxStatus,
+    AnalysisProposalOutbox,
+)
 from neuroagent.application.automation.models import TaskStatus, WorkTask
 from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
 )
 from neuroagent.application.hashing import content_hash
+from neuroagent.domain.lifecycle import PlanState, WorkflowState
 
 
 class CompositeGoalStatus(StrEnum):
     WAITING_PREPROCESSING = "waiting_preprocessing"
+    WAITING_REVIEW = "waiting_review"
+    WAITING_RUN = "waiting_run"
     WAITING_ANALYSIS = "waiting_analysis"
     WAITING_RESULT_INTERPRETATION = "waiting_result_interpretation"
     WAITING_USER = "waiting_user"
@@ -95,6 +102,33 @@ class CompositeGoalAnalysisAttempt(BaseModel):
     proposal_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class CompositeGoalPlanEvidence(BaseModel):
+    """Minimal immutable Plan identity read alongside a CompositeGoal snapshot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plan_revision_id: str = Field(min_length=1, max_length=100)
+    project_id: str = Field(min_length=1, max_length=100)
+    state: str = Field(min_length=1, max_length=32)
+    manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    input_revision: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class CompositeGoalRunEvidence(BaseModel):
+    """Minimal authoritative Workflow/QC identity needed to label a waiting Run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str = Field(min_length=1, max_length=100)
+    project_id: str = Field(min_length=1, max_length=100)
+    plan_revision_id: str = Field(min_length=1, max_length=100)
+    state: str = Field(min_length=1, max_length=32)
+    version: int = Field(ge=1)
+    qc_status: str | None = Field(default=None, max_length=32)
+    latest_qc_review_state: str | None = Field(default=None, max_length=20)
+
+
 class CompositeGoalContinuationMessage(BaseModel):
     """Minimal persisted assistant evidence used to verify delivered completion."""
 
@@ -132,6 +166,10 @@ class CompositeGoalSnapshot(BaseModel):
     preprocessing_plan_revision_id: str | None = None
     preprocessing_plan_project_id: str | None = None
     preprocessing_plan_manifest_hash: str | None = None
+    preprocessing_plan: CompositeGoalPlanEvidence | None = None
+    preprocessing_run: CompositeGoalRunEvidence | None = None
+    analysis_plan: CompositeGoalPlanEvidence | None = None
+    analysis_run: CompositeGoalRunEvidence | None = None
     preprocessing_task: WorkTask | None = None
     analysis_proposal_outbox: AnalysisProposalOutbox | None = None
     analysis_attempts: tuple[CompositeGoalAnalysisAttempt, ...] = Field(default=(), max_length=1000)
@@ -155,6 +193,74 @@ class CompositeGoalProgress(BaseModel):
     result_interpretation_status: str | None = None
     continuation_message_id: str | None = None
     reason_code: str | None = None
+
+
+class CompositeGoalHandoffAction(StrEnum):
+    NONE = "none"
+    PREPARE_ANALYSIS_PROPOSAL = "prepare_analysis_proposal"
+    PREPARE_RESULT_INTERPRETATION = "prepare_result_interpretation"
+
+
+class CompositeGoalHandoffDecision(BaseModel):
+    """Bounded read-only phase decision; actions only resume existing outboxes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    progress: CompositeGoalProgress
+    phase: CompositeGoalStatus
+    action: CompositeGoalHandoffAction = CompositeGoalHandoffAction.NONE
+    target_id: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def action_target_matches_phase(self) -> CompositeGoalHandoffDecision:
+        if self.phase is not self.progress.status:
+            raise ValueError("handoff phase must match the verified progress projection")
+        if (self.action is CompositeGoalHandoffAction.NONE) != (self.target_id is None):
+            raise ValueError("handoff target is required only for a supported continuation action")
+        if (
+            self.action is CompositeGoalHandoffAction.PREPARE_ANALYSIS_PROPOSAL
+            and self.phase is not CompositeGoalStatus.WAITING_ANALYSIS
+        ):
+            raise ValueError("analysis proposal continuation requires the analysis phase")
+        if (
+            self.action is CompositeGoalHandoffAction.PREPARE_RESULT_INTERPRETATION
+            and self.phase is not CompositeGoalStatus.WAITING_RESULT_INTERPRETATION
+        ):
+            raise ValueError("result interpretation continuation requires the result phase")
+        return self
+
+
+def resolve_composite_goal_handoff(snapshot: CompositeGoalSnapshot) -> CompositeGoalHandoffDecision:
+    """Resolve the current bounded phase and any already-registered continuation."""
+
+    progress = project_composite_goal(snapshot)
+    action = CompositeGoalHandoffAction.NONE
+    target_id: str | None = None
+    proposal = snapshot.analysis_proposal_outbox
+    if (
+        snapshot.goal.goal_kind == "preprocess_then_analyze"
+        and progress.status is CompositeGoalStatus.WAITING_ANALYSIS
+        and proposal is not None
+        and proposal.status is AnalysisOutboxStatus.READY
+        and proposal.intent_task_id == snapshot.goal.analysis_proposal_outbox_intent_task_id
+    ):
+        action = CompositeGoalHandoffAction.PREPARE_ANALYSIS_PROPOSAL
+        target_id = proposal.intent_task_id
+    interpretation = snapshot.result_interpretation_outbox
+    if (
+        progress.status is CompositeGoalStatus.WAITING_RESULT_INTERPRETATION
+        and interpretation is not None
+        and interpretation.status is ResultInterpretationStatus.READY
+        and interpretation.task_id == snapshot.goal.result_interpretation_outbox_task_id
+    ):
+        action = CompositeGoalHandoffAction.PREPARE_RESULT_INTERPRETATION
+        target_id = interpretation.task_id
+    return CompositeGoalHandoffDecision(
+        progress=progress,
+        phase=progress.status,
+        action=action,
+        target_id=target_id,
+    )
 
 
 def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProgress:
@@ -210,8 +316,15 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_binding_mismatch")
         if outbox is not None or prep_refs.workflow_run_id is not None:
             return result(CompositeGoalStatus.INDETERMINATE, "proposal_outbox_binding_missing")
-        if prep.status is TaskStatus.WAITING_USER:
-            return result(CompositeGoalStatus.WAITING_USER, "preprocessing_user_decision")
+        waiting = _task_wait_phase(
+            prep,
+            goal=goal,
+            plan=snapshot.preprocessing_plan,
+            run=snapshot.preprocessing_run,
+            prefix="preprocessing",
+        )
+        if waiting is not None:
+            return result(*waiting)
         if prep.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
             return result(CompositeGoalStatus.BLOCKED, "preprocessing_terminal_block")
         return result(CompositeGoalStatus.WAITING_PREPROCESSING, "preprocessing_not_started")
@@ -241,12 +354,15 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             proposal_status=outbox.status.value,
         )
     if prep.status is not TaskStatus.COMPLETED:
-        if prep.status is TaskStatus.WAITING_USER:
-            return result(
-                CompositeGoalStatus.WAITING_USER,
-                "preprocessing_user_decision",
-                proposal_status=outbox.status.value,
-            )
+        waiting = _task_wait_phase(
+            prep,
+            goal=goal,
+            plan=snapshot.preprocessing_plan,
+            run=snapshot.preprocessing_run,
+            prefix="preprocessing",
+        )
+        if waiting is not None:
+            return result(*waiting, proposal_status=outbox.status.value)
         return result(
             CompositeGoalStatus.WAITING_PREPROCESSING,
             "preprocessing_in_progress",
@@ -353,10 +469,16 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             proposal_status=outbox.status.value,
             analysis_status=analysis_task.status.value,
         )
-    if analysis_task.status is TaskStatus.WAITING_USER:
+    waiting = _task_wait_phase(
+        analysis_task,
+        goal=goal,
+        plan=snapshot.analysis_plan,
+        run=snapshot.analysis_run,
+        prefix="analysis",
+    )
+    if waiting is not None:
         return result(
-            CompositeGoalStatus.WAITING_USER,
-            "analysis_user_decision",
+            *waiting,
             proposal_status=outbox.status.value,
             analysis_status=analysis_task.status.value,
         )
@@ -469,12 +591,15 @@ def _project_analysis_only_external_goal(
             "analysis_terminal_block",
             analysis_status=task.status.value,
         )
-    if task.status is TaskStatus.WAITING_USER:
-        return result(
-            CompositeGoalStatus.WAITING_USER,
-            "analysis_user_decision",
-            analysis_status=task.status.value,
-        )
+    waiting = _task_wait_phase(
+        task,
+        goal=goal,
+        plan=snapshot.analysis_plan,
+        run=snapshot.analysis_run,
+        prefix="analysis",
+    )
+    if waiting is not None:
+        return result(*waiting, analysis_status=task.status.value)
     if task.status is not TaskStatus.COMPLETED:
         return result(
             CompositeGoalStatus.WAITING_ANALYSIS,
@@ -505,6 +630,149 @@ def _project_analysis_only_external_goal(
         message=snapshot.result_continuation_message,
         result=result,
         proposal_status=None,
+    )
+
+
+def _task_wait_phase(
+    task: WorkTask,
+    *,
+    goal: CompositeGoalIdentity,
+    plan: CompositeGoalPlanEvidence | None,
+    run: CompositeGoalRunEvidence | None,
+    prefix: str,
+) -> tuple[CompositeGoalStatus, str] | None:
+    """Give a narrow phase only when the WorkTask wait binds exact authority."""
+
+    if task.status is TaskStatus.WAITING_RUN:
+        run_id = task.authority_refs.workflow_run_id
+        waiting = task.waiting_condition
+        plan_state: PlanState | None = None
+        if (
+            run_id is None
+            or waiting is None
+            or waiting.kind.value != "workflow_run"
+            or waiting.reference != run_id
+            or run is None
+            or run.run_id != run_id
+            or run.project_id != goal.project_id
+            or run.plan_revision_id != task.authority_refs.plan_revision_id
+            or run.plan_revision_id is None
+            or not _task_plan_binding_matches(task, goal=goal, plan=plan, run_id=run_id)
+        ):
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_run_authority_mismatch"
+        try:
+            run_state = WorkflowState(run.state)
+        except ValueError:
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_run_state_unknown"
+        try:
+            plan_state = PlanState(plan.state) if plan is not None else None
+        except ValueError:
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_plan_state_unknown"
+        if run_state not in {
+            WorkflowState.QUEUED,
+            WorkflowState.RUNNING,
+            WorkflowState.CANCELLING,
+        } or plan_state not in {PlanState.APPROVED, PlanState.SUPERSEDED}:
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_run_state_mismatch"
+        return CompositeGoalStatus.WAITING_RUN, f"{prefix}_run_pending"
+
+    if task.status is not TaskStatus.WAITING_USER:
+        return None
+    waiting = task.waiting_condition
+    if waiting is None:
+        return CompositeGoalStatus.WAITING_USER, f"{prefix}_user_decision"
+    plan_id = task.authority_refs.plan_revision_id
+    plan_review_references = {
+        f"plan:{plan_id}" if plan_id is not None else "",
+        *(
+            f"step-plan:{task.task_id}:{step.step_id}:{plan_id}"
+            for step in task.steps
+            if plan_id is not None
+        ),
+    }
+    if waiting.reference in plan_review_references:
+        if plan is None or not _task_plan_binding_matches(task, goal=goal, plan=plan, run_id=None):
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_plan_review_authority_mismatch"
+        try:
+            plan_state = PlanState(plan.state)
+        except ValueError:
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_plan_state_unknown"
+        if plan_state in {
+            PlanState.DRAFT,
+            PlanState.AWAITING_APPROVAL,
+        }:
+            return CompositeGoalStatus.WAITING_REVIEW, f"{prefix}_plan_review"
+        if plan_state is PlanState.APPROVED:
+            return CompositeGoalStatus.WAITING_USER, f"{prefix}_run_start_user"
+        return CompositeGoalStatus.INDETERMINATE, f"{prefix}_plan_review_state_mismatch"
+
+    if waiting.reference.startswith("qc:"):
+        run_id = waiting.reference.removeprefix("qc:")
+        qc_review_pending = run is not None and (
+            (
+                run.qc_status in {"pending", "awaiting_review"}
+                and run.latest_qc_review_state in {None, "draft"}
+            )
+            or (run.qc_status == "failed" and run.latest_qc_review_state == "draft")
+        )
+        if (
+            not run_id
+            or run is None
+            or run_id != task.authority_refs.workflow_run_id
+            or run.run_id != run_id
+            or run.project_id != goal.project_id
+            or run.plan_revision_id != plan_id
+            or not qc_review_pending
+        ):
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_qc_review_authority_mismatch"
+        try:
+            workflow_state = WorkflowState(run.state)
+        except ValueError:
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_run_state_unknown"
+        if workflow_state is not WorkflowState.QC_REVIEW or not _task_plan_binding_matches(
+            task, goal=goal, plan=plan, run_id=run_id
+        ):
+            return CompositeGoalStatus.INDETERMINATE, f"{prefix}_qc_review_state_mismatch"
+        return CompositeGoalStatus.WAITING_REVIEW, f"{prefix}_qc_review"
+
+    return CompositeGoalStatus.WAITING_USER, f"{prefix}_user_decision"
+
+
+def _task_plan_binding_matches(
+    task: WorkTask,
+    *,
+    goal: CompositeGoalIdentity,
+    plan: CompositeGoalPlanEvidence | None,
+    run_id: str | None,
+) -> bool:
+    """Match the Task and its unique step to the exact Plan input and Run."""
+
+    plan_id = task.authority_refs.plan_revision_id
+    if (
+        plan is None
+        or plan_id is None
+        or task.authority_refs.input_revision is None
+        or plan.plan_revision_id != plan_id
+        or plan.project_id != goal.project_id
+        or plan.input_revision != task.authority_refs.input_revision
+    ):
+        return False
+    matches = tuple(
+        step
+        for step in task.steps
+        if step.authority_refs.plan_revision_id == plan_id
+        and step.authority_refs.workflow_run_id == run_id
+    )
+    if len(matches) != 1:
+        return False
+    step = matches[0]
+    return (
+        step.authority_refs.input_revision == task.authority_refs.input_revision
+        and step.kind in {"preprocessing_run", "statistical_run"}
+        and (
+            (run_id is None and step.status.value == "ready")
+            or (run_id is not None and step.status.value == "waiting")
+        )
     )
 
 

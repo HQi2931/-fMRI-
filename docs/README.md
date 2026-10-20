@@ -38,6 +38,7 @@
 | 数据外发策略 | [模型数据外发策略](security/data-egress.md) | |
 | 已纳入外部指标目标的结果续接与身份边界 | [ADR 0050](adr/0050-analysis-only-result-continuation.md) | 补充 [ADR 0049](adr/0049-analysis-only-external-import-goals.md) 的结果 outbox 关联决策 |
 | analysis-only 目标的前台续聊与显式新建 | [ADR 0051](adr/0051-analysis-only-foreground-resume-and-new-goals.md) | 基于 [ADR 0046](adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0049](adr/0049-analysis-only-external-import-goals.md) 与 [ADR 0050](adr/0050-analysis-only-result-continuation.md) 的目标身份合同 |
+| CompositeGoal 阶段交接判定 | [ADR 0052](adr/0052-composite-goal-handoff-decision.md) | 为现有两类目标与已注册 outbox 定义只读阶段决议；不创建 Plan/Run、不审批、不引入通用 DAG |
 | 验证事实与已知限制 | [MVP 验证与已知限制](development/mvp-verification.md) | 计划文档中的进度描述不得与之冲突 |
 | 开发与阶段流程 | [阶段审查与阶段关门](development/release-process.md) | |
 | 文档规范 | [文档规范](development/documentation-standard.md) | |
@@ -151,6 +152,7 @@
 - [ADR 0049：已有外部指标的独立统计目标](adr/0049-analysis-only-external-import-goals.md)
 - [ADR 0050：analysis-only 外部来源目标的结果续接](adr/0050-analysis-only-result-continuation.md)
 - [ADR 0051：analysis-only 外部来源目标的前台续聊与新建](adr/0051-analysis-only-foreground-resume-and-new-goals.md)
+- [ADR 0052：CompositeGoal 阶段交接判定](adr/0052-composite-goal-handoff-decision.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

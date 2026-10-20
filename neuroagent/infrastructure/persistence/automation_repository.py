@@ -25,6 +25,8 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalContinuationMessage,
     CompositeGoalIdentity,
     CompositeGoalIntentMessage,
+    CompositeGoalPlanEvidence,
+    CompositeGoalRunEvidence,
     CompositeGoalSnapshot,
 )
 from neuroagent.application.automation.model_budget import (
@@ -65,6 +67,27 @@ from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
 
 class SqliteWorkTaskRepository(SqliteAdapterMixin):
     """Versioned WorkTask store sharing the application's SQLite transaction."""
+
+    @staticmethod
+    def _composite_goal_plan_input_revision(
+        *,
+        task: WorkTask,
+        plan_revision_id: str,
+        manifest_hash: str,
+        plan_payload: Any,
+    ) -> str | None:
+        matching_steps = tuple(
+            step for step in task.steps if step.authority_refs.plan_revision_id == plan_revision_id
+        )
+        if len(matching_steps) != 1:
+            return None
+        if matching_steps[0].kind == "preprocessing_run":
+            return manifest_hash
+        if matching_steps[0].kind == "statistical_run":
+            context = plan_payload.get("work_context") if isinstance(plan_payload, dict) else None
+            candidate = context.get("draft_hash") if isinstance(context, dict) else None
+            return candidate if isinstance(candidate, str) else None
+        return None
 
     def __init__(self, database: Database, *, unit_of_work: SqliteUnitOfWork) -> None:
         super().__init__(database, unit_of_work=unit_of_work)
@@ -945,6 +968,81 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         """Read the root, attempt identities and authoritative children consistently."""
 
         with self._snapshot_session() as session:
+
+            def read_plan(
+                plan_revision_id: str | None,
+                task: WorkTask | None,
+            ) -> CompositeGoalPlanEvidence | None:
+                if plan_revision_id is None or task is None:
+                    return None
+                plan_row = (
+                    session.execute(
+                        text(
+                            "SELECT plan_revision_id, project_id, state, manifest_hash, plan_hash, "
+                            "plan_json "
+                            "FROM plan_revisions WHERE plan_revision_id=:plan_id"
+                        ),
+                        {"plan_id": plan_revision_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if plan_row is None:
+                    return None
+                try:
+                    plan_payload = json.loads(plan_row["plan_json"])
+                except (TypeError, json.JSONDecodeError):
+                    plan_payload = None
+                plan_input_revision = self._composite_goal_plan_input_revision(
+                    task=task,
+                    plan_revision_id=plan_revision_id,
+                    manifest_hash=plan_row["manifest_hash"],
+                    plan_payload=plan_payload,
+                )
+                return CompositeGoalPlanEvidence(
+                    plan_revision_id=plan_row["plan_revision_id"],
+                    project_id=plan_row["project_id"],
+                    state=plan_row["state"],
+                    manifest_hash=plan_row["manifest_hash"],
+                    plan_hash=plan_row["plan_hash"],
+                    input_revision=plan_input_revision,
+                )
+
+            def read_run(task: WorkTask | None) -> CompositeGoalRunEvidence | None:
+                run_id = task.authority_refs.workflow_run_id if task is not None else None
+                if run_id is None:
+                    return None
+                run_row = (
+                    session.execute(
+                        text(
+                            "SELECT run_id, project_id, plan_revision_id, state, version, "
+                            "qc_status "
+                            "FROM workflow_runs WHERE run_id=:run_id"
+                        ),
+                        {"run_id": run_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if run_row is None:
+                    return None
+                latest_qc_review_state = session.execute(
+                    text(
+                        "SELECT state FROM qc_review_revisions WHERE run_id=:run_id "
+                        "ORDER BY revision DESC LIMIT 1"
+                    ),
+                    {"run_id": run_id},
+                ).scalar_one_or_none()
+                return CompositeGoalRunEvidence(
+                    run_id=run_row["run_id"],
+                    project_id=run_row["project_id"],
+                    plan_revision_id=run_row["plan_revision_id"],
+                    state=run_row["state"],
+                    version=run_row["version"],
+                    qc_status=run_row["qc_status"],
+                    latest_qc_review_state=latest_qc_review_state,
+                )
+
             row = (
                 session.execute(
                     text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
@@ -1009,21 +1107,11 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 if preprocessing_task is not None
                 else None
             )
-            if plan_revision_id is not None:
-                plan_row = (
-                    session.execute(
-                        text(
-                            "SELECT project_id, manifest_hash FROM plan_revisions "
-                            "WHERE plan_revision_id=:plan_id"
-                        ),
-                        {"plan_id": plan_revision_id},
-                    )
-                    .mappings()
-                    .first()
-                )
-                if plan_row is not None:
-                    preprocessing_plan_project_id = plan_row["project_id"]
-                    preprocessing_plan_manifest_hash = plan_row["manifest_hash"]
+            preprocessing_plan = read_plan(plan_revision_id, preprocessing_task)
+            if preprocessing_plan is not None:
+                preprocessing_plan_project_id = preprocessing_plan.project_id
+                preprocessing_plan_manifest_hash = preprocessing_plan.manifest_hash
+            preprocessing_run = read_run(preprocessing_task)
             outbox = None
             proposal_analysis_task = None
             if goal.analysis_proposal_outbox_intent_task_id is not None:
@@ -1066,6 +1154,13 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 if goal.analysis_work_task_id is not None
                 else None
             )
+            analysis_plan = read_plan(
+                analysis_task.authority_refs.plan_revision_id
+                if analysis_task is not None
+                else None,
+                analysis_task,
+            )
+            analysis_run = read_run(analysis_task)
             interpretation = None
             continuation_message = None
             if goal.result_interpretation_outbox_task_id is not None:
@@ -1129,6 +1224,10 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 preprocessing_plan_revision_id=plan_revision_id,
                 preprocessing_plan_project_id=preprocessing_plan_project_id,
                 preprocessing_plan_manifest_hash=preprocessing_plan_manifest_hash,
+                preprocessing_plan=preprocessing_plan,
+                preprocessing_run=preprocessing_run,
+                analysis_plan=analysis_plan,
+                analysis_run=analysis_run,
                 preprocessing_task=preprocessing_task,
                 analysis_proposal_outbox=outbox,
                 analysis_attempts=attempts,

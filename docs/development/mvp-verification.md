@@ -3,8 +3,14 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-18
+- 更新日期：2026-10-20
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-10-20 CompositeGoal 阶段交接判定
+
+`CompositeGoalSnapshot` 在同一只读 SQLite 快照内加入目标关联的最小 Plan、Run 与 QC 状态。纯 handoff decision 被 conversation progress 和两个既有 outbox consumer 共用：只有 Task wait reference、Plan/Run 项目、输入修订及绑定身份、活跃 Run 状态和 QC review 事实一致时，才细化为“等待审查”或“等待 Run”；错绑、未知或缺失证据不会据此放行。分析提案和统计结果解释 worker 只在当前 root 与 claim 精确匹配、各自 outbox 为 ready、action 对应目标一致时调用模型。阶段暂不可交接时不调用模型；proposal handoff 自动尝试达到五次后转为可人工重试的 `WAITING_USER`，不无限重试。来源复核、共享累计预算、worker 租约和 fencing 保持原有执行边界。
+
+后端 CompositeGoal、服务、两类 outbox consumer、结果续接及 Worker 相关定向测试共 122 项通过。Agent 页面测试 67 项通过，TypeScript 类型检查和 ESLint 通过；相关 Python 文件 Ruff 与 5 个源文件 Mypy 通过；91 份 Markdown 文档规范检查和 `git diff --check` 通过。测试含既有 Starlette/httpx deprecation warning。该验证未调用真实 Provider、MATLAB 或 DPABI，也没有运行全量测试。决策见 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md)；阶段范围和限制见[计划 0014](../plans/0014-general-agent-automation.md)。
 
 ## 2026-10-18 analysis-only 结果解释续接与进度投影
 

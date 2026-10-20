@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
 
 from neuroagent.agent.models import ModelProfile
-from neuroagent.application.automation.composite_goal import CompositeGoalIdentity
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalHandoffAction,
+    CompositeGoalIdentity,
+)
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     AuthorityReferences,
@@ -458,3 +462,64 @@ def test_statistical_task_completion_and_result_outbox_insert_share_rollback(
     persisted = service.automation.get_task(task.task_id)
     assert persisted.status is TaskStatus.WAITING_RUN
     assert persisted.version == task.version
+
+
+@pytest.mark.asyncio
+async def test_result_consumer_defers_when_shared_handoff_is_not_ready(
+    service, source_root, work_root, monkeypatch
+):
+    project, conversation, outbox = _ready_result_outbox(service, source_root, work_root)
+    service.repository.create_model_profile(
+        ModelProfile(
+            id="result-interpretation-handoff-model",
+            provider="openai-compatible",
+            base_url="https://example.org/v1",
+            model="test-model",
+            api_key_env="UNUSED_RESULT_INTERPRETATION_HANDOFF_API_KEY",
+            context_window_tokens=32768,
+        )
+    )
+    goal = CompositeGoalIdentity(
+        intent_task_id="result-handoff-intent",
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+        analysis_request_hash="d" * 64,
+        preprocessing_task_id="preprocessing-task",
+        analysis_work_task_id=outbox.task_id,
+        result_interpretation_outbox_task_id=outbox.task_id,
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "verify_result_interpretation_source",
+        lambda _outbox: _verified_source(project, conversation, outbox),
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "find_composite_goal_for_analysis_task",
+        lambda _task_id: goal,
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_model_budget",
+        lambda _intent_id: object(),
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_handoff",
+        lambda *_args: SimpleNamespace(
+            action=CompositeGoalHandoffAction.NONE,
+            target_id=None,
+        ),
+    )
+    model = AsyncMock()
+    monkeypatch.setattr(service.work_dialogue, "prepare_statistical_result_interpretation", model)
+
+    outcome = await service.conversations.consume_next_result_interpretation_outbox(
+        "result-interpreter", lease_seconds=30
+    )
+
+    assert outcome == "deferred"
+    model.assert_not_awaited()
+    latest = service.automation.get_result_interpretation_outbox(outbox.task_id)
+    assert latest.status is ResultInterpretationStatus.READY
+    assert latest.last_error_code == "composite_goal_handoff_not_ready"
