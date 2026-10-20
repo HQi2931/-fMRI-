@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- MATLAB Executor 现在会在 attempt 与输入 staging 创建前，校验受支持的 DPARSFA `ExecutionUnit` 与冻结 SkillPlan/JobSpec 完全一致；缺失或错配会阻止派发。空逻辑步骤的旧编译路径及单次 `DPARSFA_run`、整单元新 attempt 重试语义保持不变；没有新增 checkpoint 或分段执行。
+
 - CompositeGoal 进度与两个后台 outbox consumer 现在共享只读阶段交接判定。精确等待 Run/审查会显示独立阶段；worker 仅在同一快照确认当前 ready outbox 后调用模型，并保留现有来源重核、租约与 fencing。未创建 Plan/Run、批准方案或扩大科研自动化范围。
 
 - analysis-only 外部指标目标现可从 Analysis 角色槽恢复并继续同一 root；补充消息保留原请求 hash、精确来源 revision 与累计模型预算。前台显式“新建独立分析目标”以 HTTP 幂等键摘要区分同文同来源的新目标，重复键重放幂等，原始 key 不写入持久账本。选择与回复提交重核来源和角色槽，冻结 Plan/Run 继续只读恢复；显式预处理回合不会被已选统计目标截获。未增加数据库迁移，统计审查、Approval 和 Run 门禁不变。

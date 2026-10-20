@@ -35,6 +35,7 @@ from neuroagent.execution.ports import ExecutionResult, MatlabExecutionCatalog
 from neuroagent.execution.preprocessing import (
     PreprocessingCompilation,
     compile_preprocessing,
+    validate_preprocessing_execution_unit,
 )
 from neuroagent.execution.progress import MatlabProgressObserver
 from neuroagent.infrastructure.filesystem.head_motion_qc import parse_dpabi_head_motion_qc
@@ -868,7 +869,7 @@ class MatlabJobExecutor:
                 relative_path=f"staging/FunImg/{lineage.subject_id}/input{suffix}",
                 read_only=True,
             )
-        return compile_preprocessing(
+        compilation = compile_preprocessing(
             plan,
             manifest,
             self._repository.get_manifest_content(manifest_id),
@@ -878,6 +879,15 @@ class MatlabJobExecutor:
             mask_binding=mask_binding,
             input_binding=input_binding,
         )
+        validate_preprocessing_execution_unit(
+            plan,
+            compilation.spec,
+            compilation.execution_unit,
+            approval_record_id=approval.approval_id,
+            run_id=run.run_id,
+            job_id=str(payload["job_id"]),
+        )
+        return compilation
 
     def _t1_preparation_lineage(
         self,

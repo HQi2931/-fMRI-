@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from neuroagent.execution.preprocessing import PreprocessingCompilation
+from neuroagent.execution.preprocessing import (
+    PreprocessingCompilation,
+    validate_preprocessing_execution_unit,
+)
 from neuroagent.execution.units import (
     ArtifactPort,
     ExecutionGate,
@@ -207,3 +210,54 @@ def test_dpabi_compilation_groups_logical_steps_without_changing_cfg_projection(
         == without_logical_steps.spec.payload.metric_projection.cfg_hash
     )
     assert compiled.spec.expected_artifacts == without_logical_steps.spec.expected_artifacts
+    validate_preprocessing_execution_unit(
+        populated_plan,
+        compiled.spec,
+        compiled.execution_unit,
+        approval_record_id="approval-01",
+        run_id="run-01",
+        job_id="job-01",
+    )
+
+    assert compiled.execution_unit is not None
+    with pytest.raises(ValueError, match="missing its execution unit"):
+        validate_preprocessing_execution_unit(
+            populated_plan,
+            compiled.spec,
+            None,
+            approval_record_id="approval-01",
+            run_id="run-01",
+            job_id="job-01",
+        )
+
+    forged = compiled.execution_unit.model_copy(update={"unit_id": "forged-unit"})
+    with pytest.raises(ValueError, match="does not match"):
+        validate_preprocessing_execution_unit(
+            populated_plan,
+            compiled.spec,
+            forged,
+            approval_record_id="approval-01",
+            run_id="run-01",
+            job_id="job-01",
+        )
+
+    changed_spec = compiled.spec.model_copy(update={"input_manifest_hash": "f" * 64})
+    with pytest.raises(ValueError, match="authority does not match"):
+        validate_preprocessing_execution_unit(
+            populated_plan,
+            changed_spec,
+            compiled.execution_unit,
+            approval_record_id="approval-01",
+            run_id="run-01",
+            job_id="job-01",
+        )
+
+    # Empty-step legacy/compiler fixtures keep their existing unclassified path.
+    validate_preprocessing_execution_unit(
+        plan,
+        without_logical_steps.spec,
+        without_logical_steps.execution_unit,
+        approval_record_id="approval-01",
+        run_id="run-01",
+        job_id="job-01",
+    )

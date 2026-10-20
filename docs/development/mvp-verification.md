@@ -12,6 +12,12 @@
 
 后端 CompositeGoal、服务、两类 outbox consumer、结果续接及 Worker 相关定向测试共 122 项通过。Agent 页面测试 67 项通过，TypeScript 类型检查和 ESLint 通过；相关 Python 文件 Ruff 与 5 个源文件 Mypy 通过；91 份 Markdown 文档规范检查和 `git diff --check` 通过。测试含既有 Starlette/httpx deprecation warning。该验证未调用真实 Provider、MATLAB 或 DPABI，也没有运行全量测试。决策见 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md)；阶段范围和限制见[计划 0014](../plans/0014-general-agent-automation.md)。
 
+## 2026-10-20 DPARSFA ExecutionUnit 派发前绑定核验
+
+MATLAB Executor 现对含受支持 DPARSFA 逻辑步骤的编译结果，在创建 attempt 与 staging 前依据同一冻结 SkillPlan/JobSpec 重建 `ExecutionUnit` 并精确比较；同时核对 JobSpec 的 Plan、manifest、Approval、Run 和 Job 身份。单元缺失、身份漂移或任一输入/输出/gate/重试合同被篡改都会在 MATLAB 派发前失败关闭。有效合同仍只对应固定模板的一次 `DPARSFA_run`，整单元重试仍由 Worker 在新 attempt 目录重新开始。没有受支持逻辑步骤的旧编译夹具维持 `execution_unit=None` 兼容路径。
+
+`test_execution_units.py`、`test_preprocessing_compilation.py`、`test_matlab_execution.py` 与 `test_preprocessing_execution.py` 共 51 项通过，1 项真实 MATLAB smoke 条件跳过；另 `test_preprocessing_runtime_edges.py`、`test_execution_control.py` 与 `test_environment.py` 共 42 项通过。覆盖有效/缺失/篡改单元、空逻辑步骤兼容、固定模板单次调用、Worker 派发前拒绝、运行时边界及显式执行控制。相关 4 个 Python 文件 Ruff check/format 通过，2 个源文件 Mypy 通过；91 份 Markdown 文档规范检查和 `git diff --check` 通过。未调用真实 Provider、MATLAB 或 DPABI；仍不提供物理 checkpoint、调用内暂停、分段恢复或多 ExecutionUnit 调度。
+
 ## 2026-10-18 analysis-only 结果解释续接与进度投影
 
 已有外部来源的 analysis-only CompositeGoal 在真实统计 WorkTask 完成后绑定同一任务的结果解释 outbox；结果消费者继续使用目标累计模型预算。绑定和消费前后重核当前外部来源 revision、批准的统计 Plan、活动分析尝试、Run、唯一真实 StatisticalResult 及其登记 Artifact；解释消息写入时再次核对 intent、task、result ID/version。conversation-scoped 进度查询现在投影此类目标，并在 Work 页面显示“统计分析/结果解释”阶段。来源变化会阻断，缺少草稿或用户决定时保持等待；用户仍负责审查统计方案、批准并启动 Run。

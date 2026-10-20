@@ -495,6 +495,46 @@ def _dparsfa_execution_unit(plan: SkillPlan, spec: MatlabJobSpec) -> ExecutionUn
     )
 
 
+def validate_preprocessing_execution_unit(
+    plan: SkillPlan,
+    spec: MatlabJobSpec,
+    execution_unit: ExecutionUnit | None,
+    *,
+    approval_record_id: str,
+    run_id: str,
+    job_id: str,
+) -> None:
+    """Fail closed when a supported DPARSFA unit drifts from its frozen inputs.
+
+    Empty-step legacy/compiler plans intentionally have no execution unit and
+    retain their existing path. Runtime plans with registered DPARSFA logical
+    steps must carry the exact unit deterministically derived from their frozen
+    plan and compiled JobSpec before the executor creates an attempt or stages
+    files.
+    """
+
+    expected = _dparsfa_execution_unit(plan, spec)
+    if expected is None:
+        if execution_unit is not None:
+            raise ValueError("DPARSFA execution unit has no supported frozen logical steps")
+        return
+
+    if execution_unit is None:
+        raise ValueError("supported DPARSFA plan is missing its execution unit")
+    if spec.kind is not MatlabJobKind.DPARSFA_PREPROCESSING:
+        raise ValueError("DPARSFA execution unit requires a preprocessing JobSpec")
+    if (
+        spec.plan_hash != plan.plan_hash
+        or spec.input_manifest_hash != plan.input_manifest_hash
+        or spec.approval_record_id != approval_record_id
+        or spec.run_id != run_id
+        or spec.job_id != job_id
+    ):
+        raise ValueError("DPARSFA JobSpec authority does not match the frozen plan and run")
+    if execution_unit != expected:
+        raise ValueError("DPARSFA execution unit does not match the frozen plan and JobSpec")
+
+
 def _validate_frozen_inputs(
     plan: SkillPlan, manifest: FrozenManifest, content: dict[str, Any]
 ) -> None:

@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-18
+- 更新日期：2026-10-20
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)、[ADR 0051](../adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 
 ## 目标里程碑
@@ -334,7 +334,7 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 ### 阶段 D：能力目录、数据状态规划与物理执行单元
 
-当前状态：预处理编译结果现在附带一次 `DPARSFA_run` 的描述性 `ExecutionUnit` 映射，标明输入/输出、调用前后 gate 和重试边界；当前 Worker 仍以既有 JobSpec/产物合同执行，并未消费该对象，也没有调用内暂停或分段恢复能力。故此映射改善了可审查性，不代表已实现断点续跑。
+当前状态：预处理编译结果附带一次 `DPARSFA_run` 的 `ExecutionUnit` 映射；MATLAB Executor 在创建 attempt 和 staging 前，会对含已注册 DPARSFA 逻辑步骤的计划重建并逐项比对该单元与冻结 SkillPlan/JobSpec，缺失或身份、输入、输出、gate、重试语义不一致时失败关闭。空逻辑步骤的旧编译路径仍不分类，保持兼容。该切片只校验一次完整 `DPARSFA_run` 执行边界，尚未实现 Worker 消费多个执行单元、可物化 checkpoint、调用内暂停或分段恢复。
 
 目标是在已审核科学范围内，按输入的真实状态寻找不同合法路径，而不是继续增加 WorkDialogue 特例。
 
@@ -409,7 +409,7 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 - **持久目标状态**：增加 WorkTask/TaskStep 状态合同、SQLite 迁移与仓储、版本化应用服务，并在应用组合根与现有数据库/Unit of Work 共享事务。任务只保存权威对象引用。`reconcile_waiting_run(task_id)` 从事件仓储读取绑定 Run 的新事件，在验证整个事件批次身份后逐个原子记录去重回执/游标，再从现有 Run、QC、Artifact 端口重读权威记录并返回结构化 readiness；Run `version` 在三次尝试中仍不稳定时返回 `indeterminate`，不改变任务生命周期状态。Artifact 引用按 ID 解析并校验项目归属，可来自上游 Run；本切片不以当前 Run 的产物清单推断通用引用缺失，也未实现任务目标级完整性合同。重复消费不重复推进；成功运行仍只进入 `waiting_dependency`，后续步骤解析器、后台事件订阅、任务领取租约与恢复调度仍缺。
 - **预检反馈**：将现有参数/统计校验消息映射为带证据来源、科学语义影响、允许修复边界和指纹的结构化问题。Work 两角色提案路径的有限回路已通过专门集成测试；预处理共享剩余预算修订未批准草稿，分析科研缺项保持为用户决定。该切片没有接管编译、设计装配或授权入口。
 - **单组导入**：一个外部指标组可纳入并形成单样本分析候选；配对设计仍需恰好两个条件组，不凭目录数推断条件。该切片不覆盖完整统计方法、单样本数据学假设审查或广义多 session 设计。
-- **执行单元映射**：预处理编译产物标注单次 `DPARSFA_run` 的物理边界。该合同目前仍未驱动 executor，也没有建立真实物化 checkpoint；既有一次性 DPABI 调用、Worker retry 和产物检查保持原语义。
+- **执行单元映射**：本轮记录时，预处理编译产物仅标注单次 `DPARSFA_run` 的物理边界，尚未驱动 executor。后续阶段 D 切片现已在 attempt/staging 创建前校验受支持的执行单元；尚未建立真实物化 checkpoint，既有一次性 DPABI 调用、Worker retry 和产物检查语义保持不变。
 
 本轮定向验证：反馈/Work 集成、单组外部导入、WorkTask 持久化服务、执行单元映射及相关回归共 87 项通过；另单独执行科学测试集为 345 项通过、6 项跳过。文档规范检查、相关文件 Ruff 与 Mypy 通过。现有全量后端和前端测试尚未通过：后端出现旧 composition-root mock 接口等兼容失败；前端失败集中在 Node 测试使用相对 `/api/...` URL 的 fetch 解析等既有问题。定向通过不替代全量门禁。未执行真实 MATLAB 计算，不能据此声称 DPABI 数值路径通过。
 

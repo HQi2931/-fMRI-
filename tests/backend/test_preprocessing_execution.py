@@ -511,6 +511,36 @@ def test_preprocessing_source_drift_never_starts_matlab(tmp_path, monkeypatch):
         service.close()
 
 
+@pytest.mark.parametrize("tamper", ["missing", "mismatch"])
+def test_invalid_dparsfa_execution_unit_never_starts_matlab(tmp_path, monkeypatch, tamper):
+    service, run, _ = _prepare(tmp_path)
+    compile_job = matlab_executor.compile_preprocessing
+
+    def tampered_compile(*args, **kwargs):
+        compilation = compile_job(*args, **kwargs)
+        assert compilation.execution_unit is not None
+        if tamper == "missing":
+            return replace(compilation, execution_unit=None)
+        forged = compilation.execution_unit.model_copy(update={"unit_id": "forged-unit"})
+        return replace(compilation, execution_unit=forged)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("MATLAB must not start with an invalid execution-unit binding")
+
+    monkeypatch.setattr(matlab_executor, "compile_preprocessing", tampered_compile)
+    monkeypatch.setattr(ControlledMatlabExecutor, "execute", forbidden)
+    try:
+        assert build_worker(service).run_once()
+        assert service.runs.get_run(run.run_id).state.value == "failed_terminal"
+        assert not service.runs.list_artifacts(run.run_id)
+        attempts = (
+            Path(service.projects.get_project(run.project_id).work_root) / run.run_id / "attempts"
+        )
+        assert not attempts.exists()
+    finally:
+        service.close()
+
+
 @pytest.mark.matlab_smoke
 @pytest.mark.skipif(
     os.environ.get("RSFMRI_RUN_PREPROCESSING_SMOKE") != "1",

@@ -11,7 +11,7 @@
 当前实现包括：
 
 - `MatlabJobSpec`、路径绑定、冻结 SkillPlan/manifest 编译和必需产物合同。
-- `units.py` 定义逻辑 Skill 步骤到物理 `ExecutionUnit` 的边界合同；预处理编译结果会附带一次 `DPARSFA_run` 映射、输入/输出、调用前后 gate 和重试边界。Worker/executor 尚未消费该映射，因此它用于审查与架构演进，不代表调用内暂停或分段恢复已经实现。
+- `units.py` 定义逻辑 Skill 步骤到物理 `ExecutionUnit` 的边界合同；预处理编译结果会附带一次 `DPARSFA_run` 映射、输入/输出、调用前后 gate 和整单元重试边界。MATLAB Executor 在创建 attempt 和 staging 前，对受支持单元与冻结 SkillPlan/JobSpec 做确定性重建及精确比对；不匹配时不会派发。空逻辑步骤的旧路径保持兼容。此校验不增加调用次数、checkpoint 或暂停/分段恢复能力。
 - 执行器协议、`ExecutionResult` 与 MATLAB 编译器所需的窄产物目录端口由 `execution/ports.py` 所有；Worker 领取记录由 `workflow/models.py` 所有。Application 仅为旧调用点保留兼容重导出。编译器与预处理投影均不再导入 Application DTO；冻结 manifest 由 `execution/manifest.py` 的结构化只读协议描述，数据集分类枚举归领域层所有。
 - 固定 MATLAB 模板渲染与 dry-run，可审查输入清单、Cfg、脚本、运行目录和预期产物。
 - `MockMatlabExecutor`，用于 CI 和完整工作流测试。
