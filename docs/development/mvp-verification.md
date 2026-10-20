@@ -18,6 +18,14 @@ MATLAB Executor 现对含受支持 DPARSFA 逻辑步骤的编译结果，在创�
 
 `test_execution_units.py`、`test_preprocessing_compilation.py`、`test_matlab_execution.py` 与 `test_preprocessing_execution.py` 共 51 项通过，1 项真实 MATLAB smoke 条件跳过；另 `test_preprocessing_runtime_edges.py`、`test_execution_control.py` 与 `test_environment.py` 共 42 项通过。覆盖有效/缺失/篡改单元、空逻辑步骤兼容、固定模板单次调用、Worker 派发前拒绝、运行时边界及显式执行控制。相关 4 个 Python 文件 Ruff check/format 通过，2 个源文件 Mypy 通过；91 份 Markdown 文档规范检查和 `git diff --check` 通过。未调用真实 Provider、MATLAB 或 DPABI；仍不提供物理 checkpoint、调用内暂停、分段恢复或多 ExecutionUnit 调度。
 
+## 2026-10-20 ExecutionUnit capability 覆盖
+
+预处理编译器现在使用穷尽 capability 分类，而不是按名称前缀推断计算类型。`fmri.dpabi.preprocess`、`fmri.dpabi.alff_falff`、`fmri.dpabi.prepare_reho` 与 `fmri.dpabi.reho` 四种计算映射到同一 `DPARSFA_run` 单元；`fmri.artifact.verify_metadata` 随单元的调用后 metadata gate 覆盖。manifest 核验、输入 staging、只读数据检查、BIDS 转换候选计划、指标 QC 和统计前人工 QC 显式留在该物理调用外。三个统计执行能力使用不同合同；它们以及任何未分类能力混入预处理 Plan 均在生成 staging 计划前拒绝。有逻辑步骤的预处理 Plan 必须至少映射一个 DPARSFA 能力，空步骤低层旧夹具仍兼容。
+
+回归覆盖默认 ToolRegistry 和所有内置 Skill step capability 的分类并集/计算能力全覆盖，ALFF+ReHo 合并 unit 对四种计算及 metadata gate 的完整映射，外部 checks/gates 不被并入物理 unit；未知计算能力及统计执行能力均在 Worker 创建 attempt、staging 或启动 MATLAB 前失败。真实 MATLAB smoke 未运行；没有新增 checkpoint、调用内暂停、多单元派发或分段恢复。
+
+`test_execution_units.py`、预处理编译/Worker、MATLAB 模板、运行时边界、执行控制及环境回归共 99 项通过、1 项真实 MATLAB smoke 条件跳过。改动涉及的 3 个 Python 文件 Ruff check/format、`preprocessing.py` Mypy、91 份 Markdown 文档规范和 `git diff --check` 均通过。验证使用注册目录与合成/Mock Worker；没有调用真实 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-18 analysis-only 结果解释续接与进度投影
 
 已有外部来源的 analysis-only CompositeGoal 在真实统计 WorkTask 完成后绑定同一任务的结果解释 outbox；结果消费者继续使用目标累计模型预算。绑定和消费前后重核当前外部来源 revision、批准的统计 Plan、活动分析尝试、Run、唯一真实 StatisticalResult 及其登记 Artifact；解释消息写入时再次核对 intent、task、result ID/version。conversation-scoped 进度查询现在投影此类目标，并在 Work 页面显示“统计分析/结果解释”阶段。来源变化会阻断，缺少草稿或用户决定时保持等待；用户仍负责审查统计方案、批准并启动 Run。

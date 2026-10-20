@@ -37,6 +37,7 @@ from neuroagent.bootstrap import build_service, build_worker
 from neuroagent.execution.matlab import ControlledMatlabExecutor
 from neuroagent.execution.models import MatlabJobResult, MatlabJobStatus, VerifiedArtifact
 from neuroagent.infrastructure import matlab_executor
+from neuroagent.skills.models import ResolvedStep, ResolvedToolRef, stable_hash
 
 from .test_environment import _fake_stack
 from .test_science_agent_api import _mask_lineage, _minimal_preprocessing_payload, _skill_request
@@ -511,13 +512,37 @@ def test_preprocessing_source_drift_never_starts_matlab(tmp_path, monkeypatch):
         service.close()
 
 
-@pytest.mark.parametrize("tamper", ["missing", "mismatch"])
+@pytest.mark.parametrize("tamper", ["missing", "mismatch", "unmapped_compute", "other_executor"])
 def test_invalid_dparsfa_execution_unit_never_starts_matlab(tmp_path, monkeypatch, tamper):
     service, run, _ = _prepare(tmp_path)
     compile_job = matlab_executor.compile_preprocessing
 
-    def tampered_compile(*args, **kwargs):
-        compilation = compile_job(*args, **kwargs)
+    def tampered_compile(plan, *args, **kwargs):
+        if tamper in {"unmapped_compute", "other_executor"}:
+            capability = (
+                "fmri.dpabi.future_compute"
+                if tamper == "unmapped_compute"
+                else "fmri.dpabi.statistics.ttest"
+            )
+            injected = ResolvedStep(
+                step_id="unmapped_compute",
+                tool=ResolvedToolRef(
+                    capability=capability,
+                    tool_id="injected_compute",
+                    version="1.0.0",
+                    content_hash="d" * 64,
+                ),
+                needs=(),
+                consumes=(),
+                produces=(),
+                parameter_names=(),
+                qc_gate=False,
+            )
+            plan = plan.model_copy(update={"steps": (*plan.steps, injected)})
+            body = plan.model_dump(mode="json", exclude={"plan_id", "plan_hash", "warnings"})
+            plan = plan.model_copy(update={"plan_hash": stable_hash(body)})
+
+        compilation = compile_job(plan, *args, **kwargs)
         assert compilation.execution_unit is not None
         if tamper == "missing":
             return replace(compilation, execution_unit=None)

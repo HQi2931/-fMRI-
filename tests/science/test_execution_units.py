@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from neuroagent.domain.fmri.skillpacks.builtin import builtin_skill_specs
 from neuroagent.execution.preprocessing import (
+    DPARSFA_COMPUTE_CAPABILITIES,
+    DPARSFA_EXECUTION_UNIT_CAPABILITIES,
+    OTHER_EXECUTION_CAPABILITIES,
+    PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES,
     PreprocessingCompilation,
+    validate_preprocessing_capability_coverage,
     validate_preprocessing_execution_unit,
 )
 from neuroagent.execution.units import (
@@ -18,6 +24,8 @@ from neuroagent.execution.units import (
     VerificationStage,
 )
 from neuroagent.skills.models import ResolvedStep, ResolvedToolRef
+from neuroagent.tools import build_default_tool_registry
+from neuroagent.tools.models import ToolRisk
 from tests.science.test_preprocessing_compilation import (
     common_parameters,
     compile_fixture,
@@ -25,6 +33,7 @@ from tests.science.test_preprocessing_compilation import (
     manifest_for,
     rehash,
 )
+from tests.science.test_skill_compiler import request
 
 
 def unit_payload() -> dict[str, object]:
@@ -148,6 +157,26 @@ def test_claimed_verification_level_requires_evidence_reference() -> None:
         ExecutionUnit.model_validate(payload)
 
 
+def test_capability_catalog_covers_every_registered_builtin_and_compute_step() -> None:
+    registry = build_default_tool_registry()
+    registered = set(registry._by_capability)
+    classified = (
+        DPARSFA_EXECUTION_UNIT_CAPABILITIES
+        | PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES
+        | OTHER_EXECUTION_CAPABILITIES
+    )
+    builtin_steps = {step.capability for spec in builtin_skill_specs() for step in spec.steps}
+    compute = {
+        capability
+        for capability, definition in registry._by_capability.items()
+        if definition.risk is ToolRisk.COMPUTE
+    }
+
+    assert builtin_steps <= registered
+    assert registered == classified
+    assert compute == DPARSFA_COMPUTE_CAPABILITIES | OTHER_EXECUTION_CAPABILITIES
+
+
 def test_dpabi_compilation_groups_logical_steps_without_changing_cfg_projection() -> None:
     manifest, manifest_content = manifest_for()
     plan = frozen_plan(manifest, parameters=common_parameters())
@@ -261,3 +290,88 @@ def test_dpabi_compilation_groups_logical_steps_without_changing_cfg_projection(
         run_id="run-01",
         job_id="job-01",
     )
+
+
+def test_combined_alff_reho_unit_covers_compute_and_leaves_gates_outside(
+    base_lineage,
+) -> None:
+    manifest, manifest_content = manifest_for()
+    requested = request(base_lineage)
+    plan = frozen_plan(
+        manifest,
+        parameters=common_parameters(),
+        alff=requested.alff_falff,
+        reho=requested.reho,
+    )
+    unit_capabilities = DPARSFA_EXECUTION_UNIT_CAPABILITIES
+    outside_capabilities = PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES
+    all_capabilities = sorted(unit_capabilities | outside_capabilities)
+    steps = tuple(
+        ResolvedStep(
+            step_id=f"logical_step_{index}",
+            tool=ResolvedToolRef(
+                capability=capability,
+                tool_id=f"test_tool_{index}",
+                version="1.0.0",
+                content_hash=str(index).zfill(64),
+            ),
+            needs=(),
+            consumes=(),
+            produces=(),
+            parameter_names=(),
+            qc_gate=capability.startswith("fmri.qc."),
+        )
+        for index, capability in enumerate(all_capabilities)
+    )
+    plan = rehash(plan.model_copy(update={"steps": steps}))
+    compiled = compile_fixture(plan, manifest, manifest_content)
+
+    assert compiled.execution_unit is not None
+    assert {step.tool.capability for step in plan.steps} & DPARSFA_COMPUTE_CAPABILITIES == (
+        DPARSFA_COMPUTE_CAPABILITIES
+    )
+    expected_unit_step_ids = {
+        step.step_id for step in plan.steps if step.tool.capability in unit_capabilities
+    }
+    outside_step_ids = {
+        step.step_id for step in plan.steps if step.tool.capability in outside_capabilities
+    }
+    assert set(compiled.execution_unit.logical_step_ids) == expected_unit_step_ids
+    assert not set(compiled.execution_unit.logical_step_ids) & outside_step_ids
+    validate_preprocessing_capability_coverage(plan)
+
+
+@pytest.mark.parametrize(
+    ("capability", "message"),
+    [
+        (
+            "fmri.dpabi.future_compute",
+            "unregistered or unmapped capabilities",
+        ),
+        (
+            "fmri.dpabi.statistics.ttest",
+            "requiring a different execution unit",
+        ),
+    ],
+)
+def test_preprocessing_capability_coverage_fails_closed(capability: str, message: str) -> None:
+    manifest, _ = manifest_for()
+    plan = frozen_plan(manifest, parameters=common_parameters())
+    step = ResolvedStep(
+        step_id="unmapped_compute",
+        tool=ResolvedToolRef(
+            capability=capability,
+            tool_id="unmapped_compute",
+            version="1.0.0",
+            content_hash="c" * 64,
+        ),
+        needs=(),
+        consumes=(),
+        produces=(),
+        parameter_names=(),
+        qc_gate=False,
+    )
+    plan = rehash(plan.model_copy(update={"steps": (step,)}))
+
+    with pytest.raises(ValueError, match=message):
+        validate_preprocessing_capability_coverage(plan)

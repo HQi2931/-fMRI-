@@ -21,3 +21,9 @@ Skill 的偏序图表达科研步骤和产物依赖，但 DPABI 包装器可能�
 ## 后果
 
 规划界面可以展示科研逻辑步骤，同时准确说明它们映射到多少个真实 DPABI 调用和检查边界。未来分段执行、批量 checkpoint 或多 session 作业需要各自的执行器证据与故障验证；仅增加 Skill DAG 节点不能使其可执行。
+
+## 实施补充（2026-10-20）
+
+预处理编译器对冻结 `SkillPlan.steps` 使用穷尽的 capability 边界分类：`fmri.dpabi.preprocess`、`fmri.dpabi.alff_falff`、`fmri.dpabi.prepare_reho` 和 `fmri.dpabi.reho` 是由一次 `DPARSFA_run` 执行的计算步骤；`fmri.artifact.verify_metadata` 是该物理单元调用后的验证 gate，随同单元声明，不视为忽略步骤。manifest 核验、输入 staging、只读数据检查、BIDS 转换候选计划、指标 QC 与统计前人工 QC 明确位于物理调用之外。当前统计计算能力属于不同执行合同，不可混入预处理作业。
+
+派发前的预处理能力覆盖校验拒绝未分类 capability，以及需要其他执行单元的已注册能力；增加任何新能力时，必须先明确其物理映射或外部 gate/编排边界。空 `SkillPlan.steps` 仅为旧低层编译夹具保留兼容路径；有逻辑步骤的计划必须至少含一个映射到 DPARSFA 单元的能力。该校验不增加调用、checkpoint 或可暂停点。

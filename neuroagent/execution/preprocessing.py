@@ -87,6 +87,7 @@ def compile_preprocessing(
     role assignments, never by recursively guessing a functional series.
     """
     _validate_frozen_inputs(plan, manifest, manifest_content)
+    validate_preprocessing_capability_coverage(plan)
     names = [name for name, _ in plan.resolved_parameters]
     if len(names) != len(set(names)):
         raise ValueError("frozen scientific parameters contain duplicate names")
@@ -386,15 +387,76 @@ def compile_preprocessing(
     )
 
 
-_DPARSFA_LOGICAL_CAPABILITIES = frozenset(
+DPARSFA_COMPUTE_CAPABILITIES = frozenset(
     {
         "fmri.dpabi.preprocess",
-        "fmri.artifact.verify_metadata",
         "fmri.dpabi.alff_falff",
         "fmri.dpabi.prepare_reho",
         "fmri.dpabi.reho",
     }
 )
+
+DPARSFA_EXECUTION_UNIT_CAPABILITIES = frozenset(
+    {
+        *DPARSFA_COMPUTE_CAPABILITIES,
+        "fmri.artifact.verify_metadata",
+    }
+)
+
+PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES = frozenset(
+    {
+        "fmri.dataset.inspect",
+        "fmri.manifest.verify",
+        "fmri.dpabi.plan_bids_conversion",
+        "fmri.dpabi.stage_input",
+        "fmri.qc.metrics",
+        "fmri.qc.pre_statistics",
+    }
+)
+
+OTHER_EXECUTION_CAPABILITIES = frozenset(
+    {
+        "fmri.dpabi.statistics.ttest",
+        "fmri.dpabi.statistics.fdr",
+        "fmri.dpabi.statistics.grf",
+    }
+)
+
+
+def validate_preprocessing_capability_coverage(plan: SkillPlan) -> None:
+    """Require every frozen logical capability to have an explicit boundary.
+
+    The supported computation and metadata-verification steps map to one
+    ``DPARSFA_run`` unit. Read-only checks, staging and QC gates are explicitly
+    outside that call. Other registered executor capabilities and unknown
+    capabilities fail closed until a reviewed execution mapping is added.
+    Empty-step legacy/compiler plans retain their compatibility path.
+    """
+
+    if not plan.steps:
+        return
+
+    capabilities = {step.tool.capability for step in plan.steps}
+    classified = (
+        DPARSFA_EXECUTION_UNIT_CAPABILITIES
+        | PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES
+        | OTHER_EXECUTION_CAPABILITIES
+    )
+    unknown = capabilities - classified
+    if unknown:
+        raise ValueError(
+            f"preprocessing plan contains unregistered or unmapped capabilities: {sorted(unknown)}"
+        )
+
+    other_executor = capabilities & OTHER_EXECUTION_CAPABILITIES
+    if other_executor:
+        raise ValueError(
+            "preprocessing plan contains capabilities requiring a different execution unit: "
+            f"{sorted(other_executor)}"
+        )
+
+    if not capabilities & DPARSFA_EXECUTION_UNIT_CAPABILITIES:
+        raise ValueError("preprocessing plan has no capability mapped to a DPARSFA execution unit")
 
 
 def _dparsfa_execution_unit(plan: SkillPlan, spec: MatlabJobSpec) -> ExecutionUnit | None:
@@ -405,7 +467,9 @@ def _dparsfa_execution_unit(plan: SkillPlan, spec: MatlabJobSpec) -> ExecutionUn
     the logical step identities needed to construct the unit.
     """
     logical_step_ids = tuple(
-        step.step_id for step in plan.steps if step.tool.capability in _DPARSFA_LOGICAL_CAPABILITIES
+        step.step_id
+        for step in plan.steps
+        if step.tool.capability in DPARSFA_EXECUTION_UNIT_CAPABILITIES
     )
     if not logical_step_ids:
         return None
