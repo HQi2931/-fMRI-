@@ -29,6 +29,11 @@ from neuroagent.domain.fmri.dpabi_stages import (
     stage_rule,
 )
 from neuroagent.domain.fmri.preprocessing import NormalizationMode
+from neuroagent.domain.fmri.preprocessing_scope import (
+    PreprocessingSubjectScopeError,
+    PreprocessingSubjectScopeIssue,
+    validate_preprocessing_subject_scope,
+)
 from neuroagent.observability.work_timings import measure_work_stage
 from neuroagent.skills.compiler import SkillCompileError
 from neuroagent.skills.models import (
@@ -181,6 +186,31 @@ class SkillPlanMixin(BaseServiceMixin):
                     "禁止按文件排序隐式选取。",
                     ambiguous=ambiguous_functional,
                 )
+
+        if intent.request_preprocessing:
+            try:
+                validate_preprocessing_subject_scope(manifest.subjects)
+            except PreprocessingSubjectScopeError as exc:
+                remediation = (
+                    "请将每个 session 分别整理为独立输入。当前预处理计划不支持跨 session 合并。"
+                    if exc.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
+                    else "请核对冻结 manifest 中的受试者身份及其安全路径名称。"
+                )
+                code = (
+                    "manifest_preprocessing_session_unsupported"
+                    if exc.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
+                    else "manifest_preprocessing_subject_scope_invalid"
+                )
+                raise InputValidationError(
+                    code,
+                    f"{exc} {remediation}",
+                    path=_manifest_issue_path(code),
+                    remediation=remediation,
+                    session_ids=sorted(
+                        {entry.session_id for entry in manifest.subjects},
+                        key=lambda session_id: session_id or "",
+                    ),
+                ) from exc
 
         preprocessing = intent.preprocessing
         if preprocessing is None or (
@@ -495,7 +525,12 @@ class SkillPlanMixin(BaseServiceMixin):
                         code=exc.code.upper(),
                         severity=IssueSeverity.BLOCKING,
                         message=exc.message,
-                        path=_manifest_issue_path(exc.code),
+                        path=str(exc.details.get("path", _manifest_issue_path(exc.code))),
+                        remediation=(
+                            str(exc.details["remediation"])
+                            if "remediation" in exc.details
+                            else None
+                        ),
                     )
                 )
                 return _PreparedSkillPlan(
@@ -519,7 +554,9 @@ class SkillPlanMixin(BaseServiceMixin):
         warning_issues = tuple(
             ValidationIssue(
                 code=issue.code,
-                message=issue.message,
+                message=(
+                    f"{issue.message} {issue.remediation}" if issue.remediation else issue.message
+                ),
                 severity=issue.severity.value,
                 path=issue.path,
             )
@@ -614,4 +651,6 @@ def _manifest_issue_path(code: str) -> str:
         "manifest_anatomical_input_missing": "manifest.anatomical_files",
         "manifest_anatomical_input_ambiguous": "manifest.anatomical_files",
         "manifest_dpabi_stage_step_conflict": "manifest.completed_steps",
+        "manifest_preprocessing_session_unsupported": "manifest.subjects.session_id",
+        "manifest_preprocessing_subject_scope_invalid": "manifest.subjects",
     }.get(code, "manifest")

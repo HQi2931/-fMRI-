@@ -26,6 +26,12 @@ MATLAB Executor 现对含受支持 DPARSFA 逻辑步骤的编译结果，在创�
 
 `test_execution_units.py`、预处理编译/Worker、MATLAB 模板、运行时边界、执行控制及环境回归共 99 项通过、1 项真实 MATLAB smoke 条件跳过。改动涉及的 3 个 Python 文件 Ruff check/format、`preprocessing.py` Mypy、91 份 Markdown 文档规范和 `git diff --check` 均通过。验证使用注册目录与合成/Mock Worker；没有调用真实 Provider、MATLAB 或 DPABI。
 
+## 2026-10-20 Work 预处理 subject/session 范围预检
+
+Work Skill dry-run 与正式 resolve 现在共用执行编译器实际使用的 subject-scope helper。仅当 `request_preprocessing=true`、将进入 DPARSFA preprocessing path 时，多个 session 才作为当前执行器不支持的能力在 Plan 持久化前阻断；Work dry-run 返回 `manifest.subjects.session_id` 和逐 session 整理建议。metric-only intent 跳过此 preprocessing 限制，同一 session 中多个 subject 仍可编译。该检查不写 Plan、Approval、Run 或工作区文件，也不放宽 Worker/compiler 的既有边界。
+
+覆盖双 session BIDS dry-run `ready=false`、无写入及正式 resolve 在环境探测/Plan 写入前失败；另验证 metric-only bypass、同 session 多 subject 编译、执行端仍以同一错误类型拒绝多 session，以及 Work feedback 将此问题映射为 `BLOCKED_CAPABILITY`。相关 dry-run、编译、Work feedback 与 Work dialogue 回归共 50 项通过（1 项既有 Starlette/httpx deprecation warning）。Ruff check/format、4 个源文件 Mypy、91 份 Markdown 文档规范检查和 `git diff --check` 通过。未运行真实 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-18 analysis-only 结果解释续接与进度投影
 
 已有外部来源的 analysis-only CompositeGoal 在真实统计 WorkTask 完成后绑定同一任务的结果解释 outbox；结果消费者继续使用目标累计模型预算。绑定和消费前后重核当前外部来源 revision、批准的统计 Plan、活动分析尝试、Run、唯一真实 StatisticalResult 及其登记 Artifact；解释消息写入时再次核对 intent、task、result ID/version。conversation-scoped 进度查询现在投影此类目标，并在 Work 页面显示“统计分析/结果解释”阶段。来源变化会阻断，缺少草稿或用户决定时保持等待；用户仍负责审查统计方案、批准并启动 Run。

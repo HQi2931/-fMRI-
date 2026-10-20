@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Work Skill dry-run 与正式 resolve 现在在实际 DPARSFA preprocessing 输入上复用执行器的 subject/session scope 校验：多 session manifest 会在方案持久化前以明确能力阻断返回；metric-only 不触发该限制，同 session 多 subject 仍可通过。未改变 Worker/compiler 执行边界或多 session 支持范围。
+
 - MATLAB Executor 现在会在 attempt 与输入 staging 创建前，校验受支持的 DPARSFA `ExecutionUnit` 与冻结 SkillPlan/JobSpec 完全一致；缺失或错配会阻止派发。空逻辑步骤的旧编译路径及单次 `DPARSFA_run`、整单元新 attempt 重试语义保持不变；没有新增 checkpoint 或分段执行。
 
 - CompositeGoal 进度与两个后台 outbox consumer 现在共享只读阶段交接判定。精确等待 Run/审查会显示独立阶段；worker 仅在同一快照确认当前 ready outbox 后调用模型，并保留现有来源重核、租约与 fencing。未创建 Plan/Run、批准方案或扩大科研自动化范围。

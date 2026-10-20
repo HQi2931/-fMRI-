@@ -24,6 +24,7 @@ from neuroagent.domain.fmri.preprocessing import (
 from neuroagent.domain.fmri.preprocessing_outputs import (
     enumerate_dpabi_preprocessing_outputs,
 )
+from neuroagent.domain.fmri.preprocessing_scope import validate_preprocessing_subject_scope
 from neuroagent.execution.manifest import FrozenManifest, ManifestSubject
 from neuroagent.execution.models import (
     ArtifactPathBinding,
@@ -636,15 +637,7 @@ def _validate_frozen_inputs(
 
 
 def _validate_subjects(subjects: tuple[ManifestSubject, ...]) -> None:
-    ids = [subject.subject_id for subject in subjects]
-    if not ids or len(ids) != len(set(ids)):
-        raise ValueError("preprocessing requires unique subjects in a single session")
-    if len({subject.session_id for subject in subjects}) != 1:
-        raise ValueError("multiple sessions are not supported by this preprocessing compiler")
-    if len({subject.subject_id.casefold() for subject in subjects}) != len(ids):
-        raise ValueError("subject IDs collide on a case-insensitive filesystem")
-    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", item) for item in ids):
-        raise ValueError("subject IDs contain unsafe path characters")
+    validate_preprocessing_subject_scope(subjects)
 
 
 def _nifti_name(relative: str) -> str:

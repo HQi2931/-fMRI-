@@ -180,6 +180,28 @@ def test_skill_dicom_inventory_and_package_governance_are_capability_blocks() ->
     ]
 
 
+def test_preprocessing_session_scope_is_a_capability_boundary() -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="MANIFEST_PREPROCESSING_SESSION_UNSUPPORTED",
+                message="当前预处理不支持跨 session 合并。请分别整理输入。",
+                severity="blocking",
+                path="manifest.subjects.session_id",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "unsupported_capability"
+    assert issue.target == "manifest.subjects.session_id"
+    assert issue.message.endswith("请分别整理输入。")
+    assert issue.repairs[0].action.value == "none"
+    assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
 def test_unknown_skill_blocker_fails_closed_without_claiming_scientific_choice() -> None:
     feedback = planning_feedback_for_skill_issues(
         (

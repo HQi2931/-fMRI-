@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import inspect, text
 
-from neuroagent.application.contracts.plans import SkillPlanResolveRequest
+from neuroagent.application.contracts.plans import SkillPlanIntent, SkillPlanResolveRequest
 from neuroagent.application.contracts.projects import DatasetCreate, ManifestScanRequest
-from neuroagent.application.errors import ConflictError
+from neuroagent.application.errors import ConflictError, InputValidationError
 from neuroagent.application.services import ApplicationServices
 from neuroagent.application.work_draft import (
     WorkDraft,
@@ -28,9 +28,15 @@ def _complete_preprocessing_draft() -> WorkDraft:
     )
 
 
-def _scanned_dataset(service: ApplicationServices, source_root: Path, work_root: Path):
+def _scanned_dataset(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    *,
+    dataset_path: Path | None = None,
+):
     project = make_project(service, source_root, work_root, key="dry-run-project")
-    bids = make_bids_dataset(source_root)
+    bids = dataset_path or make_bids_dataset(source_root)
     dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
@@ -50,6 +56,25 @@ def _scanned_dataset(service: ApplicationServices, source_root: Path, work_root:
         service.projects.get_dataset(dataset.dataset_id),
         manifest,
     )
+
+
+def _two_session_bids_dataset(root: Path) -> Path:
+    dataset = root / "bids-two-sessions"
+    dataset.mkdir()
+    (dataset / "dataset_description.json").write_text(
+        '{"Name":"synthetic","BIDSVersion":"1.9.0"}', encoding="utf-8"
+    )
+    for session in ("ses-01", "ses-02"):
+        subject = "sub-01"
+        functional = dataset / subject / session / "func"
+        anatomical = dataset / subject / "anat"
+        functional.mkdir(parents=True)
+        anatomical.mkdir(parents=True, exist_ok=True)
+        (functional / f"{subject}_{session}_task-rest_bold.nii.gz").write_bytes(
+            f"synthetic-{subject}-{session}-bold".encode()
+        )
+        (anatomical / f"{subject}_T1w.nii.gz").write_bytes(f"synthetic-{subject}-t1".encode())
+    return dataset
 
 
 def _request(project, dataset, manifest, draft: WorkDraft) -> SkillPlanResolveRequest:
@@ -83,6 +108,8 @@ def test_work_draft_dry_run_uses_resolver_validator_and_compiler_without_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, dataset, manifest = _scanned_dataset(service, source_root, work_root)
+    assert len(manifest.subjects) == 2
+    assert {subject.session_id for subject in manifest.subjects} == {None}
     draft = _complete_preprocessing_draft()
     request = _request(project, dataset, manifest, draft)
     before = _table_counts(service)
@@ -131,6 +158,77 @@ def test_work_draft_dry_run_uses_resolver_validator_and_compiler_without_writes(
     assert _table_counts(service) == before
     assert sorted(path.relative_to(work_root) for path in work_root.rglob("*")) == work_files_before
     assert draft_hash(draft)  # The submitted draft remains an unapproved proposal.
+
+
+def test_two_session_bids_preflight_blocks_before_plan_persistence_and_without_writes(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, dataset, manifest = _scanned_dataset(
+        service,
+        source_root,
+        work_root,
+        dataset_path=_two_session_bids_dataset(source_root),
+    )
+    assert {subject.session_id for subject in manifest.subjects} == {"ses-01", "ses-02"}
+    request = _request(project, dataset, manifest, _complete_preprocessing_draft())
+    before = _table_counts(service)
+    work_files_before = sorted(path.relative_to(work_root) for path in work_root.rglob("*"))
+
+    result = service.skills.dry_run_skill_plan(request)
+
+    assert result.ready is False
+    assert result.plan_hash is None
+    issue = next(
+        item for item in result.issues if item.code == "MANIFEST_PREPROCESSING_SESSION_UNSUPPORTED"
+    )
+    assert issue.severity == "blocking"
+    assert issue.path == "manifest.subjects.session_id"
+    assert "请将每个 session 分别整理为独立输入" in issue.message
+    assert _table_counts(service) == before
+    assert sorted(path.relative_to(work_root) for path in work_root.rglob("*")) == work_files_before
+
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: pytest.fail(
+            "unsupported session scope must be rejected before environment probing"
+        ),
+    )
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(request, "two-session-preprocessing")
+
+    assert raised.value.code == "manifest_preprocessing_session_unsupported"
+    assert raised.value.details["path"] == "manifest.subjects.session_id"
+    assert "remediation" in raised.value.details
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+def test_metric_only_intent_does_not_apply_preprocessing_session_scope(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+) -> None:
+    project, dataset, manifest = _scanned_dataset(
+        service,
+        source_root,
+        work_root,
+        dataset_path=_two_session_bids_dataset(source_root),
+    )
+    intent = SkillPlanIntent(
+        project_id=project.project_id,
+        dataset_ref=dataset.dataset_id,
+        input_manifest_hash=manifest.content_hash,
+        requested_metrics=(),
+        primary_outputs=(),
+        input_artifact_id="checkpoint-artifact",
+        request_preprocessing=False,
+        preprocessing=None,
+    )
+
+    service.skills._validate_manifest_for_skill_intent(intent, manifest)
 
 
 def test_dry_run_rejects_manifest_change_during_compile_without_writes(

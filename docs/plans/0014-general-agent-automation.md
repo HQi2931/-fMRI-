@@ -334,7 +334,7 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 ### 阶段 D：能力目录、数据状态规划与物理执行单元
 
-当前状态：预处理编译结果附带一次 `DPARSFA_run` 的 `ExecutionUnit` 映射；MATLAB Executor 在创建 attempt 和 staging 前，会对计划执行穷尽 capability 覆盖校验，并对受支持单元重建、逐项比对其与冻结 SkillPlan/JobSpec。四种 DPARSFA 计算能力映射到一次调用，metadata verification 作为该单元调用后 gate；只读检查、manifest 核验、输入 staging 和 QC gate 明确留在单元外；统计等不同执行合同及任何未分类能力都会失败关闭。有逻辑步骤的计划必须包含至少一个 DPARSFA 单元能力；空逻辑步骤旧编译路径仍保持兼容。该切片只校验一次完整 `DPARSFA_run` 执行边界，尚未实现 Worker 消费多个执行单元、可物化 checkpoint、调用内暂停或分段恢复。
+当前状态：预处理编译结果附带一次 `DPARSFA_run` 的 `ExecutionUnit` 映射；MATLAB Executor 在创建 attempt 和 staging 前，会对计划执行穷尽 capability 覆盖校验，并对受支持单元重建、逐项比对其与冻结 SkillPlan/JobSpec。四种 DPARSFA 计算能力映射到一次调用，metadata verification 作为该单元调用后 gate；只读检查、manifest 核验、输入 staging 和 QC gate 明确留在单元外；统计等不同执行合同及任何未分类能力都会失败关闭。有逻辑步骤的计划必须包含至少一个 DPARSFA 单元能力；空逻辑步骤旧编译路径仍保持兼容。Work 预检和正式 Skill resolve 现复用执行端相同的 subject-scope 校验：仅实际请求 DPARSFA preprocessing 时，在编译/持久化前拒绝跨 session manifest；metric-only 路径不受此 gate 影响，同 session 多 subject 仍允许。该切片只校验一次完整 `DPARSFA_run` 执行边界和当前输入范围，尚未实现 Worker 消费多个执行单元、可物化 checkpoint、调用内暂停或分段恢复。
 
 目标是在已审核科学范围内，按输入的真实状态寻找不同合法路径，而不是继续增加 WorkDialogue 特例。
 

@@ -357,6 +357,119 @@ def test_first_unpersisted_preprocessing_draft_runs_skill_dry_run(
     assert service.repository.list_runs() == []
 
 
+def test_two_session_preprocessing_dry_run_blocks_with_capability_feedback(
+    service: ApplicationServices,
+    source_root,
+    work_root,
+) -> None:
+    from tests.backend.conftest import make_project
+
+    project = make_project(service, source_root, work_root, key="two-session-dry-run-project")
+    bids = source_root / "bids-two-sessions-work"
+    (bids / "dataset_description.json").parent.mkdir(parents=True)
+    (bids / "dataset_description.json").write_text(
+        '{"Name":"synthetic","BIDSVersion":"1.9.0"}', encoding="utf-8"
+    )
+    for session in ("ses-01", "ses-02"):
+        subject = "sub-01"
+        functional = bids / subject / session / "func"
+        anatomical = bids / subject / "anat"
+        functional.mkdir(parents=True)
+        anatomical.mkdir(parents=True, exist_ok=True)
+        (functional / f"{subject}_{session}_task-rest_bold.nii.gz").write_bytes(b"synthetic-bold")
+        (anatomical / f"{subject}_T1w.nii.gz").write_bytes(b"synthetic-t1")
+    dataset = service.projects.create_dataset(
+        project.project_id,
+        DatasetCreate(
+            name="Two-session BIDS",
+            source_path=str(bids),
+            expected_project_version=project.version,
+        ),
+        "two-session-dry-run-dataset",
+    )
+    manifest = service.projects.inspect_dataset(
+        dataset.dataset_id,
+        ManifestScanRequest(expected_dataset_version=dataset.version),
+        "two-session-dry-run-manifest",
+    )
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work", project_id=project.project_id),
+        "two-session-dry-run-chat",
+    )
+    binding = ConversationMessageView(
+        message_id="two-session-dry-run-binding",
+        conversation_id=conversation.conversation_id,
+        sequence=1,
+        role=ConversationRole.ASSISTANT,
+        content="已绑定预处理工作区输入。",
+        payload={
+            "project": service.projects.get_project(project.project_id).model_dump(mode="json"),
+            "dataset": service.projects.get_dataset(dataset.dataset_id).model_dump(mode="json"),
+            "manifest": manifest.model_dump(mode="json"),
+        },
+        created_at=datetime.now(UTC),
+    )
+    conversation = conversation.model_copy(update={"messages": [binding]})
+    proposed = {
+        "answer": "已整理预处理方案草稿。",
+        "action": "prepare_preprocessing_plan",
+        "draft_patch": _complete_preprocessing_draft().model_dump(
+            mode="json", exclude={"confirmed_hash"}
+        ),
+    }
+    service.work_dialogue._interpret = AsyncMock(
+        return_value=(
+            json.dumps(proposed),
+            {"request_budget": {"model_steps": 1, "total_tokens": 300}},
+            None,
+        )
+    )
+    with service.database.engine.connect() as connection:
+        plans_before = connection.execute(text("SELECT COUNT(*) FROM plan_revisions")).scalar_one()
+
+    result = asyncio.run(
+        service.work_dialogue.respond(
+            conversation,
+            ConversationTurnCreate(
+                content="准备预处理方案",
+                agent_role=WorkAgentRole.PREPROCESSING,
+            ),
+            ContextPacket(
+                question="准备预处理方案",
+                metadata={"token_budget": 12_000, "selected": {}},
+            ),
+            workspace_path=None,
+            project_id=project.project_id,
+            preferred_profile_id=None,
+            idempotency_key="two-session-dry-run-turn",
+            has_profiles=True,
+        )
+    )
+
+    assert service.work_dialogue._interpret.await_count == 1
+    assert result.commit is None
+    assert result.payload["skill_dry_run"]["ready"] is False
+    assert result.payload["skill_dry_run"]["environment_probed"] is False
+    issue = next(
+        item
+        for item in result.payload["skill_dry_run"]["issues"]
+        if item["code"] == "MANIFEST_PREPROCESSING_SESSION_UNSUPPORTED"
+    )
+    assert issue["path"] == "manifest.subjects.session_id"
+    feedback = next(
+        item
+        for item in result.payload["planning_preflight"]
+        if item["kind"] == "unsupported_capability"
+    )
+    assert feedback["disposition"] == "blocked_capability"
+    assert feedback["target"] == "manifest.subjects.session_id"
+    assert "请将每个 session 分别整理为独立输入" in feedback["message"]
+    with service.database.engine.connect() as connection:
+        plans_after = connection.execute(text("SELECT COUNT(*) FROM plan_revisions")).scalar_one()
+    assert plans_after == plans_before
+    assert service.repository.list_runs() == []
+
+
 def test_skill_scientific_blocker_cannot_be_patched_by_feedback_model(
     service: ApplicationServices,
     source_root,

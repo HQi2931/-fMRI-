@@ -24,6 +24,10 @@ from neuroagent.domain.fmri.dataset import (
 from neuroagent.domain.fmri.preprocessing_outputs import (
     enumerate_dpabi_preprocessing_outputs,
 )
+from neuroagent.domain.fmri.preprocessing_scope import (
+    PreprocessingSubjectScopeError,
+    PreprocessingSubjectScopeIssue,
+)
 from neuroagent.execution.models import ArtifactPathBinding, PreprocessingJobPayload
 from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
 from neuroagent.skills.models import SkillPlan, stable_hash
@@ -451,6 +455,55 @@ def test_ambiguous_or_unsafe_subject_inputs_are_rejected(
     plan = frozen_plan(manifest, parameters=common_parameters())
     with pytest.raises(ValueError):
         compile_fixture(plan, manifest, content)
+
+
+def test_preprocessing_supports_multiple_subjects_in_one_session() -> None:
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=["sub-01/func/rest.nii"],
+                anatomical_files=["sub-01/anat/t1.nii"],
+            ),
+            SubjectManifestEntry(
+                subject_id="sub-02",
+                session_id="ses-01",
+                functional_files=["sub-02/func/rest.nii"],
+                anatomical_files=["sub-02/anat/t1.nii"],
+            ),
+        ]
+    )
+
+    result = compile_fixture(
+        frozen_plan(manifest, parameters=common_parameters()), manifest, content
+    )
+
+    assert tuple(subject.subject_id for subject in result.subjects) == ("sub-01", "sub-02")
+
+
+def test_execution_preprocessing_rejects_multiple_sessions_with_shared_scope_error() -> None:
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=["sub-01/ses-01/func/rest.nii"],
+                anatomical_files=["sub-01/anat/t1.nii"],
+            ),
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-02",
+                functional_files=["sub-01/ses-02/func/rest.nii"],
+                anatomical_files=["sub-01/anat/t1.nii"],
+            ),
+        ]
+    )
+
+    with pytest.raises(PreprocessingSubjectScopeError) as raised:
+        compile_fixture(frozen_plan(manifest, parameters=common_parameters()), manifest, content)
+
+    assert raised.value.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
 
 
 @pytest.mark.parametrize("kind", [DatasetKind.DICOM, DatasetKind.MIXED, DatasetKind.UNKNOWN])
