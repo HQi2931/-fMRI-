@@ -25,6 +25,7 @@ import { WorkspacePanel } from "../../components/WorkspacePanel";
 import { WorkDraftPanel } from "../../components/WorkDraftPanel";
 import { WorkRunPanel } from "../../components/WorkRunPanel";
 import { ExternalAnalysisImportPanel } from "../../components/ExternalAnalysisImportPanel";
+import { MetricOnlyCheckpointPicker } from "./MetricOnlyCheckpointPicker";
 import { updateWorkspace, useWorkspace } from "../../workspace";
 import "./agent-work.css";
 
@@ -341,6 +342,28 @@ export function AgentPage() {
     boundProjectId,
     preprocessingSources.map((source) => source.key),
   ]);
+  const metricOnlyCheckpointContext = mode === "work" && activeConversation && boundToSelectedWorkspace
+    && boundProjectId && workspace.projectId === boundProjectId
+    && workspace.datasetId && workspace.manifestId && workspace.manifestHash
+    && preprocessingSources.length > 0
+    ? {
+      key: JSON.stringify([
+        activeConversation.conversation_id,
+        workspacePath,
+        boundProjectId,
+        workspace.datasetId,
+        workspace.manifestId,
+        workspace.manifestHash,
+        preprocessingSources.map((source) => source.key),
+      ]),
+      conversationId: activeConversation.conversation_id,
+      workspacePath,
+      projectId: boundProjectId,
+      datasetId: workspace.datasetId,
+      manifestId: workspace.manifestId,
+      manifestHash: workspace.manifestHash,
+    }
+    : null;
   const canRegisterAnalysisFromPreprocessing = mode === "work" && boundToSelectedWorkspace
     && Boolean(boundProjectId) && workspace.projectId === boundProjectId && preprocessingSources.length > 0;
   const registerAnalysisFromPreprocessing = canRegisterAnalysisFromPreprocessing
@@ -977,6 +1000,11 @@ export function AgentPage() {
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
       {mode === "work" && !registerAnalysisFromPreprocessing && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setAnalysisGoalCreationSelection(null); setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
+      {metricOnlyCheckpointContext && <MetricOnlyCheckpointPicker
+        key={metricOnlyCheckpointContext.key}
+        context={metricOnlyCheckpointContext}
+        sources={preprocessingSources}
+      />}
       <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} onRetryResultInterpretation={(taskId) => void retryResultInterpretation(taskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}

@@ -8,9 +8,15 @@
 
 ## 2026-10-21 Metric-only Skill dry-run API
 
-新增 `POST /api/v1/skill-plans/dry-run`，复用现有 `SkillPlanResolveRequest` 并返回 API-owned dry-run DTO。接口支持预处理与 metric-only；后者必须显式提交 registered `input_artifact_id`，不自动选择来源。应用服务仍执行现有冻结 manifest、Artifact、来源 Plan、lineage 和单主体核验，再调用真实 SkillResolver、Validator 和 Compiler。响应 `environment_probed=false`；已识别能力阻断返回 `ready=false/issues`，无效或身份错绑输入按统一 4xx 失败。dry-run 不写 Plan、Approval、Run、事件或工作区文件，不代表真实 MATLAB/DPABI 可执行。此 slice 只新增 API 调用入口，尚未加入 metric-only Work draft 或 Artifact picker。
+新增 `POST /api/v1/skill-plans/dry-run`，复用现有 `SkillPlanResolveRequest` 并返回 API-owned dry-run DTO。接口支持预处理与 metric-only；后者必须显式提交 registered `input_artifact_id`，不自动选择来源。应用服务仍执行现有冻结 manifest、Artifact、来源 Plan、lineage 和单主体核验，再调用真实 SkillResolver、Validator 和 Compiler。响应 `environment_probed=false`；已识别能力阻断返回 `ready=false/issues`，无效或身份错绑输入按统一 4xx 失败。dry-run 不写 Plan、Approval、Run、事件或工作区文件，不代表真实 MATLAB/DPABI 可执行。该 API slice 不创建持久 Work 草稿；当前独立 Work 面板见下文。
 
-定向验证：`test_skill_plan_dry_run.py` 14 项通过；`test_science_agent_api.py -k skill_registry_resolution_and_blockers_are_api_enforced` 1 项通过。覆盖预处理既有 dry-run 流程、显式 registered metric-only checkpoint 成功、多 subject scope blocker、lineage 身份错绑 422、Plan/数据库表与工作区快照无变化，以及执行环境探测未调用。测试使用 `D:\rs` 下新建的 basetemp 并关闭 pytest cache provider。Ruff check/format、308 个 Python 源文件 Mypy、91 份 Markdown 文档规范、前端 TypeScript typecheck、OpenAPI/TypeScript schema 生成与 `git diff --check` 通过；存在一项既有 Starlette/httpx deprecation warning。未运行真实 Provider、MATLAB 或 DPABI。Work UI 尚无 metric-only draft 或 Artifact picker。
+定向验证：`test_skill_plan_dry_run.py` 14 项通过；`test_science_agent_api.py -k skill_registry_resolution_and_blockers_are_api_enforced` 1 项通过。覆盖预处理既有 dry-run 流程、显式 registered metric-only checkpoint 成功、多 subject scope blocker、lineage 身份错绑 422、Plan/数据库表与工作区快照无变化，以及执行环境探测未调用。测试使用 `D:\rs` 下新建的 basetemp 并关闭 pytest cache provider。Ruff check/format、308 个 Python 源文件 Mypy、91 份 Markdown 文档规范、前端 TypeScript typecheck、OpenAPI/TypeScript schema 生成与 `git diff --check` 通过；存在一项既有 Starlette/httpx deprecation warning。未运行真实 Provider、MATLAB 或 DPABI。该 API slice 本身不创建持久 Work 草稿。
+
+## 2026-10-21 Work metric-only checkpoint dry-run 面板
+
+Work 会话现在可在当前工作区已有项目、dataset、manifest 且当前会话包含预处理 WorkTask/run 时打开临时 checkpoint 面板。候选 Run 仅来自该会话的预处理任务，必须由研究者明确选择；面板刷新 project、dataset 和当前 manifest，要求单 subject 清单，并核对成功 Run、功能时序 Artifact 的项目/Run/type、manifest、subject、session 与已验证 lineage。切换会话、工作区、清单或来源会清空选择和结果并取消未完成请求。指标、TR、频段、缩放、滤波、掩膜、平滑及 ReHo 邻域等科学参数均要求显式输入，没有预设参数；仅显式提交 `request_preprocessing=false` 和已核验的 `input_artifact_id` 到上述只读 dry-run。图像 preview 仅供查看，不是空间或科学 QC。面板不写 Work draft、Plan、Approval、Run、事件或工作区文件。
+
+本切片前端定向测试 100 项通过（checkpoint 面板 10、AgentPage 68、API client 22）；TypeScript typecheck、ESLint、production build 和 91 份 Markdown 规范检查通过。全量 Vitest 当前为 23 个文件中 18 个通过、5 个失败，共 262 项测试 227 通过/35 失败；失败文件为 App、workspace、StatisticalClusterRoiPanel、WorkRunPanel 和 WorkStatisticalResults，定向的本切片三文件均通过。未运行真实 Provider、MATLAB 或 DPABI。
 
 ## 2026-10-20 Metric-only checkpoint subject scope preflight
 

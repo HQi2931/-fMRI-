@@ -136,6 +136,10 @@ type Options = {
   run?: () => Promise<Response>;
   picked?: () => Promise<Response>;
   profiles?: () => Promise<Response>;
+  project?: (projectId: string, signal?: AbortSignal | null) => Promise<Response>;
+  dataset?: (datasetId: string, signal?: AbortSignal | null) => Promise<Response>;
+  manifest?: (manifestId: string, signal?: AbortSignal | null) => Promise<Response>;
+  artifacts?: (runId: string, signal?: AbortSignal | null) => Promise<Response>;
   workspaceConsents?: () => Promise<Response>;
   grantWorkspaceConsent?: () => Promise<Response>;
   turn?: (init?: RequestInit) => Promise<Response>;
@@ -174,6 +178,12 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/conversations")) {
       return (options.conversations ?? (() => json([conversation()])))();
     }
+    const projectId = path.match(/\/projects\/([^/]+)$/)?.[1];
+    if (projectId) return options.project?.(decodeURIComponent(projectId), init?.signal) ?? notFound();
+    const datasetId = path.match(/\/datasets\/([^/]+)$/)?.[1];
+    if (datasetId) return options.dataset?.(decodeURIComponent(datasetId), init?.signal) ?? notFound();
+    const manifestId = path.match(/\/manifests\/([^/]+)$/)?.[1];
+    if (manifestId) return options.manifest?.(decodeURIComponent(manifestId), init?.signal) ?? notFound();
     if (path.endsWith("/composite-goals")) {
       const encodedConversationId = path.match(/\/conversations\/([^/]+)\/composite-goals$/)?.[1] ?? "";
       return options.compositeGoals?.(decodeURIComponent(encodedConversationId), init?.signal) ?? json([]);
@@ -198,7 +208,9 @@ function installFetch(options: Options = {}) {
         tool_call: null,
       });
     }
-    if (path.includes("/runs/") && (path.endsWith("/artifacts") || path.endsWith("/events"))) return json([]);
+    const runArtifacts = path.match(/\/runs\/([^/]+)\/artifacts$/)?.[1];
+    if (runArtifacts) return options.artifacts?.(decodeURIComponent(runArtifacts), init?.signal) ?? json([]);
+    if (path.includes("/runs/") && path.endsWith("/events")) return json([]);
     if (path.includes("/runs/") && path.endsWith("/qc-review")) return json(null);
     if (path.includes("/plans/") || path.includes("/plan-revisions/")) return json({});
     if (path.includes("/runs/")) return (options.run ?? (() => json({})))();
@@ -238,6 +250,52 @@ describe("agent workbench page", () => {
     expect(screen.queryByRole("checkbox", { name: "以指定的预处理结果新建分析目标" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "新建独立分析目标" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("预处理来源")).not.toBeInTheDocument();
+  });
+
+  it("limits metric-only checkpoint sources to preprocessing Runs from the active conversation", async () => {
+    const manifestHash = "a".repeat(64);
+    const active = conversation({
+      project_id: "project-1",
+      foreground_agent_role: "analysis",
+      messages: [message("context-1", "assistant", "上下文", {
+        project: { project_id: "project-1", version: 7 },
+        dataset: { dataset_id: "dataset-1", version: 3 },
+        manifest: { manifest_id: "manifest-1", content_hash: manifestHash },
+      })],
+      work_tasks: [
+        { agent_role: "preprocessing", work_task_id: "prep-current", run_id: "run-current" },
+      ],
+    });
+    const inactive = conversation({
+      conversation_id: "work-2",
+      title: "另一会话",
+      project_id: "project-1",
+      work_tasks: [{ agent_role: "preprocessing", work_task_id: "prep-other", run_id: "run-other" }],
+    });
+    const fetchMock = installFetch({
+      conversations: () => json([active, inactive]),
+      project: (projectId) => json({ project_id: projectId, version: 7 }),
+      dataset: (datasetId) => json({ dataset_id: datasetId, project_id: "project-1", version: 3, current_manifest_id: "manifest-1" }),
+      manifest: (manifestId) => json({
+        manifest_id: manifestId,
+        dataset_id: "dataset-1",
+        content_hash: manifestHash,
+        subjects: [{ subject_id: "sub-01", session_id: "ses-01" }],
+      }),
+      run: () => json({ run_id: "run-current", project_id: "project-1", state: "succeeded", version: 1 }),
+    });
+
+    render(<AgentPage />);
+
+    const sourceRun = await screen.findByLabelText("来源预处理运行");
+    expect(sourceRun).toHaveValue("");
+    expect(within(sourceRun).getByRole("option", { name: /run-current/ })).toBeInTheDocument();
+    expect(within(sourceRun).queryByRole("option", { name: /run-other|run-analysis|run-unrelated/ })).not.toBeInTheDocument();
+    const requestedPaths = fetchMock.mock.calls.map(([input]) => pathOf(input));
+    expect(requestedPaths.some((path) => path.endsWith("/runs"))).toBe(false);
+    expect(requestedPaths.some((path) => path.endsWith("/runs/run-other"))).toBe(false);
+    expect(requestedPaths.some((path) => path.endsWith("/runs/run-unrelated"))).toBe(false);
+    expect(requestedPaths.some((path) => path.endsWith("/skill-plans/dry-run"))).toBe(false);
   });
 
   it("sends the explicitly selected preprocessing task and Run only when opted in", async () => {
