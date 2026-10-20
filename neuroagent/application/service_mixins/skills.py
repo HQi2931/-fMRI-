@@ -211,6 +211,8 @@ class SkillPlanMixin(BaseServiceMixin):
                         key=lambda session_id: session_id or "",
                     ),
                 ) from exc
+        elif intent.requested_metrics:
+            SkillPlanMixin._validate_metric_only_checkpoint_scope(manifest)
 
         preprocessing = intent.preprocessing
         if preprocessing is None or (
@@ -264,6 +266,70 @@ class SkillPlanMixin(BaseServiceMixin):
                 "结构像引用必须由服务端冻结 manifest 绑定, 不能使用任意客户端 Artifact ID。",
                 expected_structural_artifact_id=expected_structural_ref,
             )
+
+    @staticmethod
+    def _validate_metric_only_checkpoint_scope(manifest: ManifestRevisionView) -> None:
+        """Enforce the execution compiler's one-subject metric-only checkpoint boundary."""
+
+        try:
+            validate_preprocessing_subject_scope(manifest.subjects)
+        except PreprocessingSubjectScopeError as exc:
+            path = (
+                "manifest.subjects.session_id"
+                if exc.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
+                else "manifest.subjects.subject_id"
+            )
+            remediation = (
+                "请先为单一 session 生成并登记经核验的 functional checkpoint, 再单独规划指标。"
+                if exc.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
+                else (
+                    "请核对冻结 manifest 中的受试者身份; "
+                    "metric-only checkpoint 必须绑定唯一受试者。"
+                )
+            )
+            raise InputValidationError(
+                "metric_only_checkpoint_scope_unsupported",
+                f"{exc} 当前 metric-only checkpoint 只支持单一受试者。{remediation}",
+                path=path,
+                remediation=remediation,
+                scope_issue=exc.issue.value,
+                subject_count=len(manifest.subjects),
+            ) from exc
+        if len(manifest.subjects) != 1:
+            remediation = (
+                "请为唯一受试者单独生成并登记 functional checkpoint, 再规划指标; "
+                "当前执行器不支持批量 metric-only checkpoint。"
+            )
+            raise InputValidationError(
+                "metric_only_checkpoint_scope_unsupported",
+                "当前 metric-only checkpoint 执行只支持冻结 manifest 中的单一受试者。"
+                f" {remediation}",
+                path="manifest.subjects",
+                remediation=remediation,
+                subject_count=len(manifest.subjects),
+            )
+
+    @staticmethod
+    def _validate_metric_only_checkpoint_lineage(
+        manifest: ManifestRevisionView,
+        input_artifact: ArtifactLineage,
+    ) -> None:
+        expected_subject_id = manifest.subjects[0].subject_id
+        if input_artifact.subject_id == expected_subject_id:
+            return
+        remediation = (
+            "请登记与冻结 manifest 唯一受试者一致的 checkpoint Artifact; "
+            "系统不会改写已登记 lineage 身份。"
+        )
+        raise InputValidationError(
+            "metric_only_checkpoint_scope_unsupported",
+            "输入 checkpoint lineage 的 subject_id 必须与冻结 manifest 的唯一受试者一致。"
+            f" {remediation}",
+            path="input_artifact.lineage.subject_id",
+            remediation=remediation,
+            manifest_subject_id=expected_subject_id,
+            artifact_subject_id=input_artifact.subject_id,
+        )
 
     def _materialize_skill_request(
         self,
@@ -337,6 +403,9 @@ class SkillPlanMixin(BaseServiceMixin):
                     "输入 Artifact 的来源计划未绑定当前冻结 manifest。",
                 )
             base_cfg_artifact_id = None
+
+        if not intent.request_preprocessing and intent.requested_metrics:
+            self._validate_metric_only_checkpoint_lineage(manifest, input_artifact)
 
         return SkillRequest(
             project_id=intent.project_id,
@@ -656,4 +725,5 @@ def _manifest_issue_path(code: str) -> str:
         "manifest_dpabi_stage_step_conflict": "manifest.completed_steps",
         "manifest_preprocessing_session_unsupported": "manifest.subjects.session_id",
         "manifest_preprocessing_subject_scope_invalid": "manifest.subjects",
+        "metric_only_checkpoint_scope_unsupported": "manifest.subjects",
     }.get(code, "manifest")

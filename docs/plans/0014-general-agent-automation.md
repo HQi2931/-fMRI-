@@ -338,6 +338,8 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 阶段 D 另共享一个 ReHo/CUT checkpoint capability 谓词：仅请求 preprocessing、ReHo 参数存在且 `scrubbing.method=CUT` 时，阻断该同计划组合，问题路径为 `preprocessing.scrubbing.method`。当前 DPARSFA 调用无法在同一计划中先物化并验证 CUT 后的 retained-volume checkpoint 再计算 ReHo；Work dry-run 返回 `ready=false` 和 remediation，正式 resolve 在 Plan 写入前拒绝，feedback 为 `BLOCKED_CAPABILITY` 且不自动修改参数。ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不命中新 gate。既有 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学/证据提示保留，用于说明实际保留时间点数仍须由 verified Artifact 确认；execution 原拒绝防线也保留。
 
+metric-only checkpoint 另在正式 Skill resolve 阶段执行输入 scope 预检：仅 `request_preprocessing=false` 且 `requested_metrics` 非空时，复用 execution 的 `validate_preprocessing_subject_scope`，并额外要求冻结 manifest 恰有一行；已登记输入 Artifact 的 `lineage.subject_id` 必须等于该行 subject。多 subject、跨 session、无效 scope 或 lineage 身份不符会以 `METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED` 返回具体路径和 remediation，且在 Plan 持久化前失败关闭。预处理同 session 多 subject 路径不受影响，执行层原单 subject/lineage 校验保留。当前 Work Skill dry-run 只接受 preprocessing 请求，故这一 slice 覆盖 normal resolve，没有 metric-only dry-run。
+
 目标是在已审核科学范围内，按输入的真实状态寻找不同合法路径，而不是继续增加 WorkDialogue 特例。
 
 任务：

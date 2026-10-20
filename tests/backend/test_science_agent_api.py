@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,7 @@ def _lineage(
     *,
     manifest_hash: str = "a" * 64,
     artifact_id: str = "functional-001",
+    subject_id: str | None = None,
     smoothed: bool = False,
 ) -> ArtifactLineage:
     return ArtifactLineage(
@@ -100,6 +102,7 @@ def _lineage(
         volume_count=120,
         metadata_evidence_hash="e" * 64,
         subject_manifest_hash=manifest_hash,
+        subject_id=subject_id,
         space="MNI152",
         grid_signature="grid-3mm",
         voxel_size_mm=(3.0, 3.0, 3.0),
@@ -346,6 +349,7 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
 ) -> None:
     project = make_project(service, source_root, work_root)
     dataset_path = make_bids_dataset(source_root)
+    shutil.rmtree(dataset_path / "sub-02")
     dataset = service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
@@ -387,6 +391,7 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
                     "lineage": _lineage(
                         manifest_hash=manifest.content_hash,
                         artifact_id="server-binds-id",
+                        subject_id="sub-01",
                         smoothed=smoothed,
                     ).model_dump(mode="json")
                 },

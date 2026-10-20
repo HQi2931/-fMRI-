@@ -6,6 +6,12 @@
 - 更新日期：2026-10-20
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-20 Metric-only checkpoint subject scope preflight
+
+正式 Skill resolve 只在 `request_preprocessing=false` 且 `requested_metrics` 非空时，复用 execution 的 `validate_preprocessing_subject_scope` 检查冻结 manifest，并要求其恰有一个 subject row。已登记 input Artifact lineage 的 `subject_id` 必须与该 manifest subject 一致。多 subject、跨 session、无效 scope 或身份不匹配均以 `METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED` 返回精确字段路径和 remediation，在 Plan 写入前失败；执行层现有单主体和 subject identity 防线保留。预处理同 session 多 subject 不受影响。Work 当前的 Skill dry-run 只接受 preprocessing 请求，metric-only 通过 normal resolve 入口处理；反馈 adapter 将该 issue 分类为 `BLOCKED_CAPABILITY`，不提供自动修复。
+
+metric-only scope、lineage mismatch、Work capability feedback、预处理双主体编译和单主体 metric-only 执行定向回归共 59 项通过，含 Plan 无写入断言。测试使用 `D:\rs` 下新建 basetemp，并关闭 pytest cache provider，未触碰仓库内 pytest artifacts。Ruff check/format、308 个 Python 源文件 Mypy、91 份 `docs/` Markdown 规范和 `git diff --check` 通过；存在一项既有 Starlette/httpx deprecation warning。未调用真实 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-20 Work ReHo 与 CUT checkpoint 能力预检
 
 Skill Validator 与执行编译器共用纯领域谓词：仅当请求 preprocessing、ReHo 参数存在、preprocessing 存在且 `scrubbing.method=CUT` 时，以 `REHO_CUT_CHECKPOINT_UNSUPPORTED` 阻断同计划组合，并指向 `preprocessing.scrubbing.method`。当前 DPARSFA 执行单元无法在同一计划中先生成并验证 CUT 后的 retained-volume checkpoint 再计算 ReHo。ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不触发该 gate；executor 原 `ValueError` 防线保留。Work dry-run 返回 `ready=false` 和 remediation，正式 resolve 在 Plan 写入前拒绝，Work feedback 为 `BLOCKED_CAPABILITY` 且不自动修改参数。独立的 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学/证据提示仍保留，以说明保留时间点数须由后续 verified Artifact 确认。

@@ -16,7 +16,11 @@ from neuroagent.application.work_draft import (
 )
 from neuroagent.domain.fmri.metrics import MetricKind
 from tests.backend.conftest import make_bids_dataset, make_project
-from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
+from tests.backend.test_science_agent_api import (
+    _lineage,
+    _minimal_preprocessing_payload,
+    _skill_request,
+)
 
 
 def _complete_preprocessing_draft() -> WorkDraft:
@@ -181,6 +185,39 @@ def _two_session_bids_dataset(root: Path) -> Path:
     return dataset
 
 
+def _single_subject_bids_dataset(root: Path) -> Path:
+    dataset = root / "bids-single-subject"
+    functional = dataset / "sub-01" / "func"
+    anatomical = dataset / "sub-01" / "anat"
+    functional.mkdir(parents=True)
+    anatomical.mkdir(parents=True)
+    (dataset / "dataset_description.json").write_text(
+        '{"Name":"synthetic","BIDSVersion":"1.9.0"}', encoding="utf-8"
+    )
+    (functional / "sub-01_task-rest_bold.nii.gz").write_bytes(b"synthetic-sub-01-bold")
+    (anatomical / "sub-01_T1w.nii.gz").write_bytes(b"synthetic-sub-01-t1")
+    return dataset
+
+
+def _metric_only_request(project, dataset, manifest, artifact_id: str):
+    intent = _skill_request(
+        project.project_id,
+        dataset.dataset_id,
+        manifest.content_hash,
+        artifact_id,
+    ).model_copy(
+        update={
+            "requested_metrics": (MetricKind.ALFF,),
+            "primary_outputs": ("zALFF",),
+            "reho": None,
+        }
+    )
+    return SkillPlanResolveRequest(
+        request=intent,
+        expected_project_version=project.version,
+    )
+
+
 def _request(project, dataset, manifest, draft: WorkDraft) -> SkillPlanResolveRequest:
     return SkillPlanResolveRequest(
         request=preflight_skill_intent(
@@ -307,6 +344,106 @@ def test_two_session_bids_preflight_blocks_before_plan_persistence_and_without_w
     assert raised.value.code == "manifest_preprocessing_session_unsupported"
     assert raised.value.details["path"] == "manifest.subjects.session_id"
     assert "remediation" in raised.value.details
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_path"),
+    [
+        ("multiple_subjects", "manifest.subjects"),
+        ("multiple_sessions", "manifest.subjects.session_id"),
+    ],
+)
+def test_metric_only_checkpoint_scope_blocks_resolve_before_plan_persistence(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+    expected_path: str,
+) -> None:
+    dataset_path = _two_session_bids_dataset(source_root) if scope == "multiple_sessions" else None
+    project, dataset, manifest = _scanned_dataset(
+        service,
+        source_root,
+        work_root,
+        dataset_path=dataset_path,
+    )
+    request = _metric_only_request(project, dataset, manifest, "unread-checkpoint")
+    before = _table_counts(service)
+    monkeypatch.setattr(
+        service.skills,
+        "get_artifact",
+        lambda _artifact_id: pytest.fail("manifest scope must be checked before Artifact lookup"),
+    )
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: pytest.fail("metric-only scope must be checked before environment probing"),
+    )
+
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(request, f"metric-only-scope-{scope}")
+
+    assert raised.value.code == "metric_only_checkpoint_scope_unsupported"
+    assert raised.value.details["path"] == expected_path
+    assert raised.value.details["remediation"]
+    assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
+
+
+def test_metric_only_checkpoint_subject_mismatch_blocks_before_plan_persistence(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    project, dataset, manifest = _scanned_dataset(
+        service,
+        source_root,
+        work_root,
+        dataset_path=_single_subject_bids_dataset(source_root),
+    )
+    artifact_id = "registered-checkpoint"
+    lineage = _lineage(
+        manifest_hash=manifest.content_hash,
+        artifact_id=artifact_id,
+        subject_id="sub-99",
+    )
+    artifact = SimpleNamespace(
+        artifact_id=artifact_id,
+        project_id=project.project_id,
+        run_id="checkpoint-run",
+        provenance={"lineage": lineage.model_dump(mode="json")},
+    )
+    monkeypatch.setattr(service.skills, "get_artifact", lambda _artifact_id: artifact)
+    monkeypatch.setattr(
+        service.skills,
+        "get_run",
+        lambda _run_id: SimpleNamespace(plan_revision_id="checkpoint-plan"),
+    )
+    monkeypatch.setattr(
+        service.skills.repository,
+        "get_plan",
+        lambda _plan_revision_id: SimpleNamespace(manifest_hash=manifest.content_hash),
+    )
+    monkeypatch.setattr(
+        service.skills.environment_provider,
+        "current",
+        lambda: pytest.fail("subject mismatch must be checked before environment probing"),
+    )
+    request = _metric_only_request(project, dataset, manifest, artifact_id)
+    before = _table_counts(service)
+
+    with pytest.raises(InputValidationError) as raised:
+        service.skills.resolve_skill_plan(request, "metric-only-subject-mismatch")
+
+    assert raised.value.code == "metric_only_checkpoint_scope_unsupported"
+    assert raised.value.details["path"] == "input_artifact.lineage.subject_id"
+    assert raised.value.details["manifest_subject_id"] == "sub-01"
+    assert raised.value.details["artifact_subject_id"] == "sub-99"
+    assert raised.value.details["remediation"]
     assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
 
 
@@ -473,7 +610,7 @@ def test_reho_cut_checkpoint_gate_blocks_dry_run_and_resolve_before_plan_write(
     assert _table_counts(service)["plan_revisions"] == before["plan_revisions"]
 
 
-def test_metric_only_intent_does_not_apply_preprocessing_session_scope(
+def test_non_metric_intent_does_not_apply_metric_only_checkpoint_scope(
     service: ApplicationServices,
     source_root: Path,
     work_root: Path,

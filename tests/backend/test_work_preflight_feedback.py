@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from neuroagent.application.contracts.plans import ValidationIssue
 
 # Full-width colon is the existing Chinese validator-message delimiter.
@@ -198,6 +200,37 @@ def test_preprocessing_session_scope_is_a_capability_boundary() -> None:
     assert issue.kind.value == "unsupported_capability"
     assert issue.target == "manifest.subjects.session_id"
     assert issue.message.endswith("请分别整理输入。")
+    assert issue.repairs[0].action.value == "none"
+    assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "manifest.subjects",
+        "manifest.subjects.session_id",
+        "input_artifact.lineage.subject_id",
+    ),
+)
+def test_metric_only_checkpoint_scope_is_a_capability_boundary(path: str) -> None:
+    feedback = planning_feedback_for_skill_issues(
+        (
+            ValidationIssue(
+                code="METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED",
+                message="Metric-only checkpoint requires one matching subject.",
+                severity="blocking",
+                path=path,
+                remediation="Register a checkpoint bound to the single manifest subject.",
+            ),
+        ),
+        draft_revision="draft-hash",
+        manifest_revision="manifest-hash",
+    )
+
+    issue, decision = feedback[0]
+    assert issue.kind.value == "unsupported_capability"
+    assert issue.target == path
+    assert issue.requires_user_decision is False
     assert issue.repairs[0].action.value == "none"
     assert decision.disposition is FeedbackDisposition.BLOCKED_CAPABILITY
 
