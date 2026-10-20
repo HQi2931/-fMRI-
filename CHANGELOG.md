@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-21
+
+- Added `POST /api/v1/skill-plans/dry-run` for read-only preprocessing and explicit metric-only Skill preflight. Metric-only callers must supply a registered `input_artifact_id`; existing manifest, source Plan, lineage, and single-subject checks remain active. The endpoint uses configured version labels without probing MATLAB/SPM/DPABI and creates no Plan, Approval, Run, event, or workspace files. It does not add a metric-only Work draft or Artifact picker.
+
 ## 2026-10-20
 
 - Formal metric-only Skill resolution now enforces the executor's checkpoint scope before Plan persistence: the frozen manifest must contain exactly one subject, pass the shared subject/session validator, and match the registered Artifact lineage `subject_id`. Batch, cross-session, invalid-scope, and mismatched checkpoints fail with a capability blocker and field path; preprocessing plans may still contain multiple subjects in one session. Executor checks remain in place. Work's current Skill dry-run is preprocessing-only, so this guard applies to normal resolve rather than a metric-only dry-run.

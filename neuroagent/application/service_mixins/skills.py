@@ -493,17 +493,13 @@ class SkillPlanMixin(BaseServiceMixin):
         )
 
     def dry_run_skill_plan(self, request: SkillPlanResolveRequest) -> SkillPlanDryRunView:
-        """Run the real preprocessing Skill pipeline without persistence or probing.
+        """Run the real Skill pipeline without persistence or environment probing.
 
-        Unlike the normal resolver, this path uses only configured version labels
-        to create a temporary compiler snapshot. It deliberately does not inspect
-        MATLAB/SPM/DPABI files; environment readiness remains a separate action.
+        Preprocessing input is derived from the frozen manifest. Metric-only input
+        must identify a registered Artifact explicitly; this method never selects
+        one on the caller's behalf. The temporary compiler snapshot uses configured
+        version labels and deliberately does not inspect MATLAB/SPM/DPABI files.
         """
-        if not request.request.request_preprocessing:
-            raise InputValidationError(
-                "preprocessing_dry_run_required",
-                "Work Skill dry-run 仅支持预处理草稿。",
-            )
         prepared = self._prepare_skill_plan(
             request,
             environment=self._configured_environment_snapshot(),

@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-17
+- 更新日期：2026-10-21
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
@@ -296,11 +296,14 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/skills` | 列出已登记 SkillSpec |
+| `POST` | `/skill-plans/dry-run` | 只读校验并编译预处理或显式 metric-only Skill 请求 |
 | `POST` | `/skill-plans/resolve` | 从用户意图和服务端谱系编译 SkillPlan |
 | `GET` | `/plan-revisions/{plan_revision_id}` | 读取计划 revision |
 | `POST` | `/plan-revisions/{plan_revision_id}/approve` | 批准或拒绝精确计划哈希 |
 
 浏览器只提交 `SkillPlanIntent`：项目、数据集、manifest hash 和显式科研参数。输入 Artifact lineage、基础 Cfg Artifact 与环境锁由服务端派生，客户端不能伪造。
+
+`/skill-plans/dry-run` 复用 `/skill-plans/resolve` 的请求体，并只使用配置中的软件版本标签；响应始终标记 `environment_probed=false`。metric-only 请求必须显式提交已登记的 `input_artifact_id`，服务端沿用 manifest、Artifact、来源 Plan、lineage 和单主体校验，不自动搜索或选择输入。可编译请求返回 `ready=true` 与预览 Plan hash；已识别的能力/科学阻断返回 `ready=false` 和 issues。无效或错绑的输入返回统一 4xx。该只读操作不会创建 Plan、Approval、Run、事件或工作区文件，也不表示真实影像或 DPABI 执行已通过；Work 页面目前没有 metric-only Artifact picker。
 
 ## 运行、事件和 Artifact
 

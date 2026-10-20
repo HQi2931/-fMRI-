@@ -382,6 +382,19 @@ def test_metric_only_checkpoint_scope_blocks_resolve_before_plan_persistence(
         lambda: pytest.fail("metric-only scope must be checked before environment probing"),
     )
 
+    dry_run = service.skills.dry_run_skill_plan(request)
+
+    assert dry_run.ready is False
+    assert dry_run.plan_hash is None
+    blocker = next(
+        issue
+        for issue in dry_run.issues
+        if issue.code == "METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED"
+    )
+    assert blocker.path == expected_path
+    assert blocker.remediation
+    assert _table_counts(service) == before
+
     with pytest.raises(InputValidationError) as raised:
         service.skills.resolve_skill_plan(request, f"metric-only-scope-{scope}")
 
@@ -435,6 +448,14 @@ def test_metric_only_checkpoint_subject_mismatch_blocks_before_plan_persistence(
     )
     request = _metric_only_request(project, dataset, manifest, artifact_id)
     before = _table_counts(service)
+
+    with pytest.raises(InputValidationError) as dry_run_raised:
+        service.skills.dry_run_skill_plan(request)
+
+    assert dry_run_raised.value.code == "metric_only_checkpoint_scope_unsupported"
+    assert dry_run_raised.value.details["path"] == "input_artifact.lineage.subject_id"
+    assert dry_run_raised.value.details["remediation"]
+    assert _table_counts(service) == before
 
     with pytest.raises(InputValidationError) as raised:
         service.skills.resolve_skill_plan(request, "metric-only-subject-mismatch")

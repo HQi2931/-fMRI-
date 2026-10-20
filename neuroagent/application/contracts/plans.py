@@ -136,7 +136,7 @@ class SkillPlanResolveView(StrictModel):
 
 
 class SkillPlanDryRunView(StrictModel):
-    """Read-only preprocessing Skill contract validation and compilation result."""
+    """Read-only Skill contract validation and compilation result."""
 
     scope: Literal["skill_contract_compile_only"] = "skill_contract_compile_only"
     environment_probed: Literal[False] = False

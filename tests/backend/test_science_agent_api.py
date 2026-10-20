@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from neuroagent.agent.models import (
     AgentSummaryPurpose,
@@ -115,6 +115,15 @@ def _lineage(
         scrubbed=False,
         producer_step_hash="b" * 64,
     )
+
+
+def _table_counts(service: ApplicationServices) -> dict[str, int]:
+    tables = inspect(service.database.engine).get_table_names()
+    with service.database.engine.connect() as connection:
+        return {
+            table: int(connection.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+            for table in tables
+        }
 
 
 def _mask_lineage(manifest_hash: str) -> ArtifactLineage:
@@ -423,6 +432,74 @@ def test_skill_registry_resolution_and_blockers_are_api_enforced(
         skills = client.get("/api/v1/skills")
         assert skills.status_code == 200
         assert "rsfmri.pipeline.alff_reho_combined" in {item["skill_id"] for item in skills.json()}
+
+        database_before_dry_run = _table_counts(service)
+        work_files_before_dry_run = sorted(
+            path.relative_to(work_root) for path in work_root.rglob("*")
+        )
+        with monkeypatch.context() as dry_run_patch:
+            dry_run_patch.setattr(
+                service.skills.environment_provider,
+                "current",
+                lambda: pytest.fail("Skill dry-run must not probe the execution environment"),
+            )
+            dry_run = client.post(
+                "/api/v1/skill-plans/dry-run",
+                json=request.model_dump(mode="json"),
+            )
+        assert dry_run.status_code == 200, dry_run.text
+        dry_run_payload = dry_run.json()
+        assert dry_run_payload["scope"] == "skill_contract_compile_only"
+        assert dry_run_payload["environment_probed"] is False
+        assert dry_run_payload["manifest_id"] == manifest.manifest_id
+        assert dry_run_payload["manifest_hash"] == manifest.content_hash
+        assert dry_run_payload["ready"] is True, dry_run_payload["issues"]
+        assert dry_run_payload["plan_hash"]
+        assert _table_counts(service) == database_before_dry_run
+        assert sorted(path.relative_to(work_root) for path in work_root.rglob("*")) == (
+            work_files_before_dry_run
+        )
+
+        bad_artifact_id = "registered-checkpoint-wrong-subject"
+        bad_lineage = _lineage(
+            manifest_hash=manifest.content_hash,
+            artifact_id=bad_artifact_id,
+            subject_id="sub-99",
+        )
+        bad_artifact = unsmoothed.model_copy(
+            update={
+                "artifact_id": bad_artifact_id,
+                "provenance": {"lineage": bad_lineage.model_dump(mode="json")},
+            }
+        )
+        bad_request = request.model_copy(
+            update={
+                "request": request.request.model_copy(update={"input_artifact_id": bad_artifact_id})
+            }
+        )
+        with monkeypatch.context() as invalid_source_patch:
+            invalid_source_patch.setattr(
+                service.skills,
+                "get_artifact",
+                lambda _artifact_id: bad_artifact,
+            )
+            invalid_source_patch.setattr(
+                service.skills.environment_provider,
+                "current",
+                lambda: pytest.fail("Invalid lineage must fail before environment probing"),
+            )
+            bad_lineage_response = client.post(
+                "/api/v1/skill-plans/dry-run",
+                json=bad_request.model_dump(mode="json"),
+            )
+        assert bad_lineage_response.status_code == 422
+        bad_lineage_error = bad_lineage_response.json()["error"]
+        assert bad_lineage_error["code"] == "metric_only_checkpoint_scope_unsupported"
+        assert bad_lineage_error["details"]["path"] == "input_artifact.lineage.subject_id"
+        assert _table_counts(service) == database_before_dry_run
+        assert sorted(path.relative_to(work_root) for path in work_root.rglob("*")) == (
+            work_files_before_dry_run
+        )
 
         initial_preprocessing = client.post(
             "/api/v1/skill-plans/resolve",

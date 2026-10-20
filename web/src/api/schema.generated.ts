@@ -1202,6 +1202,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/skill-plans/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dry Run Skill Plan */
+        post: operations["dry_run_skill_plan_api_v1_skill_plans_dry_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/skill-plans/resolve": {
         parameters: {
             query?: never;
@@ -4495,6 +4512,31 @@ export interface components {
             steps: components["schemas"]["ResolvedStep"][];
             /** Warnings */
             warnings: components["schemas"]["SkillValidationIssue"][];
+        };
+        /** SkillPlanDryRunView */
+        SkillPlanDryRunView: {
+            /**
+             * Environment Probed
+             * @default false
+             * @constant
+             */
+            environment_probed: false;
+            /** Issues */
+            issues?: components["schemas"]["ValidationIssue"][];
+            /** Manifest Hash */
+            manifest_hash: string;
+            /** Manifest Id */
+            manifest_id: string;
+            /** Plan Hash */
+            plan_hash?: string | null;
+            /** Ready */
+            ready: boolean;
+            /**
+             * Scope
+             * @default skill_contract_compile_only
+             * @constant
+             */
+            scope: "skill_contract_compile_only";
         };
         /**
          * SkillPlanIntent
@@ -11759,6 +11801,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    dry_run_skill_plan_api_v1_skill_plans_dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillPlanResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillPlanDryRunView"];
                 };
             };
             /** @description Bad Request */

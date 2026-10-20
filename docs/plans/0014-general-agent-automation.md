@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-20
+- 更新日期：2026-10-21
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)、[ADR 0051](../adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 
 ## 目标里程碑
@@ -338,7 +338,7 @@ conversation-scoped CompositeGoal progress API 现在列出两类 root，并在�
 
 阶段 D 另共享一个 ReHo/CUT checkpoint capability 谓词：仅请求 preprocessing、ReHo 参数存在且 `scrubbing.method=CUT` 时，阻断该同计划组合，问题路径为 `preprocessing.scrubbing.method`。当前 DPARSFA 调用无法在同一计划中先物化并验证 CUT 后的 retained-volume checkpoint 再计算 ReHo；Work dry-run 返回 `ready=false` 和 remediation，正式 resolve 在 Plan 写入前拒绝，feedback 为 `BLOCKED_CAPABILITY` 且不自动修改参数。ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不命中新 gate。既有 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学/证据提示保留，用于说明实际保留时间点数仍须由 verified Artifact 确认；execution 原拒绝防线也保留。
 
-metric-only checkpoint 另在正式 Skill resolve 阶段执行输入 scope 预检：仅 `request_preprocessing=false` 且 `requested_metrics` 非空时，复用 execution 的 `validate_preprocessing_subject_scope`，并额外要求冻结 manifest 恰有一行；已登记输入 Artifact 的 `lineage.subject_id` 必须等于该行 subject。多 subject、跨 session、无效 scope 或 lineage 身份不符会以 `METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED` 返回具体路径和 remediation，且在 Plan 持久化前失败关闭。预处理同 session 多 subject 路径不受影响，执行层原单 subject/lineage 校验保留。当前 Work Skill dry-run 只接受 preprocessing 请求，故这一 slice 覆盖 normal resolve，没有 metric-only dry-run。
+metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行输入 scope 预检：仅 `request_preprocessing=false` 且 `requested_metrics` 非空时，复用 execution 的 `validate_preprocessing_subject_scope`，并额外要求冻结 manifest 恰有一行；已登记输入 Artifact 的 `lineage.subject_id` 必须等于该行 subject。多 subject、跨 session、无效 scope 或 lineage 身份不符会以 `METRIC_ONLY_CHECKPOINT_SCOPE_UNSUPPORTED` 返回具体路径和 remediation，且在 Plan 持久化前失败关闭。`POST /api/v1/skill-plans/dry-run` 复用现有请求 DTO，要求调用方显式给出 registered `input_artifact_id`，支持预处理与 metric-only 请求；它使用配置版本标签，不探测 MATLAB/SPM/DPABI，不创建 Plan、Approval、Run、事件或工作区文件。已识别的能力阻断返回 `ready=false/issues`，错绑来源按统一 4xx 返回。预处理同 session 多 subject 路径不受影响，执行层原单 subject/lineage 校验保留。Work 内部 dry-run 仍只接受预处理草稿；本切片未加入 metric-only Work draft 或 Artifact picker。
 
 目标是在已审核科学范围内，按输入的真实状态寻找不同合法路径，而不是继续增加 WorkDialogue 特例。
 

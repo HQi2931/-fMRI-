@@ -7948,6 +7948,62 @@
         "title": "SkillPlan",
         "type": "object"
       },
+      "SkillPlanDryRunView": {
+        "additionalProperties": false,
+        "properties": {
+          "environment_probed": {
+            "const": false,
+            "default": false,
+            "title": "Environment Probed",
+            "type": "boolean"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "manifest_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Hash",
+            "type": "string"
+          },
+          "manifest_id": {
+            "title": "Manifest Id",
+            "type": "string"
+          },
+          "plan_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Hash"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "scope": {
+            "const": "skill_contract_compile_only",
+            "default": "skill_contract_compile_only",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest_id",
+          "manifest_hash",
+          "ready"
+        ],
+        "title": "SkillPlanDryRunView",
+        "type": "object"
+      },
       "SkillPlanIntent": {
         "additionalProperties": false,
         "description": "Client intent without client-authored Artifact lineage or environment locks.",
@@ -19494,6 +19550,97 @@
         "summary": "Retry Run",
         "tags": [
           "runs"
+        ]
+      }
+    },
+    "/api/v1/skill-plans/dry-run": {
+      "post": {
+        "operationId": "dry_run_skill_plan_api_v1_skill_plans_dry_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillPlanResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPlanDryRunView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Dry Run Skill Plan",
+        "tags": [
+          "skills"
         ]
       }
     },

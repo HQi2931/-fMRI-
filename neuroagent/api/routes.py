@@ -91,7 +91,7 @@ from neuroagent.api.routers.runs import (
     validate_roi_table,
 )
 from neuroagent.api.routers.runs import router as runs_router
-from neuroagent.api.routers.skills import list_skills, resolve_skill_plan
+from neuroagent.api.routers.skills import dry_run_skill_plan, list_skills, resolve_skill_plan
 from neuroagent.api.routers.skills import router as skills_router
 from neuroagent.api.routers.statistics import (
     approve_statistical_design,
@@ -150,6 +150,7 @@ __all__ = [
     "delete_model_profile",
     "diagnose_run",
     "download_artifact",
+    "dry_run_skill_plan",
     "environment_config",
     "environment_probe",
     "get_agent_task",
