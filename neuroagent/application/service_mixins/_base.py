@@ -209,9 +209,19 @@ class BaseServiceMixin:
         response_type: type[T],
         prepare: Callable[[], Awaitable[U]],
         finalize: Callable[[U], T],
+        legacy_key: str | None = None,
+        legacy_request_hashes: tuple[str, ...] = (),
     ) -> T:
         request_hash = content_hash(request.model_dump(mode="json"))
         owner_token = str(uuid4())
+        if legacy_key is not None and legacy_key != key:
+            self.idempotency_store.migrate_legacy_idempotency_key(
+                scope,
+                legacy_key,
+                key,
+                request_hash=request_hash,
+                legacy_request_hashes=legacy_request_hashes,
+            )
         stored = self.idempotency_store.begin_idempotent_request(
             scope,
             key,

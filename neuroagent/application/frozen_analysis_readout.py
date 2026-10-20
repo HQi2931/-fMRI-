@@ -23,7 +23,7 @@ from neuroagent.application.errors import ApplicationError, ConflictError
 from neuroagent.application.statistics_draft import StatisticsDraft, render_statistics_draft_review
 from neuroagent.application.work_agents import latest_agent_payload, recent_messages_for_agent
 from neuroagent.application.work_models import WorkInterpretation
-from neuroagent.application.work_tools import AgentExecutionContext
+from neuroagent.application.work_tools import AgentExecutionContext, PersistentModelCallBudget
 from neuroagent.context.engine import RegexTokenCounter
 from neuroagent.context.interfaces import ContextPacket
 from neuroagent.multi_agent.registry import WorkAgentRole
@@ -43,6 +43,7 @@ async def respond_frozen_analysis(
     preferred_profile_id: str | None,
     idempotency_key: str,
     has_profiles: bool,
+    persistent_model_budget: PersistentModelCallBudget | None = None,
 ) -> WorkActionResult:
     """The caller has just verified the exact frozen goal/Plan/Run identity."""
 
@@ -175,6 +176,7 @@ async def respond_frozen_analysis(
                 work_agent_role=WorkAgentRole.ANALYSIS,
             ),
             allow_tools=False,
+            persistent_model_budget=persistent_model_budget,
         )
         reply = WorkInterpretation.model_validate_json(raw)
         if (

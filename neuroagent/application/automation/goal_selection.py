@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from pydantic import ValidationError
 
@@ -34,7 +34,7 @@ from neuroagent.multi_agent.registry import WorkAgentRole
 def analysis_selection(
     conversation: ConversationView,
     goal: CompositeGoalIdentity,
-    outbox: AnalysisProposalOutbox,
+    outbox: AnalysisProposalOutbox | None,
     task: WorkTask | None,
     *,
     plan: PlanRevisionView | None = None,
@@ -47,6 +47,12 @@ def analysis_selection(
             "analysis_goal_selection_conflict",
             "当前分析目标尚不可恢复, 或来源、草稿及任务记录不一致。请刷新进度后核对。",
         )
+
+    if goal.goal_kind == "analysis_only_external_import":
+        return _analysis_only_selection(conversation, goal, task, plan=plan, run=run)
+
+    if outbox is None:
+        reject()
 
     if (
         outbox.intent_task_id != goal.intent_task_id
@@ -152,6 +158,266 @@ def analysis_selection(
             }
         )
     reject()
+
+
+def _analysis_only_selection(
+    conversation: ConversationView,
+    goal: CompositeGoalIdentity,
+    task: WorkTask | None,
+    *,
+    plan: PlanRevisionView | None,
+    run: RunView | None,
+) -> ConversationWorkTaskView:
+    """Restore an external-import analysis from its goal and statistical records.
+
+    Analysis-only goals do not use the preprocessing proposal outbox. Their
+    exact external import revision is already part of the root identity.
+    """
+
+    def reject() -> NoReturn:
+        raise ConflictError(
+            "analysis_goal_selection_conflict",
+            "当前外部指标分析目标的来源、草稿或统计记录无法核验。请刷新后核对。",
+        )
+
+    if (
+        goal.goal_kind != "analysis_only_external_import"
+        or goal.conversation_id != conversation.conversation_id
+        or goal.project_id != conversation.project_id
+        or goal.preprocessing_task_id is not None
+        or goal.analysis_proposal_outbox_intent_task_id is not None
+        or goal.source_external_import_id is None
+        or goal.source_inclusion_hash is None
+        or goal.source_manifest_hash is None
+        or goal.analysis_request_hash == ""
+    ):
+        reject()
+
+    dependencies: set[str] = set()
+    for message in conversation.messages:
+        if message.role is not ConversationRole.ASSISTANT:
+            continue
+        dependency = message.payload.get("analysis_dependency")
+        if not isinstance(dependency, dict) or dependency.get("task_id") != goal.intent_task_id:
+            continue
+        original = dependency.get("analysis_request")
+        if (
+            dependency.get("task_kind") != goal.goal_kind
+            or dependency.get("conversation_id") != goal.conversation_id
+            or dependency.get("project_id") != goal.project_id
+            or not isinstance(original, str)
+            or content_hash(original) != goal.analysis_request_hash
+        ):
+            reject()
+        references = dependency.get("data_references")
+        if not isinstance(references, dict) or any(
+            references.get(field) != expected
+            for field, expected in (
+                ("external_import_id", goal.source_external_import_id),
+                ("external_import_version", goal.source_import_version),
+                ("source_tree_hash", goal.source_tree_hash),
+                ("inclusion_hash", goal.source_inclusion_hash),
+                ("input_manifest_hash", goal.source_manifest_hash),
+            )
+        ):
+            reject()
+        dependencies.add(original)
+    if len(dependencies) != 1:
+        reject()
+
+    saved: dict[str, Any] | None = None
+    saved_message_id: str | None = None
+    proposal: StatisticalDesignProposal | None = None
+    for message in reversed(conversation.messages):
+        if (
+            message.role is not ConversationRole.ASSISTANT
+            or message.payload.get("agent_role") != WorkAgentRole.ANALYSIS.value
+            or message.payload.get("analysis_draft_unchanged") is True
+        ):
+            continue
+        candidate = message.payload.get("analysis_draft")
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("analysis_intent_task_id") != goal.intent_task_id:
+            continue
+        try:
+            draft = StatisticsDraft.model_validate(candidate.get("draft"))
+        except ValidationError:
+            reject()
+        draft_hash = statistics_draft_hash(draft)
+        if (
+            candidate.get("analysis_request_hash") != goal.analysis_request_hash
+            or candidate.get("hash") != draft_hash
+            or draft.external_import_id != goal.source_external_import_id
+            or draft.external_import_hash != goal.source_inclusion_hash
+            or draft.input_manifest_hash != goal.source_manifest_hash
+            or draft.source_run_id is not None
+        ):
+            reject()
+        saved = candidate
+        saved_message_id = message.message_id
+        raw_proposal = message.payload.get("statistical_design_proposal")
+        if raw_proposal is not None:
+            try:
+                proposal = StatisticalDesignProposal.model_validate(raw_proposal)
+            except ValidationError:
+                reject()
+            design = proposal.design
+            if (
+                proposal.project_id != goal.project_id
+                or proposal.source_run_id is not None
+                or proposal.input_manifest_hash != goal.source_manifest_hash
+                or design.external_import_id != goal.source_external_import_id
+                or design.external_import_hash != goal.source_inclusion_hash
+                or not _proposal_hash_matches(proposal)
+            ):
+                reject()
+        break
+
+    if task is None:
+        if (
+            goal.analysis_work_task_id is not None
+            or plan is not None
+            or run is not None
+            or proposal is not None
+        ):
+            reject()
+        if saved is None:
+            return ConversationWorkTaskView(
+                agent_role=WorkAgentRole.ANALYSIS,
+                analysis_intent_task_id=goal.intent_task_id,
+            )
+        return ConversationWorkTaskView(
+            agent_role=WorkAgentRole.ANALYSIS,
+            analysis_intent_task_id=goal.intent_task_id,
+            draft_hash=str(saved["hash"]),
+        )
+
+    if (
+        saved is None
+        or proposal is None
+        or task.task_id != goal.analysis_work_task_id
+        or task.authority_refs.conversation_id != goal.conversation_id
+        or task.authority_refs.analysis_intent_task_id != goal.intent_task_id
+        or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
+        or task.authority_refs.input_revision != saved.get("hash")
+        or len(task.steps) != 1
+        or task.steps[0].kind != "statistical_run"
+        or task.steps[0].input_version != proposal.proposal_hash
+        or task.steps[0].authority_refs.conversation_id != goal.conversation_id
+        or task.steps[0].authority_refs.analysis_intent_task_id != goal.intent_task_id
+        or task.steps[0].authority_refs.analysis_request_hash != goal.analysis_request_hash
+        or task.steps[0].authority_refs.input_revision != saved.get("hash")
+        or task.authority_refs.plan_revision_id != (plan.plan_revision_id if plan else None)
+        or task.steps[0].authority_refs.plan_revision_id
+        != (plan.plan_revision_id if plan else None)
+        or task.authority_refs.workflow_run_id != (run.run_id if run else None)
+        or task.steps[0].authority_refs.workflow_run_id != (run.run_id if run else None)
+    ):
+        reject()
+
+    selected = ConversationWorkTaskView(
+        agent_role=WorkAgentRole.ANALYSIS,
+        analysis_intent_task_id=goal.intent_task_id,
+        draft_hash=str(saved["hash"]),
+        proposal_hash=proposal.proposal_hash,
+        proposal_message_id=saved_message_id,
+        work_task_id=task.task_id,
+        plan_revision_id=plan.plan_revision_id if plan else None,
+        run_id=run.run_id if run else None,
+    )
+    if plan is None:
+        if run is not None or task.status is not TaskStatus.WAITING_USER:
+            reject()
+        return selected
+
+    _frozen_analysis_only_selection(conversation, goal, task, plan, run, saved, proposal)
+    return selected
+
+
+def _frozen_analysis_only_selection(
+    conversation: ConversationView,
+    goal: CompositeGoalIdentity,
+    task: WorkTask,
+    plan: PlanRevisionView,
+    run: RunView | None,
+    saved: dict[str, Any],
+    proposal: StatisticalDesignProposal,
+) -> None:
+    """Validate an external-source frozen Plan/Run while retaining its gates."""
+
+    def reject() -> NoReturn:
+        raise ConflictError(
+            "analysis_goal_selection_conflict",
+            "冻结外部指标统计方案的身份或审批状态无法核验。",
+        )
+
+    context = plan.plan.get("work_context")
+    if (
+        plan.project_id != goal.project_id
+        or plan.plan.get("kind") != "statistical_design"
+        or plan.state not in {PlanState.DRAFT, PlanState.AWAITING_APPROVAL, PlanState.APPROVED}
+        or plan.manifest_hash != goal.source_manifest_hash
+        or plan.plan_hash
+        != content_hash(
+            {
+                "plan": plan.plan,
+                "manifest_hash": plan.manifest_hash,
+                "environment_hash": plan.environment_hash,
+            }
+        )
+        or not isinstance(context, dict)
+        or context.get("conversation_id") != conversation.conversation_id
+        or context.get("proposal_hash") != proposal.proposal_hash
+        or context.get("draft_hash") != saved.get("hash")
+    ):
+        reject()
+    message = next(
+        (
+            item
+            for item in conversation.messages
+            if item.message_id == context.get("proposal_message_id")
+        ),
+        None,
+    )
+    if (
+        message is None
+        or message.role is not ConversationRole.ASSISTANT
+        or message.payload.get("agent_role") != WorkAgentRole.ANALYSIS.value
+        or message.payload.get("analysis_draft") != saved
+        or message.payload.get("statistical_design_proposal") != proposal.model_dump(mode="json")
+        or proposal.design.model_dump(mode="json") != plan.plan.get("design")
+        or (proposal.correction.model_dump(mode="json") if proposal.correction else None)
+        != plan.plan.get("correction")
+        or [list(row) for row in design_matrix(proposal.design)] != plan.plan.get("design_matrix")
+    ):
+        reject()
+    if run is None:
+        if (
+            task.status is not TaskStatus.WAITING_USER
+            or task.steps[0].status is not TaskStepStatus.READY
+        ):
+            reject()
+    elif (
+        run.project_id != goal.project_id
+        or run.plan_revision_id != plan.plan_revision_id
+        or plan.state is not PlanState.APPROVED
+        or task.status
+        not in {
+            TaskStatus.WAITING_USER,
+            TaskStatus.WAITING_RUN,
+            TaskStatus.WAITING_DEPENDENCY,
+            TaskStatus.COMPLETED,
+        }
+        or task.steps[0].status
+        is not (
+            TaskStepStatus.SUCCEEDED
+            if task.status is TaskStatus.COMPLETED
+            else TaskStepStatus.WAITING
+        )
+        or (task.status is TaskStatus.COMPLETED and run.state is not WorkflowState.SUCCEEDED)
+    ):
+        reject()
 
 
 def _selection_conflict() -> NoReturn:

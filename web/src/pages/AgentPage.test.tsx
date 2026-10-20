@@ -236,6 +236,7 @@ describe("agent workbench page", () => {
 
     await screen.findByRole("option", { name: "DemoData ALFF" });
     expect(screen.queryByRole("checkbox", { name: "以指定的预处理结果新建分析目标" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "新建独立分析目标" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("预处理来源")).not.toBeInTheDocument();
   });
 
@@ -360,8 +361,13 @@ describe("agent workbench page", () => {
       expect(within(card).getAllByRole("listitem")).toHaveLength(2);
       expect(within(card).queryByText("预处理：")).not.toBeInTheDocument();
       expect(within(card).queryByText("分析方案：")).not.toBeInTheDocument();
-      expect(within(card).queryByRole("button")).not.toBeInTheDocument();
     }
+    expect(within(cards[1]).getByRole("button", { name: "继续此分析" })).toBeInTheDocument();
+    expect(within(cards[2]).getByRole("button", { name: "查看此分析" })).toBeInTheDocument();
+    expect(within(cards[3]).getByRole("button", { name: "查看此分析" })).toBeInTheDocument();
+    expect(within(cards[4]).getByRole("button", { name: "继续此分析" })).toBeInTheDocument();
+    expect(within(cards[5]).getByRole("button", { name: "继续此分析" })).toBeInTheDocument();
+    expect(within(cards[6]).queryByRole("button")).not.toBeInTheDocument();
     expect(within(cards[1]).getByText("统计分析需要你的决定。")).toBeInTheDocument();
     expect(within(cards[2]).getByText("已就绪")).toBeInTheDocument();
     expect(within(cards[3]).getByText("结果说明已送达当前会话。")).toBeInTheDocument();
@@ -372,6 +378,133 @@ describe("agent workbench page", () => {
     expect(screen.queryByText("等待预处理")).not.toBeInTheDocument();
     expect(screen.queryByText("external-user")).not.toBeInTheDocument();
     expect(screen.queryByText("external-complete")).not.toBeInTheDocument();
+  });
+
+  it("selects an analysis-only goal and sends the server-selected intent as a turn assertion", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const savedDraft = message("draft-external", "assistant", "外部指标分析草稿", {
+      agent_role: "analysis",
+      analysis_draft: {
+        analysis_intent_task_id: "external-goal",
+        hash: "b".repeat(64),
+        draft: { external_import_id: "included-external" },
+      },
+    });
+    const initial = conversation({ project_id: "project-1", foreground_agent_role: "preprocessing", messages: [savedDraft] });
+    const selected = conversation({
+      project_id: "project-1",
+      version: 2,
+      foreground_agent_role: "analysis",
+      messages: [savedDraft],
+      work_tasks: [{ agent_role: "analysis", work_task_id: "stat-task", analysis_intent_task_id: "external-goal" }],
+    });
+    const selectGoal = vi.fn((intentTaskId: string, init?: RequestInit) => {
+      expect(intentTaskId).toBe("external-goal");
+      expect(JSON.parse(String(init?.body))).toEqual({ expected_version: 1 });
+      return json(selected);
+    });
+    const turn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({ conversation: selected, user_message: message("u", "user", "继续目标"), assistant_message: message("a", "assistant", "继续分析"), tool_call: null });
+    });
+    installFetch({
+      conversations: () => json([initial]),
+      compositeGoals: () => json([{ ...externalAnalysisGoal("waiting_user", "external-goal", "analysis_draft_user_decision"), analysis_status: null, analysis_work_task_id: null }]),
+      selectCompositeGoal: selectGoal,
+      turn,
+    });
+
+    render(<AgentPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "继续此分析" }));
+    await waitFor(() => expect(selectGoal).toHaveBeenCalledOnce());
+    await screen.findByText("当前负责：数据分析 Agent");
+    fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续这个外部指标分析" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(requestBody).toMatchObject({
+      agent_role: "analysis",
+      analysis_intent_task_id: "external-goal",
+      external_analysis_import_id: "included-external",
+    });
+    expect(requestBody).not.toHaveProperty("start_new_analysis_goal");
+  });
+
+  it("starts an independent external-import goal only after an explicit choice", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const current = conversation({
+      project_id: "project-1",
+      foreground_agent_role: "analysis",
+      messages: [message("draft", "assistant", "已选外部指标", {
+        agent_role: "analysis",
+        analysis_draft: {
+          analysis_intent_task_id: "current-goal",
+          hash: "c".repeat(64),
+          draft: { external_import_id: "included-import" },
+        },
+      })],
+      work_tasks: [{ agent_role: "analysis", work_task_id: "current-task", analysis_intent_task_id: "current-goal" }],
+    });
+    const turn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({ conversation: current, user_message: message("u", "user", "独立分析"), assistant_message: message("a", "assistant", "已登记独立目标"), tool_call: null });
+    });
+    installFetch({ conversations: () => json([current]), turn });
+
+    render(<AgentPage />);
+    const createGoal = await screen.findByRole("checkbox", { name: "新建独立分析目标" });
+    expect(createGoal).not.toBeChecked();
+    expect(screen.getByText("仅使用当前已纳入的外部指标；勾选后，本轮将创建独立目标，不会继续当前已选分析目标。")).toBeInTheDocument();
+    fireEvent.click(createGoal);
+    expect(createGoal).toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "独立分析这个指标" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(requestBody).toMatchObject({
+      agent_role: null,
+      external_analysis_import_id: "included-import",
+      start_new_analysis_goal: true,
+    });
+    expect(requestBody).not.toHaveProperty("analysis_intent_task_id");
+  });
+
+  it("does not carry an independent-goal choice across conversation switches", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const savedConversation = (conversationId: string, intentId: string, importId: string) => conversation({
+      conversation_id: conversationId,
+      project_id: "project-1",
+      foreground_agent_role: "analysis",
+      messages: [message(`draft-${conversationId}`, "assistant", "外部指标草稿", {
+        agent_role: "analysis",
+        analysis_draft: { analysis_intent_task_id: intentId, hash: "d".repeat(64), draft: { external_import_id: importId } },
+      })],
+      work_tasks: [{ agent_role: "analysis", work_task_id: `task-${conversationId}`, analysis_intent_task_id: intentId }],
+    });
+    const first = savedConversation("work-1", "goal-first", "import-first");
+    const second = savedConversation("work-2", "goal-second", "import-second");
+    const turn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({ conversation: second, user_message: message("u", "user", "继续第二个目标"), assistant_message: message("a", "assistant", "已继续"), tool_call: null });
+    });
+    installFetch({ conversations: () => json([first, second]), turn });
+
+    render(<AgentPage />);
+    const createGoal = await screen.findByRole("checkbox", { name: "新建独立分析目标" });
+    fireEvent.click(createGoal);
+    expect(createGoal).toBeChecked();
+    fireEvent.change(screen.getByLabelText("当前会话"), { target: { value: "work-2" } });
+    const secondCreateGoal = await screen.findByRole("checkbox", { name: "新建独立分析目标" });
+    expect(secondCreateGoal).not.toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续第二个外部分析" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(requestBody).toMatchObject({
+      analysis_intent_task_id: "goal-second",
+      external_analysis_import_id: "import-second",
+    });
+    expect(requestBody).not.toHaveProperty("start_new_analysis_goal");
   });
 
   it("selects an exact analysis goal and uses its saved source instead of a newer unrelated draft", async () => {

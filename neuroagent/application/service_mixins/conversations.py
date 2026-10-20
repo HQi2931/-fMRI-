@@ -17,6 +17,7 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxRetryRequest,
     AnalysisOutboxStatus,
 )
+from neuroagent.application.automation.composite_goal import CompositeGoalIdentity
 from neuroagent.application.automation.goal_selection import analysis_selection
 from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationRetryRequest,
@@ -121,6 +122,80 @@ RECOVERABLE_RESULT_INTERPRETATION_ERRORS = (
 )
 
 
+def _verify_analysis_only_external_source(
+    goal: CompositeGoalIdentity, imported: ExternalAnalysisImportView
+) -> None:
+    """Compare every mutable source revision field with the immutable goal root."""
+    manifest_hash = imported.selection.input_manifest_hash if imported.selection else None
+    tree_hash = imported.inspection.source_tree_hash
+    revision_hash = content_hash(
+        {
+            "external_import_id": imported.import_id,
+            "import_version": imported.version,
+            "source_tree_hash": tree_hash,
+            "inclusion_hash": imported.inclusion_hash,
+            "input_manifest_hash": manifest_hash,
+        }
+    )
+    if (
+        goal.goal_kind != "analysis_only_external_import"
+        or goal.source_external_import_id != imported.import_id
+        or goal.project_id != imported.project_id
+        or imported.status != "included"
+        or imported.selection is None
+        or imported.inclusion_hash is None
+        or tree_hash is None
+        or imported.version != goal.source_import_version
+        or tree_hash != goal.source_tree_hash
+        or imported.inclusion_hash != goal.source_inclusion_hash
+        or manifest_hash != goal.source_manifest_hash
+        or revision_hash != goal.source_revision_hash
+        or imported.inspection.metric_kind is None
+        or imported.inspection.scaling is None
+    ):
+        raise ConflictError(
+            "analysis_goal_external_source_changed",
+            "当前外部指标来源与所选分析目标冻结的项目、纳入状态或 revision 不一致。",
+        )
+
+
+def _analysis_goal_original_request(
+    conversation: ConversationView,
+    goal: CompositeGoalIdentity,
+    *,
+    current_request: str,
+) -> str:
+    """Recover the immutable original request from exact assistant evidence."""
+    matches: set[str] = set()
+    for message in conversation.messages:
+        if message.role is not ConversationRole.ASSISTANT:
+            continue
+        dependency = message.payload.get("analysis_dependency")
+        if not isinstance(dependency, dict) or dependency.get("task_id") != goal.intent_task_id:
+            continue
+        original = dependency.get("analysis_request")
+        if (
+            dependency.get("task_kind") != goal.goal_kind
+            or dependency.get("conversation_id") != goal.conversation_id
+            or dependency.get("project_id") != goal.project_id
+            or not isinstance(original, str)
+            or content_hash(original.strip()) != goal.analysis_request_hash
+        ):
+            raise ConflictError(
+                "analysis_goal_identity_conflict",
+                "当前目标的原始请求证据与其稳定摘要不匹配。",
+            )
+        matches.add(original.strip())
+    if len(matches) == 1:
+        return next(iter(matches))
+    if not matches and content_hash(current_request.strip()) == goal.analysis_request_hash:
+        return current_request.strip()
+    raise ConflictError(
+        "analysis_goal_identity_conflict",
+        "无法从当前会话恢复唯一且可核验的目标原始请求。",
+    )
+
+
 class _CompositeGoalModelBudgetSession:
     """Bind successive provider turns to one exact fenced outbox attempt."""
 
@@ -210,6 +285,15 @@ class ConversationMixin(BaseServiceMixin):
         def action() -> ConversationView:
             conversation = self.repository.get_conversation(conversation_id)
             goal = self.automation.get_composite_goal(conversation_id, intent_task_id)
+            if goal.goal_kind == "analysis_only_external_import":
+                try:
+                    imported = self.get_external_import(goal.source_external_import_id or "")
+                except ApplicationError as exc:
+                    raise ConflictError(
+                        "analysis_goal_external_source_changed",
+                        "当前外部指标来源无法核验，不能恢复此分析目标。",
+                    ) from exc
+                _verify_analysis_only_external_source(goal, imported)
             progress = self.automation.get_composite_goal_progress(conversation_id, intent_task_id)
             if progress.status.value not in {
                 "waiting_user",
@@ -220,7 +304,11 @@ class ConversationMixin(BaseServiceMixin):
                 raise ConflictError(
                     "analysis_goal_not_selectable", "当前目标状态或权威证据尚不可恢复。"
                 )
-            outbox = self.automation.get_analysis_outbox(intent_task_id)
+            outbox = (
+                None
+                if goal.goal_kind == "analysis_only_external_import"
+                else self.automation.get_analysis_outbox(intent_task_id)
+            )
             task = (
                 self.automation.get_task(goal.analysis_work_task_id)
                 if goal.analysis_work_task_id is not None
@@ -312,7 +400,11 @@ class ConversationMixin(BaseServiceMixin):
                 raise ConflictError(
                     "analysis_goal_selection_conflict", "当前目标的权威证据尚不可读取。"
                 )
-            outbox = self.automation.get_analysis_outbox(intent_id)
+            outbox = (
+                None
+                if goal.goal_kind == "analysis_only_external_import"
+                else self.automation.get_analysis_outbox(intent_id)
+            )
             if goal.analysis_work_task_id is None:
                 raise ConflictError(
                     "analysis_goal_selection_conflict", "当前目标缺少统计任务身份。"
@@ -1822,6 +1914,27 @@ class ConversationMixin(BaseServiceMixin):
         _confirmation: WorkConfirmationCreate | None = None,
     ) -> ConversationTurnView:
         conversation = self.repository.get_conversation(conversation_id)
+        idempotency_key_hash = content_hash(idempotency_key)
+        selected_analysis_task = conversation_work_task(conversation, WorkAgentRole.ANALYSIS)
+        initial_selected_intent_id = (
+            selected_analysis_task.analysis_intent_task_id
+            if selected_analysis_task is not None
+            else None
+        )
+        durable_idempotency_key = (
+            idempotency_key_hash
+            if conversation.mode is ConversationMode.WORK
+            else idempotency_key
+        )
+        if (
+            request.analysis_intent_task_id is not None
+            or request.external_analysis_import_id is not None
+            or request.start_new_analysis_goal
+        ) and conversation.mode is not ConversationMode.WORK:
+            raise InputValidationError(
+                "analysis_goal_work_conversation_required",
+                "复合分析目标只能在 Work 会话中恢复或新建。",
+            )
         if (
             request.preprocessing_task_id is not None
             and conversation.mode is not ConversationMode.WORK
@@ -1847,6 +1960,9 @@ class ConversationMixin(BaseServiceMixin):
             str | None,
             dict[str, Any] | None,
             AnalysisOutboxRegistrationSource | None,
+            CompositeGoalIdentity | None,
+            str | None,
+            str | None,
         ]:
             conversation = self.repository.get_conversation(conversation_id)
             if _confirmation is not None:
@@ -1859,17 +1975,70 @@ class ConversationMixin(BaseServiceMixin):
             )
             project_id = request.project_id or conversation.project_id
             analysis_goal = None
+            analysis_original_request: str | None = None
             persistent_model_budget = None
-            if (
-                request.external_analysis_import_id is not None
-                and request.action is ConversationAction.AUTO
+            selected_analysis_task = conversation_work_task(conversation, WorkAgentRole.ANALYSIS)
+            selected_intent_id = (
+                selected_analysis_task.analysis_intent_task_id
+                if selected_analysis_task is not None
+                else None
+            )
+            if selected_intent_id != initial_selected_intent_id:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict",
+                    "请求准备期间 Analysis 角色槽已切换，请基于当前目标重试。",
+                )
+            requested_role = (
+                WorkAgentRole.ANALYSIS
+                if request.analysis_intent_task_id is not None
+                or request.external_analysis_import_id is not None
+                or request.start_new_analysis_goal
+                else request.agent_role
+            )
+            selected_role = work_agent_role_for_turn(
+                request.content,
+                requested=requested_role,
+                conversation=conversation,
+            )
+            if request.analysis_intent_task_id is not None and (
+                request.analysis_intent_task_id != selected_intent_id
             ):
+                raise ConflictError(
+                    "analysis_goal_selection_conflict",
+                    "请求中的分析目标 ID 与当前 Analysis 角色槽不一致。",
+                )
+            selected_goal = (
+                self.automation.find_composite_goal(selected_intent_id)
+                if selected_intent_id is not None
+                else None
+            )
+            turn_selected_goal = (
+                selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
+            )
+            if request.start_new_analysis_goal and _confirmation is not None:
+                raise InputValidationError(
+                    "analysis_goal_confirmation_not_supported",
+                    "工作确认请求不能创建新的独立分析目标。",
+                )
+            if selected_goal is not None and (
+                selected_goal.conversation_id != conversation_id
+                or selected_goal.project_id != project_id
+            ):
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前 Analysis 角色槽的目标范围不匹配。"
+                )
+            if request.analysis_intent_task_id is not None and selected_goal is None:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict", "当前 Analysis 角色槽没有可恢复的目标记录。"
+                )
+
+            def read_external_source(import_id: str) -> ExternalAnalysisImportView:
                 if conversation.mode is not ConversationMode.WORK or project_id is None:
                     raise InputValidationError(
                         "analysis_only_work_project_required",
                         "独立统计分析需要绑定到一个 Work 会话和当前项目。",
                     )
-                imported = self.get_external_import(request.external_analysis_import_id)
+                imported = self.get_external_import(import_id)
                 if (
                     imported.project_id != project_id
                     or imported.status != "included"
@@ -1882,16 +2051,70 @@ class ConversationMixin(BaseServiceMixin):
                         "analysis_only_external_source_unverified",
                         "请从当前项目选择已纳入并登记掩膜的外部分析来源。",
                     )
+                return imported
+
+            if request.start_new_analysis_goal:
+                assert request.external_analysis_import_id is not None
+                imported = read_external_source(request.external_analysis_import_id)
                 analysis_goal = self.automation.ensure_analysis_only_external_goal(
                     conversation_id=conversation_id,
-                    project_id=project_id,
+                    project_id=str(project_id),
                     analysis_request=request.content,
                     imported=imported,
+                    idempotency_key_hash=idempotency_key_hash,
+                )
+                analysis_original_request = request.content.strip()
+            elif request.external_analysis_import_id is not None:
+                if turn_selected_goal is not None:
+                    if turn_selected_goal.goal_kind != "analysis_only_external_import":
+                        raise ConflictError(
+                            "analysis_goal_selection_conflict",
+                            "当前选择的是其他分析目标；如需独立外部指标目标，请明确新建目标。",
+                        )
+                    if (
+                        turn_selected_goal.source_external_import_id
+                        != request.external_analysis_import_id
+                    ):
+                        raise ConflictError(
+                            "analysis_goal_selection_conflict",
+                            "所选外部来源与当前 Analysis 目标不一致。",
+                        )
+                    analysis_goal = turn_selected_goal
+                else:
+                    imported = read_external_source(request.external_analysis_import_id)
+                    analysis_goal = self.automation.ensure_analysis_only_external_goal(
+                        conversation_id=conversation_id,
+                        project_id=str(project_id),
+                        analysis_request=request.content,
+                        imported=imported,
+                        idempotency_key_hash=idempotency_key_hash,
+                    )
+                    analysis_original_request = request.content.strip()
+            elif turn_selected_goal is not None and (
+                turn_selected_goal.goal_kind == "analysis_only_external_import"
+            ):
+                analysis_goal = turn_selected_goal
+
+            if analysis_goal is not None:
+                imported = read_external_source(
+                    analysis_goal.source_external_import_id or ""
+                )
+                _verify_analysis_only_external_source(analysis_goal, imported)
+                analysis_original_request = _analysis_goal_original_request(
+                    conversation,
+                    analysis_goal,
+                    current_request=request.content.strip(),
                 )
                 persistent_model_budget = _CompositeGoalModelBudgetSession(
                     self.automation,
                     intent_task_id=analysis_goal.intent_task_id,
-                    scope=f"analysis-only:{analysis_goal.intent_task_id}:{idempotency_key}",
+                    scope=f"analysis-only:{analysis_goal.intent_task_id}:{idempotency_key_hash}",
+                )
+            elif turn_selected_goal is not None:
+                persistent_model_budget = _CompositeGoalModelBudgetSession(
+                    self.automation,
+                    intent_task_id=turn_selected_goal.intent_task_id,
+                    scope=f"composite-goal:{turn_selected_goal.intent_task_id}:{idempotency_key_hash}",
                 )
             if request.preprocessing_task_id is not None:
                 if _confirmation is not None:
@@ -1990,21 +2213,39 @@ class ConversationMixin(BaseServiceMixin):
                     preferred_profile_id,
                     None,
                     source,
+                    None,
+                    None,
+                    selected_intent_id,
                 )
-            selected_role = work_agent_role_for_turn(
-                request.content,
-                requested=WorkAgentRole.ANALYSIS
-                if request.external_analysis_import_id
-                else request.agent_role,
-                conversation=conversation,
-            )
+            turn_goal = analysis_goal or turn_selected_goal
+            dialogue_request = request
+            if turn_goal is not None:
+                dialogue_request = request.model_copy(
+                    update={
+                        "analysis_intent_task_id": turn_goal.intent_task_id,
+                        "agent_role": WorkAgentRole.ANALYSIS,
+                        "external_analysis_import_id": (
+                            analysis_goal.source_external_import_id
+                            if analysis_goal is not None
+                            and request.action is ConversationAction.AUTO
+                            else request.external_analysis_import_id
+                        ),
+                        "start_new_analysis_goal": False,
+                    }
+                )
             active_run_id = request.target_run_id or run_for_agent_context(
                 conversation, selected_role
             )
             frozen_analysis = (
                 self.resolve_selected_frozen_analysis(conversation)
                 if selected_role is WorkAgentRole.ANALYSIS
-                and request.external_analysis_import_id is None
+                and (
+                    request.external_analysis_import_id is None
+                    or (
+                        turn_goal is not None
+                        and selected_intent_id == turn_goal.intent_task_id
+                    )
+                )
                 else None
             )
             selected_plan_id = request.plan_revision_id
@@ -2020,6 +2261,14 @@ class ConversationMixin(BaseServiceMixin):
                     )
                 active_run_id = frozen_role.run_id
                 selected_plan_id = frozen_role.plan_revision_id
+                dialogue_request = dialogue_request.model_copy(
+                    update={"external_analysis_import_id": None}
+                )
+            if analysis_goal is not None and selected_intent_id != analysis_goal.intent_task_id:
+                # A newly-created goal starts with its own source context and
+                # cannot inherit another goal's selected Run.
+                active_run_id = None
+                selected_plan_id = None
             # This turn's context must use the selected role's run, while the
             # persisted conversation retains both roles' independent references.
             if active_run_id is not None:
@@ -2067,7 +2316,7 @@ class ConversationMixin(BaseServiceMixin):
             if request.action is ConversationAction.AUTO or frozen_analysis is not None:
                 action_result = await self.work_dialogue.respond(
                     conversation,
-                    request,
+                    dialogue_request,
                     work_packet,
                     workspace_path=workspace_path,
                     project_id=project_id,
@@ -2079,7 +2328,7 @@ class ConversationMixin(BaseServiceMixin):
                         if hasattr(self, "workspace_content_consent_granted")
                         else False
                     ),
-                    idempotency_key=idempotency_key,
+                    idempotency_key=durable_idempotency_key,
                     has_profiles=bool(self.list_model_profiles()),
                     persistent_model_budget=persistent_model_budget,
                 )
@@ -2089,7 +2338,7 @@ class ConversationMixin(BaseServiceMixin):
                     workspace_path=workspace_path,
                     active_run_id=active_run_id,
                     project_id=project_id,
-                    idempotency_key=idempotency_key,
+                    idempotency_key=durable_idempotency_key,
                     conversation_id=conversation_id,
                 )
                 role = request.agent_role or (
@@ -2118,7 +2367,7 @@ class ConversationMixin(BaseServiceMixin):
                     "task_id": analysis_goal.intent_task_id,
                     "conversation_id": conversation_id,
                     "project_id": analysis_goal.project_id,
-                    "analysis_request": request.content.strip(),
+                    "analysis_request": analysis_original_request,
                     "status": "analysis_started",
                     "data_references": {
                         "external_import_id": analysis_goal.source_external_import_id,
@@ -2162,6 +2411,9 @@ class ConversationMixin(BaseServiceMixin):
                 preferred_profile_id,
                 model_metadata,
                 None,
+                analysis_goal,
+                analysis_original_request,
+                selected_intent_id,
             )
 
         def finalize(
@@ -2175,6 +2427,9 @@ class ConversationMixin(BaseServiceMixin):
                 str | None,
                 dict[str, Any] | None,
                 AnalysisOutboxRegistrationSource | None,
+                CompositeGoalIdentity | None,
+                str | None,
+                str | None,
             ],
         ) -> ConversationTurnView:
             (
@@ -2187,6 +2442,9 @@ class ConversationMixin(BaseServiceMixin):
                 preferred_profile_id,
                 model_metadata,
                 registration_source,
+                analysis_goal,
+                _analysis_original_request,
+                selected_intent_id,
             ) = prepared
             conversation = self.repository.get_conversation(conversation_id)
             if conversation.version != expected_conversation_version:
@@ -2194,6 +2452,34 @@ class ConversationMixin(BaseServiceMixin):
                     "conversation_changed_during_prepare",
                     "工作请求准备期间对话已变化，请基于最新状态重试。",
                 )
+            current_selected = conversation_work_task(conversation, WorkAgentRole.ANALYSIS)
+            current_selected_id = (
+                current_selected.analysis_intent_task_id if current_selected is not None else None
+            )
+            if current_selected_id != selected_intent_id:
+                raise ConflictError(
+                    "analysis_goal_selection_conflict",
+                    "模型准备期间 Analysis 角色槽已切换，迟到结果未写入。",
+                )
+            if analysis_goal is not None:
+                try:
+                    current_goal = self.automation.get_composite_goal(
+                        conversation_id, analysis_goal.intent_task_id
+                    )
+                    imported = self.get_external_import(
+                        analysis_goal.source_external_import_id or ""
+                    )
+                except ApplicationError as exc:
+                    raise ConflictError(
+                        "analysis_goal_external_source_changed",
+                        "模型准备期间外部来源或目标记录已无法核验，迟到结果未写入。",
+                    ) from exc
+                if current_goal != analysis_goal:
+                    raise ConflictError(
+                        "analysis_goal_selection_conflict",
+                        "模型准备期间分析目标身份已变化，迟到结果未写入。",
+                    )
+                _verify_analysis_only_external_source(analysis_goal, imported)
             if action_result.commit is not None:
                 proposed = action_result
                 committed = action_result.commit()
@@ -2313,11 +2599,33 @@ class ConversationMixin(BaseServiceMixin):
             return await self._idempotent_async(
                 scope=f"conversations:{conversation_id}:"
                 + ("work-confirmation" if _confirmation is not None else "turns"),
-                key=idempotency_key,
+                key=durable_idempotency_key,
                 request=_confirmation if _confirmation is not None else request,
                 response_type=ConversationTurnView,
                 prepare=prepare,
                 finalize=finalize,
+                legacy_key=(
+                    idempotency_key
+                    if durable_idempotency_key != idempotency_key
+                    else None
+                ),
+                legacy_request_hashes=(
+                    (
+                        content_hash(
+                            request.model_dump(
+                                mode="json",
+                                exclude={"analysis_intent_task_id", "start_new_analysis_goal"},
+                            )
+                        ),
+                    )
+                    if conversation.mode is ConversationMode.WORK
+                    and _confirmation is None
+                    and not {
+                        "analysis_intent_task_id",
+                        "start_new_analysis_goal",
+                    }.intersection(request.model_fields_set)
+                    else ()
+                ),
             )
 
     def _commit_preprocessing_work_task_binding(

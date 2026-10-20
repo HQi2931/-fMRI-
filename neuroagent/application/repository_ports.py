@@ -85,6 +85,16 @@ class IdempotencyStorePort(Protocol):
         lease_seconds: int,
     ) -> dict[str, Any] | None: ...
 
+    def migrate_legacy_idempotency_key(
+        self,
+        scope: str,
+        legacy_key: str,
+        key: str,
+        *,
+        request_hash: str,
+        legacy_request_hashes: tuple[str, ...] = (),
+    ) -> None: ...
+
     def complete_idempotent_request(
         self,
         scope: str,

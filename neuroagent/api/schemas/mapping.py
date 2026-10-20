@@ -16,7 +16,10 @@ def to_application_message(
 ) -> ApplicationMessage:
     """Map a validated HTTP DTO into an independently owned use-case message."""
 
-    return target.model_validate(message.model_dump(mode="python"))
+    # Keep fields that were actually supplied by the HTTP client distinguishable
+    # from DTO defaults. Application commands may use that presence information
+    # for compatibility and explicit-intent checks.
+    return target.model_validate(message.model_dump(mode="python", exclude_unset=True))
 
 
 def to_http_response(message: object, target: Any) -> Any:

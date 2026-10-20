@@ -1397,6 +1397,19 @@
             "title": "Allow Remote Search",
             "type": "boolean"
           },
+          "analysis_intent_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Intent Task Id"
+          },
           "confirmation_id": {
             "anyOf": [
               {
@@ -1570,6 +1583,11 @@
                 "type": "null"
               }
             ]
+          },
+          "start_new_analysis_goal": {
+            "default": false,
+            "title": "Start New Analysis Goal",
+            "type": "boolean"
           },
           "stream": {
             "default": false,

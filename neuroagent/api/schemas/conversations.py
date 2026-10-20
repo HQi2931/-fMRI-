@@ -112,6 +112,8 @@ class ConversationTurnCreate(StrictHttpModel):
     target_run_id: str | None = None
     preprocessing_task_id: str | None = Field(default=None, min_length=1, max_length=100)
     external_analysis_import_id: str | None = Field(default=None, min_length=1, max_length=64)
+    analysis_intent_task_id: str | None = Field(default=None, min_length=1, max_length=100)
+    start_new_analysis_goal: bool = False
     qc_review_id: str | None = None
     workspace_setup: WorkspaceSetupIntent | None = None
     skill_plan_intent: SkillPlanIntent | None = None
@@ -127,6 +129,25 @@ class ConversationTurnCreate(StrictHttpModel):
 
     @model_validator(mode="after")
     def explicit_external_source_requires_analysis(self) -> ConversationTurnCreate:
+        if self.start_new_analysis_goal and (
+            self.external_analysis_import_id is None
+            or self.action is not ConversationAction.AUTO
+            or self.agent_role is WorkAgentRole.PREPROCESSING
+            or self.analysis_intent_task_id is not None
+            or self.preprocessing_task_id is not None
+            or self.target_run_id is not None
+            or self.confirmation_id is not None
+            or self.real_execution_confirmed
+        ):
+            raise ValueError(
+                "a new analysis goal requires an external source and cannot combine with a "
+                "selected goal, preprocessing source, run, or confirmation"
+            )
+        if (
+            self.analysis_intent_task_id is not None
+            and self.agent_role is WorkAgentRole.PREPROCESSING
+        ):
+            raise ValueError("analysis goal assertions cannot select the preprocessing role")
         if self.external_analysis_import_id is not None and (
             self.target_run_id is not None or self.agent_role is WorkAgentRole.PREPROCESSING
         ):

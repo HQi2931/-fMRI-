@@ -162,10 +162,11 @@ function CompositeGoalProgressPanel({
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
-            {!analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
+            {(analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
+              || !analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
               && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
               && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
-              && !["blocked", "cancelled"].includes(goal.analysis_status ?? "")
+              && !["blocked", "cancelled"].includes(goal.analysis_status ?? ""))
               && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>{!goal.analysis_status || goal.analysis_status === "waiting_user" ? "继续此分析" : "查看此分析"}</button>}
           </article>
         </li>;
@@ -293,6 +294,10 @@ export function AgentPage() {
     enabled: boolean;
     sourceKey: string;
   } | null>(null);
+  const [analysisGoalCreationSelection, setAnalysisGoalCreationSelection] = useState<{
+    context: string;
+    enabled: boolean;
+  } | null>(null);
 
   const modeConversations = useMemo(() => conversations.filter((item) => item.mode === mode), [conversations, mode]);
   const activeConversation = conversations.find((item) => item.conversation_id === activeIds[mode]);
@@ -339,6 +344,19 @@ export function AgentPage() {
     .find((message) => message.role === "assistant" && (message.payload.agent_role === "analysis" || message.payload.agent_role === "preprocessing"))
     ?.payload.agent_role;
   const effectiveAgentRole = selectedPreprocessingSource ? "analysis" : agentRole === "auto" ? (activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
+  const analysisGoalCreationContext = JSON.stringify([
+    mode,
+    activeConversation?.conversation_id ?? null,
+    boundProjectId,
+    selectedExternalImportId,
+  ]);
+  const createIndependentAnalysisGoal = mode === "work" && effectiveAgentRole === "analysis"
+    && !selectedPreprocessingSource && Boolean(selectedExternalImportId)
+    && analysisGoalCreationSelection?.context === analysisGoalCreationContext
+    && analysisGoalCreationSelection.enabled;
+  useEffect(() => {
+    setAnalysisGoalCreationSelection((current) => current?.context === analysisGoalCreationContext ? current : null);
+  }, [analysisGoalCreationContext]);
   const offeredConfirmation = mode === "work" && effectiveAgentRole === "preprocessing" && boundToSelectedWorkspace
     ? currentConfirmation(activeConversation?.messages ?? [], workspacePath) : null;
   const confirmation = offeredConfirmation?.request ?? null;
@@ -621,6 +639,7 @@ export function AgentPage() {
       setAgentRole("analysis");
       setExternalSource(null);
       setAnalysisSourceSelection(null);
+      setAnalysisGoalCreationSelection(null);
       setOpenedConfirmation(null);
       setCompositeGoalRefreshNonce((value) => value + 1);
     } catch (caught) {
@@ -760,6 +779,11 @@ export function AgentPage() {
         if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); setOpenedConfirmation(null); }
         return;
       }
+      const analysisGoalTurnFields = mode === "work" && effectiveAgentRole === "analysis" && !selectedPreprocessingSource
+        ? createIndependentAnalysisGoal
+          ? { start_new_analysis_goal: true }
+          : selectedAnalysisIntentId ? { analysis_intent_task_id: selectedAnalysisIntentId } : {}
+        : {};
       const turn = await agentApi.streamConversationTurn(conversationId, {
         content,
         workspace_path: mode === "work" ? workspacePath.trim() || null : null,
@@ -776,6 +800,7 @@ export function AgentPage() {
         workspace_file_scope: mode === "work" && selectedScope.length ? { paths: selectedScope } : null,
         selected_input_stage: mode === "work" && selectedInputStage ? selectedInputStage : null,
         real_execution_confirmed: false,
+        ...analysisGoalTurnFields,
       }, (event) => {
         if (controller.signal.aborted) return;
         if (event.type === "reset") setPendingTurn((pending) => pending && { ...pending, text: "" });
@@ -927,7 +952,7 @@ export function AgentPage() {
       />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
-      {mode === "work" && !registerAnalysisFromPreprocessing && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
+      {mode === "work" && !registerAnalysisFromPreprocessing && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setAnalysisGoalCreationSelection(null); setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
       <ConversationHistory busy={busy} messages={visibleMessages.length ? visibleMessages : [WELCOME[mode]]} onApply={(proposal) => void applyWorkspaceProposal(proposal)} onUndo={(proposal) => void undoWorkspaceProposal(proposal)} onRetryAnalysisOutbox={(intentTaskId) => void retryAnalysisOutbox(intentTaskId)} onRetryResultInterpretation={(taskId) => void retryResultInterpretation(taskId)} latestDraftId={latestDraftId} onOpenPlan={() => setPlanOpen(true)} onStatisticsRun={receiveStatisticsRun} conversation={activeConversation} agentRole={effectiveAgentRole} onTaskChange={refreshWorkTask} />
       {mode === "work" && activeRun && <WorkRunPanel run={activeRun} onRunChange={(run) => { setActiveRun(run); updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state }); }} />}
       {runConnectionMessage && <div role="status">{runConnectionMessage} <button type="button" onClick={() => setPollNonce((value) => value + 1)}>重新连接</button></div>}
@@ -952,6 +977,17 @@ export function AgentPage() {
             <option value="">请明确选择任务和运行</option>
             {preprocessingSources.map((source) => <option key={source.key} value={source.key}>任务 {source.taskId} · 运行 {source.runId}</option>)}
           </select></label>}
+        </div>}
+        {mode === "work" && effectiveAgentRole === "analysis" && !selectedPreprocessingSource && selectedExternalImportId && <div className="analysis-goal-source">
+          <label><input
+            type="checkbox"
+            checked={createIndependentAnalysisGoal}
+            disabled={busy || draftDirty}
+            onChange={(event) => setAnalysisGoalCreationSelection(event.target.checked
+              ? { context: analysisGoalCreationContext, enabled: true }
+              : null)}
+          />新建独立分析目标</label>
+          <small>仅使用当前已纳入的外部指标；勾选后，本轮将创建独立目标，不会继续当前已选分析目标。</small>
         </div>}
         <textarea ref={composer} disabled={busy || draftDirty} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "chat" ? "问一个 rs-fMRI 方法问题" : "例如：用当前 DemoData 准备 ALFF 预处理方案"} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !busy) { event.preventDefault(); void send(); }

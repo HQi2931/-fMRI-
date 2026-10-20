@@ -795,6 +795,7 @@ class WorkTaskApplicationService:
         project_id: str,
         analysis_request: str,
         imported: ExternalAnalysisImportView,
+        idempotency_key_hash: str | None = None,
     ) -> CompositeGoalIdentity:
         """Persist an explicit external-source goal and budget before model work."""
 
@@ -830,7 +831,23 @@ class WorkTaskApplicationService:
             "external_import_id": imported.import_id,
             "source_revision_hash": revision_hash,
         }
-        intent_id = content_hash(identity_fields)[:32]
+        if idempotency_key_hash is not None:
+            if len(idempotency_key_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in idempotency_key_hash
+            ):
+                raise ValueError("idempotency key hash must be a lowercase SHA-256 digest")
+            # Anchor the root ID to the one-way key digest so a failed attempt
+            # cannot release the key-to-identity binding. Reusing that key for
+            # another request or source reaches the same row and conflicts.
+            intent_id = content_hash(
+                {
+                    "goal_kind": "analysis_only_external_import",
+                    "conversation_id": conversation_id,
+                    "idempotency_key_hash": idempotency_key_hash,
+                }
+            )[:32]
+        else:
+            intent_id = content_hash(identity_fields)[:32]
         goal = CompositeGoalIdentity(
             intent_task_id=intent_id,
             conversation_id=conversation_id,

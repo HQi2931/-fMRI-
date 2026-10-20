@@ -14,6 +14,12 @@
 
 本切片仅覆盖用户明确选定的单个外部来源及现有统计能力。它没有完成通用目标调度、多来源/多指标自动拆分、跨 Run/session 编排、FC、任意 DAG 或整个计划 0014。
 
+## 2026-10-18 analysis-only 前台续聊与显式新建
+
+Work 前台现在按服务端 Analysis role slot 恢复 analysis-only 外部指标目标。正常补充复用同一 CompositeGoal root、原始请求 hash、冻结来源 revision 和累计模型预算；缺少账本或来源 revision 变化时，在模型调用前失败关闭。`analysis_intent_task_id` 仅断言当前服务端目标，目标切换仍走既有选择 API。用户显式勾选“新建独立分析目标”后，HTTP 幂等键摘要稳定寻址新 root，request/source 身份保存在 root 并在复用时核对：同键同身份重放幂等，同键改正文或来源冲突，不同键允许相同正文/来源建立另一个 root。Work 回合的持久幂等记录使用 key 摘要；升级前的原始 key 记录会先匹配旧版请求摘要（移除当时不存在的两个分析目标字段），再在同 key 重放前转为当前摘要；不匹配的旧请求身份不会被改写。新记录从不保存原始 key。选择和最终提交复核来源及前台目标，模型期间的来源/Analysis slot 变化会拒绝迟到回复。analysis-only 冻结 Plan/Run 恢复只读；显式切换到 preprocessing Agent 的回合不消费 Analysis 目标预算。
+
+新增前台恢复回归 14 项，连同分析意图、预处理交接和 WorkTask 来源绑定回归共 57 项通过；Agent 页面 `AgentPage.test.tsx` 67 项通过。OpenAPI 与 TypeScript schema 已重新生成；前端 TypeScript、ESLint 通过，Ruff 检查涉及的 11 个后端/测试文件通过，Mypy 检查 10 个源文件通过，文档规范检查覆盖 90 份 Markdown，`git diff --check` 通过。定向 pytest 使用 `--no-cov`，此前无此选项的同类定向运行只因项目全局 coverage fail-under 退出，不是测试失败。本切片未运行全量测试、真实 Provider、MATLAB 或 DPABI；没有新增数据库迁移，也未完成计划 0014 的通用 dispatcher、多来源自动拆分、跨 Run/session、FC 或任意 DAG。
+
 ## 2026-10-18 普通分析任务只读结果兼容性
 
 前台只读结果查询现在区分普通 standalone Analysis task 与 CompositeGoal task：没有 `analysis_intent_task_id` 的冻结引用，只有在持久 WorkTask ID 未关联任何复合目标时才保留既有 standalone 查询路径；无法确认任务身份或该任务确属复合目标时仍返回冲突，避免将缺失的目标身份降级为普通分析。

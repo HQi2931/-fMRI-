@@ -2094,6 +2094,8 @@ export interface components {
              * @default false
              */
             allow_remote_search: boolean;
+            /** Analysis Intent Task Id */
+            analysis_intent_task_id?: string | null;
             /** Confirmation Id */
             confirmation_id?: string | null;
             /** Content */
@@ -2130,6 +2132,11 @@ export interface components {
             /** Selected Input Stage */
             selected_input_stage?: string | null;
             skill_plan_intent?: components["schemas"]["SkillPlanIntent"] | null;
+            /**
+             * Start New Analysis Goal
+             * @default false
+             */
+            start_new_analysis_goal: boolean;
             /**
              * Stream
              * @default false

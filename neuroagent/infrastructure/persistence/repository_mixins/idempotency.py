@@ -23,6 +23,57 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
 class IdempotencyMixin(RepositoryBaseMixin):
     # -- idempotency ---------------------------------------------------------
 
+    def migrate_legacy_idempotency_key(
+        self,
+        scope: str,
+        legacy_key: str,
+        key: str,
+        *,
+        request_hash: str,
+        legacy_request_hashes: tuple[str, ...] = (),
+    ) -> None:
+        """Rekey a pre-hash Work entry before reserving its digest key."""
+        if legacy_key == key:
+            return
+        with self._write_session() as session:
+            legacy = session.scalar(
+                select(IdempotencyRow).where(
+                    IdempotencyRow.scope == scope,
+                    IdempotencyRow.idempotency_key == legacy_key,
+                )
+            )
+            if legacy is None:
+                return
+            current = session.scalar(
+                select(IdempotencyRow).where(
+                    IdempotencyRow.scope == scope,
+                    IdempotencyRow.idempotency_key == key,
+                )
+            )
+            if current is not None:
+                raise ConflictError(
+                    "idempotency_legacy_key_conflict",
+                    "旧版与摘要幂等记录同时存在。请核对后重试。",
+                    scope=scope,
+                )
+            if (
+                legacy.request_hash != request_hash
+                and legacy.request_hash not in legacy_request_hashes
+            ):
+                raise ConflictError(
+                    "idempotency_key_reused",
+                    "同一 Idempotency-Key 不能用于不同请求。",
+                    scope=scope,
+                )
+            legacy.idempotency_key = key
+            if legacy.request_hash in legacy_request_hashes:
+                # Earlier ConversationTurnCreate schemas omitted the two
+                # analysis-goal assertion fields. Accept only that exact
+                # legacy serialization and normalize it to the current hash.
+                legacy.request_hash = request_hash
+            legacy.updated_at = datetime.now(UTC)
+            session.flush()
+
     def begin_idempotent_request(
         self,
         scope: str,

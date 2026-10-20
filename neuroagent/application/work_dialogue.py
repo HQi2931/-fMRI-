@@ -523,6 +523,31 @@ def _consumed_analysis_intent(
     )
 
 
+def _scope_conversation_to_analysis_intent(
+    conversation: ConversationView, intent_task_id: str | None
+) -> ConversationView:
+    """Make target-scoped readers see only the selected analysis slot."""
+    if intent_task_id is None:
+        return conversation
+    selected = next(
+        (task for task in conversation.work_tasks if task.agent_role is WorkAgentRole.ANALYSIS),
+        None,
+    )
+    if selected is not None and selected.analysis_intent_task_id == intent_task_id:
+        return conversation
+    target = ConversationWorkTaskView(
+        agent_role=WorkAgentRole.ANALYSIS,
+        analysis_intent_task_id=intent_task_id,
+    )
+    work_tasks = tuple(
+        target if item.agent_role is WorkAgentRole.ANALYSIS else item
+        for item in conversation.work_tasks
+    )
+    if selected is None:
+        work_tasks = (*work_tasks, target)
+    return conversation.model_copy(update={"work_tasks": work_tasks})
+
+
 class WorkDialogue:
     def __init__(
         self,
@@ -694,6 +719,12 @@ class WorkDialogue:
         has_profiles: bool,
         persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
+        # The client field is an assertion at the API boundary. The caller
+        # replaces it with the resolved server target for model preparation so
+        # all draft and history readers remain scoped to that exact goal.
+        conversation = _scope_conversation_to_analysis_intent(
+            conversation, request.analysis_intent_task_id
+        )
         run_context = packet.work_context.get("run")
         qc_context = packet.work_context.get("qc")
         qc_status = (
@@ -773,6 +804,7 @@ class WorkDialogue:
                     preferred_profile_id=preferred_profile_id,
                     idempotency_key=idempotency_key,
                     has_profiles=has_profiles,
+                    persistent_model_budget=persistent_model_budget,
                 )
         consumed_intent = (
             _consumed_analysis_intent(conversation, request, project_id=project_id)
