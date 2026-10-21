@@ -568,6 +568,41 @@ describe("agent workbench page", () => {
     expect(requestBody).not.toHaveProperty("start_new_analysis_goal");
   });
 
+  it("lets auto dispatch a new preprocessing plan without inheriting the prior analysis goal", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const current = conversation({
+      project_id: "project-1",
+      foreground_agent_role: "analysis",
+      messages: [message("external-draft", "assistant", "外部指标分析草稿", {
+        agent_role: "analysis",
+        analysis_draft: {
+          analysis_intent_task_id: "external-goal",
+          hash: "e".repeat(64),
+          draft: { external_import_id: "included-external" },
+        },
+      })],
+      work_tasks: [{ agent_role: "analysis", work_task_id: "analysis-task", analysis_intent_task_id: "external-goal" }],
+    });
+    const turn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({ conversation: current, user_message: message("u", "user", "新建预处理方案"), assistant_message: message("a", "assistant", "已准备预处理草稿"), tool_call: null });
+    });
+    installFetch({ conversations: () => json([current]), turn });
+
+    render(<AgentPage />);
+    const prompt = "请为当前项目创建一份待审 DPABI 预处理草稿，只计算 ALFF/fALFF，不做统计分析。";
+    fireEvent.change(await screen.findByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: prompt } });
+    expect(screen.getByText("当前负责：预处理 Agent")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(requestBody).toMatchObject({
+      agent_role: null,
+      external_analysis_import_id: null,
+    });
+    expect(requestBody).not.toHaveProperty("analysis_intent_task_id");
+  });
+
   it("starts an independent external-import goal only after an explicit choice", async () => {
     let requestBody: Record<string, unknown> | null = null;
     const current = conversation({

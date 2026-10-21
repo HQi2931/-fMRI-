@@ -406,6 +406,12 @@ Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志�
 
 每次受控 MATLAB attempt 现在只为子进程创建独立、路径受限的 `MATLAB_PREFDIR`，用于绕过默认偏好目录不可写的环境问题，不触碰用户默认配置。当前分类与本地隔离方案是可复核的故障处理路径，不证明本次报错只有一个根因。真实复跑和 DPABI 阶段推进记录待实际运行后补充；该功能切片不代表计划 0014 的整体自动化范围已完成。
 
+### 自动分派跨角色新预处理意图（2026-10-21）
+
+当 Work 选择器处于自动分派、会话前台角色仍为数据分析且该槽绑定旧分析目标时，用户明确请求新建 DPABI/预处理方案会按新意图路由到预处理 Agent。前端在编辑这类请求时同步显示预处理角色，并省略旧分析目标 ID 和外部指标导入绑定；普通分析目标续接仍保留当前目标。后端显式两阶段“先预处理再分析”继续优先进入预处理。
+
+定向验证：路由后端 53 项、Agent 页面 71 项通过；Ruff、TypeScript 类型检查与差异空白检查通过。未调用 Provider、未启动 MATLAB/DPABI，未执行本轮对话草稿的真实模型验收。
+
 ### 阶段 B CompositeGoal 阶段交接判定（2026-10-20）
 
 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md) 已实现一个受限的只读 handoff decision：进度投影和两个已有 outbox consumer 共用同一纯决议函数。CompositeGoal 快照在同一只读 SQLite 一致性边界中加入当前目标对应的最小 Plan、Run 与 QC 事实；只有 Task wait reference、Plan/Run 项目、输入修订和绑定关系、活跃 Run 状态及 QC review 事实均精确匹配时，才显示等待审查或等待已绑定 Run。缺失、未知或错绑证据保持待核验/原等待状态。仅允许现有 `preprocess_then_analyze` proposal outbox 和统计结果解释 outbox 在 handoff action、当前 root、outbox claim ID 一致且状态 ready 时调用模型；原有来源重核、预算、租约、幂等和 fencing 继续有效。阶段暂不可交接不调用模型；proposal handoff 经五次自动尝试仍未就绪时暂停至用户手动重试，避免无限后台重试。

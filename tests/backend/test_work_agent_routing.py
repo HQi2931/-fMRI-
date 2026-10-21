@@ -8,6 +8,7 @@ from neuroagent.application.automation.analysis_outbox import AnalysisProposalOu
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationTurnCreate,
+    ConversationWorkTaskView,
 )
 from neuroagent.application.hashing import content_hash
 from neuroagent.application.work_agents import (
@@ -42,13 +43,28 @@ from .test_work_dialogue import configure, generated
         ("比较两组 ReHo 数据", "analysis"),
         ("先预处理再比较两组", "preprocessing"),
         ("first compute ALFF then compare ASD and HC", "preprocessing"),
+        (
+            "请核查 ALFF/fALFF 与 ReHo 是否可同批运行, 分析当前 DPARSFA 合同后, "
+            "为项目准备新的待审 DPABI 预处理方案, 仅包含 ALFF/fALFF, 不做统计分析.",
+            "preprocessing",
+        ),
     ],
 )
 def test_new_intent_routes_from_either_current_role(service, prior, content, expected):
     conversation = service.conversations.create_conversation(
         ConversationCreate(mode="work"), "route"
     )
-    conversation = conversation.model_copy(update={"foreground_agent_role": WorkAgentRole(prior)})
+    analysis_task = ConversationWorkTaskView(
+        agent_role=WorkAgentRole.ANALYSIS,
+        work_task_id="previous-analysis-task",
+        analysis_intent_task_id="previous-analysis-goal",
+    )
+    conversation = conversation.model_copy(
+        update={
+            "foreground_agent_role": WorkAgentRole(prior),
+            "work_tasks": (analysis_task,) if prior == "analysis" else (),
+        }
+    )
     assert (
         work_agent_role_for_turn(content, requested=None, conversation=conversation).value
         == expected

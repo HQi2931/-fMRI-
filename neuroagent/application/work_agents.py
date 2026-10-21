@@ -34,6 +34,13 @@ _PREPROCESS_THEN_ANALYZE = re.compile(
     r"\b(?:compar(?:e|ing)|analy[sz](?:e|ing)|t[ -]?test|statistics)\b",
     re.IGNORECASE,
 )
+_PREPROCESSING_PLAN_REQUEST = re.compile(
+    r"(?:准备|生成|创建|制定|编制|草拟).{0,48}(?:预处理|DPABI|preprocessing).{0,20}"
+    r"(?:方案|计划|草稿|plan|draft)|"
+    r"(?:预处理|DPABI|preprocessing).{0,32}(?:方案|计划|草稿|plan|draft).{0,24}"
+    r"(?:准备|生成|创建|制定|编制|草拟)",
+    re.IGNORECASE,
+)
 _DRAFT_EDIT_LANGUAGE = re.compile(
     r"修改|调整|补充|改成|设置|参数|其中|把.{0,12}(?:设为|改为|调整)|新增一个参数"
 )
@@ -135,6 +142,8 @@ def work_agent_role_for_turn(
             return WorkAgentRole.ANALYSIS
         return prior
     if _PREPROCESS_THEN_ANALYZE.search(content):
+        return WorkAgentRole.PREPROCESSING
+    if _PREPROCESSING_PLAN_REQUEST.search(content):
         return WorkAgentRole.PREPROCESSING
     if (
         _PREPROCESSING_SUBJECT.search(content)

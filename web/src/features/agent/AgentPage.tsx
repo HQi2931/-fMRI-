@@ -39,6 +39,7 @@ const OUTBOX_REFRESH_MAX_INTERVAL_MS = 60_000;
 const MAX_OUTBOX_CONVERSATION_REFRESHES = 16;
 const COMPOSITE_GOAL_REFRESH_INTERVAL_MS = 10_000;
 const COMPOSITE_GOAL_REFRESH_MAX_INTERVAL_MS = 30_000;
+const NEW_PREPROCESSING_PLAN_REQUEST = /(?:准备|生成|创建|制定|编制|草拟).{0,48}(?:预处理|DPABI|preprocessing).{0,20}(?:方案|计划|草稿|plan|draft)|(?:预处理|DPABI|preprocessing).{0,32}(?:方案|计划|草稿|plan|draft).{0,24}(?:准备|生成|创建|制定|编制|草拟)/i;
 
 type CompositeGoalTone = "good" | "warn" | "danger" | "info" | "neutral";
 
@@ -389,10 +390,12 @@ export function AgentPage() {
   const savedExternalImportId = savedAnalysisDraft && typeof savedAnalysisDraft === "object" && "external_import_id" in savedAnalysisDraft && typeof savedAnalysisDraft.external_import_id === "string" ? savedAnalysisDraft.external_import_id : null;
   const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId || selectedPreprocessingSource ? null
     : externalSource?.projectId === boundProjectId && externalSource?.conversationId === (activeConversation?.conversation_id ?? null) ? externalSource.importId : savedExternalImportId;
+  const autoPreprocessingPlanRequest = mode === "work" && agentRole === "auto"
+    && NEW_PREPROCESSING_PLAN_REQUEST.test(prompt.trim());
   const routedRole = [...(activeConversation?.messages ?? [])].reverse()
     .find((message) => message.role === "assistant" && (message.payload.agent_role === "analysis" || message.payload.agent_role === "preprocessing"))
     ?.payload.agent_role;
-  const effectiveAgentRole = selectedPreprocessingSource ? "analysis" : agentRole === "auto" ? (activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
+  const effectiveAgentRole = selectedPreprocessingSource ? "analysis" : agentRole === "auto" ? (autoPreprocessingPlanRequest ? "preprocessing" : activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
   const analysisGoalCreationContext = JSON.stringify([
     mode,
     activeConversation?.conversation_id ?? null,
@@ -866,7 +869,10 @@ export function AgentPage() {
         if (!controller.signal.aborted) { cache(turn.conversation); setPendingTurn(null); setOpenedConfirmation(null); }
         return;
       }
-      const analysisGoalTurnFields = mode === "work" && effectiveAgentRole === "analysis" && !selectedPreprocessingSource
+      const hasExplicitAnalysisContext = mode === "work" && !selectedPreprocessingSource
+        && !autoPreprocessingPlanRequest
+        && (agentRole === "analysis" || createIndependentAnalysisGoal || effectiveAgentRole === "analysis");
+      const analysisGoalTurnFields = hasExplicitAnalysisContext
         ? createIndependentAnalysisGoal
           ? { start_new_analysis_goal: true }
           : selectedAnalysisIntentId ? { analysis_intent_task_id: selectedAnalysisIntentId } : {}
@@ -880,10 +886,10 @@ export function AgentPage() {
         project_id: mode === "work" ? boundProjectId : null,
         agent_role: selectedPreprocessingSource ? "analysis" : mode === "work" && agentRole !== "auto" ? agentRole : null,
         preprocessing_task_id: selectedPreprocessingSource?.taskId,
-        external_analysis_import_id: mode === "work" && !selectedPreprocessingSource ? selectedExternalImportId : null,
-        target_run_id: selectedPreprocessingSource?.runId ?? (mode === "work" && boundToSelectedWorkspace && !selectedExternalImportId ? workspace.runId ?? null : null),
-        plan_revision_id: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource ? workspace.planRevisionId ?? null : null,
-        expected_plan_hash: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource ? workspace.planHash ?? null : null,
+        external_analysis_import_id: hasExplicitAnalysisContext ? selectedExternalImportId : null,
+        target_run_id: selectedPreprocessingSource?.runId ?? (mode === "work" && boundToSelectedWorkspace && !(hasExplicitAnalysisContext && selectedExternalImportId) ? workspace.runId ?? null : null),
+        plan_revision_id: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource && !(hasExplicitAnalysisContext && selectedExternalImportId) ? workspace.planRevisionId ?? null : null,
+        expected_plan_hash: mode === "work" && boundToSelectedWorkspace && !selectedPreprocessingSource && !(hasExplicitAnalysisContext && selectedExternalImportId) ? workspace.planHash ?? null : null,
         workspace_file_scope: mode === "work" && selectedScope.length ? { paths: selectedScope } : null,
         selected_input_stage: mode === "work" && selectedInputStage ? selectedInputStage : null,
         real_execution_confirmed: false,
