@@ -13,6 +13,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from http.client import IncompleteRead
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from urllib.error import URLError
@@ -261,7 +262,7 @@ def _download_file(source: SourceFile, destination: Path) -> dict[str, Any]:
                 )
             os.replace(temporary, destination)
             return {"filename": source.filename, "size": size, "sha256": digest.hexdigest()}
-        except (OSError, URLError, DownloadError) as exc:
+        except (IncompleteRead, OSError, URLError, DownloadError) as exc:
             last_error = exc
             temporary.unlink(missing_ok=True)
             if attempt == DOWNLOAD_ATTEMPTS:

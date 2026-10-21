@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from http.client import IncompleteRead
 from pathlib import Path
 from urllib.error import URLError
 
@@ -79,6 +80,13 @@ class _Response:
         chunk = self.payload[self.offset : self.offset + size]
         self.offset += len(chunk)
         return chunk
+
+
+class _InterruptedResponse(_Response):
+    def read(self, size: int = -1) -> bytes:
+        if self.offset == len(self.payload):
+            raise IncompleteRead(b"", 1)
+        return super().read(size)
 
 
 def _url_filename(request: object) -> str:
@@ -221,7 +229,7 @@ def test_file_download_retries_a_truncated_response(
     def fake_urlopen(_request: object, timeout: int) -> _Response:
         nonlocal attempts
         attempts += 1
-        return _Response(payload[:5] if attempts == 1 else payload)
+        return _InterruptedResponse(payload[:5]) if attempts == 1 else _Response(payload)
 
     monkeypatch.setattr(demo, "urlopen", fake_urlopen)
     monkeypatch.setattr(demo.time, "sleep", lambda _seconds: None)
