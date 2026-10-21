@@ -146,6 +146,14 @@ function compositeGoalIsActive(goal: CompositeGoalProgress): boolean {
   return ["waiting_preprocessing", "waiting_run", "waiting_analysis", "waiting_result_interpretation"].includes(goal.status);
 }
 
+function compositeGoalTitle(goal: CompositeGoalProgress): string {
+  const summary = goal.analysis_summary?.replace(/\s+/g, " ").trim();
+  if (summary) return summary;
+  return goal.goal_kind === "analysis_only_external_import"
+    ? "外部指标分析（目标摘要暂不可用）"
+    : "预处理与分析（目标摘要暂不可用）";
+}
+
 function compositeGoalRunStateLabel(state: string): string {
   const labels: Record<string, string> = {
     queued: "排队中",
@@ -342,11 +350,14 @@ function CompositeGoalProgressPanel({
         const status = compositeGoalStatusView(goal.status);
         const reason = compositeGoalReasonView(goal.reason_code);
         const analysisOnly = goal.goal_kind === "analysis_only_external_import";
+        const title = compositeGoalTitle(goal);
         return <li key={goal.intent_task_id}>
           <article className="composite-goal-card">
-            <h3>自动化流程 {index + 1} <span className={`status-pill status-${status.tone}`}>{status.label}</span></h3>
+            <h3 className="composite-goal-heading" aria-label={`${title}，${status.label}`}>
+              <span className="composite-goal-title-text" title={title}>{title}</span>
+              <span className={`status-pill status-${status.tone}`}>{status.label}</span>
+            </h3>
             <p><strong>流程类型：</strong>{analysisOnly ? "外部指标分析" : "预处理与分析"}</p>
-            {goal.analysis_summary && <p className="composite-goal-summary"><strong>分析目标：</strong>{goal.analysis_summary}</p>}
             <p>{reason ?? status.detail}</p>
             <ol aria-label={`自动化流程 ${index + 1} 的处理阶段`}>
               {!analysisOnly && <li><strong>预处理：</strong>{compositeGoalStageView(goal.preprocessing_status)}</li>}

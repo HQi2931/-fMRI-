@@ -1,6 +1,9 @@
 .content:has(.agent-shell.is-reviewing) { width: min(1680px, 100%); padding-right: 24px; padding-left: 24px; }
 .agent-shell.is-reviewing { max-width: none; }
 .work-agent-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.composite-goal-heading { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.composite-goal-title-text { display: -webkit-box; flex: 1 1 auto; min-width: 0; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.composite-goal-heading .status-pill { flex: 0 0 auto; }
 .work-review-layout { display: grid; align-items: start; }
 .work-review-layout.has-plan { grid-template-columns: minmax(300px, .85fr) minmax(420px, 1.15fr); margin-top: 20px; border-top: 1px solid var(--line); }
 .work-dialogue-region, .work-plan-region { min-width: 0; }

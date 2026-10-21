@@ -486,6 +486,34 @@ describe("agent workbench page", () => {
     await waitFor(() => expect(loadGoals).toHaveBeenCalledTimes(2));
   });
 
+  it("uses each goal summary as its title with type-aware fallbacks and a full-text tooltip", async () => {
+    const longSummary = "ALFF 两组比较与校正结果复核 ".repeat(12).trim();
+    const goals = [
+      { ...compositeGoal("waiting_user", "goal-alff"), analysis_summary: "  ALFF   两组比较\n  ", analysis_status: "waiting_user" },
+      { ...externalAnalysisGoal("waiting_result_interpretation", "goal-falff"), analysis_summary: "fALFF 与量表相关性", analysis_status: "completed" },
+      { ...compositeGoal("waiting_user", "goal-no-summary"), analysis_summary: null, analysis_status: "waiting_user" },
+      { ...externalAnalysisGoal("waiting_user", "goal-blank-summary"), analysis_summary: " \n\t ", analysis_status: "waiting_user" },
+      { ...compositeGoal("waiting_user", "goal-long-summary"), analysis_summary: longSummary, analysis_status: "waiting_user" },
+    ];
+    installFetch({ compositeGoals: () => json(goals) });
+
+    render(<AgentPage />);
+
+    const region = await screen.findByRole("region", { name: "自动化流程进度" });
+    const cards = within(region).getAllByRole("article");
+    expect(within(cards[0]).getByRole("heading", { name: "ALFF 两组比较，需要你处理" })).toBeInTheDocument();
+    expect(within(cards[1]).getByRole("heading", { name: "fALFF 与量表相关性，等待结果解释" })).toBeInTheDocument();
+    expect(within(cards[2]).getByRole("heading", { name: "预处理与分析（目标摘要暂不可用），需要你处理" })).toBeInTheDocument();
+    expect(within(cards[3]).getByRole("heading", { name: "外部指标分析（目标摘要暂不可用），需要你处理" })).toBeInTheDocument();
+    expect(within(cards[0]).getByText("预处理与分析")).toBeInTheDocument();
+    expect(within(cards[1]).getByText("外部指标分析")).toBeInTheDocument();
+    expect(within(cards[0]).getAllByRole("listitem")[0]).toHaveTextContent("预处理：已完成");
+
+    const longTitle = within(cards[4]).getByTitle(longSummary);
+    expect(longTitle).toHaveClass("composite-goal-title-text");
+    expect(within(cards[4]).getByRole("heading", { name: `${longSummary}，需要你处理` })).toBeInTheDocument();
+  });
+
   it("shows mixed goal types with only their recorded stages and supported actions", async () => {
     const goals = [
       { ...compositeGoal("waiting_user", "prep-goal"), analysis_status: "waiting_user" },
@@ -973,7 +1001,7 @@ describe("agent workbench page", () => {
     await waitFor(() => expect(loadGoals).toHaveBeenCalledWith("work-1", expect.any(AbortSignal)));
     fireEvent.change(screen.getByLabelText("当前会话"), { target: { value: "work-2" } });
 
-    expect(await screen.findByRole("heading", { name: "自动化流程 1 已完成" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "外部指标分析（目标摘要暂不可用），已完成" })).toBeInTheDocument();
     expect(screen.getByText("外部指标分析")).toBeInTheDocument();
     await waitFor(() => expect(firstSignal?.aborted).toBe(true));
     await act(async () => {
@@ -1002,7 +1030,7 @@ describe("agent workbench page", () => {
     settled = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(loadGoals).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("heading", { name: `自动化流程 1 ${terminalStatus === "completed" ? "已完成" : "需要你处理"}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: `外部指标分析（目标摘要暂不可用），${terminalStatus === "completed" ? "已完成" : "需要你处理"}` })).toBeInTheDocument();
     expect(screen.queryByText("进行中的任务每 10 秒自动更新。")).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(loadGoals).toHaveBeenCalledTimes(3);
