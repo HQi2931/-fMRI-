@@ -82,6 +82,25 @@ describe("API client", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(body);
   });
 
+  it("posts project demographics with explicit columns and the current dataset revision", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ demographics_id: "demographics-1" }), { status: 201 }),
+    );
+    const body = {
+      source_path: "D:\\Study\\participants.tsv",
+      subject_id_column: "participant_id",
+      column_mapping: { group: "group", age: "age" },
+      encoding: "utf-8-sig",
+      expected_dataset_version: 4,
+    } as const;
+
+    await api.importDemographics("dataset-1", body);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/datasets/dataset-1/demographics/import");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(body);
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("Idempotency-Key")).toBeTruthy();
+  });
+
   it("converts a failed response to ApiError", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ error: { code: "missing", message: "不存在", details: { id: "x" }, trace_id: "trace-1" } }), { status: 404 }),
