@@ -48,8 +48,10 @@ function compositeGoal(status: string, intentTaskId: string, reasonCode: string 
     project_id: "project-1",
     analysis_request_hash: "a".repeat(64),
     preprocessing_task_id: `prep-${intentTaskId}`,
+    preprocessing_run_id: null,
     analysis_proposal_outbox_intent_task_id: intentTaskId,
     analysis_work_task_id: `analysis-${intentTaskId}`,
+    analysis_run_id: null,
     result_interpretation_outbox_task_id: `analysis-${intentTaskId}`,
     status,
     preprocessing_status: "completed",
@@ -133,7 +135,7 @@ type Options = {
   workspaceCheck?: () => Promise<Response>;
   conversations?: () => Promise<Response>;
   created?: () => Promise<Response>;
-  run?: () => Promise<Response>;
+  run?: (runId?: string) => Promise<Response>;
   picked?: () => Promise<Response>;
   profiles?: () => Promise<Response>;
   project?: (projectId: string, signal?: AbortSignal | null) => Promise<Response>;
@@ -242,7 +244,7 @@ function installFetch(options: Options = {}) {
         state: "succeeded", version: 1, attempt: 1, cancel_requested: false, error: null,
         qc_mode: "require", qc_status: "skipped", stage: "completed", stage_progress: 1,
         created_at: now, updated_at: now,
-      })))();
+      })))(decodeURIComponent(runId));
     }
     return notFound();
   });
@@ -1382,6 +1384,93 @@ describe("agent workbench page", () => {
     expect(run).toHaveBeenCalled();
     expect(diagnosis).toHaveBeenCalledWith("run-preprocessing", expect.any(AbortSignal));
     expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-preprocessing" )).toBe(true);
+  });
+
+  it("tracks MATLAB failures for unselected composite goals after the conversation is restored", async () => {
+    const goals = [
+      {
+        ...compositeGoal("blocked", "goal-hidden", "preprocessing_terminal_block"),
+        preprocessing_status: "blocked",
+        preprocessing_run_id: "run-hidden-preprocessing",
+        analysis_status: "blocked",
+      },
+      {
+        ...compositeGoal("blocked", "goal-shared", "preprocessing_terminal_block"),
+        preprocessing_status: "blocked",
+        preprocessing_run_id: "run-hidden-preprocessing",
+        analysis_status: "blocked",
+      },
+      {
+        ...compositeGoal("waiting_analysis", "goal-selected", "analysis_in_progress"),
+        analysis_run_id: "run-selected-analysis",
+      },
+    ];
+    const run = vi.fn((runId = "unknown-run") => json({
+      run_id: runId,
+      project_id: "project-1",
+      plan_revision_id: `plan-${runId}`,
+      state: runId === "run-hidden-preprocessing" ? "failed_terminal" : "running",
+      version: 2,
+      attempt: 1,
+      cancel_requested: false,
+      error: "internal detail must stay hidden",
+      qc_mode: "require",
+      qc_status: "pending",
+      stage: runId === "run-hidden-preprocessing" ? "failed" : "running",
+      stage_progress: 0,
+      created_at: now,
+      updated_at: now,
+    }));
+    const diagnosis = vi.fn((runId: string) => json({
+      run_id: runId,
+      diagnosis: runId === "run-hidden-preprocessing" ? {
+        code: "path_policy",
+        severity: "error",
+        summary: "MATLAB 启动时无权写入偏好设置目录",
+        evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
+        suggestions: ["检查 MATLAB 偏好目录写入权限"],
+        confidence: 0.8,
+        requires_new_plan: false,
+        source: "deterministic_log_classifier",
+      } : {
+        code: "unknown",
+        severity: "info",
+        summary: "尚无可报告的 MATLAB 错误",
+        evidence: [],
+        suggestions: [],
+        confidence: 0,
+        requires_new_plan: false,
+        source: "deterministic_log_classifier",
+      },
+    }));
+    const fetchMock = installFetch({
+      conversations: () => json([conversation({
+        foreground_agent_role: "analysis",
+        active_run_id: null,
+        work_tasks: [
+          { agent_role: "analysis", work_task_id: "analysis-selected", run_id: "run-selected-analysis" },
+        ],
+      })]),
+      compositeGoals: () => json(goals),
+      run,
+      diagnosis,
+    });
+
+    render(<AgentPage />);
+
+    const region = await screen.findByRole("region", { name: "自动化流程进度" });
+    expect(await within(region).findByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
+    expect(within(region).getByRole("alert")).toHaveTextContent(/流程 1 · 预处理；流程 2 · 预处理运行：计算失败/);
+    expect(within(region).getAllByRole("status").some((node) => node.textContent?.includes("流程 3 · 统计分析运行：计算中"))).toBe(true);
+    expect(within(region).getByText("检查 MATLAB 偏好目录写入权限")).toBeInTheDocument();
+    expect(within(region).getByText("诊断在本机完成，日志不会发送给模型。")).toBeInTheDocument();
+    expect(within(region).queryByText("internal detail must stay hidden")).not.toBeInTheDocument();
+    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-hidden-preprocessing")).toBe(true);
+    expect(diagnosis).toHaveBeenCalledWith("run-hidden-preprocessing", expect.any(AbortSignal));
+    expect(run).toHaveBeenCalledWith("run-hidden-preprocessing");
+    expect(fetchMock.mock.calls.filter(([input]) => pathOf(input) === "/api/v1/runs/run-hidden-preprocessing")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
   });
 
   it("refreshes a delayed assistant analysis continuation after preprocessing succeeds", async () => {

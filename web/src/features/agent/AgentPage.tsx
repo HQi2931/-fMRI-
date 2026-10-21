@@ -9,6 +9,7 @@ import type {
   CompositeGoalProgress,
   ConversationMode,
   Run,
+  RunDiagnosis,
   WorkspaceConsent,
   WorkspaceCheck,
   WorkspaceProposal,
@@ -145,6 +146,169 @@ function compositeGoalIsActive(goal: CompositeGoalProgress): boolean {
   return ["waiting_preprocessing", "waiting_run", "waiting_analysis", "waiting_result_interpretation"].includes(goal.status);
 }
 
+function compositeGoalRunStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    queued: "排队中",
+    running: "计算中",
+    cancelling: "正在取消",
+    failed_retryable: "计算失败，可重试",
+    failed_terminal: "计算失败",
+    timed_out: "计算超时",
+    cancelled: "计算已取消",
+    qc_review: "计算完成，待 QC 审查",
+    succeeded: "计算完成",
+  };
+  return labels[state] ?? "运行状态待核验";
+}
+
+type CompositeGoalRunObservation = {
+  run: Run;
+  diagnosis: RunDiagnosis["diagnosis"] | null;
+  diagnosisChecked: boolean;
+  connectionError: boolean;
+};
+
+function CompositeGoalRunFeedback({
+  conversationId,
+  goals,
+}: {
+  conversationId: string;
+  goals: CompositeGoalProgress[];
+}) {
+  const runIds = useMemo(() => [...new Set(goals.flatMap((goal) => [
+    goal.preprocessing_run_id,
+    goal.analysis_run_id,
+  ]).filter((runId): runId is string => Boolean(runId)))].sort(), [goals]);
+  const references = useMemo(() => {
+    const byRun = new Map<string, string[]>();
+    goals.forEach((goal, index) => {
+      const roleByRun = new Map<string, string[]>();
+      if (goal.preprocessing_run_id) roleByRun.set(goal.preprocessing_run_id, ["预处理"]);
+      if (goal.analysis_run_id) {
+        const roles = roleByRun.get(goal.analysis_run_id) ?? [];
+        roleByRun.set(goal.analysis_run_id, [...roles, "统计分析"]);
+      }
+      for (const [runId, roles] of roleByRun) {
+        const labels = byRun.get(runId) ?? [];
+        byRun.set(runId, [...labels, `流程 ${index + 1} · ${roles.join(" / ")}`]);
+      }
+    });
+    return byRun;
+  }, [goals]);
+  const runIdsKey = JSON.stringify(runIds);
+  const [observations, setObservations] = useState<Record<string, CompositeGoalRunObservation>>({});
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    setObservations({});
+
+    const schedule = (callback: () => void, delayMs: number) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        callback();
+      }, delayMs);
+      timers.add(timer);
+    };
+
+    for (const runId of JSON.parse(runIdsKey) as string[]) {
+      let connectionFailures = 0;
+      let terminalDiagnosisChecks = 0;
+      const observe = async () => {
+        if (controller.signal.aborted) return;
+        let run: Run | null = null;
+        try {
+          const loaded = await runsApi.run(runId, controller.signal);
+          if (controller.signal.aborted || loaded.run_id !== runId) return;
+          run = loaded;
+          connectionFailures = 0;
+          setObservations((previous) => {
+            const prior = previous[runId];
+            const sameAttempt = prior?.run.attempt === loaded.attempt;
+            return {
+              ...previous,
+              [runId]: {
+                run: loaded,
+                diagnosis: sameAttempt ? prior.diagnosis : null,
+                diagnosisChecked: sameAttempt ? prior.diagnosisChecked : false,
+                connectionError: false,
+              },
+            };
+          });
+        } catch {
+          if (controller.signal.aborted) return;
+          connectionFailures += 1;
+          setObservations((previous) => {
+            const prior = previous[runId];
+            return prior ? { ...previous, [runId]: { ...prior, connectionError: true } } : previous;
+          });
+          if (connectionFailures < 6) {
+            schedule(() => void observe(), Math.min(1000 * 2 ** connectionFailures, 15_000));
+          }
+          return;
+        }
+
+        let diagnosis: RunDiagnosis["diagnosis"] | null = null;
+        if (["queued", "running", "cancelling", "failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)) {
+          try {
+            const result = await runsApi.latestDiagnosis(runId, controller.signal);
+            if (!controller.signal.aborted && result.run_id === runId) diagnosis = result.diagnosis;
+          } catch {
+            // Local log diagnosis is optional; the run state remains visible when it is unavailable.
+          }
+        }
+        if (controller.signal.aborted) return;
+        const active = ["queued", "running", "cancelling"].includes(run.state);
+        const failed = ["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state);
+        const hasEvidence = Boolean(diagnosis?.evidence.length);
+        const retryTerminalDiagnosis = failed && !hasEvidence && terminalDiagnosisChecks < 4;
+        if (retryTerminalDiagnosis) terminalDiagnosisChecks += 1;
+        const diagnosisChecked = !active && !retryTerminalDiagnosis;
+        setObservations((previous) => {
+          const prior = previous[runId];
+          if (!prior || prior.run.attempt !== run.attempt) return previous;
+          return { ...previous, [runId]: { ...prior, diagnosis: diagnosis ?? prior.diagnosis, diagnosisChecked } };
+        });
+
+        if (active || retryTerminalDiagnosis) {
+          schedule(() => void observe(), active ? 4000 : 1000);
+        }
+      };
+      void observe();
+    }
+
+    return () => {
+      controller.abort();
+      timers.forEach((timer) => clearTimeout(timer));
+    };
+  }, [conversationId, runIdsKey]);
+
+  if (runIds.length === 0) return null;
+  return <ul className="composite-goal-run-feedback" aria-label="自动化目标运行反馈">
+    {runIds.map((runId) => {
+      const observation = observations[runId];
+      const run = observation?.run;
+      const diagnosis = observation?.diagnosis;
+      const hasErrorDiagnosis = diagnosis?.severity === "error" && diagnosis.evidence.length > 0;
+      return <li key={runId}>
+        <p role={hasErrorDiagnosis ? "alert" : "status"}>
+          <strong>{references.get(runId)?.join("；")}运行：</strong>{run ? compositeGoalRunStateLabel(run.state) : observation?.connectionError ? "状态连接中断，正在重试" : "正在读取运行状态"}
+          {run && <span className="chat-technical">（尝试 {run.attempt}）</span>}
+        </p>
+        {hasErrorDiagnosis && <div className="work-run-failure work-run-live-diagnosis">
+          <p><strong>Agent 已从本机日志检测到运行异常：</strong>{diagnosis.summary}</p>
+          {diagnosis.suggestions.length > 0 && <ul>{diagnosis.suggestions.map((suggestion, index) => <li key={`${runId}:${index}`}>{suggestion}</li>)}</ul>}
+          {diagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{diagnosis.evidence.slice(0, 4).map((line, index) => <li key={`${runId}:evidence:${index}`}><pre>{line}</pre></li>)}</ul></details>}
+          <p>诊断在本机完成，日志不会发送给模型。</p>
+        </div>}
+        {run && ["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)
+          && observation?.diagnosisChecked && !hasErrorDiagnosis
+          && <p role="status">尚未从本机日志找到可识别的错误原因，请检查这次运行的日志。</p>}
+      </li>;
+    })}
+  </ul>;
+}
+
 function CompositeGoalProgressPanel({
   view,
   refreshingAutomatically,
@@ -200,6 +364,7 @@ function CompositeGoalProgressPanel({
         </li>;
       })}
     </ol>}
+    {view.goals.length > 0 && <CompositeGoalRunFeedback conversationId={view.conversationId} goals={view.goals} />}
   </section>;
 }
 

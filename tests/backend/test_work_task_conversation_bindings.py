@@ -179,8 +179,8 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             progress = service.automation.get_composite_goal_progress(
                 conversation.conversation_id, analysis_intent["task_id"]
             )
-            assert progress.status.value == "waiting_user"
-            assert progress.reason_code == "preprocessing_user_decision"
+            assert progress.status.value == "waiting_review"
+            assert progress.reason_code == "preprocessing_plan_review"
             assert progress.analysis_summary == user_goal
             identity = service.automation.get_composite_goal(
                 conversation.conversation_id, analysis_intent["task_id"]
@@ -203,8 +203,8 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert listed_goal["preprocessing_task_id"] == task_id
             assert listed_goal["analysis_proposal_outbox_intent_task_id"] is None
             assert listed_goal["analysis_work_task_id"] is None
-            assert listed_goal["status"] == "waiting_user"
-            assert listed_goal["reason_code"] == "preprocessing_user_decision"
+            assert listed_goal["status"] == "waiting_review"
+            assert listed_goal["reason_code"] == "preprocessing_plan_review"
 
             other_conversation = service.conversations.create_conversation(
                 ConversationCreate(
@@ -711,25 +711,24 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                         "composite-result-interpreter", lease_seconds=30
                     )
                 )
-                == ResultInterpretationStatus.COMPLETED.value
+                == "deferred"
             )
             completed_conversation = service.conversations.get_conversation(
                 conversation.conversation_id
             )
-            completion_payload = completed_conversation.messages[-1].payload
-            assert completion_payload["analysis_intent_envelope"]["status"] == "completed"
-            assert completion_payload["statistical_result_interpretation"]["task_id"] == (
-                finished_task.task_id
+            assert not any(
+                isinstance(message.payload.get("statistical_result_interpretation"), dict)
+                and message.payload["statistical_result_interpretation"].get("task_id")
+                == finished_task.task_id
+                for message in completed_conversation.messages
             )
             progress = service.automation.get_composite_goal_progress(
                 conversation.conversation_id, analysis_intent["task_id"]
             )
-            # This fixture intentionally leaves preprocessing running for the
-            # later assertions in this test. Result delivery must not falsely
-            # mark the overall goal complete while that authoritative task is
-            # still in progress.
-            assert progress.status is CompositeGoalStatus.WAITING_PREPROCESSING
-            assert progress.reason_code == "preprocessing_in_progress"
+            # This fixture leaves the exact preprocessing Run active. Result
+            # interpretation must defer until that bound Run has been verified.
+            assert progress.status is CompositeGoalStatus.WAITING_RUN
+            assert progress.reason_code == "preprocessing_run_pending"
             with pytest.raises(ConflictError, match="项目"):
                 service.automation.ensure_analysis_proposal_outbox(
                     intent=analysis_intent,

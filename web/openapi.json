@@ -829,6 +829,18 @@
             "title": "Analysis Request Hash",
             "type": "string"
           },
+          "analysis_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Server-verified analysis Run ID while its run state is observable.",
+            "title": "Analysis Run Id"
+          },
           "analysis_status": {
             "anyOf": [
               {
@@ -891,6 +903,18 @@
           "intent_task_id": {
             "title": "Intent Task Id",
             "type": "string"
+          },
+          "preprocessing_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Server-verified preprocessing Run ID while its run state is observable.",
+            "title": "Preprocessing Run Id"
           },
           "preprocessing_status": {
             "anyOf": [

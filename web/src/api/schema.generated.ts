@@ -1935,6 +1935,11 @@ export interface components {
             analysis_proposal_status?: string | null;
             /** Analysis Request Hash */
             analysis_request_hash: string;
+            /**
+             * Analysis Run Id
+             * @description Server-verified analysis Run ID while its run state is observable.
+             */
+            analysis_run_id?: string | null;
             /** Analysis Status */
             analysis_status?: string | null;
             /**
@@ -1956,6 +1961,11 @@ export interface components {
             goal_kind: "preprocess_then_analyze" | "analysis_only_external_import";
             /** Intent Task Id */
             intent_task_id: string;
+            /**
+             * Preprocessing Run Id
+             * @description Server-verified preprocessing Run ID while its run state is observable.
+             */
+            preprocessing_run_id?: string | null;
             /** Preprocessing Status */
             preprocessing_status?: string | null;
             /** Preprocessing Task Id */

@@ -57,7 +57,16 @@ def test_health_openapi_and_error_envelope(service: ApplicationServices) -> None
             "analysis_proposal_outbox_intent_task_id",
             "analysis_work_task_id",
             "result_interpretation_outbox_task_id",
+            "goal_kind",
+            "source_external_import_id",
+            "source_import_version",
+            "source_tree_hash",
+            "source_inclusion_hash",
+            "source_manifest_hash",
+            "source_revision_hash",
             "status",
+            "preprocessing_run_id",
+            "analysis_run_id",
             "preprocessing_status",
             "analysis_proposal_status",
             "analysis_status",
@@ -946,7 +955,9 @@ def test_environment_config_accepts_user_selected_local_paths(
         assert response.status_code == 200
         assert response.json()["configured"] is True
         assert response.json()["dpabi_version"] == "DPABI-local"
-        assert response.json()["allowed_work_root"] == str(service.settings.allowed_work_root.resolve())
+        assert response.json()["allowed_work_root"] == str(
+            service.settings.allowed_work_root.resolve()
+        )
 
         restored = client.get("/api/v1/environment/config")
         assert restored.status_code == 200

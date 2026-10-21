@@ -11,7 +11,7 @@ from neuroagent.application.automation.analysis_outbox import (
     AnalysisOutboxStatus,
     AnalysisProposalOutbox,
 )
-from neuroagent.application.automation.models import TaskStatus, WorkTask
+from neuroagent.application.automation.models import TaskStatus, TaskStepStatus, WorkTask
 from neuroagent.application.automation.result_interpretation import (
     ResultInterpretationStatus,
     StatisticalResultInterpretationOutbox,
@@ -113,6 +113,8 @@ class CompositeGoalPlanEvidence(BaseModel):
     manifest_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     input_revision: str | None = Field(default=None, min_length=1, max_length=200)
+    source_external_import_id: str | None = Field(default=None, max_length=100)
+    source_external_import_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class CompositeGoalRunEvidence(BaseModel):
@@ -187,6 +189,8 @@ class CompositeGoalProgress(BaseModel):
     goal: CompositeGoalIdentity
     analysis_summary: str | None = Field(default=None, max_length=160)
     status: CompositeGoalStatus
+    preprocessing_run_id: str | None = None
+    analysis_run_id: str | None = None
     preprocessing_status: str | None = None
     analysis_proposal_status: str | None = None
     analysis_status: str | None = None
@@ -269,6 +273,10 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     goal = snapshot.goal
     prep = snapshot.preprocessing_task
     analysis_summary = _verified_analysis_summary(goal, snapshot.analysis_intent_messages)
+    verified_run_ids: dict[str, str | None] = {
+        "preprocessing_run_id": None,
+        "analysis_run_id": None,
+    }
 
     def result(
         status: CompositeGoalStatus,
@@ -283,6 +291,7 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             goal=goal,
             analysis_summary=analysis_summary,
             status=status,
+            **verified_run_ids,
             preprocessing_status=prep.status.value if prep is not None else None,
             analysis_proposal_status=proposal_status,
             analysis_status=analysis_status,
@@ -292,7 +301,7 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
         )
 
     if goal.goal_kind == "analysis_only_external_import":
-        return _project_analysis_only_external_goal(snapshot, result)
+        return _project_analysis_only_external_goal(snapshot, result, verified_run_ids)
 
     if prep is None or prep.task_id != goal.preprocessing_task_id:
         return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_task_missing")
@@ -316,6 +325,13 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_binding_mismatch")
         if outbox is not None or prep_refs.workflow_run_id is not None:
             return result(CompositeGoalStatus.INDETERMINATE, "proposal_outbox_binding_missing")
+        verified_run_ids["preprocessing_run_id"] = _verified_observable_run_id(
+            prep,
+            goal=goal,
+            plan=snapshot.preprocessing_plan,
+            run=snapshot.preprocessing_run,
+            step_kind="preprocessing_run",
+        )
         waiting = _task_wait_phase(
             prep,
             goal=goal,
@@ -346,6 +362,15 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             "proposal_outbox_authority_mismatch",
             proposal_status=outbox.status.value,
         )
+
+    verified_run_ids["preprocessing_run_id"] = _verified_observable_run_id(
+        prep,
+        goal=goal,
+        plan=snapshot.preprocessing_plan,
+        run=snapshot.preprocessing_run,
+        step_kind="preprocessing_run",
+        verified_source_binding=True,
+    )
 
     if prep.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
         return result(
@@ -400,14 +425,10 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
                 "proposal_analysis_task_mismatch",
                 proposal_status=outbox.status.value,
             )
-        initial_attempt = next(
-            (
-                item
-                for item in snapshot.analysis_attempts
-                if item.work_task_id == initial_task.task_id
-            ),
-            None,
+        initial_attempts = tuple(
+            item for item in snapshot.analysis_attempts if item.work_task_id == initial_task.task_id
         )
+        initial_attempt = initial_attempts[0] if len(initial_attempts) == 1 else None
         if initial_attempt is None or initial_attempt.attempt_number != 1:
             return result(
                 CompositeGoalStatus.INDETERMINATE,
@@ -447,13 +468,16 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             proposal_status=outbox.status.value,
             analysis_status=analysis_task.status.value,
         )
-    active_attempt = next(
-        (item for item in snapshot.analysis_attempts if item.work_task_id == analysis_task.task_id),
-        None,
+    active_attempts = tuple(
+        item for item in snapshot.analysis_attempts if item.work_task_id == analysis_task.task_id
     )
+    active_attempt = active_attempts[0] if len(active_attempts) == 1 else None
     if (
         analysis_task.task_id != goal.analysis_work_task_id
         or active_attempt is None
+        or not snapshot.analysis_attempts
+        or max(snapshot.analysis_attempts, key=lambda item: item.attempt_number).work_task_id
+        != analysis_task.task_id
         or not _analysis_task_has_proposal(analysis_task, active_attempt.proposal_hash)
     ):
         return result(
@@ -462,6 +486,14 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
             proposal_status=outbox.status.value,
             analysis_status=analysis_task.status.value,
         )
+
+    verified_run_ids["analysis_run_id"] = _verified_observable_run_id(
+        analysis_task,
+        goal=goal,
+        plan=snapshot.analysis_plan,
+        run=snapshot.analysis_run,
+        step_kind="statistical_run",
+    )
     if analysis_task.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
         return result(
             CompositeGoalStatus.BLOCKED,
@@ -549,6 +581,7 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
 def _project_analysis_only_external_goal(
     snapshot: CompositeGoalSnapshot,
     result: Callable[..., CompositeGoalProgress],
+    verified_run_ids: dict[str, str | None],
 ) -> CompositeGoalProgress:
     """Project a direct external-import analysis without inventing a prep child."""
 
@@ -577,14 +610,22 @@ def _project_analysis_only_external_goal(
         task.task_id != goal.analysis_work_task_id
         or not _analysis_task_matches(task, goal)
         or len(snapshot.analysis_attempts) == 0
-        or snapshot.analysis_attempts[-1].work_task_id != task.task_id
-        or not _analysis_task_has_proposal(task, snapshot.analysis_attempts[-1].proposal_hash)
+        or max(snapshot.analysis_attempts, key=lambda item: item.attempt_number).work_task_id
+        != task.task_id
+        or not _analysis_task_attempt_matches(snapshot, task)
     ):
         return result(
             CompositeGoalStatus.INDETERMINATE,
             "analysis_task_reference_mismatch",
             analysis_status=task.status.value,
         )
+    verified_run_ids["analysis_run_id"] = _verified_observable_run_id(
+        task,
+        goal=goal,
+        plan=snapshot.analysis_plan,
+        run=snapshot.analysis_run,
+        step_kind="statistical_run",
+    )
     if task.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
         return result(
             CompositeGoalStatus.BLOCKED,
@@ -773,6 +814,114 @@ def _task_plan_binding_matches(
             (run_id is None and step.status.value == "ready")
             or (run_id is not None and step.status.value == "waiting")
         )
+    )
+
+
+def _verified_observable_run_id(
+    task: WorkTask | None,
+    *,
+    goal: CompositeGoalIdentity,
+    plan: CompositeGoalPlanEvidence | None,
+    run: CompositeGoalRunEvidence | None,
+    step_kind: str,
+    verified_source_binding: bool = False,
+) -> str | None:
+    """Expose only an exact, still-observable Run bound to this goal and step."""
+
+    if task is None or plan is None or run is None:
+        return None
+    refs = task.authority_refs
+    run_id = refs.workflow_run_id
+    plan_id = refs.plan_revision_id
+    input_revision = refs.input_revision
+    task_goal_matches = (
+        refs.analysis_intent_task_id == goal.intent_task_id
+        and refs.analysis_request_hash == goal.analysis_request_hash
+    )
+    if (
+        refs.conversation_id != goal.conversation_id
+        or (not task_goal_matches and not verified_source_binding)
+        or run_id is None
+        or plan_id is None
+        or input_revision is None
+        or plan.plan_revision_id != plan_id
+        or plan.project_id != goal.project_id
+        or plan.input_revision != input_revision
+        or run.run_id != run_id
+        or run.project_id != goal.project_id
+        or run.plan_revision_id != plan_id
+    ):
+        return None
+    if goal.goal_kind == "analysis_only_external_import" and (
+        plan.manifest_hash != goal.source_manifest_hash
+        or plan.source_external_import_id != goal.source_external_import_id
+        or plan.source_external_import_hash != goal.source_inclusion_hash
+    ):
+        return None
+    try:
+        plan_state = PlanState(plan.state)
+        run_state = WorkflowState(run.state)
+    except ValueError:
+        return None
+    if plan_state not in {PlanState.APPROVED, PlanState.SUPERSEDED}:
+        return None
+    if run_state not in {
+        WorkflowState.QUEUED,
+        WorkflowState.RUNNING,
+        WorkflowState.CANCELLING,
+        WorkflowState.QC_REVIEW,
+        WorkflowState.FAILED_RETRYABLE,
+        WorkflowState.FAILED_TERMINAL,
+        WorkflowState.TIMED_OUT,
+        WorkflowState.CANCELLED,
+    }:
+        return None
+
+    referenced_steps = tuple(
+        step for step in task.steps if step.authority_refs.workflow_run_id == run_id
+    )
+    if len(referenced_steps) != 1:
+        return None
+    step = referenced_steps[0]
+    step_refs = step.authority_refs
+    if (
+        step.kind != step_kind
+        or step_refs.conversation_id != refs.conversation_id
+        or step_refs.analysis_intent_task_id != refs.analysis_intent_task_id
+        or step_refs.analysis_request_hash != refs.analysis_request_hash
+        or step_refs.plan_revision_id != plan_id
+        or step_refs.workflow_run_id != run_id
+        or step_refs.input_revision != input_revision
+    ):
+        return None
+
+    waiting_task_states = {
+        TaskStatus.WAITING_RUN,
+        TaskStatus.WAITING_USER,
+        TaskStatus.WAITING_DEPENDENCY,
+    }
+    if task.status in waiting_task_states and step.status is TaskStepStatus.WAITING:
+        return run_id
+    if task.status in {TaskStatus.BLOCKED, TaskStatus.CANCELLED} and step.status in {
+        TaskStepStatus.FAILED,
+        TaskStepStatus.BLOCKED,
+        TaskStepStatus.SKIPPED,
+    }:
+        return run_id
+    return None
+
+
+def _analysis_task_attempt_matches(snapshot: CompositeGoalSnapshot, task: WorkTask) -> bool:
+    """Require the analysis Run to belong to the currently selected proposal attempt."""
+
+    matching = tuple(
+        item for item in snapshot.analysis_attempts if item.work_task_id == task.task_id
+    )
+    if len(matching) != 1 or not snapshot.analysis_attempts:
+        return False
+    latest = max(snapshot.analysis_attempts, key=lambda item: item.attempt_number)
+    return latest.work_task_id == task.task_id and _analysis_task_has_proposal(
+        task, matching[0].proposal_hash
     )
 
 

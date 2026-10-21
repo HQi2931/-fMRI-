@@ -993,6 +993,18 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     plan_payload = json.loads(plan_row["plan_json"])
                 except (TypeError, json.JSONDecodeError):
                     plan_payload = None
+                plan_design = plan_payload.get("design") if isinstance(plan_payload, dict) else None
+                source_import_hash = (
+                    plan_design.get("external_import_hash")
+                    if isinstance(plan_design, dict)
+                    else None
+                )
+                if not (
+                    isinstance(source_import_hash, str)
+                    and len(source_import_hash) == 64
+                    and all(character in "0123456789abcdef" for character in source_import_hash)
+                ):
+                    source_import_hash = None
                 plan_input_revision = self._composite_goal_plan_input_revision(
                     task=task,
                     plan_revision_id=plan_revision_id,
@@ -1006,6 +1018,13 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                     manifest_hash=plan_row["manifest_hash"],
                     plan_hash=plan_row["plan_hash"],
                     input_revision=plan_input_revision,
+                    source_external_import_id=(
+                        plan_design.get("external_import_id")
+                        if isinstance(plan_design, dict)
+                        and isinstance(plan_design.get("external_import_id"), str)
+                        else None
+                    ),
+                    source_external_import_hash=source_import_hash,
                 )
 
             def read_run(task: WorkTask | None) -> CompositeGoalRunEvidence | None:

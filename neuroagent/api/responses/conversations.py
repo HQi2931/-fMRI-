@@ -78,6 +78,14 @@ class CompositeGoalProgressView(StrictModel):
     analysis_work_task_id: str | None = None
     result_interpretation_outbox_task_id: str | None = None
     status: CompositeGoalProgressStatus
+    preprocessing_run_id: str | None = Field(
+        default=None,
+        description="Server-verified preprocessing Run ID while its run state is observable.",
+    )
+    analysis_run_id: str | None = Field(
+        default=None,
+        description="Server-verified analysis Run ID while its run state is observable.",
+    )
     preprocessing_status: str | None = None
     analysis_proposal_status: str | None = None
     analysis_status: str | None = None

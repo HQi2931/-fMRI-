@@ -120,6 +120,50 @@ def test_external_result_finalization_binds_root_atomically_and_progress_api(
     assert len(service.runs.list_runs(project_id=goal.project_id)) == 1
 
 
+@pytest.mark.parametrize("mutation", [None, "source", "plan_source", "active_attempt"])
+def test_analysis_only_progress_api_exposes_only_verified_observable_run(
+    service, source_root, work_root, monkeypatch, mutation
+):
+    goal, _role_task, run, _payload = _ready(service, source_root, work_root, monkeypatch)
+    plan = service.plans.get_plan(run.plan_revision_id) if mutation == "plan_source" else None
+    with service.database.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE workflow_runs SET state='queued' WHERE run_id=:run_id"),
+            {"run_id": run.run_id},
+        )
+        if mutation == "source":
+            connection.execute(
+                text("UPDATE external_analysis_imports SET version=version+1 WHERE import_id=:id"),
+                {"id": goal.source_external_import_id},
+            )
+        elif mutation == "plan_source":
+            assert plan is not None
+            content = dict(plan.plan)
+            content["design"] = {**content["design"], "external_import_id": "wrong-source"}
+            connection.execute(
+                text("UPDATE plan_revisions SET plan_json=:content WHERE plan_revision_id=:id"),
+                {"id": plan.plan_revision_id, "content": json.dumps(content)},
+            )
+        elif mutation == "active_attempt":
+            connection.execute(
+                text(
+                    "UPDATE composite_goal_links SET analysis_work_task_id=NULL "
+                    "WHERE intent_task_id=:id"
+                ),
+                {"id": goal.intent_task_id},
+            )
+
+    with TestClient(create_app(service=service)) as client:
+        response = client.get(f"/api/v1/conversations/{goal.conversation_id}/composite-goals")
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json() if item["intent_task_id"] == goal.intent_task_id)
+    assert item["preprocessing_run_id"] is None
+    if mutation is None:
+        assert item["analysis_run_id"] == run.run_id
+    else:
+        assert item["analysis_run_id"] is None
+
+
 @pytest.mark.parametrize("mutation", ["source", "plan_source", "active_attempt"])
 def test_external_result_binding_rejects_changed_authority_atomically(
     service, source_root, work_root, monkeypatch, mutation
