@@ -32,6 +32,10 @@ from neuroagent.analysis.templates import generate_ml_template
         ("Undefined function spm_vol", FailureCode.SOFTWARE_ENVIRONMENT),
         ("Out of memory", FailureCode.RESOURCE),
         ("Access is denied", FailureCode.PATH_POLICY),
+        (
+            "std::exception::what: CreateFile failed: 拒绝访问。 [system:5]",
+            FailureCode.PATH_POLICY,
+        ),
         ("Job timed out", FailureCode.TIMEOUT),
     ],
 )
@@ -40,6 +44,20 @@ def test_dpabi_log_diagnosis_is_classified_and_redacted(log: str, code: FailureC
     assert diagnosis.code is code
     assert all("C:\\data" not in evidence for evidence in diagnosis.evidence)
     assert diagnosis.suggestions
+
+
+def test_matlab_startup_permission_diagnosis_is_actionable_and_redacted() -> None:
+    private_path = r"C:\Users\Researcher\AppData\Roaming\MathWorks\MATLAB\R2024b"
+    diagnosis = diagnose_dpabi_log(
+        "Fatal Startup Error:\n"
+        "std::exception::what: CreateFile failed: 拒绝访问。 [system:5] "
+        f"{private_path}"
+    )
+
+    assert diagnosis.code is FailureCode.PATH_POLICY
+    assert "MATLAB 启动" in diagnosis.summary
+    assert any("MATLAB_PREFDIR" in item for item in diagnosis.suggestions)
+    assert private_path not in "\n".join(diagnosis.evidence)
 
 
 def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:

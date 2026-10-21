@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
 from neuroagent.application.contracts.runs import (
+    RunAction,
     RunCreate,
 )
 from neuroagent.application.services import ApplicationServices
@@ -118,3 +119,71 @@ def test_extension_analysis_endpoints_are_local_and_typed(
         )
         assert answer.status_code == 200
         assert answer.json()["remote_search_used"] is False
+
+
+def test_get_run_diagnosis_reads_active_and_cancelled_attempt_logs_locally(
+    service: ApplicationServices, source_root: Path, work_root: Path
+) -> None:
+    project = make_project(service, source_root, work_root)
+    plan = make_approved_plan(service, project.project_id)
+    run = service.runs.create_run(
+        RunCreate(
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            expected_plan_hash=plan.plan_hash,
+        ),
+        "diagnosis-get-run-key",
+    )
+
+    attempt_root = Path(project.work_root) / run.run_id / "attempts" / "attempt-001"
+    stderr = attempt_root / "logs" / "job-1" / "attempt-001" / "matlab.stderr.log"
+    stderr.parent.mkdir(parents=True)
+    private_path = r"C:\Users\Researcher\AppData\Roaming\MathWorks\MATLAB\R2024b"
+    stderr.write_text(
+        "Fatal Startup Error:\n"
+        "std::exception::what: CreateFile failed: 拒绝访问。 [system:5] "
+        f"{private_path}\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(service=service)) as client:
+        active = client.get(f"/api/v1/runs/{run.run_id}/diagnosis")
+        assert active.status_code == 200
+        assert active.json()["run_id"] == run.run_id
+        assert active.json()["diagnosis"]["code"] == "path_policy"
+        assert private_path not in active.text
+        assert "MATLAB 启动" in active.json()["diagnosis"]["summary"]
+
+        cancelled_run = service.runs.cancel_run(
+            run.run_id,
+            RunAction(expected_version=run.version, reason="synthetic API test cancellation"),
+            "diagnosis-get-cancel-key",
+        )
+        assert cancelled_run.state.value == "cancelled"
+
+        cancelled = client.get(f"/api/v1/runs/{run.run_id}/diagnosis")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["diagnosis"]["code"] == "path_policy"
+
+
+def test_get_run_diagnosis_without_an_attempt_reports_no_evidence(
+    service: ApplicationServices, source_root: Path, work_root: Path
+) -> None:
+    project = make_project(service, source_root, work_root)
+    plan = make_approved_plan(service, project.project_id)
+    run = service.runs.create_run(
+        RunCreate(
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            expected_plan_hash=plan.plan_hash,
+        ),
+        "diagnosis-empty-run-key",
+    )
+
+    with TestClient(create_app(service=service)) as client:
+        response = client.get(f"/api/v1/runs/{run.run_id}/diagnosis")
+
+    assert response.status_code == 200
+    assert response.json()["diagnosis"]["code"] == "unknown"
+    assert response.json()["diagnosis"]["severity"] == "info"
+    assert response.json()["diagnosis"]["evidence"] == []

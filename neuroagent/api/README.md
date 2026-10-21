@@ -23,6 +23,7 @@
 - `create_app()` 装配路由、统一错误处理与 `X-Trace-ID`；
 - 业务错误、请求校验错误、未匹配路径和意外 `500` 统一返回 `{"error": {"code", "message", "details", "trace_id"}}`；
 - SSE 通过 `/runs/{id}/events` 提供可续传的运行事件；
+- `GET /runs/{id}/diagnosis` 从当前 attempt 的本地日志实时生成确定性诊断；尚无日志返回空 evidence，不上传给模型；
 - 对话回合通过 `stream=true` 提供正文 SSE，契约见 [API v1](../../docs/api/api-v1.md#持久化对话与工具编排)；
 - `static.py` 在生产构建下提供前端入口。
 

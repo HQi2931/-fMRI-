@@ -130,6 +130,20 @@ def diagnose_run(
     )
 
 
+@router.get("/runs/{run_id}/diagnosis", response_model=RunDiagnosisView, tags=["runs"])
+def diagnose_latest_run(run_id: str, request: Request) -> RunDiagnosisView:
+    """Read a local diagnosis of the current attempt without uploading its logs."""
+
+    diagnosis = capability_from(request, "runs").diagnose_latest_run(run_id)
+    return cast(
+        RunDiagnosisView,
+        to_http_response(
+            {"run_id": run_id, "diagnosis": diagnosis},
+            RunDiagnosisView,
+        ),
+    )
+
+
 @router.post("/ml/datasets/inspect", response_model=MlTableInspectView, tags=["machine-learning"])
 def inspect_ml_table(
     body: MlTableInspectRequest, request: Request, idempotency_key: IdempotencyKey

@@ -16,6 +16,7 @@ from neuroagent.analysis.dpabi_atlas import (
     localize_cluster_map,
     peak_axial_slice,
 )
+from neuroagent.analysis.models import FailureCode, FailureDiagnosis
 from neuroagent.analysis.organization import build_dpabi_preview
 from neuroagent.analysis.rag import answer_rsfmri_question, search_evidence
 from neuroagent.analysis.roi import build_roi_tables, validate_roi_request
@@ -262,15 +263,31 @@ class RunMixin(BaseServiceMixin):
         return RunDiagnosisView(run_id=run.run_id, diagnosis=diagnosis)
 
     def diagnose_latest_run(self, run_id: str) -> dict[str, object]:
-        """Classify bounded local logs for a failed run without exposing paths."""
+        """Classify the current attempt's bounded local logs without exposing paths."""
 
         run = self.repository.get_run(run_id)
-        attempt_root = self._latest_attempt_root(run).resolve()
+        try:
+            attempt_root = self._latest_attempt_root(run).resolve()
+        except ConflictError as exc:
+            if exc.code != "head_motion_qc_attempt_missing":
+                raise
+            return self._diagnosis_without_logs().model_dump(mode="json")
+        project = self.project_repository.get_project(run.project_id)
+        work_root = Path(project.work_root).resolve()
+        attempts_root = (work_root / run.run_id / "attempts").resolve()
+        try:
+            attempts_root.relative_to(work_root)
+            attempt_root.relative_to(attempts_root)
+        except ValueError as exc:
+            raise ConflictError(
+                "run_diagnosis_attempt_path_invalid",
+                "运行诊断日志越过项目工作区边界。",
+            ) from exc
         log_root = (attempt_root / "logs").resolve()
         try:
             log_root.relative_to(attempt_root)
         except ValueError:
-            return diagnose_dpabi_log("").model_dump(mode="json")
+            return self._diagnosis_without_logs().model_dump(mode="json")
         allowed_names = {"matlab.log", "matlab.stdout.log", "matlab.stderr.log"}
         chunks: list[str] = []
         remaining = 64_000
@@ -293,8 +310,24 @@ class RunMixin(BaseServiceMixin):
                 remaining -= len(content.encode("utf-8", errors="replace"))
             if remaining <= 0:
                 break
-        diagnosis = diagnose_dpabi_log("\n".join(chunks) if chunks else "")
+        diagnosis = (
+            diagnose_dpabi_log("\n".join(chunks)) if chunks else self._diagnosis_without_logs()
+        )
         return diagnosis.model_dump(mode="json")
+
+    @staticmethod
+    def _diagnosis_without_logs() -> FailureDiagnosis:
+        """Represent a not-yet-created log as absence of evidence, not a failure."""
+
+        return FailureDiagnosis(
+            code=FailureCode.UNKNOWN,
+            severity="info",
+            summary="当前 attempt 尚无可诊断的 MATLAB 日志",
+            evidence=(),
+            suggestions=("等待当前 attempt 写入 MATLAB 日志后再次检查",),
+            confidence=0,
+            requires_new_plan=False,
+        )
 
     def inspect_ml_table(self, request: MlTableInspectRequest) -> MlTableInspectView:
         project = self.project_repository.get_project(request.project_id)

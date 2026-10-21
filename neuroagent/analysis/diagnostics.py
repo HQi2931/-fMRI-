@@ -57,7 +57,18 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
     (
         FailureCode.PATH_POLICY,
-        r"(permission denied|access is denied|path traversal|权限拒绝|目录越界)",
+        r"createfile failed.{0,160}(?:拒绝访问|access is denied).{0,80}(?:system:5)?",
+        ("MATLAB 启动时创建文件被 Windows 拒绝访问",),
+        (
+            "确认运行用户对 MATLAB preferences、临时目录和项目工作目录有写权限",
+            "若 MATLAB preferences 目录不可写, 为本机 MATLAB 配置独立且可写的 "
+            "MATLAB_PREFDIR 后重试",
+            "重试前先检查本次 attempt 的 stderr 日志",
+        ),
+    ),
+    (
+        FailureCode.PATH_POLICY,
+        r"(permission denied|access is denied|path traversal|权限拒绝|拒绝访问|目录越界)",
         ("路径或权限策略阻断了运行",),
         ("将输入放入允许的只读根目录", "将输出改到项目 staging 工作区"),
     ),
