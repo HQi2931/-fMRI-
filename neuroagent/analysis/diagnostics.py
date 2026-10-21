@@ -35,6 +35,15 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
     (
         FailureCode.DPABI_CONFIGURATION,
+        r"no auto mask binding exists for",
+        ("DPABI 未找到该受试者的 AutoMask 绑定",),
+        (
+            "检查本次 attempt 是否生成了 AutoMask 输出及对应的受试者绑定记录",
+            "核对冻结清单中的受试者 ID 与 DPABI 输入映射; 修复后重新确认方案",
+        ),
+    ),
+    (
+        FailureCode.DPABI_CONFIGURATION,
         r"(cfg|configuration|parameter|field).*(invalid|unknown|missing)|字段.*错误|参数.*错误",
         ("DPABI Cfg 参数未通过校验",),
         ("重新生成结构化 Cfg 并查看字段映射", "不要直接编辑 MATLAB 文本"),
@@ -124,16 +133,6 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
                 confidence=0.6,
                 requires_new_plan=code not in {FailureCode.INPUT_MISSING, FailureCode.PATH_POLICY},
             )
-    if "cancel" in lower or "取消" in text:
-        return FailureDiagnosis(
-            code=FailureCode.CANCELLED,
-            severity="warning",
-            summary="作业被用户或进程取消",
-            evidence=tuple(lines[-max_evidence:]),
-            suggestions=("确认取消原因; 如需继续, 使用相同批准计划重新排队",),
-            confidence=0.85,
-            requires_new_plan=False,
-        )
     error_lines = tuple(line for line in lines if _UNRECOGNIZED_ERROR_LINE.search(line))
     if error_lines:
         return FailureDiagnosis(
@@ -147,6 +146,16 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
             ),
             confidence=0.25,
             requires_new_plan=True,
+        )
+    if "cancel" in lower or "取消" in text:
+        return FailureDiagnosis(
+            code=FailureCode.CANCELLED,
+            severity="warning",
+            summary="作业被用户或进程取消",
+            evidence=tuple(lines[-max_evidence:]),
+            suggestions=("确认取消原因; 如需继续, 使用相同批准计划重新排队",),
+            confidence=0.85,
+            requires_new_plan=False,
         )
     return FailureDiagnosis(
         code=FailureCode.UNKNOWN,

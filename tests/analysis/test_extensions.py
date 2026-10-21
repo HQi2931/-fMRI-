@@ -107,6 +107,35 @@ def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:
     assert "C:\\Users\\Researcher" not in "\n".join(unknown_error.evidence)
 
 
+@pytest.mark.parametrize(
+    "log",
+    [
+        "Cancellation requested by user\nError using run_preprocessing (line 42)",
+        "Error using run_preprocessing (line 42): cancellation check failed",
+        "Run interrupted\nException: MATLAB failure detected after cancellation",
+    ],
+)
+def test_matlab_error_evidence_takes_precedence_over_cancel_text(log: str) -> None:
+    diagnosis = diagnose_dpabi_log(log)
+
+    assert diagnosis.code is FailureCode.UNKNOWN
+    assert diagnosis.severity == "error"
+    assert diagnosis.summary == "发现尚未匹配已知规则的 MATLAB/DPABI 错误"
+
+
+def test_auto_mask_binding_error_has_targeted_feedback_and_redacted_subject_id() -> None:
+    diagnosis = diagnose_dpabi_log(
+        "No auto mask binding exists for Sub-001.\nError using run_preprocessing (line 42)"
+    )
+
+    assert diagnosis.code is FailureCode.DPABI_CONFIGURATION
+    assert diagnosis.summary == "DPABI 未找到该受试者的 AutoMask 绑定"
+    assert any("AutoMask 输出" in item for item in diagnosis.suggestions)
+    evidence = "\n".join(diagnosis.evidence)
+    assert "Sub<id>" in evidence
+    assert "Sub-001" not in evidence
+
+
 def test_t1_conversion_diagnosis_does_not_infer_a_specific_root_cause() -> None:
     diagnosis = diagnose_dpabi_log("���� assert\nT1 converter failed.\nrsfmri:t1:ConverterFailed")
     assert diagnosis.code is FailureCode.INPUT_FORMAT
