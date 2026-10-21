@@ -499,9 +499,26 @@ class ConversationWorkCoordinator:
         try:
             if not workspace_path:
                 return WorkActionResult("请先选择工作区，再确认参数草稿。", project_id=project_id)
-            if dataset_id is not None and project_id is not None:
-                dataset = self._project_repository.get_dataset(dataset_id)
+            if project_id is not None:
                 project = self._project_repository.get_project(project_id)
+                if dataset_id is None:
+                    datasets = self._project_repository.list_datasets_for_project(project_id)
+                    if not datasets:
+                        raise ConflictError(
+                            "project_dataset_not_registered",
+                            "当前项目尚无已登记数据集，请先登记数据集并冻结清单，再编译方案。",
+                            project_id=project_id,
+                        )
+                    if len(datasets) > 1:
+                        raise ConflictError(
+                            "project_dataset_ambiguous",
+                            "当前项目已登记多个数据集，无法安全自动选择；请先明确绑定唯一数据集，再编译方案。",
+                            project_id=project_id,
+                            dataset_count=len(datasets),
+                        )
+                    dataset = datasets[0]
+                else:
+                    dataset = self._project_repository.get_dataset(dataset_id)
                 if dataset.project_id != project_id:
                     raise ValueError("dataset project mismatch")
                 bound = self._path_policy.validate_read_path(

@@ -358,6 +358,8 @@ class ProjectRepositoryPort(Protocol):
 
     def get_dataset(self, dataset_id: str) -> DatasetView: ...
 
+    def list_datasets_for_project(self, project_id: str) -> list[DatasetView]: ...
+
     def create_manifest(
         self,
         dataset_id: str,

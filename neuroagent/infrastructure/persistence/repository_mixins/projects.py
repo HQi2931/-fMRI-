@@ -93,6 +93,15 @@ class ProjectDatasetMixin(RepositoryBaseMixin):
                 raise NotFoundError("dataset", dataset_id)
             return self._dataset(row)
 
+    def list_datasets_for_project(self, project_id: str) -> list[DatasetView]:
+        with self._read_session() as session:
+            rows = session.scalars(
+                select(DatasetRow)
+                .where(DatasetRow.project_id == project_id)
+                .order_by(DatasetRow.created_at, DatasetRow.dataset_id)
+            ).all()
+            return [self._dataset(row) for row in rows]
+
     def create_manifest(
         self, dataset_id: str, *, expected_version: int, content: dict[str, Any]
     ) -> ManifestRevisionView:
