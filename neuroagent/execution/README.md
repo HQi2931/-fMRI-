@@ -15,7 +15,7 @@
 - 执行器协议、`ExecutionResult` 与 MATLAB 编译器所需的窄产物目录端口由 `execution/ports.py` 所有；Worker 领取记录由 `workflow/models.py` 所有。Application 仅为旧调用点保留兼容重导出。编译器与预处理投影均不再导入 Application DTO；冻结 manifest 由 `execution/manifest.py` 的结构化只读协议描述，数据集分类枚举归领域层所有。
 - 固定 MATLAB 模板渲染与 dry-run，可审查输入清单、Cfg、脚本、运行目录和预期产物。
 - `MockMatlabExecutor`，用于 CI 和完整工作流测试。
-- 默认禁止真实运行的 `ControlledMatlabExecutor` 已接入公共 Worker，支持 Windows 空格路径、超时、取消、退出码、日志和必需产物检查。执行前会快照预期输出；成功后仅登记本次新建或内容发生变化的非空普通文件，并记录大小和 SHA-256。目录、符号链接、零字节文件以及前次失败或重试遗留的未变化产物都会被拒绝。stdout/stderr 持续写入 `logs/<job_id>/attempt-NNN/`，重试保留历史；`MatlabJobResult` 只携带最多 1 MiB 的日志尾部，避免大输出阻塞或占满内存。Artifact API 提供元数据及受权限、路径与完整性检查约束的文件下载。
+- 默认禁止真实运行的 `ControlledMatlabExecutor` 已接入公共 Worker，支持 Windows 空格路径、超时、取消、退出码、日志和必需产物检查。执行前会快照预期输出；成功后仅登记本次新建或内容发生变化的非空普通文件，并记录大小和 SHA-256。目录、符号链接、零字节文件以及前次失败或重试遗留的未变化产物都会被拒绝。stdout/stderr 持续写入 `logs/<job_id>/attempt-NNN/`，重试保留历史；`MatlabJobResult` 只携带最多 1 MiB 的日志尾部，避免大输出阻塞或占满内存。每个 MATLAB 进程获得位于本次执行目录内的独立 `matlab-preferences` 文件夹，`MATLAB_PREFDIR` 仅对子进程生效，并拒绝解析到 attempt 根目录之外的路径；这是针对本机偏好目录不可写时的隔离 workaround，不表示已确认任何具体启动错误的根因。Artifact API 提供元数据及受权限、路径与完整性检查约束的文件下载。
 - 公共 MATLAB 适配器给每次执行建立独立 attempt 工作目录，重新从只读输入准备 staging，避免重试复用已删除 dummy volumes 的时间序列。
 - DPABI 原位续跑读取冻结 manifest 的 `selected_input_stage`；`FunImgAR`、`FunImgARW`、`FunImgARWS` 等已核验 checkpoint 会关闭相应已完成步骤，禁止重复 dummy-volume 删除，并在运行前核对伴随文件哈希。头动 QC provenance 会区分 `prior_checkpoint` 与 `current_execution`。缺少显式阶段、步骤冲突或输出目录碰撞时失败关闭。
 - 统计软件证据来自运行时 MATLAB/SPM 版本和 DPABI 源码 Release 标记；效应量使用冻结设计矩阵的对比方差，见 [ADR 0007](../../docs/adr/0007-adjusted-statistical-effects.md)。

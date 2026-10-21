@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -410,6 +411,79 @@ def test_controlled_executor_maps_success_missing_output_and_failure(
     failed = failed_executor.execute(job(), is_cancelled=lambda: False)
     assert failed.status.value == "failed"
     assert failed.exit_code == 7
+
+
+def test_controlled_executor_uses_attempt_local_matlab_preferences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = prepared_work(tmp_path)
+    executor = ControlledMatlabExecutor(
+        MatlabTemplateRenderer(Path("matlab/templates")),
+        executable_environment(tmp_path),
+        work,
+        allow_real_execution=True,
+    )
+    monkeypatch.setenv("MATLAB_PREFDIR", "ambient-user-preferences")
+    monkeypatch.setenv("RSFMRI_INHERITED_ENV_TEST", "inherited")
+    launch: dict[str, Any] = {}
+
+    def fake_popen(*args: Any, **kwargs: Any) -> FakeProcess:
+        launch["args"] = args
+        launch.update(kwargs)
+        return FakeProcess(*args, **kwargs, create_output=True)
+
+    monkeypatch.setattr(matlab_module.subprocess, "Popen", fake_popen)
+
+    result = executor.execute(job(), is_cancelled=lambda: False)
+
+    run_root = work / "run-001"
+    attempt_root = run_root / "logs" / "job-001" / "attempt-001"
+    preference_directory = attempt_root / "matlab-preferences"
+    child_environment = launch["env"]
+    assert result.status.value == "succeeded"
+    assert preference_directory.is_dir()
+    assert child_environment["MATLAB_PREFDIR"] == str(preference_directory.resolve())
+    assert Path(child_environment["MATLAB_PREFDIR"]).is_relative_to(run_root.resolve())
+    assert child_environment["RSFMRI_INHERITED_ENV_TEST"] == "inherited"
+    assert child_environment["MATLAB_PREFDIR"] != "ambient-user-preferences"
+    assert os.environ["MATLAB_PREFDIR"] == "ambient-user-preferences"
+
+
+def test_controlled_executor_rejects_attempt_path_escape_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = prepared_work(tmp_path)
+    outside_attempt = tmp_path / "outside-attempt"
+    outside_attempt.mkdir()
+
+    executor = ControlledMatlabExecutor(
+        MatlabTemplateRenderer(Path("matlab/templates")),
+        executable_environment(tmp_path),
+        work,
+        allow_real_execution=True,
+    )
+    launched = False
+
+    def forbidden_popen(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        nonlocal launched
+        launched = True
+        raise AssertionError("Popen must not run when the preferences path escapes")
+
+    monkeypatch.setattr(
+        matlab_module,
+        "_allocate_execution_logs",
+        lambda *_args: (
+            outside_attempt / "matlab.stdout.log",
+            outside_attempt / "matlab.stderr.log",
+        ),
+    )
+    monkeypatch.setattr(matlab_module.subprocess, "Popen", forbidden_popen)
+
+    with pytest.raises(MatlabExecutionError, match="escapes allowed root"):
+        executor.execute(job(), is_cancelled=lambda: False)
+
+    assert not launched
+    assert tuple(outside_attempt.iterdir()) == ()
 
 
 @pytest.mark.parametrize("stale_kind", ["nonempty", "empty", "directory"])

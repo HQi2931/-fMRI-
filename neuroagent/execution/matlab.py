@@ -317,6 +317,11 @@ class ControlledMatlabExecutor:
             raise MatlabExecutionError(f"MATLAB executable not found: {executable}")
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         stdout_path, stderr_path = _allocate_execution_logs(rendered.run_directory, job.job_id)
+        preferences_directory = _prepare_matlab_preferences_directory(
+            rendered.run_directory, stdout_path.parent
+        )
+        child_environment = os.environ.copy()
+        child_environment["MATLAB_PREFDIR"] = str(preferences_directory)
         prior_artifacts = _snapshot_expected_artifacts(job, rendered.run_directory)
         requested_status: MatlabJobStatus | None = None
         with (
@@ -331,6 +336,7 @@ class ControlledMatlabExecutor:
                 text=True,
                 shell=False,
                 creationflags=creation_flags,
+                env=child_environment,
             )
             deadline = time.monotonic() + job.timeout_seconds
             output_cursor = 0
@@ -456,6 +462,33 @@ def _allocate_execution_logs(run_directory: Path, job_id: str) -> tuple[Path, Pa
             attempt_directory / "matlab.stderr.log",
         )
     raise MatlabExecutionError(f"too many preserved execution logs for job {job_id!r}")
+
+
+def _prepare_matlab_preferences_directory(run_directory: Path, attempt_directory: Path) -> Path:
+    """Create an isolated preference directory for one MATLAB process launch."""
+    try:
+        run_root = run_directory.resolve(strict=True)
+        attempt_root = attempt_directory.resolve(strict=True)
+        _assert_within(attempt_root, run_root)
+        if not attempt_root.is_dir():
+            raise MatlabExecutionError("MATLAB execution attempt directory is not a directory")
+
+        candidate = attempt_root / "matlab-preferences"
+        # Check the resolved path before mkdir so a pre-existing symlink or
+        # junction cannot redirect creation outside the execution attempt.
+        _assert_within(candidate.resolve(strict=False), attempt_root)
+        if candidate.is_symlink():
+            raise MatlabExecutionError("MATLAB preference directory cannot be a symbolic link")
+        candidate.mkdir(exist_ok=True)
+        preferences_directory = candidate.resolve(strict=True)
+        _assert_within(preferences_directory, attempt_root)
+        if not preferences_directory.is_dir():
+            raise MatlabExecutionError("MATLAB preference path is not a directory")
+        return preferences_directory
+    except OSError as exc:
+        raise MatlabExecutionError(
+            "failed to prepare the per-attempt MATLAB preference directory"
+        ) from exc
 
 
 def _read_bounded_log(path: Path) -> str:
