@@ -421,6 +421,10 @@ export function AgentPage() {
     { id: "pending-assistant", role: "assistant", text: pendingTurn.text, streamingStatus: pendingTurn.status },
   );
   const selectedModel = choices.find((item) => item.key === selectedModelKey);
+  const activeConversationId = activeConversation?.conversation_id;
+  const activeConversationWorkspacePath = activeConversation?.workspace_path;
+  const selectedModelProfileId = selectedModel?.profileId;
+  const selectedModelName = selectedModel?.model;
   const receiveStatisticsRun = useCallback((run: Run) => {
     const conversationId = activeConversation?.conversation_id;
     if (!conversationId || currentConversationId.current !== conversationId) return;
@@ -629,13 +633,15 @@ export function AgentPage() {
   }, [activeConversation?.conversation_id, activeConversation?.version, activeConversation?.work_tasks, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
 
   useEffect(() => {
-    if (mode !== "work" || !activeConversation || !workspacePath) { setWorkspaceEntries([]); return; }
+    if (mode !== "work" || !activeConversationId || !workspacePath) { setWorkspaceEntries([]); return; }
     const controller = new AbortController();
-    workspacesApi.workspaceFiles(activeConversation.conversation_id, "", controller.signal)
-      .then((listing) => setWorkspaceEntries(listing.entries.filter((item) => item.kind === "file" && item.readable !== false)))
-      .catch(() => setWorkspaceEntries([]));
+    workspacesApi.workspaceFiles(activeConversationId, "", controller.signal)
+      .then((listing) => {
+        if (!controller.signal.aborted) setWorkspaceEntries(listing.entries.filter((item) => item.kind === "file" && item.readable !== false));
+      })
+      .catch(() => { if (!controller.signal.aborted) setWorkspaceEntries([]); });
     return () => controller.abort();
-  }, [activeConversation, mode, workspacePath]);
+  }, [activeConversationId, mode, workspacePath]);
 
   useEffect(() => {
     setWorkspaceCheck(null);
@@ -656,14 +662,17 @@ export function AgentPage() {
   }, [mode, workspacePath, activeConversation?.conversation_id, confirmedWorkspaceStage]);
 
   useEffect(() => {
-    if (mode !== "work" || !activeConversation || activeConversation.workspace_path !== workspacePath || !selectedModel) { setWorkspaceConsent(null); return; }
+    if (mode !== "work" || !activeConversationId || activeConversationWorkspacePath !== workspacePath || !selectedModelProfileId || !selectedModelName) { setWorkspaceConsent(null); return; }
     setWorkspaceConsent(null);
     const controller = new AbortController();
-    workspacesApi.workspaceConsents(activeConversation.conversation_id, controller.signal)
-      .then((items) => setWorkspaceConsent(items.find((item) => item.profile_id === selectedModel.profileId && item.model === selectedModel.model && item.valid_for_current_context && !item.revoked_at) ?? null))
-      .catch(() => setWorkspaceConsent(null));
+    workspacesApi.workspaceConsents(activeConversationId, controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setWorkspaceConsent(items.find((item) => item.profile_id === selectedModelProfileId && item.model === selectedModelName && item.valid_for_current_context && !item.revoked_at) ?? null);
+      })
+      .catch(() => { if (!controller.signal.aborted) setWorkspaceConsent(null); });
     return () => controller.abort();
-  }, [activeConversation, mode, selectedModel, workspacePath]);
+  }, [activeConversationId, activeConversationWorkspacePath, mode, selectedModelProfileId, selectedModelName, workspacePath]);
 
   function cache(conversation: Conversation): void {
     setDraftDirty(false);

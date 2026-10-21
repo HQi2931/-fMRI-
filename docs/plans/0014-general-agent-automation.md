@@ -412,6 +412,8 @@ Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志�
 
 定向验证：路由后端 53 项、Agent 页面 71 项通过；Ruff、TypeScript 类型检查与差异空白检查通过。未调用 Provider、未启动 MATLAB/DPABI，未执行本轮对话草稿的真实模型验收。
 
+Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模型身份订阅；组件清理后，已中止请求的成功或失败回调都不能覆盖新上下文状态。Agent 页面回归测试覆盖旧授权查询与旧文件清单在新会话响应之后才因 AbortSignal 取消的竞态。Agent 页面测试 72 项、TypeScript 类型检查与 ESLint 均通过。本地浏览器恢复后，受限白名单保持仅选两份元数据；真实 DeepSeek Flash 在 ds002748 会话创建了 ALFF/fALFF 待审草稿并引用 TR、SliceTiming 数组及第 13 层证据。草稿未批准、未创建 Run，未启动 MATLAB。Agent 的回复没有明确回答 ALFF/fALFF 与 ReHo 能否同批；本计划 Skill 文档与编译测试显示可在同一 `DPARSFA_run` 中沿不同已验证时序检查点执行，差异属于分支处理顺序而非一律禁止同批的科学规则。该工程能力判断不改变本轮仅请求 ALFF/fALFF 的选择。
+
 ### 阶段 B CompositeGoal 阶段交接判定（2026-10-20）
 
 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md) 已实现一个受限的只读 handoff decision：进度投影和两个已有 outbox consumer 共用同一纯决议函数。CompositeGoal 快照在同一只读 SQLite 一致性边界中加入当前目标对应的最小 Plan、Run 与 QC 事实；只有 Task wait reference、Plan/Run 项目、输入修订和绑定关系、活跃 Run 状态及 QC review 事实均精确匹配时，才显示等待审查或等待已绑定 Run。缺失、未知或错绑证据保持待核验/原等待状态。仅允许现有 `preprocess_then_analyze` proposal outbox 和统计结果解释 outbox 在 handoff action、当前 root、outbox claim ID 一致且状态 ready 时调用模型；原有来源重核、预算、租约、幂等和 fencing 继续有效。阶段暂不可交接不调用模型；proposal handoff 经五次自动尝试仍未就绪时暂停至用户手动重试，避免无限后台重试。
