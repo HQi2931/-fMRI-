@@ -33,6 +33,7 @@
 | Work 双 Agent 分工 | [ADR 0024](adr/0024-work-dual-agents.md) | [Agent 注册与交接](../neuroagent/multi_agent/README.md) 描述代码边界 |
 | ROI、ML 与定位契约 | [ROI、机器学习与脑区定位领域合同](domain/roi-ml-localization.md) | |
 | MATLAB/DPABI 运行与恢复 | [本地运行、诊断与恢复](operations/local-operations.md) | |
+| 公共静息态 fMRI 演示数据 | [OpenNeuro 20 人静息态 fMRI demo](operations/openneuro-rsfmri-demo.md) | 下载、来源与真实端到端验证边界 |
 | 长任务与错误诊断 | [长任务等待、恢复与错误诊断](operations/long-running-jobs.md) | |
 | Provider 配置 | [Provider 配置与 smoke](operations/provider-setup.md) | |
 | 数据外发策略 | [模型数据外发策略](security/data-egress.md) | |
@@ -74,6 +75,7 @@
 ### 运维
 
 - [本地运行、诊断与恢复](operations/local-operations.md)
+- [OpenNeuro 20 人静息态 fMRI demo](operations/openneuro-rsfmri-demo.md)
 - [长任务等待、恢复与错误诊断](operations/long-running-jobs.md)
 - [Provider 配置与 smoke](operations/provider-setup.md)
 
