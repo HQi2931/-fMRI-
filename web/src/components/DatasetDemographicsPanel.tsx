@@ -101,6 +101,9 @@ export function DatasetDemographicsPanel({ datasetId, workspacePath, disabled = 
         expected_dataset_version: dataset.version,
       });
       setRevision(imported);
+      // Creating an immutable demographics revision increments the dataset version.
+      // Keep the next explicit import on the version returned by this successful write.
+      setDataset({ ...dataset, version: dataset.version + 1 });
       updateWorkspace({ demographicsId: imported.demographics_id, demographicsRevision: imported.revision });
     } catch (caught) {
       setError(describeError(caught));

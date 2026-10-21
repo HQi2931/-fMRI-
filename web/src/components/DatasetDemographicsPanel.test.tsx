@@ -98,6 +98,12 @@ describe("project demographics registration", () => {
     }));
     expect(await screen.findByText("登记完成，受试者与清单完全对齐")).toBeInTheDocument();
     expect(screen.getByText("第 1 版 · 2 行 · 已登记列：group、age、sex")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "登记并校验人口学表" }));
+    await waitFor(() => expect(projectsApi.importDemographics).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(projectsApi.importDemographics).mock.calls[1][1]).toMatchObject({
+      expected_dataset_version: 5,
+    });
   });
 
   it("reports missing and extra IDs from the server-side alignment check", async () => {
