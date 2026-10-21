@@ -167,21 +167,23 @@ def test_download_is_atomic_idempotent_and_records_hashes(
 ) -> None:
     participants = _participant_bytes()
     sources, payloads = _sources(participants)
-    fail_once = {"README": True}
+    failures_remaining = {"README": demo.DOWNLOAD_ATTEMPTS}
 
     def fake_urlopen(request: object, timeout: int) -> _Response:
         filename = _url_filename(request)
-        if filename == "README" and fail_once.pop("README", False):
+        if filename == "README" and failures_remaining["README"] > 0:
+            failures_remaining["README"] -= 1
             raise URLError("temporary network interruption")
         return _Response(payloads[filename])
 
     monkeypatch.setattr(demo, "urlopen", fake_urlopen)
+    monkeypatch.setattr(demo.time, "sleep", lambda _seconds: None)
     destination = tmp_path / "ds002748"
 
     def load_files(_timeout: int) -> list[demo.SourceFile]:
         return sources
 
-    with pytest.raises(demo.DownloadError, match="Failed to download README"):
+    with pytest.raises(demo.DownloadError, match="after 4 attempts: <urlopen error temporary"):
         demo.download_demo(destination, files_loader=load_files)
     assert not destination.exists()
     assert not list(tmp_path.glob(".rsfmri-demo-*"))
@@ -203,6 +205,32 @@ def test_download_is_atomic_idempotent_and_records_hashes(
     second = demo.download_demo(destination, files_loader=load_files)
     assert second["status"] == "already_complete"
     assert second["output_files"] == manifest["output_files"]
+
+
+def test_file_download_retries_a_truncated_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"complete payload"
+    source = demo.SourceFile(
+        filename="README",
+        size=len(payload),
+        url="https://s3.amazonaws.com/openneuro.org/ds002748/README?versionId=pinned",
+    )
+    attempts = 0
+
+    def fake_urlopen(_request: object, timeout: int) -> _Response:
+        nonlocal attempts
+        attempts += 1
+        return _Response(payload[:5] if attempts == 1 else payload)
+
+    monkeypatch.setattr(demo, "urlopen", fake_urlopen)
+    monkeypatch.setattr(demo.time, "sleep", lambda _seconds: None)
+
+    record = demo._download_file(source, tmp_path / "README")
+
+    assert attempts == 2
+    assert (tmp_path / "README").read_bytes() == payload
+    assert record["size"] == len(payload)
 
 
 def test_existing_unverified_output_is_never_overwritten(tmp_path: Path) -> None:

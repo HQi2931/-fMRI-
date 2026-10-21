@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,6 +24,7 @@ SNAPSHOT = "1.0.5"
 DATASET_URL = f"https://openneuro.org/datasets/{DATASET_ID}/versions/{SNAPSHOT}"
 GRAPHQL_URL = "https://openneuro.org/crn/graphql"
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "data/rsfmri-demo/ds002748-v1.0.5"
+DOWNLOAD_ATTEMPTS = 4
 
 DEPR_SUBJECTS = (*(f"sub-{number:02d}" for number in range(21, 30)), "sub-31")
 CONTROL_SUBJECTS = (
@@ -241,23 +243,34 @@ def _download_bytes(source: SourceFile, timeout: int = 90) -> bytes:
 def _download_file(source: SourceFile, destination: Path) -> dict[str, Any]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.part")
-    digest = hashlib.sha256()
-    size = 0
     request = Request(source.url, headers={"User-Agent": "rs-fmri-agent-demo-downloader/1.0"})
-    try:
-        with urlopen(request, timeout=90) as response, temporary.open("xb") as output:
-            while chunk := response.read(1024 * 1024):
-                size += len(chunk)
-                digest.update(chunk)
-                output.write(chunk)
-    except (OSError, URLError) as exc:
-        raise DownloadError(f"Failed to download {source.filename}: {exc}") from exc
-    if size != source.size:
-        raise DownloadError(
-            f"Size mismatch for {source.filename}: OpenNeuro lists {source.size} bytes, got {size}"
-        )
-    os.replace(temporary, destination)
-    return {"filename": source.filename, "size": size, "sha256": digest.hexdigest()}
+    last_error: Exception | None = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with urlopen(request, timeout=90) as response, temporary.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != source.size:
+                raise DownloadError(
+                    f"Size mismatch for {source.filename}: OpenNeuro lists {source.size} bytes, "
+                    f"got {size}"
+                )
+            os.replace(temporary, destination)
+            return {"filename": source.filename, "size": size, "sha256": digest.hexdigest()}
+        except (OSError, URLError, DownloadError) as exc:
+            last_error = exc
+            temporary.unlink(missing_ok=True)
+            if attempt == DOWNLOAD_ATTEMPTS:
+                break
+            time.sleep(min(2 ** (attempt - 1), 4))
+
+    raise DownloadError(
+        f"Failed to download {source.filename} after {DOWNLOAD_ATTEMPTS} attempts: {last_error}"
+    ) from last_error
 
 
 def _output_files(root: Path) -> list[dict[str, Any]]:
