@@ -247,6 +247,8 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务。新增 review route 只返回 DTO；为避免误选同类型前驱或重复步骤，本切片不放宽旧入口，也未增加步骤级 approval/confirmation 或 Run 创建接口。统计 Run 的 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。后续仍需把精确步骤身份传入确认、Run 创建绑定与多步 readiness/finalizer。因此当前实现提供的是可核验的只读审查数据，不是多步骤用户可执行闭环。
 
+2026-10-21 Work 前端已接入只读审查面板。列表只返回经服务端重核的预处理/统计参数摘要；统计纳入明细仅在用户主动展开时读取，并采用 allow-list DTO，仅包含表格所需的被试编号、组别、条件和协变量。详情从同一个 deferred SQLite read snapshot 重核身份，不返回完整 Plan 或 Artifact ID，也不占用 `BEGIN IMMEDIATE` 写锁。活动目标或待审查项会定时刷新，并提示候选截断。该切片仍没有步骤级批准/启动入口；当前生产 WorkTask 也尚未创建 READY 后继，所以它不代表多步骤执行或 20 人数据的 MATLAB 端到端验收已完成。
+
 新增 lifecycle/service/persistence 覆盖 Plan 审查转换、前驱引用保留、精确 review wait、多步骤 Run 绑定重放/拒绝条件、权威项目/输入核验及过期 claim 写入拒绝。未运行 MATLAB/DPABI。
 
 ### 阶段 B 多步骤准备链路接线审查（2026-10-15）

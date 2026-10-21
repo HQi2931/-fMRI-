@@ -585,3 +585,9 @@ WorkRunPanel 定向前端测试 30 项通过，覆盖未识别错误线索默认
 复合目标进度 API 为每个目标返回经过服务端核验的预处理/分析 Run ID。只有会话、目标来源、任务、冻结 Plan、输入修订、Run 和 TaskStep 身份精确匹配，且 Run 仍处于可观察状态时才返回；成功 Run、错绑或证据不足的 Run 不暴露给轮询器。前端恢复所有目标的 Run，按唯一 Run ID 去重并读取状态和已有本机诊断；失败、超时或取消但暂时没有日志证据时，短暂重查以捕获迟到日志。错误字段不直接展示，确定性诊断只显示脱敏摘要、建议和有限日志线索，不发送给模型，不自动修改方案或重试。
 
 定向验证：CompositeGoal、分析结果续接、API 与 WorkTask 来源绑定后端回归共 75 项通过；Agent 页面测试 73 项通过，TypeScript 类型检查、ESLint、后端 Ruff、Mypy、OpenAPI/TypeScript schema 同步、文档规范检查与 `git diff --check` 通过。存在一项既有 Starlette/httpx deprecation warning。未启动 MATLAB/DPABI，未访问演示影像或调用 Provider，因此验证的是目标 Run 恢复、状态/诊断轮询和本机反馈行为，不是一次真实 MATLAB 计算验收，也不表示计划 0014 整体完成。
+
+## 2026-10-21 多步骤方案只读审查面板
+
+Work 页面现列出当前会话中经服务端身份重核的 READY 步骤 Plan 摘要。预处理摘要仅包含已登记的采集、去噪、标准化和指标参数；统计摘要返回检验与矩阵计数，不传被试、组别标签、协变量值、Artifact ID 或路径。用户主动展开统计纳入表后，前端才请求精确步骤详情；API 返回严格 allow-list 字段。列表查询最多验证 100 个候选并返回截断标记，不使用 SQLite writer transaction；详情查询在 task、conversation、project、plan 仓库共享的 deferred read snapshot 中重核绑定。活动目标和已有审查项会每 10 秒刷新，后台 Worker 更新无需改变 conversation version。
+
+验证：步骤审查 API/服务定向测试 12 项通过；StepPlanReviewPanel、AgentPage、App 定向前端测试 85 项通过；TypeScript typecheck、ESLint、生产构建、变更文件 Ruff/Mypy 与差异空白检查通过。全量前端 Vitest 仍有 14 项既有失败，集中在 workspace 迁移、StatisticalClusterRoiPanel 和 WorkStatisticalResults 测试；本次新增组件测试及相关页面测试通过。未调用 Provider、MATLAB 或 DPABI；当前仍没有步骤级批准/启动闭环，也没有生产 READY successor，因此这些检查不证明真实 20 人预处理已运行。
