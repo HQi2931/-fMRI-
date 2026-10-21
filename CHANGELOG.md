@@ -2,6 +2,7 @@
 
 ## 2026-10-21
 
+- 步骤 Run 启动绑定后，只允许原确认挑战已消费到同一 Run 的重放；后续新挑战或执行后端、工作区、QC 不匹配时会失败关闭。绑定 Run 的选项从持久 Job 与 Run 记录核验；Work 对所有 MATLAB 步骤显示真实执行确认，并在切换后端时清空授权/确认，Mock 会重置隔离工作区。
 - Work 多步骤审查卡现在允许用户批准精确 TaskStep 当前绑定的冻结 Plan，并在新的独立动作中签发步骤级一次性启动确认、创建 Run 并原子绑定回该 TaskStep。挑战绑定会话/项目、Task/Step/Plan 版本与 Plan hash、执行后端、工作区及 QC 选项；版本变化和错绑会失败关闭。MATLAB 仍需明确真实执行确认；Mock 参数只写入 Mock executor payload。当前仅接通单个精确等待步骤的启动，不自动生成或推进 successor。
 - 显式“先预处理再分析”请求现在会在首次模型调用前，将原始用户消息、稳定 CompositeGoal 身份和共享模型预算一起持久化；请求中断后可按同一身份幂等恢复。预处理 Plan/Task 准备成功后才在同一事务中绑定一次确切 Task。提案 outbox 创建和后台来源重核以已接纳消息、root 和 raw-text hash 为准，并为旧会话保留 assistant dependency 兼容路径；原始消息被改写、错项目或 root 不匹配会失败关闭。保留现有提案与结果解释 outbox、用户审查/批准和显式 Run 启动门禁。
 - The Work page can register a scanned BIDS folder as a project and dataset, inspect and freeze its manifest, and open a project-bound conversation. The calculation directory defaults under the application-configured safe work root and remains separate from the read-only source; the existing unbound conversation stays available. BIDS staging is limited to manifest-listed single-session, single-run functional NIfTI and paired T1 inputs in isolated DPABI directories.

@@ -60,6 +60,7 @@ from neuroagent.application.contracts.runs import (
     QcReviewView,
     QcSkipCreate,
     QcSkipView,
+    RunExecutionChoice,
     RuntimeEventView,
     RunView,
 )
@@ -204,6 +205,7 @@ class ConversationRepositoryPort(Protocol):
         plan_version: int | None = None,
         execution_backend: str | None = None,
         workspace_mode: str | None = None,
+        require_prior_consumption: bool = False,
     ) -> ConfirmationChallengeView: ...
 
     def list_conversations(
@@ -509,6 +511,8 @@ class RunRepositoryPort(Protocol):
     ) -> RunView: ...
 
     def get_run(self, run_id: str) -> RunView: ...
+
+    def get_run_execution_choice(self, run_id: str) -> RunExecutionChoice: ...
 
     def list_runs(
         self,

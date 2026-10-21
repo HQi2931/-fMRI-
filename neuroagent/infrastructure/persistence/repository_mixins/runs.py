@@ -8,9 +8,10 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, func, select, update
 
 from neuroagent.application.contracts.plans import ApprovalDecision
-from neuroagent.application.contracts.runs import RunView
+from neuroagent.application.contracts.runs import RunExecutionChoice, RunView
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json, content_hash
+from neuroagent.domain.execution import ExecutionBackend, ExecutionWorkspaceMode, QcExecutionMode
 from neuroagent.domain.lifecycle import (
     PlanState,
     WorkflowState,
@@ -26,6 +27,7 @@ from neuroagent.infrastructure.persistence.models import (
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
     _id,
+    _load,
 )
 from neuroagent.workflow.models import JobEnvelope, JobKind
 from neuroagent.workflow.state import validate_workflow_transition
@@ -162,6 +164,38 @@ class RunMixin(RepositoryBaseMixin):
             if row is None:
                 raise NotFoundError("run", run_id)
             return self._run(row)
+
+    def get_run_execution_choice(self, run_id: str) -> RunExecutionChoice:
+        """Read immutable backend/workspace choices from the queued JobEnvelope."""
+
+        with self._read_session() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run", run_id)
+            job = session.scalar(select(JobRow).where(JobRow.run_id == run_id))
+            if job is None:
+                raise NotFoundError("job for run", run_id)
+            envelope = JobEnvelope.from_persisted(
+                _load(job.payload_json, {}),
+                job_id=job.job_id,
+                run_id=job.run_id,
+                attempt=max(1, job.attempt),
+            )
+            backend_value = envelope.execution_policy.get("execution_backend")
+            if backend_value is None:
+                backend_value = (
+                    ExecutionBackend.MATLAB.value
+                    if envelope.kind in {JobKind.MATLAB_PREPROCESSING, JobKind.MATLAB_STATISTICS}
+                    else ExecutionBackend.MOCK.value
+                )
+            workspace_value = envelope.execution_policy.get(
+                "workspace_mode", ExecutionWorkspaceMode.ISOLATED.value
+            )
+            return RunExecutionChoice(
+                execution_backend=ExecutionBackend(backend_value),
+                workspace_mode=ExecutionWorkspaceMode(workspace_value),
+                qc_mode=QcExecutionMode(run.qc_mode or QcExecutionMode.REQUIRE.value),
+            )
 
     def list_runs(
         self,

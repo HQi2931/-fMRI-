@@ -1462,6 +1462,7 @@ class WorkTaskApplicationService:
                     )
                 run_id = step.authority_refs.workflow_run_id
                 run = self._run_repository.get_run(run_id)
+                choice = self._run_repository.get_run_execution_choice(run_id)
                 conversation = self._conversation_repository.get_conversation(conversation_id)
                 self._require_work_conversation(conversation, conversation_id, run.project_id)
                 plan = self._plan_repository.get_plan(request.plan_revision_id)
@@ -1476,6 +1477,16 @@ class WorkTaskApplicationService:
                     raise ConflictError(
                         "step_run_binding_mismatch", "现有步骤 Run 引用无法通过项目和 Plan 核验。"
                     )
+                if (
+                    choice.execution_backend is not request.execution_backend
+                    or choice.workspace_mode is not request.workspace_mode
+                    or choice.qc_mode is not request.qc_mode
+                ):
+                    raise ConflictError(
+                        "step_run_bound_choice_mismatch",
+                        "当前步骤已绑定的 Run 使用不同执行后端、工作区或 QC 选项。",
+                        run_id=run_id,
+                    )
                 self._consume_step_run_authorization(
                     request,
                     conversation_id=conversation_id,
@@ -1483,6 +1494,7 @@ class WorkTaskApplicationService:
                     step_id=step_id,
                     project_id=run.project_id,
                     run_id=run_id,
+                    require_prior_consumption=True,
                 )
                 return StepRunStartView(
                     conversation_id=conversation_id,
@@ -1566,6 +1578,7 @@ class WorkTaskApplicationService:
         step_id: str,
         project_id: str,
         run_id: str,
+        require_prior_consumption: bool = False,
     ) -> ConfirmationChallengeView:
         return self._conversation_repository.consume_confirmation_challenge(
             confirmation_id=request.confirmation_id,
@@ -1582,6 +1595,7 @@ class WorkTaskApplicationService:
             plan_version=request.plan_version,
             execution_backend=request.execution_backend,
             workspace_mode=request.workspace_mode,
+            require_prior_consumption=require_prior_consumption,
         )
 
     def _bind_reviewed_step_run(

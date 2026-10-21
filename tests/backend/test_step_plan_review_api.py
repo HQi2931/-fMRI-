@@ -608,6 +608,29 @@ def test_exact_step_plan_approval_and_mock_run_authorization_are_bound_atomicall
         assert authorization["plan_revision_id"] == plan.plan_revision_id
         assert authorization["plan_hash"] == plan.plan_hash
 
+        fresh_same_choice = client.post(
+            f"{root}/run-authorizations",
+            json={
+                **current_identity,
+                "execution_backend": "mock",
+                "workspace_mode": "isolated",
+                "real_execution_confirmed": False,
+                "qc_mode": "require",
+            },
+        )
+        assert fresh_same_choice.status_code == 201, fresh_same_choice.text
+        mismatched_choice = client.post(
+            f"{root}/run-authorizations",
+            json={
+                **current_identity,
+                "execution_backend": "matlab",
+                "workspace_mode": "in_place",
+                "real_execution_confirmed": True,
+                "qc_mode": "skip",
+            },
+        )
+        assert mismatched_choice.status_code == 201, mismatched_choice.text
+
         start_body = {
             **current_identity,
             "confirmation_id": authorization["confirmation_id"],
@@ -640,6 +663,46 @@ def test_exact_step_plan_approval_and_mock_run_authorization_are_bound_atomicall
         )
         assert replayed.status_code == 202, replayed.text
         assert replayed.json() == started_payload
+
+        fresh_challenge_replay = client.post(
+            f"{root}/run",
+            json={**start_body, "confirmation_id": fresh_same_choice.json()["confirmation_id"]},
+            headers={"Idempotency-Key": "step-run-start-fresh-challenge"},
+        )
+        assert fresh_challenge_replay.status_code == 409, fresh_challenge_replay.text
+        assert fresh_challenge_replay.json()["error"]["code"] == "confirmation_challenge_invalid"
+
+        mismatched_choice_replay = client.post(
+            f"{root}/run",
+            json={
+                **start_body,
+                "confirmation_id": mismatched_choice.json()["confirmation_id"],
+                "execution_backend": "matlab",
+                "workspace_mode": "in_place",
+                "real_execution_confirmed": True,
+                "qc_mode": "skip",
+            },
+            headers={"Idempotency-Key": "step-run-start-mismatched-choice"},
+        )
+        assert mismatched_choice_replay.status_code == 409, mismatched_choice_replay.text
+        assert mismatched_choice_replay.json()["error"]["code"] == "step_run_bound_choice_mismatch"
+
+        with service.database.session_factory() as session:
+            session.execute(
+                text(
+                    "UPDATE confirmation_challenges SET expires_at='2000-01-01 00:00:00' "
+                    "WHERE confirmation_id=:confirmation_id"
+                ),
+                {"confirmation_id": authorization["confirmation_id"]},
+            )
+            session.commit()
+        exact_challenge_replay = client.post(
+            f"{root}/run",
+            json=start_body,
+            headers={"Idempotency-Key": "step-run-start-exact-challenge-replay"},
+        )
+        assert exact_challenge_replay.status_code == 202, exact_challenge_replay.text
+        assert exact_challenge_replay.json() == started_payload
         assert len(service.runs.list_runs(project_id=project.project_id)) == 1
 
         persisted = service.automation.get_task(task.task_id)
@@ -681,6 +744,21 @@ def test_exact_step_plan_approval_and_mock_run_authorization_are_bound_atomicall
             "mock",
             "isolated",
             run_id,
+        )
+        with service.database.session_factory() as session:
+            replay_challenges = session.execute(
+                text(
+                    "SELECT confirmation_id, consumed_at, consumed_run_id "
+                    "FROM confirmation_challenges WHERE confirmation_id IN (:same_id, :mismatch_id)"
+                ),
+                {
+                    "same_id": fresh_same_choice.json()["confirmation_id"],
+                    "mismatch_id": mismatched_choice.json()["confirmation_id"],
+                },
+            ).all()
+        assert len(replay_challenges) == 2
+        assert all(
+            row.consumed_at is None and row.consumed_run_id is None for row in replay_challenges
         )
 
 

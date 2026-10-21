@@ -240,4 +240,73 @@ describe("step plan review panel", () => {
       },
     ));
   });
+
+  it("requires explicit real-execution confirmation for a MATLAB statistical step", async () => {
+    vi.mocked(agentApi.stepPlanReviews).mockResolvedValue({
+      items: [summary({
+        step_kind: "statistical_run", plan_state: "approved", preprocessing: null, statistical: null,
+      })],
+      truncated: false,
+    });
+    vi.mocked(agentApi.createStepRunAuthorization).mockResolvedValue({
+      conversation_id: "conversation-1", project_id: "project-1", task_id: "task-internal",
+      step_id: "step-internal", plan_revision_id: "plan-internal", plan_hash: "a".repeat(64),
+      confirmation_id: "confirmation-statistics", expires_at: "2026-10-21T00:05:00Z",
+    } as never);
+    render(<StepPlanReviewPanel {...props} />);
+
+    fireEvent.change(await screen.findByLabelText("执行后端"), { target: { value: "matlab" } });
+    const confirmation = screen.getByRole("checkbox", { name: "我明确授权启动本机 MATLAB / DPABI 真实计算。" });
+    expect(confirmation).not.toBeChecked();
+    const issueButton = screen.getByRole("button", { name: "签发此步骤的一次性启动授权" });
+    expect(issueButton).toBeDisabled();
+
+    fireEvent.click(confirmation);
+    expect(issueButton).toBeEnabled();
+    fireEvent.click(issueButton);
+    await waitFor(() => expect(agentApi.createStepRunAuthorization).toHaveBeenCalledWith(
+      "conversation-1", "task-internal", "step-internal", {
+        task_version: 7, step_version: 3, plan_revision_id: "plan-internal", plan_version: 1,
+        plan_hash: "a".repeat(64), execution_backend: "matlab", workspace_mode: "isolated",
+        real_execution_confirmed: true, qc_mode: "require",
+      },
+    ));
+  });
+
+  it("clears authorization and resets real-execution and workspace choices when switching backends", async () => {
+    vi.mocked(agentApi.stepPlanReviews).mockResolvedValue({
+      items: [summary({ plan_state: "approved" })], truncated: false,
+    });
+    vi.mocked(agentApi.createStepRunAuthorization).mockImplementation(async (_conversation, _task, _step, body) => ({
+      conversation_id: "conversation-1", project_id: "project-1", task_id: "task-internal",
+      step_id: "step-internal", plan_revision_id: "plan-internal", plan_hash: "a".repeat(64),
+      confirmation_id: `confirmation-${body.execution_backend}-${body.workspace_mode}`,
+      expires_at: "2026-10-21T00:05:00Z",
+    } as never));
+    render(<StepPlanReviewPanel {...props} />);
+
+    const backend = await screen.findByLabelText("执行后端");
+    fireEvent.change(backend, { target: { value: "matlab" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我明确授权启动本机 MATLAB / DPABI 真实计算。" }));
+    fireEvent.change(screen.getByLabelText("工作区模式"), { target: { value: "in_place" } });
+    fireEvent.click(screen.getByRole("button", { name: "签发此步骤的一次性启动授权" }));
+    expect(await screen.findByRole("button", { name: "确认并创建 Run" })).toBeInTheDocument();
+
+    fireEvent.change(backend, { target: { value: "mock" } });
+    expect(screen.queryByRole("button", { name: "确认并创建 Run" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "签发此步骤的一次性启动授权" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "签发此步骤的一次性启动授权" }));
+    await waitFor(() => expect(agentApi.createStepRunAuthorization).toHaveBeenLastCalledWith(
+      "conversation-1", "task-internal", "step-internal", {
+        task_version: 7, step_version: 3, plan_revision_id: "plan-internal", plan_version: 1,
+        plan_hash: "a".repeat(64), execution_backend: "mock", workspace_mode: "isolated",
+        real_execution_confirmed: false, qc_mode: "require",
+      },
+    ));
+
+    fireEvent.change(backend, { target: { value: "matlab" } });
+    expect(screen.getByRole("checkbox", { name: "我明确授权启动本机 MATLAB / DPABI 真实计算。" })).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "确认并创建 Run" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "签发此步骤的一次性启动授权" })).toBeDisabled();
+  });
 });

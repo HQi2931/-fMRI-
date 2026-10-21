@@ -338,15 +338,18 @@ function StepPlanReviewCard({
         <h4>启动已批准的步骤</h4>
         <label>执行后端
           <select value={executionBackend} disabled={busy} onChange={(event) => {
-            setExecutionBackend(event.target.value as Schemas["ExecutionBackend"]);
+            const nextBackend = event.target.value as Schemas["ExecutionBackend"];
+            setExecutionBackend(nextBackend);
+            setRealExecutionConfirmed(false);
+            if (nextBackend === "mock") setWorkspaceMode("isolated");
             invalidateAuthorization();
           }}>
             <option value="mock">Mock 验收</option>
             <option value="matlab">本机 MATLAB / DPABI 真实运行</option>
           </select>
         </label>
-        {executionBackend === "matlab" && summary.step_kind === "preprocessing_run" && <>
-          <label>工作区模式
+        {executionBackend === "matlab" && <>
+          {summary.step_kind === "preprocessing_run" && <label>工作区模式
             <select value={workspaceMode} disabled={busy} onChange={(event) => {
               setWorkspaceMode(event.target.value as Schemas["ExecutionWorkspaceMode"]);
               invalidateAuthorization();
@@ -354,7 +357,7 @@ function StepPlanReviewCard({
               <option value="isolated">隔离工作区</option>
               <option value="in_place">原目录执行</option>
             </select>
-          </label>
+          </label>}
           <label className="step-plan-confirmation">
             <input type="checkbox" checked={realExecutionConfirmed} disabled={busy} onChange={(event) => {
               setRealExecutionConfirmed(event.target.checked);

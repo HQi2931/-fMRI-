@@ -271,6 +271,7 @@ class ConversationMixin(RepositoryBaseMixin):
         plan_version: int | None = None,
         execution_backend: str | None = None,
         workspace_mode: str | None = None,
+        require_prior_consumption: bool = False,
     ) -> ConfirmationChallengeView:
         with self._write_session() as session:
             row = session.get(ConfirmationChallengeRow, confirmation_id)
@@ -301,7 +302,18 @@ class ConversationMixin(RepositoryBaseMixin):
                     else None
                 )
                 or (row.consumed_at is not None and row.consumed_run_id != run_id)
-                or _as_utc(row.expires_at) <= now
+                or (
+                    require_prior_consumption
+                    and (row.consumed_at is None or row.consumed_run_id != run_id)
+                )
+                or (
+                    _as_utc(row.expires_at) <= now
+                    and not (
+                        require_prior_consumption
+                        and row.consumed_at is not None
+                        and row.consumed_run_id == run_id
+                    )
+                )
             ):
                 raise ConflictError(
                     "confirmation_challenge_invalid",

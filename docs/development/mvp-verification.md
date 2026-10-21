@@ -6,6 +6,12 @@
 - 更新日期：2026-10-21
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-21 步骤 Run 授权重放与 MATLAB UI 修复
+
+TaskStep 已绑定 Run 后，服务从对应持久 Job 的执行策略和 Run 的 QC 字段读取实际选择，只接受已消费到该 Run 的原确认挑战重放；未消费的新挑战或执行后端、工作区、QC 不匹配会返回冲突，不改变绑定和 Run。已消费挑战即使过期也只允许绑定 Run 的同挑战重放。Work 对每种 MATLAB 步骤显示真实计算确认框；切换后端会清除确认和授权，切到 Mock 时工作区回到 isolated。统计步骤保持其冻结 QC 来源及隔离工作区约束。
+
+`test_step_plan_review_api.py` 与 `test_migrations.py` 共 27 项通过，覆盖新挑战拒绝、选择不匹配拒绝、挑战不被消费、过期的原挑战重放及迁移兼容；`StepPlanReviewPanel.test.tsx` 11 项通过，覆盖统计 MATLAB 确认和后端切换重置。改动文件 Ruff check/format、相关 Python Mypy、前端 TypeScript、ESLint 和生产构建通过。测试未创建真实运行，未调用 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-21 Work 会话详情 GET 风暴修复
 
 本地 Work 浏览器发现终态运行观察会在会话详情刷新后重新触发自身：刷新将返回的新 `work_tasks` 数组引用作为 effect 依赖，即使会话版本和任务内容不变也会再次请求详情。现场性能记录约 4 秒出现 231 次同一会话 GET，关闭页面后请求停止。前端改为按稳定会话/运行身份、会话版本和任务语义布尔值订阅，稳定终态快照只触发一次详情读取；待处理 outbox 的有限退避刷新仍保留。

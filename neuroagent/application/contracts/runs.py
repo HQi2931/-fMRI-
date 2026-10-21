@@ -143,6 +143,14 @@ class RunView(StrictModel):
     updated_at: datetime
 
 
+class RunExecutionChoice(StrictModel):
+    """Persisted execution options needed to verify an idempotent run replay."""
+
+    execution_backend: ExecutionBackend
+    workspace_mode: ExecutionWorkspaceMode
+    qc_mode: QcExecutionMode
+
+
 class ArtifactView(StrictModel):
     artifact_id: str
     project_id: str
