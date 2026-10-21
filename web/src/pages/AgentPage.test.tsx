@@ -141,7 +141,8 @@ type Options = {
   manifest?: (manifestId: string, signal?: AbortSignal | null) => Promise<Response>;
   artifacts?: (runId: string, signal?: AbortSignal | null) => Promise<Response>;
   diagnosis?: (runId: string, signal?: AbortSignal | null) => Promise<Response>;
-  workspaceConsents?: () => Promise<Response>;
+  workspaceConsents?: (conversationId: string, signal?: AbortSignal | null) => Promise<Response>;
+  workspaceFiles?: (conversationId: string, directory: string, signal?: AbortSignal | null) => Promise<Response>;
   grantWorkspaceConsent?: () => Promise<Response>;
   turn?: (init?: RequestInit) => Promise<Response>;
   draftPatch?: (init?: RequestInit) => Promise<Response>;
@@ -175,7 +176,13 @@ function installFetch(options: Options = {}) {
     });
     if (path.endsWith("/workspace/consents")) {
       if (method === "POST") return (options.grantWorkspaceConsent ?? (() => json({ error: { code: "workspace_tool_probe_failed", message: "所选模型未能通过工具调用测试。", details: {}, trace_id: "probe-trace" } }, 422)))();
-      return (options.workspaceConsents ?? (() => json([])))();
+      const conversationId = path.match(/\/conversations\/([^/]+)\/workspace\/consents$/)?.[1] ?? "";
+      return options.workspaceConsents?.(decodeURIComponent(conversationId), init?.signal) ?? json([]);
+    }
+    if (path.endsWith("/workspace/files")) {
+      const conversationId = path.match(/\/conversations\/([^/]+)\/workspace\/files$/)?.[1] ?? "";
+      const directory = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://local").searchParams.get("directory") ?? "";
+      return options.workspaceFiles?.(decodeURIComponent(conversationId), directory, init?.signal) ?? notFound();
     }
     if (path.endsWith("/projects") && method === "POST") return options.createProject?.(init) ?? notFound();
     const projectDatasets = path.match(/\/projects\/([^/]+)\/datasets$/)?.[1];
@@ -1746,6 +1753,71 @@ describe("agent workbench page", () => {
     expect(await screen.findByText("文件分析已授权")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "更换工作区" }));
     expect(await screen.findByText("文件分析未授权")).toBeInTheDocument();
+  });
+
+  it("keeps the new conversation's file scope and consent when stale requests reject after cancellation", async () => {
+    const user = userEvent.setup();
+    let rejectStaleConsent: ((reason: unknown) => void) | undefined;
+    let rejectStaleFiles: ((reason: unknown) => void) | undefined;
+    let staleConsentSignal: AbortSignal | null | undefined;
+    let staleFilesSignal: AbortSignal | null | undefined;
+    const validConsent = {
+      consent_id: "consent-2",
+      conversation_id: "work-2",
+      workspace_hash: "a".repeat(64),
+      profile_id: "deepseek",
+      profile_revision: "b".repeat(64),
+      model: "deepseek-chat",
+      policy_version: "workspace-files-v1",
+      provider_host: "api.deepseek.com",
+      granted_at: now,
+      revoked_at: null,
+      valid_for_current_context: true,
+    };
+    installFetch({
+      conversations: () => json([
+        conversation({ conversation_id: "work-1", title: "第一个会话" }),
+        conversation({ conversation_id: "work-2", title: "第二个会话" }),
+      ]),
+      profiles: () => json([profile("deepseek", ["json_object", "tool_use"])]),
+      workspaceConsents: (conversationId, signal) => {
+        if (conversationId === "work-1") {
+          staleConsentSignal = signal;
+          return new Promise<Response>((_resolve, reject) => { rejectStaleConsent = reject; });
+        }
+        return json([validConsent]);
+      },
+      workspaceFiles: (conversationId, _directory, signal) => {
+        if (conversationId === "work-1") {
+          staleFilesSignal = signal;
+          return new Promise<Response>((_resolve, reject) => { rejectStaleFiles = reject; });
+        }
+        return json({ directory: "", total: 1, entries: [{ path: "dataset_description.json", kind: "file", readable: true }] });
+      },
+    });
+
+    render(<AgentPage />);
+    await screen.findByRole("option", { name: "第二个会话" });
+    const modelPicker = await screen.findByLabelText("模型");
+    await user.selectOptions(modelPicker, "deepseek:deepseek-chat");
+    await waitFor(() => {
+      expect(rejectStaleConsent).toBeTypeOf("function");
+      expect(rejectStaleFiles).toBeTypeOf("function");
+    });
+
+    await user.selectOptions(screen.getByLabelText("当前会话"), "work-2");
+    expect(await screen.findByText("文件分析已授权")).toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: /dataset_description\.json/ })).toBeInTheDocument();
+    expect(staleConsentSignal?.aborted).toBe(true);
+    expect(staleFilesSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      rejectStaleConsent?.(new DOMException("The operation was aborted.", "AbortError"));
+      rejectStaleFiles?.(new DOMException("The operation was aborted.", "AbortError"));
+    });
+
+    expect(screen.getByText("文件分析已授权")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /dataset_description\.json/ })).toBeInTheDocument();
   });
 
   it("starts a new conversation and switches between existing ones", async () => {
