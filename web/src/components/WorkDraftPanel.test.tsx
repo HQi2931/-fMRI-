@@ -290,4 +290,10 @@ describe("editable DPARSF draft", () => {
     expect(screen.getByRole("heading", { name: /第 3 版/ })).toBeInTheDocument();
     expect(screen.getByText(/方案标识/).closest("details")).not.toHaveAttribute("open");
   });
+  it("describes the supported single-session BIDS NIfTI staging boundary", () => {
+    render(<WorkDraftPanel snapshot={snapshot()} onSave={vi.fn()} />);
+    expect(screen.getByText(/BIDS 当前仅支持单一 session、每名被试一个明确的 BOLD run/)).toBeInTheDocument();
+    expect(screen.getByText(/按冻结清单把 NIfTI 复制到隔离的 DPABI FunImg\/T1Img 暂存目录/)).toBeInTheDocument();
+    expect(screen.getByText(/完整 BIDS 转换、多 session、多 run 和 DICOM 转换暂不支持/)).toBeInTheDocument();
+  });
 });

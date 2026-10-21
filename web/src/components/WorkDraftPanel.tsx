@@ -308,7 +308,7 @@ export function WorkDraftPanel({ snapshot, issues: rawIssues = [], preview, read
       catch (error) { setSaveError(describeError(error)); }
     }}>应用到面板</button></>}</details>
     {preview !== undefined && <PlanPreview value={preview} />}
-    <p className="draft-help">暂不支持：DICOM/BIDS 转换、外部 DARTEL 模板复用、FC、度中心性。T1 准备、配准、分割及 DARTEL 在获批任务中自动衔接；启动计算需独立授权。</p>
+    <p className="draft-help">BIDS 当前仅支持单一 session、每名被试一个明确的 BOLD run；应用按冻结清单把 NIfTI 复制到隔离的 DPABI FunImg/T1Img 暂存目录，不修改源数据。完整 BIDS 转换、多 session、多 run 和 DICOM 转换暂不支持。外部 DARTEL 模板复用、FC、度中心性也暂不支持。T1 准备、配准、分割及 DARTEL 在获批任务中自动衔接；启动计算需独立授权。</p>
     {saveError && <p ref={saveErrorRef} role="alert" className="draft-error">{saveError}</p>}
     {!readOnly && <div className="draft-actions"><span>{dirty ? "有未保存修改" : "当前参数已保存"}</span><button type="button" className="button button-secondary" disabled={locked || !dirty} onClick={() => { setDraft(snapshot.draft); setEdited([]); setArrayText({}); setInputErrors({}); setSaveError(""); onDirty?.(false); }}>放弃本地修改</button><button type="button" className="button button-secondary" disabled={locked || !dirty || Object.values(inputErrors).some(Boolean)} onClick={() => void save()}>{saving ? "保存中…" : "保存修改"}</button><button type="button" className="button button-primary" disabled={actionLocked || dirty || Object.values(inputErrors).some(Boolean) || (issues.length > 0 && !inputRecovery) || (inputNeedsReview && !inputRecovery) || !confirmation || snapshot.consumed} onClick={onConfirm}>{confirmLabel}</button></div>}
   </section>;
