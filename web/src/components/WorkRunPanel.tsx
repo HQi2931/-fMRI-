@@ -204,27 +204,22 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const [reload, setReload] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [diagnosis, setDiagnosis] = useState<{ runId: string; attempt: number; value: RunDiagnosis["diagnosis"] } | null>(null);
-  const currentDiagnosis = diagnosis?.runId === run.run_id && diagnosis.attempt === run.attempt ? diagnosis.value : null;
+  const currentDiagnosis = diagnosis && diagnosis.runId === run.run_id && diagnosis.attempt === run.attempt
+    ? diagnosis.value : null;
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function load() {
       try {
-        const [artifactResult, eventResult, planResult, statisticsResult, diagnosisResult] = await Promise.allSettled([
+        const [artifactResult, eventResult, planResult, statisticsResult] = await Promise.allSettled([
           runsApi.artifacts(run.run_id, controller.signal),
           runsApi.runEvents(run.run_id, 0, controller.signal),
           plansApi.plan(run.plan_revision_id, controller.signal),
           run.state === "succeeded" ? statisticsApi.statisticalResults(run.project_id, controller.signal) : Promise.resolve([]),
-          diagnosableStates.has(run.state)
-            ? runsApi.latestDiagnosis(run.run_id, controller.signal)
-            : Promise.resolve(null),
         ]);
         const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value : [];
         const events = eventResult.status === "fulfilled" ? eventResult.value : [];
         const plan = planResult.status === "fulfilled" ? planResult.value : null;
-        if (diagnosisResult.status === "fulfilled" && diagnosisResult.value && !controller.signal.aborted) {
-          setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: diagnosisResult.value.diagnosis });
-        }
         const resultSummaries = statisticsResult.status === "fulfilled" ? statisticsResult.value.filter((item) => item.run_id === run.run_id) : [];
         const statisticsDetailResponses = await Promise.allSettled(resultSummaries.map((item) => statisticsApi.statisticalResult(item.result_id, controller.signal)));
         const statisticalResults = statisticsDetailResponses.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
@@ -264,6 +259,26 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     void load();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
   }, [run.project_id, run.run_id, run.plan_revision_id, run.version, run.state, run.attempt, reload]);
+  useEffect(() => {
+    if (!diagnosableStates.has(run.state)) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const checkDiagnosis = async () => {
+      try {
+        const result = await runsApi.latestDiagnosis(run.run_id, controller.signal);
+        if (!controller.signal.aborted && result.run_id === run.run_id) {
+          setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: result.diagnosis });
+        }
+      } catch {
+        // Run diagnosis is read-only and should not hide the rest of the run card.
+      }
+      if (!controller.signal.aborted && activeStates.has(run.state)) {
+        timer = setTimeout(() => void checkDiagnosis(), 4000);
+      }
+    };
+    void checkDiagnosis();
+    return () => { controller.abort(); if (timer) clearTimeout(timer); };
+  }, [run.run_id, run.state, run.attempt, reload]);
   useEffect(() => {
     if (!activeStates.has(run.state)) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);

@@ -542,7 +542,10 @@ export function AgentPage() {
   }, [initialWorkspace]);
 
   const taskRunId = activeConversation?.work_tasks?.find((item) => item.agent_role === effectiveAgentRole)?.run_id;
-  const monitoredRunId = mode === "work" && boundToSelectedWorkspace ? taskRunId ?? activeConversation?.active_run_id : null;
+  const conversationTaskRunId = activeConversation?.work_tasks?.find((item) => item.run_id)?.run_id;
+  const monitoredRunId = mode === "work" && boundToSelectedWorkspace
+    ? taskRunId ?? activeConversation?.active_run_id ?? conversationTaskRunId ?? null
+    : null;
   const pendingOutboxIntentId = pendingAnalysisOutboxIntentId(activeConversation);
   const observedRunId = activeRun?.run_id;
   const observedRunState = activeRun?.state;
@@ -562,7 +565,9 @@ export function AgentPage() {
         setActiveRun(run);
         failures = 0;
         setRunConnectionMessage("");
-        updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
+        if (run.run_id === taskRunId || run.run_id === activeConversation?.active_run_id) {
+          updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
+        }
         if (!RUN_TERMINAL_STATES.has(run.state)) timer = setTimeout(() => void poll(), 2000);
       } catch {
         if (!controller.signal.aborted) {
@@ -574,7 +579,7 @@ export function AgentPage() {
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, taskRunId, boundToSelectedWorkspace, effectiveAgentRole, mode, monitoredRunId, pollNonce]);
+  }, [activeConversation?.conversation_id, activeConversation?.active_run_id, taskRunId, conversationTaskRunId, boundToSelectedWorkspace, effectiveAgentRole, mode, monitoredRunId, pollNonce]);
 
   useEffect(() => {
     const conversationId = activeConversation?.conversation_id;

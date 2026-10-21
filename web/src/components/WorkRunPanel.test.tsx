@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runsApi } from "../api/runs";
 import { plansApi } from "../api/plans";
@@ -17,7 +17,7 @@ vi.mock("../api/statistics", () => ({ statisticsApi: {
   localizeStatisticalResult: vi.fn(), statisticalAtlases: vi.fn(),
 } }));
 const api = { ...runsApi, ...plansApi, ...statisticsApi };
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const run = (state: Run["state"] = "qc_review"): Run => ({ run_id: "run-1", project_id: "project", plan_revision_id: "plan", version: 4, attempt: 1, state, stage: "running", cancel_requested: false, qc_status: "awaiting_review", created_at: "2026-10-06T10:00:00Z", updated_at: "2026-10-06T10:09:00Z", qc_mode: "require", diagnosis_available: false, log_cursor: 0 });
 const event = (id: number, type: string, time: string): RuntimeEvent => ({ event_id: id, event_type: type, trace_id: "trace", run_id: "run-1", payload: { stage: "running" }, severity: "info", created_at: time });
 const diagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "input_format", severity: "error", summary: "T1 重定向与裁剪未完成", evidence: ["T1 converter failed"], suggestions: ["检查本次转换工具日志与输入文件"], confidence: 0.6, requires_new_plan: true, source: "deterministic_log_classifier" } };
@@ -92,6 +92,25 @@ describe("Work run and results", () => {
     expect(screen.getByText(/诊断在本机完成，不会发送给模型/)).toBeInTheDocument();
     expect(screen.getByText("重新运行以使用本次 attempt 的隔离偏好目录")).toBeInTheDocument();
     expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
+  });
+  it("keeps checking for a MATLAB error while other run details are still loading", async () => {
+    vi.useFakeTimers();
+    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+      code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
+      evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
+      suggestions: ["检查 MATLAB 偏好目录写入权限"], confidence: 0.8,
+      requires_new_plan: false, source: "deterministic_log_classifier",
+    } };
+    vi.mocked(api.artifacts).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.latestDiagnosis).mockResolvedValueOnce(noDiagnosis).mockResolvedValueOnce(startup);
+    render(<WorkRunPanel run={run("running")} />);
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
   });
   it("shows the detected local log diagnosis after a run is cancelled", async () => {
     const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {

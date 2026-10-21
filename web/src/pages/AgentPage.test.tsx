@@ -140,6 +140,7 @@ type Options = {
   dataset?: (datasetId: string, signal?: AbortSignal | null) => Promise<Response>;
   manifest?: (manifestId: string, signal?: AbortSignal | null) => Promise<Response>;
   artifacts?: (runId: string, signal?: AbortSignal | null) => Promise<Response>;
+  diagnosis?: (runId: string, signal?: AbortSignal | null) => Promise<Response>;
   workspaceConsents?: () => Promise<Response>;
   grantWorkspaceConsent?: () => Promise<Response>;
   turn?: (init?: RequestInit) => Promise<Response>;
@@ -222,10 +223,20 @@ function installFetch(options: Options = {}) {
     }
     const runArtifacts = path.match(/\/runs\/([^/]+)\/artifacts$/)?.[1];
     if (runArtifacts) return options.artifacts?.(decodeURIComponent(runArtifacts), init?.signal) ?? json([]);
+    const runDiagnosis = path.match(/\/runs\/([^/]+)\/diagnosis$/)?.[1];
+    if (runDiagnosis) return options.diagnosis?.(decodeURIComponent(runDiagnosis), init?.signal) ?? notFound();
     if (path.includes("/runs/") && path.endsWith("/events")) return json([]);
     if (path.includes("/runs/") && path.endsWith("/qc-review")) return json(null);
     if (path.includes("/plans/") || path.includes("/plan-revisions/")) return json({});
-    if (path.includes("/runs/")) return (options.run ?? (() => json({})))();
+    if (path.includes("/runs/")) {
+      const runId = path.match(/\/runs\/([^/]+)/)?.[1] ?? "run-default";
+      return (options.run ?? (() => json({
+        run_id: decodeURIComponent(runId), project_id: null, plan_revision_id: "plan-default",
+        state: "succeeded", version: 1, attempt: 1, cancel_requested: false, error: null,
+        qc_mode: "require", qc_status: "skipped", stage: "completed", stage_progress: 1,
+        created_at: now, updated_at: now,
+      })))();
+    }
     return notFound();
   });
 }
@@ -1290,6 +1301,45 @@ describe("agent workbench page", () => {
     expect(screen.queryByText(/运行状态连接中断/)).not.toBeInTheDocument();
     expect(fetchSpy.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
     expect(fetchSpy.mock.calls.filter(([input]) => /^\/api\/v1\/runs\/run-1$/.test(pathOf(input))).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("tracks and reports a preprocessing MATLAB failure while the analysis Agent is selected", async () => {
+    const run = vi.fn(() => json({
+      run_id: "run-preprocessing", project_id: "project-1", plan_revision_id: "plan-1",
+      state: "failed_terminal", version: 4, attempt: 1, cancel_requested: false,
+      error: "MATLAB exited with code 1", qc_mode: "require", qc_status: "pending",
+      stage: "failed", stage_progress: 0, created_at: now, updated_at: now,
+    }));
+    const diagnosis = vi.fn(() => json({
+      run_id: "run-preprocessing",
+      diagnosis: {
+        code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
+        evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
+        suggestions: ["检查 MATLAB 偏好目录写入权限"], confidence: 0.8,
+        requires_new_plan: false, source: "deterministic_log_classifier",
+      },
+    }));
+    const fetchMock = installFetch({
+      conversations: () => json([conversation({
+        foreground_agent_role: "analysis",
+        active_run_id: null,
+        work_tasks: [
+          { agent_role: "analysis", work_task_id: "analysis-task", run_id: null },
+          { agent_role: "preprocessing", work_task_id: "preprocessing-task", run_id: "run-preprocessing" },
+        ],
+      })]),
+      run,
+      diagnosis,
+    });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByRole("heading", { name: "计算失败" })).toBeInTheDocument();
+    expect(await screen.findByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
+    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+    expect(run).toHaveBeenCalled();
+    expect(diagnosis).toHaveBeenCalledWith("run-preprocessing", expect.any(AbortSignal));
+    expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-preprocessing" )).toBe(true);
   });
 
   it("refreshes a delayed assistant analysis continuation after preprocessing succeeds", async () => {
