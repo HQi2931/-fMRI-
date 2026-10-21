@@ -22,6 +22,8 @@ export const runsApi = {
     post<Run>(`/runs/${runId}/retry`, body, signal),
   diagnoseRun: (runId: string, body: Schemas["RunDiagnosisRequest"], signal?: AbortSignal) =>
     post<RunDiagnosis>(`/runs/${runId}/diagnosis`, body, signal),
+  latestDiagnosis: (runId: string, signal?: AbortSignal) =>
+    request<RunDiagnosis>(`/runs/${runId}/diagnosis`, { signal }),
   artifacts: (runId: string, signal?: AbortSignal) =>
     request<Artifact[]>(`/runs/${runId}/artifacts`, { signal }),
   createHeadMotionQc: (

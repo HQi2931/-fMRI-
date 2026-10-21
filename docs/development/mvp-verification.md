@@ -6,6 +6,12 @@
 - 更新日期：2026-10-21
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-21 MATLAB 运行错误自动跟踪
+
+Work 运行卡片会在运行期间及失败、超时、取消后轮询只读 GET 诊断接口。API 只读取当前 attempt 目录下有界日志，在本机运行确定性分类器，并脱敏本机路径、受试者编号和邮箱。浏览器不会上传日志文本到 Provider。没有日志时返回空 evidence 和 `unknown/info`；识别到 `CreateFile failed`、拒绝访问和 `system:5` 时，会反馈 MATLAB 启动权限线索及本地检查建议。经过路径包含校验后，每个 attempt 的 `MATLAB_PREFDIR` 只传给对应 MATLAB 子进程，不改用户默认设置。这是针对偏好目录权限的本地隔离方案，不能证明根因唯一。
+
+验证结果：诊断规则与 API 回归 29 项通过；MATLAB 子进程环境安全测试 25 项通过；`WorkRunPanel.test.tsx` 25 项通过；前端类型检查、生产构建和改动文件 ESLint 通过。组件测试覆盖运行中反馈、取消后反馈和无日志时不报错。日志不发送给模型。此前获准的 20 名被试 DPABI 运行尚未使用此修复重试，MATLAB 启动和预处理仍待真实验证。
+
 ## 2026-10-21 Metric-only Skill dry-run API
 
 新增 `POST /api/v1/skill-plans/dry-run`，复用现有 `SkillPlanResolveRequest` 并返回 API-owned dry-run DTO。接口支持预处理与 metric-only；后者必须显式提交 registered `input_artifact_id`，不自动选择来源。应用服务仍执行现有冻结 manifest、Artifact、来源 Plan、lineage 和单主体核验，再调用真实 SkillResolver、Validator 和 Compiler。响应 `environment_probed=false`；已识别能力阻断返回 `ready=false/issues`，无效或身份错绑输入按统一 4xx 失败。dry-run 不写 Plan、Approval、Run、事件或工作区文件，不代表真实 MATLAB/DPABI 可执行。该 API slice 不创建持久 Work 草稿；当前独立 Work 面板见下文。

@@ -400,6 +400,12 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 
 ## 验证、风险与完成报告
 
+### MATLAB 错误自动跟踪与本地反馈（2026-10-21）
+
+Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志，并在失败、超时或取消后继续检查该 attempt。GET 诊断端点仅读取有界 stdout/stderr/`matlab.log`，用确定性规则识别错误，脱敏本机路径、受试者编号和邮箱；日志不发送到模型。普通日志或尚未创建的日志不会在运行时被显示为错误。针对 Windows `CreateFile failed`、`拒绝访问`、`system:5` 的分类会说明启动阶段的写入权限线索与检查建议；Agent 不修改设置、不改变已批准参数，也不自动重试。
+
+每次受控 MATLAB attempt 现在只为子进程创建独立、路径受限的 `MATLAB_PREFDIR`，用于绕过默认偏好目录不可写的环境问题，不触碰用户默认配置。当前分类与本地隔离方案是可复核的故障处理路径，不证明本次报错只有一个根因。真实复跑和 DPABI 阶段推进记录待实际运行后补充；该功能切片不代表计划 0014 的整体自动化范围已完成。
+
 ### 阶段 B CompositeGoal 阶段交接判定（2026-10-20）
 
 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md) 已实现一个受限的只读 handoff decision：进度投影和两个已有 outbox consumer 共用同一纯决议函数。CompositeGoal 快照在同一只读 SQLite 一致性边界中加入当前目标对应的最小 Plan、Run 与 QC 事实；只有 Task wait reference、Plan/Run 项目、输入修订和绑定关系、活跃 Run 状态及 QC review 事实均精确匹配时，才显示等待审查或等待已绑定 Run。缺失、未知或错绑证据保持待核验/原等待状态。仅允许现有 `preprocess_then_analyze` proposal outbox 和统计结果解释 outbox 在 handoff action、当前 root、outbox claim ID 一致且状态 ready 时调用模型；原有来源重核、预算、租约、幂等和 fencing 继续有效。阶段暂不可交接不调用模型；proposal handoff 经五次自动尝试仍未就绪时暂停至用户手动重试，避免无限后台重试。

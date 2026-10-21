@@ -1,16 +1,27 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type Artifact, type PlanRevision, type Run, type RunDiagnosis, type RuntimeEvent, type StatisticalAtlas, type StatisticalResultDetail } from "../api/client";
+import { runsApi } from "../api/runs";
+import { plansApi } from "../api/plans";
+import { statisticsApi } from "../api/statistics";
+import type { Artifact, PlanRevision, Run, RunDiagnosis, RuntimeEvent, StatisticalAtlas, StatisticalResultDetail } from "../api/types";
 import { WorkRunPanel } from "./WorkRunPanel";
 
-vi.mock("../api/client", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../api/client")>();
-  return { ...original, api: { artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), qcReview: vi.fn(), runQcReview: vi.fn(), diagnoseRun: vi.fn(), cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(), run: vi.fn(), statisticalResults: vi.fn(), statisticalResult: vi.fn(), statisticalResultSliceInfo: vi.fn(), localizeStatisticalResult: vi.fn(), statisticalAtlases: vi.fn() } };
-});
+vi.mock("../api/runs", () => ({ runsApi: {
+  artifacts: vi.fn(), runEvents: vi.fn(), qcReview: vi.fn(), runQcReview: vi.fn(), diagnoseRun: vi.fn(), latestDiagnosis: vi.fn(),
+  cancelRun: vi.fn(), retryRun: vi.fn(), createHeadMotionQc: vi.fn(), approveQcReview: vi.fn(),
+} }));
+vi.mock("../api/plans", () => ({ plansApi: { plan: vi.fn() } }));
+vi.mock("../api/statistics", () => ({ statisticsApi: {
+  statisticalResults: vi.fn(), statisticalResult: vi.fn(), statisticalResultSliceInfo: vi.fn(),
+  statisticalResultSliceUrl: vi.fn(() => "/api/v1/statistics/results/result-1/slices/0.png"),
+  localizeStatisticalResult: vi.fn(), statisticalAtlases: vi.fn(),
+} }));
+const api = { ...runsApi, ...plansApi, ...statisticsApi };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const run = (state: Run["state"] = "qc_review"): Run => ({ run_id: "run-1", project_id: "project", plan_revision_id: "plan", version: 4, attempt: 1, state, stage: "running", cancel_requested: false, qc_status: "awaiting_review", created_at: "2026-10-06T10:00:00Z", updated_at: "2026-10-06T10:09:00Z", qc_mode: "require", diagnosis_available: false, log_cursor: 0 });
 const event = (id: number, type: string, time: string): RuntimeEvent => ({ event_id: id, event_type: type, trace_id: "trace", run_id: "run-1", payload: { stage: "running" }, severity: "info", created_at: time });
-const diagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "input_format", severity: "error", summary: "T1 重定向与裁剪未完成", evidence: [], suggestions: ["检查本次转换工具日志与输入文件"], confidence: 0.6, requires_new_plan: true, source: "deterministic_log_classifier" } };
+const diagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "input_format", severity: "error", summary: "T1 重定向与裁剪未完成", evidence: ["T1 converter failed"], suggestions: ["检查本次转换工具日志与输入文件"], confidence: 0.6, requires_new_plan: true, source: "deterministic_log_classifier" } };
+const noDiagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "unknown", severity: "info", summary: "暂未发现明确错误", evidence: [], suggestions: [], confidence: 0.1, requires_new_plan: false, source: "deterministic_log_classifier" } };
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.artifacts).mockResolvedValue([]);
@@ -18,6 +29,7 @@ beforeEach(() => {
   vi.mocked(api.plan).mockResolvedValue({ plan_revision_id: "plan", plan: {} } as PlanRevision);
   vi.mocked(api.runQcReview).mockResolvedValue(null);
   vi.mocked(api.diagnoseRun).mockResolvedValue(diagnosis);
+  vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
   vi.mocked(api.statisticalResults).mockResolvedValue([]);
   vi.mocked(api.statisticalResult).mockRejectedValue(new Error("unexpected statistical result lookup"));
 });
@@ -48,6 +60,7 @@ describe("Work run and results", () => {
   });
   it("shows a deterministic explanation and keeps the original stack collapsed with logs downloadable", async () => {
     const raw = "{���� assert\nT1 converter failed.\nrun_preprocessing>prepare_t1 (line 331)\nrsfmri:t1:ConverterFailed}";
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(diagnosis);
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "log", artifact_type: "execution.matlab_log", relative_path: "logs/matlab.stderr.log", size_bytes: 400, provenance: {} } as Artifact]);
     render(<WorkRunPanel run={{ ...run("failed_terminal"), error: raw }} />);
     await screen.findByText(diagnosis.diagnosis.summary);
@@ -56,27 +69,53 @@ describe("Work run and results", () => {
     expect(technical.closest("details")).not.toHaveAttribute("open");
     expect(technical).not.toBeVisible();
     expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/log/content");
-    expect(api.diagnoseRun).toHaveBeenCalledWith("run-1", { log_text: raw }, expect.any(AbortSignal));
+    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
   });
   it("retains neutral failure guidance when diagnosis is unavailable", async () => {
-    vi.mocked(api.diagnoseRun).mockRejectedValue(new Error("diagnosis unavailable"));
+    vi.mocked(api.latestDiagnosis).mockRejectedValue(new Error("diagnosis unavailable"));
     render(<WorkRunPanel run={{ ...run("failed_terminal"), error: "internal stack" }} />);
-    await waitFor(() => expect(api.diagnoseRun).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledOnce());
     expect(screen.getByRole("alert")).toHaveTextContent("具体原因尚未确定");
     expect(screen.getByRole("alert")).not.toHaveTextContent("internal stack");
     expect(screen.getByText("internal stack")).not.toBeVisible();
   });
+  it("tracks a MATLAB startup error from local logs while execution is still running", async () => {
+    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+      code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
+      evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
+      suggestions: ["检查 MATLAB 偏好目录写入权限", "重新运行以使用本次 attempt 的隔离偏好目录"],
+      confidence: 0.8, requires_new_plan: false, source: "deterministic_log_classifier",
+    } };
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(startup);
+    render(<WorkRunPanel run={run("running")} />);
+    expect(await screen.findByText(/MATLAB 启动时无权写入偏好设置目录/)).toBeInTheDocument();
+    expect(screen.getByText(/诊断在本机完成，不会发送给模型/)).toBeInTheDocument();
+    expect(screen.getByText("重新运行以使用本次 attempt 的隔离偏好目录")).toBeInTheDocument();
+    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
+  });
+  it("shows the detected local log diagnosis after a run is cancelled", async () => {
+    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+      code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
+      evidence: ["CreateFile failed: 拒绝访问。 [system:5]"], suggestions: ["检查 MATLAB 偏好目录写入权限"],
+      confidence: 0.8, requires_new_plan: false, source: "deterministic_log_classifier",
+    } };
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(startup);
+    render(<WorkRunPanel run={run("cancelled")} />);
+    expect(await screen.findByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
+    expect(screen.getByText("计算已取消")).toBeInTheDocument();
+    expect(screen.getByText("Agent 已自动检查本次 attempt 的本地日志，诊断未发送给模型。")).toBeInTheDocument();
+  });
   it("does not attach a late failure diagnosis to a subsequent successful run", async () => {
     let resolve!: (result: RunDiagnosis) => void;
-    vi.mocked(api.diagnoseRun).mockReturnValue(new Promise((done) => { resolve = done; }));
+    vi.mocked(api.latestDiagnosis).mockReturnValue(new Promise((done) => { resolve = done; }));
     const view = render(<WorkRunPanel run={{ ...run("failed_terminal"), error: "failed" }} />);
-    await waitFor(() => expect(api.diagnoseRun).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledOnce());
     view.rerender(<WorkRunPanel run={{ ...run("succeeded"), run_id: "run-2", error: "stale error" }} />);
     resolve(diagnosis);
     await screen.findByText("计算完成");
     expect(screen.queryByText(diagnosis.diagnosis.summary)).not.toBeInTheDocument();
     expect(screen.queryByText("stale error")).not.toBeInTheDocument();
-    expect(api.diagnoseRun).toHaveBeenCalledOnce();
+    expect(api.latestDiagnosis).toHaveBeenCalledOnce();
   });
   it.each(["failed_retryable", "failed_terminal", "timed_out", "cancelled"] as const)("keeps registered files clearly qualified after %s", async (state) => {
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "partial", artifact_type: "metric.alff", relative_path: "output/ALFF.nii", size_bytes: 400, provenance: {} } as Artifact]);

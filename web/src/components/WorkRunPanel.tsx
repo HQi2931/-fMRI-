@@ -16,6 +16,7 @@ const RUN_LABELS: Record<string, string> = {
 const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: "准备输入", running: "MATLAB 计算中", slice_timing: "层时间校正", realignment: "头动校正", brain_extraction: "BET 去颅骨", coregistration: "T1 配准", segmentation: "T1 组织分割", normalization: "空间标准化", smoothing: "空间平滑", nuisance: "协变量回归", metric_calculation: "指标计算" };
 const activeStates = new Set(["queued", "running", "cancelling"]);
 const failedStates = new Set(["failed_retryable", "failed_terminal", "timed_out"]);
+const diagnosableStates = new Set([...activeStates, ...failedStates, "cancelled"]);
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {
   "metric.alff": "ALFF 指标图", "metric.alff.raw": "原始 ALFF", "metric.alff.global_mean": "均值归一化 ALFF", "metric.alff.z_score": "z 标准化 ALFF",
@@ -202,34 +203,28 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const [diagnosis, setDiagnosis] = useState<{ runId: string; attempt: number; error: string; value: RunDiagnosis["diagnosis"] } | null>(null);
-  useEffect(() => {
-    if (!failedStates.has(run.state) || !run.error?.trim()) return;
-    const controller = new AbortController();
-    const rawError = run.error;
-    void (async () => {
-      try {
-        const result = await runsApi.diagnoseRun(run.run_id, { log_text: rawError.slice(-200_000) }, controller.signal);
-        if (!controller.signal.aborted) setDiagnosis({ runId: run.run_id, attempt: run.attempt, error: rawError, value: result.diagnosis });
-      } catch { /* Keep the neutral explanation and original technical details available. */ }
-    })();
-    return () => controller.abort();
-  }, [run.run_id, run.attempt, run.state, run.error]);
-  const currentDiagnosis = diagnosis?.runId === run.run_id && diagnosis.attempt === run.attempt && diagnosis.error === run.error ? diagnosis.value : null;
+  const [diagnosis, setDiagnosis] = useState<{ runId: string; attempt: number; value: RunDiagnosis["diagnosis"] } | null>(null);
+  const currentDiagnosis = diagnosis?.runId === run.run_id && diagnosis.attempt === run.attempt ? diagnosis.value : null;
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function load() {
       try {
-        const [artifactResult, eventResult, planResult, statisticsResult] = await Promise.allSettled([
+        const [artifactResult, eventResult, planResult, statisticsResult, diagnosisResult] = await Promise.allSettled([
           runsApi.artifacts(run.run_id, controller.signal),
           runsApi.runEvents(run.run_id, 0, controller.signal),
           plansApi.plan(run.plan_revision_id, controller.signal),
           run.state === "succeeded" ? statisticsApi.statisticalResults(run.project_id, controller.signal) : Promise.resolve([]),
+          diagnosableStates.has(run.state)
+            ? runsApi.latestDiagnosis(run.run_id, controller.signal)
+            : Promise.resolve(null),
         ]);
         const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value : [];
         const events = eventResult.status === "fulfilled" ? eventResult.value : [];
         const plan = planResult.status === "fulfilled" ? planResult.value : null;
+        if (diagnosisResult.status === "fulfilled" && diagnosisResult.value && !controller.signal.aborted) {
+          setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: diagnosisResult.value.diagnosis });
+        }
         const resultSummaries = statisticsResult.status === "fulfilled" ? statisticsResult.value.filter((item) => item.run_id === run.run_id) : [];
         const statisticsDetailResponses = await Promise.allSettled(resultSummaries.map((item) => statisticsApi.statisticalResult(item.result_id, controller.signal)));
         const statisticalResults = statisticsDetailResponses.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
@@ -280,6 +275,18 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const gallery = artifacts.filter((artifact) => artifact.artifact_type.startsWith("metric.") && /\.nii(\.gz)?$|\.png$/i.test(artifact.relative_path)).slice(0, 3);
   const review = current?.review;
   const statisticalResults = current?.statisticalResults ?? [];
+  const hasDiagnosisEvidence = Boolean(currentDiagnosis?.evidence.length);
+  const activeDiagnosis = activeStates.has(run.state)
+    && currentDiagnosis
+    && currentDiagnosis.code !== "unknown"
+    && currentDiagnosis.code !== "cancelled"
+    && hasDiagnosisEvidence
+    ? currentDiagnosis : null;
+  const terminalDiagnosis = diagnosableStates.has(run.state)
+    && !activeStates.has(run.state)
+    && hasDiagnosisEvidence
+    && (failedStates.has(run.state) || (run.state === "cancelled" && currentDiagnosis?.code !== "unknown" && currentDiagnosis?.code !== "cancelled"))
+    ? currentDiagnosis : null;
   const elapsed = elapsedLabel(events, now);
   const phaseEvent = [...events].reverse().find((event) => ["MatlabPhaseStarted", "MatlabPhaseFinished"].includes(event.event_type) && event.payload.attempt === run.attempt);
   const observedPhase = phaseEvent?.event_type === "MatlabPhaseStarted" ? String(phaseEvent.payload.phase) : run.state === "running" && run.stage === "queued" ? "running" : run.stage;
@@ -307,14 +314,20 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     <header><h3>{RUN_LABELS[run.state] ?? run.state}</h3><span>第 {run.attempt} 次执行</span></header>
     {mock && <p className="work-run-warning">Mock 演示结果 · 非科学产物，不能用于科研结论。</p>}
     {activeStates.has(run.state) && <p role="status">当前阶段：{PHASE_LABELS[observedPhase] ?? "MATLAB 计算中"}{elapsed && ` · 已运行 ${elapsed}`}</p>}
+    {activeDiagnosis && <div className="work-run-failure work-run-live-diagnosis">
+      <p role="alert"><strong>Agent 已从本地日志检测到运行异常：</strong>{activeDiagnosis.summary}</p>
+      {activeDiagnosis.suggestions.length > 0 && <ul>{activeDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+      <p>正在跟踪本次运行日志；诊断在本机完成，不会发送给模型。</p>
+    </div>}
     {completedPhases.length > 0 && <p>已观察到完成：{completedPhases.map((phase) => PHASE_LABELS[phase] ?? "处理步骤").join("、")}</p>}
     {!activeStates.has(run.state) && elapsed && <p>计算耗时：{elapsed}</p>}
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
     {run.state === "qc_review" && <p>指标计算已完成，科学质量审查尚未通过。</p>}
     {run.state === "succeeded" && <p>{statisticalResults.length > 0 ? "统计计算及结果登记已完成，请结合本次检验和校正阈值查看结果。" : run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
-    {failedStates.has(run.state) && <div className="work-run-failure">
-      <p role="alert">{currentDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
-      {currentDiagnosis && currentDiagnosis.suggestions.length > 0 && <ul>{currentDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+    {(failedStates.has(run.state) || (run.state === "cancelled" && terminalDiagnosis)) && <div className="work-run-failure">
+      <p role="alert">{terminalDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
+      {terminalDiagnosis && terminalDiagnosis.suggestions.length > 0 && <ul>{terminalDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+      {terminalDiagnosis && <p>Agent 已自动检查本次 attempt 的本地日志，诊断未发送给模型。</p>}
       <p>如需调整输入或参数，请在对话中准备新方案并重新审查。</p>
       {run.error && <details><summary>错误技术详情</summary><pre>{run.error}</pre></details>}
     </div>}
