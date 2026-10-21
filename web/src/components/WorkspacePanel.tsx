@@ -1,6 +1,15 @@
 import { useState, type ReactNode } from "react";
 import type { WorkspaceCheck } from "../api/types";
 
+const datasetKindLabels: Record<WorkspaceCheck["kind"], string> = {
+  bids: "BIDS 数据集",
+  dpabi_ready: "DPABI 处理结果",
+  dicom: "DICOM 数据",
+  nifti: "NIfTI 数据",
+  mixed: "混合影像数据",
+  unknown: "未识别数据",
+};
+
 type Props = {
   path: string;
   check: WorkspaceCheck | null;
@@ -26,6 +35,9 @@ export function WorkspacePanel(props: Props) {
   const name = props.path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || props.path;
   const candidates = props.check?.stage_candidates ?? [];
   const selected = candidates.find((item) => item.stage === props.selectedStage);
+  const issues = props.check?.issues ?? [];
+  const warnings = props.check?.warnings ?? [];
+  const invalidNiftiFiles = props.check?.invalid_nifti_files ?? [];
 
   return <section className="work-folder" aria-label="工作区设置">
     <div className="work-folder-heading">
@@ -44,6 +56,18 @@ export function WorkspacePanel(props: Props) {
     {props.path && <>
       {props.checking && <p className="work-folder-notice" role="status">正在检查工作区中的起始阶段…</p>}
       {props.checkError && <p className="work-folder-notice work-folder-error" role="status">工作区检查未完成：{props.checkError}</p>}
+      {props.check && !props.checking && <section className="work-scan-summary" aria-label="扫描结果">
+        <div className="work-scan-summary-heading"><strong>扫描结果</strong><span>{datasetKindLabels[props.check.kind]}</span></div>
+        <p>{props.check.file_count} 个文件 · {props.check.nifti_count} 个 NIfTI · {props.check.dicom_count} 个 DICOM</p>
+        <p>{props.check.subject_count} 名受试者 · 功能像 {props.check.functional_subject_count} 名 · 结构像 {props.check.anatomical_subject_count} 名</p>
+        {issues.length === 0 && warnings.length === 0 && invalidNiftiFiles.length === 0
+          ? <p className="work-scan-summary-ok">扫描通过，未发现需要处理的问题或警告。</p>
+          : <>
+            {issues.length > 0 && <div className="work-scan-summary-problems"><strong>需要处理</strong><ul>{issues.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+            {warnings.length > 0 && <div className="work-scan-summary-warnings"><strong>待留意</strong><ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+            {invalidNiftiFiles.length > 0 && <div className="work-scan-summary-warnings"><strong>无法读取的 NIfTI 文件</strong><ul>{invalidNiftiFiles.map((item) => <li key={item}><code>{item}</code></li>)}</ul></div>}
+          </>}
+      </section>}
       {candidates.length > 0 && <details className="work-stage-picker">
         <summary>
           <span className="work-stage-summary"><strong>预处理起点</strong><span>{selected ? `${selected.stage} · ${props.stageConfirmed ? "已确认" : "待确认"}` : "尚未选择"}</span></span>

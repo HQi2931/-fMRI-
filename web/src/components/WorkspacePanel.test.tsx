@@ -89,3 +89,35 @@ it("keeps a failed workspace check visible and does not grant consent without a 
   expect(screen.getByText("先选择模型")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "授权文件分析" })).toBeDisabled();
 });
+
+it("shows BIDS input counts and a clear successful scan status", () => {
+  const bidsCheck: WorkspaceCheck = {
+    ...check(), kind: "bids", file_count: 48, nifti_count: 40, dicom_count: 0,
+    subject_count: 20, functional_subject_count: 20, anatomical_subject_count: 20,
+  };
+  render(<WorkspacePanel {...defaults()} check={bidsCheck} />);
+
+  const summary = screen.getByRole("region", { name: "扫描结果" });
+  expect(summary).toHaveTextContent("BIDS 数据集");
+  expect(summary).toHaveTextContent("48 个文件 · 40 个 NIfTI · 0 个 DICOM");
+  expect(summary).toHaveTextContent("20 名受试者 · 功能像 20 名 · 结构像 20 名");
+  expect(summary).toHaveTextContent("扫描通过，未发现需要处理的问题或警告。");
+});
+
+it("separates blocking scan issues from warnings and lists unreadable NIfTI files", () => {
+  const scan = {
+    ...check(),
+    issues: ["存在多个功能 run"],
+    warnings: ["1 个 NIfTI 文件的头标记无法读取。"],
+    invalid_nifti_files: ["sub-01/func/sub-01_task-rest_bold.nii.gz"],
+  } satisfies WorkspaceCheck;
+  render(<WorkspacePanel {...defaults()} check={scan} />);
+
+  const summary = screen.getByRole("region", { name: "扫描结果" });
+  expect(summary).toHaveTextContent("需要处理");
+  expect(summary).toHaveTextContent("存在多个功能 run");
+  expect(summary).toHaveTextContent("待留意");
+  expect(summary).toHaveTextContent("1 个 NIfTI 文件的头标记无法读取。");
+  expect(summary).toHaveTextContent("sub-01/func/sub-01_task-rest_bold.nii.gz");
+  expect(summary).not.toHaveTextContent("扫描通过");
+});
