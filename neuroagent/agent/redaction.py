@@ -6,10 +6,50 @@ import hashlib
 import hmac
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from neuroagent.agent.models import RedactedContext
+
+_WORK_PARTICIPANT_TABLE = re.compile(
+    r"(?is)(?:participant|subject|受试者|被试)[-_ ]?(?:id|编号)?[^\n]*(?:\t|,|\|)"
+    r"[^\n]*(?:group|组别|condition|分组)[^\n]*(?:\n|$)[^\n]+(?:\t|,|\|)[^\n]+"
+)
+_WORK_PARTICIPANT_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:sub|subject|participant)[-_ ]?\d+[a-z]?\b.{0,24}"
+    r"\b(?:ASD|HC|MDD|BD|OCD|ADHD|PTSD|SZ|SCZ|patient|control|case)\b"
+    r"|\b(?:ASD|HC|MDD|BD|OCD|ADHD|PTSD|SZ|SCZ|patient|control|case)\b.{0,24}"
+    r"\b(?:sub|subject|participant)[-_ ]?\d+[a-z]?\b"
+)
+_WORK_IMAGE_PAYLOAD = re.compile(
+    r"(?is)(?:data:image/[^;,\s]+;base64,|base64\s*[:=]\s*)[A-Za-z0-9+/=]{80,}"
+    r"|(?:^|\W)[A-Za-z0-9+/]{256,}={0,2}(?:$|\W)"
+)
+
+
+def reject_sensitive_work_context(payload: Mapping[str, Any]) -> None:
+    """Block subject-to-group mappings and raw image payloads from Work models."""
+
+    def strings(value: Any) -> Iterator[str]:
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, Mapping):
+            for child in value.values():
+                yield from strings(child)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for child in value:
+                yield from strings(child)
+
+    for value in strings(payload):
+        if (
+            "\x00" in value
+            or _WORK_PARTICIPANT_TABLE.search(value)
+            or _WORK_PARTICIPANT_ASSIGNMENT.search(value)
+            or _WORK_IMAGE_PAYLOAD.search(value)
+        ):
+            raise OutboundPolicyError(
+                "subject-group mappings and image payloads cannot leave the local machine"
+            )
 
 
 class OutboundPolicyError(ValueError):

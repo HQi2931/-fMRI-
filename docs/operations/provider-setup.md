@@ -83,6 +83,20 @@ OPENAI_COMPATIBLE_API_KEY=<local-secret>
 
 [ModelProfile 示例](../../config/model-profiles.example.json) 只是人工参考，不会被 API 自动加载。请通过 UI 或 API 逐个创建 `profiles` 数组中的条目。
 
+### Work Agent 自动路由模型
+
+自动路由先用本地规则处理明确请求；需要分类时默认调用小模型 Profile `dashscope`，默认模型为 `qwen3.8-flash`。低置信度、无效 JSON 或小模型调用失败时，再用现有 `deepseek` Profile 兜底。两者使用同一 OpenAI-compatible Gateway 和外发脱敏策略，路由模型只返回 `preprocessing`、`analysis` 或 `clarify`，不生成 Work 草稿。
+
+在本机“设置 → 绑定服务商 API”完成百炼 Profile：
+
+1. 选择“阿里云百炼 Model Studio”预设；或手工填写 `provider=openai-compatible`、`api_key_env=DASHSCOPE_API_KEY`。
+2. 在本机设置页的密码框输入 API Key。它会由本机后端保存到未跟踪的 `.env`；不要把密钥粘贴到聊天。
+3. 使用当前账号地域对应的 OpenAI-compatible Base URL。北京通用端点为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如果账户提供 workspace 专属端点，优先使用该端点。不同地域的端点见阿里云[Base URL 文档](https://help.aliyun.com/en/model-studio/base-url)。
+4. 指定模型 ID `qwen3.8-flash`，保留 `json_object` 能力。百炼官方将此 ID 列为轻量低成本模型，并标明支持 OpenAI-compatible 与结构化输出：[模型说明](https://help.aliyun.com/en/model-studio/qwen3-8-flash)、[模型能力列表](https://help.aliyun.com/en/model-studio/text-generation-model/)。成功后 Profile ID 由 `DASHSCOPE_API_KEY` 自动生成为 `dashscope`。
+5. 保留 ID 为 `deepseek` 的现有 DeepSeek Profile 作为大模型兜底。路由模型默认 ID 可在服务端 `.env` 中通过 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 和 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 调整；默认分别为 `dashscope` 与 `deepseek`。
+
+路由使用本轮用户请求文字及最少布尔/角色状态，并通过 `OutboundContextPolicy` 清洗后发到所配置的模型服务。不会发送对话历史、工作区文件、影像或参与者清单；检测到参与者表、受试者-组别对应或影像/base64 payload 时，该轮路由模型调用会被阻止。本地规则命中的明确请求不调用路由模型。真实请求仍会离开本机；请在提供商侧确认数据处理条件。路由测试使用 mock provider，不会触发真实 API 调用。
+
 ## DeepSeek 官方接口来源
 
 DeepSeek 配置和兼容性核对以官方 [Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion/) 与 [JSON Output 指南](https://api-docs.deepseek.com/guides/json_mode/) 为参考。当前项目通过可配置的 OpenAI-compatible adapter 调用，不硬编码模型名称；实际可用的模型、端点和 JSON 能力仍须按当前账户配置并通过用户显式触发的轻量 smoke 验证。

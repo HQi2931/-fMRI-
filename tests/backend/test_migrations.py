@@ -9,6 +9,7 @@ import textwrap
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, event, inspect, text
@@ -1207,5 +1208,188 @@ def test_two_processes_can_initialize_the_same_new_sqlite_database(tmp_path: Pat
     engine = create_engine(url)
     try:
         assert "alembic_version" in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_preprocessing_goal_admission_migration_preserves_ledger_and_guards_downgrade(
+    tmp_path: Path,
+) -> None:
+    from neuroagent.infrastructure.persistence.models import (
+        CompositeGoalLinkRow,
+        CompositeGoalModelBudgetRow,
+        CompositeGoalModelCallReservationRow,
+        ConversationRow,
+        ProjectRow,
+    )
+
+    database_path = tmp_path / "preprocessing-goal-admission.sqlite"
+    url = f"sqlite:///{database_path.as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    engine = create_engine(url)
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    def migrate(action: Callable[[Config, str], None], revision: str) -> None:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            try:
+                action(config, revision)
+            finally:
+                config.attributes.pop("connection", None)
+
+    tables = (
+        "composite_goal_links",
+        "composite_goal_analysis_attempts",
+        "composite_goal_model_budgets",
+        "composite_goal_model_call_reservations",
+    )
+
+    def ledger() -> dict[str, tuple[tuple[object, ...], ...]]:
+        with engine.connect() as connection:
+            return {
+                table: tuple(connection.execute(text(f"SELECT * FROM {table}")).all())
+                for table in tables
+            }
+
+    try:
+        migrate(command.upgrade, "0034_analysis_only_result_outbox")
+        with engine.begin() as connection:
+            connection.execute(
+                ProjectRow.__table__.insert().values(
+                    project_id="admission-migration-project",
+                    name="Admission migration fixture",
+                    source_roots_json="[]",
+                    work_root="fixture",
+                    version=1,
+                )
+            )
+            connection.execute(
+                ConversationRow.__table__.insert().values(
+                    conversation_id="admission-migration-conversation",
+                    mode="work",
+                    title="Admission migration fixture",
+                    project_id="admission-migration-project",
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO work_tasks (task_id,status,version,goal_json,"
+                    "waiting_condition_json,authority_refs_json,recovery_steps_json,budget_json) "
+                    "VALUES ('admission-migration-task','waiting_user',1,'{}',NULL,'{}','[]',"
+                    ":budget)"
+                ),
+                {
+                    "budget": json.dumps(
+                        {
+                            "max_steps": 100,
+                            "max_model_calls": 40,
+                            "max_tokens": 200_000,
+                            "max_elapsed_seconds": 86_400,
+                        }
+                    )
+                },
+            )
+            connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(
+                    intent_task_id="admission-migration-legacy-root",
+                    conversation_id="admission-migration-conversation",
+                    project_id="admission-migration-project",
+                    analysis_request_hash="a" * 64,
+                    goal_kind="preprocess_then_analyze",
+                    preprocessing_task_id="admission-migration-task",
+                )
+            )
+            connection.execute(
+                CompositeGoalModelBudgetRow.__table__.insert().values(
+                    intent_task_id="admission-migration-legacy-root",
+                    max_steps=100,
+                    max_model_calls=40,
+                    max_tokens=200_000,
+                    max_elapsed_seconds=86_400,
+                    used_steps=1,
+                    used_model_calls=1,
+                    used_tokens=47,
+                    elapsed_seconds=2,
+                )
+            )
+            connection.execute(
+                CompositeGoalModelCallReservationRow.__table__.insert().values(
+                    intent_task_id="admission-migration-legacy-root",
+                    reservation_id="legacy-reservation",
+                    call_id="legacy-call",
+                    state="settled",
+                    estimated_tokens=50,
+                    reserved_tokens=50,
+                    actual_tokens=47,
+                    elapsed_seconds=2,
+                    reserved_elapsed_seconds=0,
+                )
+            )
+
+        legacy = ledger()
+        migrate(command.upgrade, "head")
+        assert ledger() == legacy
+
+        with engine.begin() as connection:
+            connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(
+                    intent_task_id="admission-migration-unbound-root",
+                    conversation_id="admission-migration-conversation",
+                    project_id="admission-migration-project",
+                    analysis_request_hash="b" * 64,
+                    goal_kind="preprocess_then_analyze",
+                    preprocessing_task_id=None,
+                )
+            )
+            connection.execute(
+                CompositeGoalModelBudgetRow.__table__.insert().values(
+                    intent_task_id="admission-migration-unbound-root",
+                    max_steps=100,
+                    max_model_calls=40,
+                    max_tokens=200_000,
+                    max_elapsed_seconds=86_400,
+                    used_steps=0,
+                    used_model_calls=0,
+                    used_tokens=0,
+                    elapsed_seconds=0,
+                )
+            )
+        upgraded_with_admission = ledger()
+        with pytest.raises(RuntimeError, match="Cannot downgrade 0035"):
+            migrate(command.downgrade, "0034_analysis_only_result_outbox")
+        assert ledger() == upgraded_with_admission
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM composite_goal_model_budgets "
+                    "WHERE intent_task_id='admission-migration-unbound-root'"
+                )
+            )
+            connection.execute(
+                text(
+                    "DELETE FROM composite_goal_links "
+                    "WHERE intent_task_id='admission-migration-unbound-root'"
+                )
+            )
+        migrate(command.downgrade, "0034_analysis_only_result_outbox")
+        assert ledger() == legacy
+        with engine.begin() as connection, pytest.raises(IntegrityError):
+            connection.execute(
+                CompositeGoalLinkRow.__table__.insert().values(
+                    intent_task_id="admission-migration-rejected-root",
+                    conversation_id="admission-migration-conversation",
+                    project_id="admission-migration-project",
+                    analysis_request_hash="c" * 64,
+                    goal_kind="preprocess_then_analyze",
+                    preprocessing_task_id=None,
+                )
+            )
     finally:
         engine.dispose()

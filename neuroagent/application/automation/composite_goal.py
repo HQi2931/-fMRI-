@@ -69,10 +69,8 @@ class CompositeGoalIdentity(BaseModel):
             self.source_revision_hash,
         )
         if self.goal_kind == "preprocess_then_analyze":
-            if self.preprocessing_task_id is None or any(
-                item is not None for item in source_fields
-            ):
-                raise ValueError("preprocessing goals require only a preprocessing task reference")
+            if any(item is not None for item in source_fields):
+                raise ValueError("preprocessing goals cannot reference an external import source")
         elif (
             self.preprocessing_task_id is not None
             or any(item is None for item in source_fields)
@@ -302,6 +300,18 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
 
     if goal.goal_kind == "analysis_only_external_import":
         return _project_analysis_only_external_goal(snapshot, result, verified_run_ids)
+
+    if goal.preprocessing_task_id is None:
+        if (
+            prep is not None
+            or goal.analysis_proposal_outbox_intent_task_id is not None
+            or goal.analysis_work_task_id is not None
+            or goal.result_interpretation_outbox_task_id is not None
+            or snapshot.analysis_proposal_outbox is not None
+            or snapshot.result_interpretation_outbox is not None
+        ):
+            return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_binding_missing")
+        return result(CompositeGoalStatus.WAITING_PREPROCESSING, "preprocessing_not_started")
 
     if prep is None or prep.task_id != goal.preprocessing_task_id:
         return result(CompositeGoalStatus.INDETERMINATE, "preprocessing_task_missing")

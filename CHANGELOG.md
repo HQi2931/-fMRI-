@@ -2,6 +2,7 @@
 
 ## 2026-10-21
 
+- 显式“先预处理再分析”请求现在会在首次模型调用前，将原始用户消息、稳定 CompositeGoal 身份和共享模型预算一起持久化；请求中断后可按同一身份幂等恢复。预处理 Plan/Task 准备成功后才在同一事务中绑定一次确切 Task。提案 outbox 创建和后台来源重核以已接纳消息、root 和 raw-text hash 为准，并为旧会话保留 assistant dependency 兼容路径；原始消息被改写、错项目或 root 不匹配会失败关闭。保留现有提案与结果解释 outbox、用户审查/批准和显式 Run 启动门禁。
 - The Work page can register a scanned BIDS folder as a project and dataset, inspect and freeze its manifest, and open a project-bound conversation. The calculation directory defaults under the application-configured safe work root and remains separate from the read-only source; the existing unbound conversation stays available. BIDS staging is limited to manifest-listed single-session, single-run functional NIfTI and paired T1 inputs in isolated DPABI directories.
 - The Work run card now follows the active MATLAB attempt's local logs and automatically explains recognized errors while the job is running or after it stops. Diagnosis stays on this machine, redacts local paths and subject identifiers, and gives recovery guidance without changing or retrying the approved plan.
 - Work keeps monitoring a Run bound to either Agent role when the selected role has no Run, so switching from preprocessing to analysis cannot hide the project's MATLAB failure feedback. Diagnosis polling runs independently of slower artifact and QC detail loading.
@@ -22,6 +23,8 @@
 本文件记录项目中对用户和开发者可见的重要变化。
 
 ## Unreleased
+
+- Work AUTO 回合现先按规则路由清晰请求，再调用百炼 `qwen3.8-flash` Profile（默认 `dashscope`）分类；低置信度、无效 JSON 或调用失败时以现有 DeepSeek `deepseek` Profile 兜底，仍不确定则追问。普通 Work 回复继续使用已选模型。设置页可选/输入具体模型 ID；路由仅发送经 `OutboundContextPolicy` 脱敏的当前请求和最少绑定状态，不发送对话历史、工作区文件、参与者表、组别对应或 MRI。显式复合目标首阶段由服务端约束，路由调用计入目标共享预算且切走的旧分析目标预算不被扣除；不记录请求文本、API Key 或 Provider body。
 
 - Work Skill dry-run 与正式 resolve 现在在实际 DPARSFA preprocessing 输入上复用执行器的 subject/session scope 校验：多 session manifest 会在方案持久化前以明确能力阻断返回；metric-only 不触发该限制，同 session 多 subject 仍可通过。未改变 Worker/compiler 执行边界或多 session 支持范围。
 

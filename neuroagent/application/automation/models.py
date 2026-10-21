@@ -98,6 +98,14 @@ class TaskBudget(BaseModel):
         return self
 
 
+DEFAULT_TASK_BUDGET = TaskBudget(
+    max_steps=100,
+    max_model_calls=40,
+    max_tokens=200_000,
+    max_elapsed_seconds=86_400,
+)
+
+
 class TaskStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

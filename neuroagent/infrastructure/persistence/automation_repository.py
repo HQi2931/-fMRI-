@@ -205,6 +205,77 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 )
             return self._ensure_preprocessing_composite_goal(session, current)
 
+    def ensure_preprocessing_composite_goal_intent(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity:
+        """Persist an explicit preprocessing intent before Plan or Task creation."""
+
+        if goal.goal_kind != "preprocess_then_analyze" or goal.preprocessing_task_id is not None:
+            raise ValueError("an unbound preprocessing composite goal root is required")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            conversation = (
+                session.execute(
+                    text("SELECT mode, project_id FROM conversations WHERE conversation_id=:id"),
+                    {"id": goal.conversation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                conversation is None
+                or conversation["mode"] != "work"
+                or conversation["project_id"] not in {None, goal.project_id}
+            ):
+                raise ConflictError(
+                    "composite_goal_conversation_mismatch",
+                    "复合预处理目标必须绑定到同项目的 Work 会话。",
+                )
+            current_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if current_row is None:
+                session.execute(
+                    text(
+                        """INSERT INTO composite_goal_links
+                        (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                         goal_kind, preprocessing_task_id, source_external_import_id,
+                         source_import_version, source_tree_hash, source_inclusion_hash,
+                         source_manifest_hash, source_revision_hash,
+                         analysis_proposal_outbox_intent_task_id, analysis_work_task_id,
+                         result_interpretation_outbox_task_id)
+                        VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                                'preprocess_then_analyze', NULL, NULL, NULL, NULL, NULL,
+                                NULL, NULL, NULL, NULL, NULL)"""
+                    ),
+                    {
+                        "intent_id": goal.intent_task_id,
+                        "conversation_id": goal.conversation_id,
+                        "project_id": goal.project_id,
+                        "request_hash": goal.analysis_request_hash,
+                    },
+                )
+                current_row = (
+                    session.execute(
+                        text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+            identity = self._composite_goal_from_row(current_row)
+            if identity.model_copy(update={"preprocessing_task_id": None}) != goal:
+                raise ConflictError(
+                    "composite_goal_identity_conflict",
+                    "稳定复合目标 ID 已绑定到不同的会话、项目或请求摘要。",
+                )
+            self._ensure_composite_goal_model_budget(session, goal.intent_task_id, budget)
+            return identity
+
     def ensure_analysis_only_external_goal(
         self, goal: CompositeGoalIdentity, budget: TaskBudget
     ) -> CompositeGoalIdentity:
@@ -370,13 +441,21 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         )
         conversation = (
             session.execute(
-                text("SELECT project_id FROM conversations WHERE conversation_id=:conversation_id"),
+                text(
+                    "SELECT mode, project_id FROM conversations "
+                    "WHERE conversation_id=:conversation_id"
+                ),
                 {"conversation_id": refs.conversation_id},
             )
             .mappings()
             .first()
         )
-        if plan is None or conversation is None or plan["manifest_hash"] != refs.input_revision:
+        if (
+            plan is None
+            or conversation is None
+            or conversation["mode"] != "work"
+            or plan["manifest_hash"] != refs.input_revision
+        ):
             raise ConflictError(
                 "composite_goal_preprocessing_authority_mismatch",
                 "预处理 Plan、manifest 或会话不存在或互不匹配。",
@@ -440,18 +519,38 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 .one()
             )
         identity = SqliteWorkTaskRepository._composite_goal_from_row(current_row)
-        expected = (refs.conversation_id, project_id, request_hash, task.task_id)
-        actual = (
-            identity.conversation_id,
-            identity.project_id,
-            identity.analysis_request_hash,
-            identity.preprocessing_task_id,
-        )
-        if actual != expected:
+        expected = (refs.conversation_id, project_id, request_hash)
+        actual = (identity.conversation_id, identity.project_id, identity.analysis_request_hash)
+        if (
+            actual != expected
+            or identity.goal_kind != "preprocess_then_analyze"
+            or identity.preprocessing_task_id not in {None, task.task_id}
+        ):
             raise ConflictError(
                 "composite_goal_identity_conflict",
                 "稳定复合目标 ID 已绑定到不同的会话、项目、请求或预处理任务。",
             )
+        if identity.preprocessing_task_id is None:
+            session.execute(
+                text(
+                    "UPDATE composite_goal_links SET preprocessing_task_id=:task_id "
+                    "WHERE intent_task_id=:intent_id AND preprocessing_task_id IS NULL"
+                ),
+                {"task_id": task.task_id, "intent_id": intent_id},
+            )
+            identity = SqliteWorkTaskRepository._composite_goal_from_row(
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_id},
+                )
+                .mappings()
+                .one()
+            )
+            if identity.preprocessing_task_id != task.task_id:
+                raise ConflictError(
+                    "composite_goal_preprocessing_task_conflict",
+                    "复合目标已被绑定到另一条预处理任务。",
+                )
         SqliteWorkTaskRepository._ensure_composite_goal_model_budget(
             session, intent_id, task.budget
         )
@@ -462,10 +561,30 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         session: Session, intent_task_id: str, source_budget: TaskBudget
     ) -> None:
         row = session.execute(
-            text("SELECT 1 FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"),
+            text(
+                "SELECT max_steps, max_model_calls, max_tokens, max_elapsed_seconds "
+                "FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
+            ),
             {"intent_id": intent_task_id},
-        ).first()
+        ).mappings().first()
         if row is not None:
+            actual = (
+                row["max_steps"],
+                row["max_model_calls"],
+                row["max_tokens"],
+                row["max_elapsed_seconds"],
+            )
+            expected = (
+                source_budget.max_steps,
+                source_budget.max_model_calls,
+                source_budget.max_tokens,
+                source_budget.max_elapsed_seconds,
+            )
+            if actual != expected:
+                raise ConflictError(
+                    "composite_goal_budget_mismatch",
+                    "复合目标累计模型预算与预处理 TaskBudget 不一致。",
+                )
             return
         session.execute(
             text(
@@ -1526,7 +1645,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         rows = (
             session.execute(
                 text(
-                    "SELECT payload_json FROM conversation_messages "
+                    "SELECT role, content, payload_json FROM conversation_messages "
                     "WHERE conversation_id=:conversation_id ORDER BY sequence"
                 ),
                 {"conversation_id": conversation_id},
@@ -1534,6 +1653,7 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
             .mappings()
             .all()
         )
+        admissions: list[tuple[Any, dict[str, Any]]] = []
         matching_intents: list[dict[str, Any]] = []
         for row in rows:
             try:
@@ -1542,9 +1662,44 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
                 return False
             if not isinstance(payload, dict):
                 continue
+            admission = payload.get("composite_goal_admission")
+            if isinstance(admission, dict) and admission.get("intent_task_id") == intent_task_id:
+                admissions.append((row, admission))
             candidate = payload.get("analysis_dependency")
             if isinstance(candidate, dict) and candidate.get("task_id") == intent_task_id:
                 matching_intents.append(candidate)
+        if admissions:
+            if len(admissions) != 1:
+                return False
+            message, admission = admissions[0]
+            goal = (
+                session.execute(
+                    text(
+                        "SELECT goal_kind, conversation_id, project_id, analysis_request_hash, "
+                        "preprocessing_task_id FROM composite_goal_links "
+                        "WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            content = message["content"]
+            return bool(
+                message["role"] == "user"
+                and isinstance(content, str)
+                and content.strip()
+                and admission.get("conversation_id") == conversation_id
+                and admission.get("project_id") == project_id
+                and admission.get("analysis_request_hash") == request_hash
+                and content_hash(content.strip()) == request_hash
+                and goal is not None
+                and goal["goal_kind"] == "preprocess_then_analyze"
+                and goal["conversation_id"] == conversation_id
+                and goal["project_id"] == project_id
+                and goal["analysis_request_hash"] == request_hash
+                and goal["preprocessing_task_id"] == values.get("preprocessing_task_id")
+            )
         if not matching_intents:
             return False
         for intent in matching_intents:

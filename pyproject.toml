@@ -65,6 +65,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 "neuroagent/application/services.py" = ["E501", "RUF001"]
 "neuroagent/application/work_dialogue.py" = ["E501", "RUF001"]
 "neuroagent/application/work_tools.py" = ["E501"]
+"neuroagent/infrastructure/model_work_agent_router.py" = ["RUF001"]
 "neuroagent/infrastructure/filesystem/workspace_files.py" = ["E501", "E702", "SIM102", "RUF001"]
 "neuroagent/infrastructure/persistence/repository_mixins/workspace_assistant.py" = ["E501"]
 

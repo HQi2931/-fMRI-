@@ -196,6 +196,34 @@ async def test_context_reaches_gateway_once_and_is_redacted() -> None:
     assert call.args[2][1]["content"].count("那它有什么区别？") == 1
 
 
+def test_work_gateway_blocks_group_mappings_in_current_or_prior_messages() -> None:
+    import pytest
+
+    from neuroagent.agent.gateway import ModelGateway
+    from neuroagent.agent.redaction import OutboundContextPolicy, OutboundPolicyError
+    from neuroagent.agent.router import ModelRouter
+
+    gateway = ModelGateway(
+        ModelRouter([], {}),
+        {},
+        OutboundContextPolicy("work-context-redaction-salt"),
+        object(),
+    )
+
+    with pytest.raises(OutboundPolicyError):
+        gateway.build_chat_messages(
+            question="请继续生成预处理方案",
+            evidence=[],
+            recent_messages=[
+                {
+                    "role": "user",
+                    "content": "subject_id,group\nsub-01,ASD\nsub-02,HC",
+                }
+            ],
+            work_mode=True,
+        )
+
+
 def test_followup_retrieval_and_per_message_citations_persist(service: ApplicationServices) -> None:
     from unittest.mock import AsyncMock, Mock
 

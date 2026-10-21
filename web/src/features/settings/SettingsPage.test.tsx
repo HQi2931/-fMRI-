@@ -499,4 +499,53 @@ describe("settings page", () => {
       api_key: "sk-synthetic",
     });
   });
+
+  it("offers the Bailian lightweight router model and preserves its explicit model ID", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = installFetch({
+      listModels: () => json({ models: ["qwen3.8-flash", "qwen3.8-max"] }),
+    });
+
+    render(<SettingsPage />);
+    await screen.findByText("MATLAB R2024b");
+    await user.selectOptions(screen.getByLabelText("服务商预设"), "阿里云百炼 Model Studio");
+    expect(screen.getByLabelText("API 基址")).toHaveValue(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    );
+    expect(screen.getByLabelText("密钥环境变量名")).toHaveValue("DASHSCOPE_API_KEY");
+    expect(screen.getByLabelText("指定模型 ID（可留空）")).toHaveValue("qwen3.8-flash");
+    await user.type(screen.getByLabelText("API Key"), "sk-synthetic");
+    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+
+    await screen.findByText(/服务商 API 已绑定/);
+    const create = fetchSpy.mock.calls.find(
+      ([input, init]) => pathOf(input).endsWith("/model-profiles") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(create?.[1]?.body))).toMatchObject({
+      profile: {
+        id: "dashscope",
+        provider: "openai-compatible",
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model: "qwen3.8-flash",
+        api_key_env: "DASHSCOPE_API_KEY",
+        capabilities: ["json_object"],
+      },
+      api_key: "sk-synthetic",
+    });
+  });
+
+  it("rejects an explicitly entered model missing from the provider model list", async () => {
+    const user = userEvent.setup();
+    installFetch({ listModels: () => json({ models: ["deepseek-chat"] }) });
+
+    render(<SettingsPage />);
+    await screen.findByText("MATLAB R2024b");
+    await user.type(screen.getByLabelText("API Key"), "sk-synthetic");
+    await user.type(screen.getByLabelText("API 基址"), "https://provider.example/v1");
+    await user.type(screen.getByLabelText("密钥环境变量名"), "PROVIDER_API_KEY");
+    await user.type(screen.getByLabelText("指定模型 ID（可留空）"), "not-listed");
+    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+
+    await screen.findByText(/服务商返回的模型列表中没有 not-listed/);
+  });
 });

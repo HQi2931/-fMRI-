@@ -169,7 +169,7 @@ composite intent
 
 `CompositeGoal` 的身份/进度根不保存可独立变化的预算状态。预算和调用账本由以 intent 为外键的 SQLite 记录持有：每个模型 Gateway invocation 在分发前原子预留一次调用、一个 step、估算 token 和剩余 elapsed allowance；调用结束或失败后按 reservation 幂等结算。工具循环每轮和 JSON 单次回退共用同一预算端口。已接入的分析提案、统计结果解释后台 outbox 共用一份 goal 账本。重复 call ID、超额与耗尽都不能继续分发 Provider 请求。成功响应中报告的 profile failover attempts 会按额外估算 token 记账。具体 schema、生成身份、兼容处理和限制见 [ADR 0048](../adr/0048-composite-goal-model-call-budget.md)。
 
-预算预留同时预扣最多为剩余额度的整数秒，并以该值限制本地 Gateway await；结算记录实际向上取整耗时，取消清理可能造成 overrun 并阻止后续调用，进程中途退出则保留预扣。token usage 超过 estimate 时按实际值结算并阻止后续调用。claim fence 丢失会取消本地生成任务。这个预算目前仅保护持久根建立后已接入的两种后台 outbox；普通前台 Work 对话尚未接入、根建立前的生成无法使用尚未创建的账本、没有根的历史 standalone outbox 也保留旧路径。迁移 0031、0032 为旧目标回填精确预处理任务预算上限并增加 elapsed reservation 字段；无法重建启用账本前的模型调用/usage，所以历史 used 计数从零开始。Gateway 内部失败且无 usage 的 profile attempts 不能精确计数；本地取消也不能保证远端 Provider 停止处理或计费。
+预算预留同时预扣最多为剩余额度的整数秒，并以该值限制本地 Gateway await；结算记录实际向上取整耗时，取消清理可能造成 overrun 并阻止后续调用，进程中途退出则保留预扣。token usage 超过 estimate 时按实际值结算并阻止后续调用。claim fence 丢失会取消本地生成任务。普通 Work 对话仍未接入持久预算；显式 `preprocess_then_analyze` 首轮在 Provider 调用前原子持久化原始用户消息、CompositeGoal 身份和共享预算，且仅在成功保存预处理 Plan/Task 后绑定唯一 Task。未采用此 admission 的历史 standalone outbox 仍保留旧路径。迁移 0031、0032 为旧目标回填精确预处理任务预算上限并增加 elapsed reservation 字段；迁移 0035 允许已接纳目标在 Plan/Task 创建前持久化。无法重建启用账本前的模型调用/usage，所以历史 used 计数从零开始。Gateway 内部失败且无 usage 的 profile attempts 不能精确计数；本地取消也不能保证远端 Provider 停止处理或计费。
 
 ## fMRI 能力与方案生成
 
@@ -223,6 +223,10 @@ composite intent
 用户应该能够以一个目标开始，例如“检查这个工作区，准备计算 ALFF 和 ReHo；对现有指标做两组统计并生成报告”。系统先读取所选工作区中可读的事实，再把影响科学结论的未知项集中询问。用户审查并批准方案后，系统负责创建受控运行、等待进度、消费完成事件、检查 QC 与产物，并在目标条件满足后准备下一步或整理结果。
 
 界面应区分四种结果：正在自动调查/恢复、等待用户科研决定、等待长作业或 QC、当前能力不支持/执行失败。用户断开页面不应清除任务进度；重新打开时应看到已完成的检查、当前等待条件、最近错误与继续所需操作。成功统计即使没有显著簇，也应生成正常的结果解释和复现材料。
+
+Work AUTO 路由先用确定规则处理清晰的预处理/统计请求及服务端锁定的复合目标首阶段；规则无法确定时调用模型设置中的 `dashscope` 小模型 Profile（默认 `qwen3.8-flash`），结果置信度低、JSON 无效或调用失败时显式调用 `deepseek` 大模型兜底。两个 Profile ID 可分别用 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 与 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 覆盖。路由模型只分类当前 Work 回合，普通回复和草稿仍使用用户当前选定的 Work 模型。客户端 `agent_role` 不参与自动路由，非 AUTO 操作由 `ConversationAction` 和会话内精确的冻结目标/Run 绑定确定角色；模型调用失败、预算耗尽或兜底结果仍不确定时，Work 停止生成并返回可操作反馈。
+
+需要模型的路由会把当前请求和最少布尔/角色级状态发送到当前设置的外部 ModelProfile，经 `OutboundContextPolicy` 脱敏。路由调用不带历史消息、工作区文件、参与者表、样本-组别对应或 MRI；本机路径、文件名、受试者编号和常见组别标签会先遮蔽，识别到参与者表、受试者-组别对应或影像/base64 payload 时拒绝进入路由模型。回复只记录 status、模型、Profile ID、confidence、source 和 failure reason code，不记录路由输入、API Key 或 Provider body。显式 `preprocess_then_analyze` admission/root 和复合目标共享预算在模型请求前落库，路由调用按目标预算预留和结算；切换到预处理时不记入离开的分析目标预算。该路由不生成 Plan/Run，不跨越 proposal/result outbox、用户审查/批准或显式运行启动门禁。
 
 自动化质量用支持范围内的目标完成率、技术性追问轮数、重复询问已核验事实次数、可恢复故障恢复率、重复运行次数、重启恢复率、用户决定等待时间和每个目标的资源预算衡量。需要科学决定、能力不支持、安全拒绝和未完成运行应单独统计，不能通过从分母删除困难任务来虚增自动化比例。
 

@@ -10,6 +10,7 @@ from neuroagent.application.environment_lock import EnvironmentLockProvider
 from neuroagent.application.ports import SecretWriterPort, WorkerHostRepositoryPort
 from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
+from neuroagent.application.work_routing import WorkAgentRouter
 from neuroagent.execution.ports import ExecutionResult, JobExecutor
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 from neuroagent.infrastructure.filesystem.dataset_inspector import DatasetInspector
@@ -60,6 +61,7 @@ def build_service(
     database: Database | None = None,
     repository: SqliteRepository | None = None,
     secret_writer: SecretWriterPort | None = None,
+    work_agent_router: WorkAgentRouter | None = None,
 ) -> ApplicationServices:
     """Assemble the local application service and all infrastructure adapters."""
 
@@ -164,6 +166,7 @@ def build_service(
         ),
         skill_registry=skill_registry,
         literature_repository=SqliteLiteratureRepository(resolved_database),
+        work_agent_router=work_agent_router,
     )
 
 

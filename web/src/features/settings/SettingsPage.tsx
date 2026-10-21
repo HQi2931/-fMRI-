@@ -27,6 +27,7 @@ const PROVIDER_PRESETS = [
   { label: "月之暗面 Kimi（海外）", baseUrl: "https://api.moonshot.ai/v1", keyEnv: "MOONSHOT_API_KEY" },
   { label: "通义千问 Qwen（国内）", baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
   { label: "通义千问 Qwen（国际）", baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
+  { label: "阿里云百炼 Model Studio", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", keyEnv: "DASHSCOPE_API_KEY", model: "qwen3.8-flash" },
   { label: "小米 MiMo", baseUrl: "https://api.xiaomimimo.com/v1", keyEnv: "XIAOMI_API_KEY" },
   { label: "蚂蚁灵语 Ant Ling", baseUrl: "https://api.ant-ling.com/v1", keyEnv: "ANT_LING_API_KEY" },
   { label: "OpenAI", baseUrl: "https://api.openai.com/v1", keyEnv: "OPENAI_API_KEY" },
@@ -56,6 +57,7 @@ export function SettingsPage() {
   const [presetLabel, setPresetLabel] = useState("");
   const [provider, setProvider] = useState("openai-compatible");
   const [baseUrl, setBaseUrl] = useState("");
+  const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [keyEnv, setKeyEnv] = useState("");
   const [priority, setPriority] = useState(100);
@@ -134,6 +136,7 @@ export function SettingsPage() {
       setProvider("openai-compatible");
       setBaseUrl(preset.baseUrl);
       setKeyEnv(preset.keyEnv);
+      setModelName("model" in preset ? preset.model : "");
       setThinkingMode(preset.baseUrl === "https://api.deepseek.com" ? "disabled" : "provider_default");
     }
   }
@@ -180,6 +183,7 @@ export function SettingsPage() {
   function resetForm(): void {
     setPresetLabel("");
     setBaseUrl("");
+    setModelName("");
     setApiKey("");
     setKeyEnv("");
   }
@@ -195,6 +199,9 @@ export function SettingsPage() {
         api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
       });
       if (models.models.length === 0) throw new Error("该服务商没有返回可选择的模型。");
+      if (modelName.trim() && !models.models.includes(modelName.trim())) {
+        throw new Error(`服务商返回的模型列表中没有 ${modelName.trim()}，请核对模型 ID 和地域端点。`);
+      }
       const existing = profiles.find((item) =>
         item.profile.base_url === baseUrl.trim().replace(/\/$/, "") &&
         item.profile.api_key_env === keyEnv.trim(),
@@ -212,7 +219,7 @@ export function SettingsPage() {
           id: connectionId,
           provider: provider.trim(),
           base_url: baseUrl.trim(),
-          model: models.models[0],
+          model: modelName.trim() || models.models[0],
           api_key_env: keyEnv.trim(),
           priority,
           capabilities,
@@ -321,6 +328,7 @@ export function SettingsPage() {
             <label>API Key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="填写后可直接拉取模型；保存时写入本地 .env（不进入数据库）" autoComplete="off" /></label>
             <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="openai-compatible">openai-compatible</option></select></label>
             <label>API 基址<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" /></label>
+            <label>指定模型 ID（可留空）<input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="如 qwen3.8-flash；留空使用首个模型" /></label>
             <label>密钥环境变量名<input value={keyEnv} onChange={(event) => setKeyEnv(event.target.value)} placeholder="以 _API_KEY 结尾，如 DEEPSEEK_API_KEY" /></label>
             <div className="form-grid">
               <label>优先级<input type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label>
@@ -339,7 +347,7 @@ export function SettingsPage() {
               ))}
             </fieldset>
           </div>
-          <p className="muted">绑定时会立即验证 API 并读取模型列表。API Key 只写入未跟踪的本地 <code>.env</code>，不进入数据库、日志或浏览器状态；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
+          <p className="muted">绑定时会立即验证 API 并读取模型列表。API Key 只在此本机设置页输入并写入未跟踪的本地 <code>.env</code>，不要通过聊天发送密钥；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。指定模型 ID 会先与服务商列表核对。</p>
           <p className="muted">“工具调用”是服务商配置声明。只有确认该服务商支持 OpenAI 兼容的 <code>tools/tool_calls</code> 才应开启；Work 还会在文件授权前验证所选具体模型。</p>
           <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : "绑定 API 并读取模型"}</button></div>
         </section>

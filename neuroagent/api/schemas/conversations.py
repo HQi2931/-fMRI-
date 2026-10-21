@@ -132,7 +132,6 @@ class ConversationTurnCreate(StrictHttpModel):
         if self.start_new_analysis_goal and (
             self.external_analysis_import_id is None
             or self.action is not ConversationAction.AUTO
-            or self.agent_role is WorkAgentRole.PREPROCESSING
             or self.analysis_intent_task_id is not None
             or self.preprocessing_task_id is not None
             or self.target_run_id is not None
@@ -143,18 +142,10 @@ class ConversationTurnCreate(StrictHttpModel):
                 "a new analysis goal requires an external source and cannot combine with a "
                 "selected goal, preprocessing source, run, or confirmation"
             )
-        if (
-            self.analysis_intent_task_id is not None
-            and self.agent_role is WorkAgentRole.PREPROCESSING
-        ):
-            raise ValueError("analysis goal assertions cannot select the preprocessing role")
-        if self.external_analysis_import_id is not None and (
-            self.target_run_id is not None or self.agent_role is WorkAgentRole.PREPROCESSING
-        ):
-            raise ValueError("external analysis input cannot select a run or preprocessing role")
+        if self.external_analysis_import_id is not None and self.target_run_id is not None:
+            raise ValueError("external analysis input cannot select a run")
         if self.preprocessing_task_id is not None and (
             self.target_run_id is None
-            or self.agent_role is not WorkAgentRole.ANALYSIS
             or self.action is not ConversationAction.AUTO
             or self.external_analysis_import_id is not None
         ):

@@ -63,6 +63,15 @@ class Settings(BaseSettings):
     rag_collection: str = "fmri_literature_v1"
     rag_api_key_env: str = "DASHSCOPE_API_KEY"
     rag_rerank: bool = True
+    work_router_small_profile_id: str = Field(
+        default="dashscope", pattern=r"^[a-z0-9][a-z0-9-]{1,62}$"
+    )
+    work_router_fallback_profile_id: str = Field(
+        default="deepseek", pattern=r"^[a-z0-9][a-z0-9-]{1,62}$"
+    )
+    work_router_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    work_router_minimum_confidence: float = Field(default=0.65, gt=0, le=1)
+    work_router_max_request_tokens: int = Field(default=4_096, ge=256, le=32_768)
     memory_embedding_profile: ModelProfile | None = None
     memory_recall_limit: int = Field(default=12, ge=1, le=100)
     memory_half_life_days: float = Field(default=180, gt=0)

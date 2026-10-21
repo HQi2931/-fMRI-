@@ -1627,6 +1627,7 @@ class WorkDialogue:
                     model=request.model,
                     execution_context=execution_context,
                     budget_override=remaining_budget,
+                    persistent_model_budget=persistent_model_budget,
                 )
                 feedback_state["latest_loop_metadata"] = result[2]
                 if result[2] is not None:

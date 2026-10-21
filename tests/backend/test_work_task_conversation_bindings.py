@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +16,10 @@ from fastapi.testclient import TestClient
 from neuroagent.agent.models import ModelProfile
 from neuroagent.api import create_app
 from neuroagent.application.automation.analysis_outbox import AnalysisOutboxStatus
-from neuroagent.application.automation.composite_goal import CompositeGoalStatus
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalIdentity,
+    CompositeGoalStatus,
+)
 from neuroagent.application.automation.models import (
     TaskStatus,
     TaskStepStatus,
@@ -110,6 +113,32 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             user_goal, project.project_id, conversation.conversation_id, "work-task-binding-initial"
         )
         assert analysis_intent is not None
+        admitted_message_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                "neuroagent:composite-goal-admission:"
+                f"{conversation.conversation_id}:{analysis_intent['task_id']}",
+            )
+        )
+        analysis_request_hash = content_hash(user_goal.strip())
+        admitted_goal = CompositeGoalIdentity(
+            intent_task_id=analysis_intent["task_id"],
+            conversation_id=conversation.conversation_id,
+            project_id=project.project_id,
+            analysis_request_hash=analysis_request_hash,
+            goal_kind="preprocess_then_analyze",
+            preprocessing_task_id=None,
+        )
+        with service.idempotency_store.atomic():
+            service.repository.admit_preprocessing_goal_intent_message(
+                conversation.conversation_id,
+                message_id=admitted_message_id,
+                user_content=user_goal,
+                intent_task_id=admitted_goal.intent_task_id,
+                project_id=project.project_id,
+                analysis_request_hash=analysis_request_hash,
+            )
+            service.automation.ensure_preprocessing_composite_goal_intent(admitted_goal)
         draft = complete_draft()
         service.repository.append_conversation_exchange(
             conversation.conversation_id,
@@ -125,7 +154,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                     "workspace_path": str(source),
                     "compiled": False,
                     "analysis_intent_task_id": analysis_intent["task_id"],
-                    "analysis_request_hash": content_hash(user_goal.strip()),
+                    "analysis_request_hash": analysis_request_hash,
                 },
                 "analysis_dependency": analysis_intent,
             },
@@ -134,6 +163,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             preferred_profile_id=None,
             project_id=project.project_id,
             active_run_id=None,
+            existing_user_message_id=admitted_message_id,
         )
 
         with TestClient(create_app(service=service)) as client:
@@ -313,6 +343,14 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert service.automation.get_task(task_id).status is TaskStatus.WAITING_USER
 
             original_bind = service.automation.bind_preprocessing_run
+            router_not_called = AsyncMock(
+                side_effect=AssertionError("confirmed action must not invoke automatic routing")
+            )
+            monkeypatch.setattr(
+                service.conversations.work_agent_router,
+                "choose",
+                router_not_called,
+            )
 
             def fail_binding(**_kwargs):
                 raise ConflictError("test_work_task_bind_failure", "Injected binding failure")
@@ -324,6 +362,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 headers={"Idempotency-Key": "work-task-binding-start"},
             )
             assert failed.status_code == 409, failed.text
+            router_not_called.assert_not_awaited()
             rolled_back_task = service.automation.get_task(task_id)
             assert rolled_back_task.status is TaskStatus.WAITING_USER
             assert rolled_back_task.authority_refs.workflow_run_id is None
@@ -345,11 +384,13 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 json=confirmation_body,
                 headers={"Idempotency-Key": "work-task-binding-start"},
             )
+            assert started.status_code == 200, started.text
             replay = client.post(
                 confirm_url,
                 json=confirmation_body,
                 headers={"Idempotency-Key": "work-task-binding-start"},
             )
+            router_not_called.assert_not_awaited()
             run_id = started.json()["assistant_message"]["payload"]["run"]["run_id"]
             bound_task = service.automation.get_task(task_id)
             replayed_binding = service.automation.bind_preprocessing_run(
@@ -443,7 +484,8 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 json={**explicit_turn, "agent_role": "preprocessing"},
                 headers={"Idempotency-Key": "work-task-binding-explicit-wrong-role"},
             )
-            assert wrong_role.status_code == 422
+            assert wrong_role.status_code == 201, wrong_role.text
+            assert wrong_role.json()["assistant_message"]["payload"]["agent_role"] == "analysis"
 
             cross_conversation = service.conversations.create_conversation(
                 ConversationCreate(
@@ -479,7 +521,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                     task_id
                 )
             )
-            assert len(pending_outboxes) == 2
+            assert len(pending_outboxes) == 3
             pending_by_intent = {item.intent_task_id: item for item in pending_outboxes}
             pending_outbox = pending_by_intent[analysis_intent["task_id"]]
             assert pending_outbox is not None
@@ -488,6 +530,11 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert pending_outbox.plan_revision_id == plan_id
             assert pending_outbox.artifact_ids == ()
             assert pending_by_intent[explicit_intent_id].status is AnalysisOutboxStatus.PENDING
+            ignored_role_intent_id = wrong_role.json()["assistant_message"]["payload"][
+                "analysis_dependency"
+            ]["task_id"]
+            assert ignored_role_intent_id not in {analysis_intent["task_id"], explicit_intent_id}
+            assert pending_by_intent[ignored_role_intent_id].status is AnalysisOutboxStatus.PENDING
             repository = service.automation._repository
             ready_outbox = repository.mark_analysis_outbox_ready(
                 analysis_intent["task_id"],

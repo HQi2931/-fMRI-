@@ -417,7 +417,6 @@ describe("agent workbench page", () => {
 
     await waitFor(() => expect(responseTurn).toHaveBeenCalledOnce());
     expect(requestBody).toMatchObject({
-      agent_role: "analysis",
       project_id: "project-1",
       preprocessing_task_id: "prep-selected",
       target_run_id: "run-selected",
@@ -425,6 +424,7 @@ describe("agent workbench page", () => {
       plan_revision_id: null,
       expected_plan_hash: null,
     });
+    expect(requestBody).not.toHaveProperty("agent_role");
   });
 
   it("leaves preprocessing-source identifiers out of ordinary analysis turns", async () => {
@@ -592,16 +592,16 @@ describe("agent workbench page", () => {
     render(<AgentPage />);
     fireEvent.click(await screen.findByRole("button", { name: "继续此分析" }));
     await waitFor(() => expect(selectGoal).toHaveBeenCalledOnce());
-    await screen.findByText("当前负责：数据分析 Agent");
+    await screen.findByText("Agent 自动分派 · 当前：数据分析 Agent");
     fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续这个外部指标分析" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => expect(turn).toHaveBeenCalledOnce());
     expect(requestBody).toMatchObject({
-      agent_role: "analysis",
       analysis_intent_task_id: "external-goal",
       external_analysis_import_id: "included-external",
     });
+    expect(requestBody).not.toHaveProperty("agent_role");
     expect(requestBody).not.toHaveProperty("start_new_analysis_goal");
   });
 
@@ -622,22 +622,23 @@ describe("agent workbench page", () => {
     });
     const turn = vi.fn((init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
-      return json({ conversation: current, user_message: message("u", "user", "新建预处理方案"), assistant_message: message("a", "assistant", "已准备预处理草稿"), tool_call: null });
+      return json({ conversation: { ...current, foreground_agent_role: "preprocessing" }, user_message: message("u", "user", "新建预处理方案"), assistant_message: message("a", "assistant", "已准备预处理草稿", { agent_role: "preprocessing" }), tool_call: null });
     });
     installFetch({ conversations: () => json([current]), turn });
 
     render(<AgentPage />);
     const prompt = "请为当前项目创建一份待审 DPABI 预处理草稿，只计算 ALFF/fALFF，不做统计分析。";
     fireEvent.change(await screen.findByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: prompt } });
-    expect(screen.getByText("当前负责：预处理 Agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => expect(turn).toHaveBeenCalledOnce());
     expect(requestBody).toMatchObject({
-      agent_role: null,
       external_analysis_import_id: null,
     });
+    expect(requestBody).not.toHaveProperty("agent_role");
     expect(requestBody).not.toHaveProperty("analysis_intent_task_id");
+    expect(await screen.findByText("Agent 自动分派 · 当前：预处理 Agent")).toBeInTheDocument();
   });
 
   it("starts an independent external-import goal only after an explicit choice", async () => {
@@ -672,10 +673,10 @@ describe("agent workbench page", () => {
 
     await waitFor(() => expect(turn).toHaveBeenCalledOnce());
     expect(requestBody).toMatchObject({
-      agent_role: null,
       external_analysis_import_id: "included-import",
       start_new_analysis_goal: true,
     });
+    expect(requestBody).not.toHaveProperty("agent_role");
     expect(requestBody).not.toHaveProperty("analysis_intent_task_id");
   });
 
@@ -746,7 +747,8 @@ describe("agent workbench page", () => {
     });
     const turn = vi.fn((init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      expect(body.agent_role).toBe("analysis");
+      expect(body).not.toHaveProperty("agent_role");
+      expect(body.analysis_intent_task_id).toBe("goal/selected");
       expect(body.external_analysis_import_id).toBeNull();
       expect(body).not.toHaveProperty("preprocessing_task_id");
       return json({ conversation: initial, user_message: message("u", "user", "继续"), assistant_message: message("a", "assistant", "已继续"), tool_call: null });
@@ -760,9 +762,10 @@ describe("agent workbench page", () => {
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[0]);
     await waitFor(() => expect(selectGoal).toHaveBeenCalledOnce());
-    await screen.findByText("当前负责：数据分析 Agent");
+    await screen.findByText("Agent 自动分派 · 当前：数据分析 Agent");
     expect(registration).not.toBeChecked();
-    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("analysis");
+    expect(screen.queryByLabelText("Work 负责 Agent")).not.toBeInTheDocument();
+    expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续这个分析目标" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(turn).toHaveBeenCalledOnce());
@@ -783,7 +786,7 @@ describe("agent workbench page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("会话已变化");
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
     expect(button).toBeEnabled();
-    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("auto");
+    expect(screen.queryByLabelText("Work 负责 Agent")).not.toBeInTheDocument();
   });
 
   it("requires unsaved preprocessing edits to be handled before selecting an analysis goal", async () => {
@@ -1050,49 +1053,31 @@ describe("agent workbench page", () => {
     expect(loadGoals).toHaveBeenCalledTimes(3);
   });
 
-  it("switches the responsible Agent on the server while retaining drafts and hiding the other role's confirmation", async () => {
+  it("automatically routes Work turns and shows the current Agent without a role selector", async () => {
     const messages = [message("pre-draft", "assistant", "已保存预处理草稿", { agent_role: "preprocessing",
       work_draft: { hash: "a".repeat(64), version: 2, draft: { preprocessing: { tr_seconds: 2 }, requested_metrics: [] }, compiled: false },
       confirmation_request: { title: "确认预处理参数", summary: "当前预处理草稿", options: [{ label: "确认参数", description: "建立正式方案", command: "confirm-current-draft" }] },
     }), message("analysis-draft", "assistant", "已保存统计草稿", { agent_role: "analysis", analysis_draft: { hash: "b".repeat(64), draft: { test: "independent_two_sample_t" } } })];
-    let version = 4;
-    const switchAgent = vi.fn((init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
-      expect(body.expected_version).toBe(version);
-      version += 1;
-      return json(conversation({ messages, version, foreground_agent_role: body.agent_role }));
+    let requestBody: Record<string, unknown> | null = null;
+    const autoTurn = vi.fn((init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return json({ conversation: conversation({ messages, version: 5, foreground_agent_role: "analysis" }),
+        user_message: message("auto-user", "user", "比较两组 ALFF 指标"),
+        assistant_message: message("auto-assistant", "assistant", "已交给分析 Agent", { agent_role: "analysis" }),
+        tool_call: null });
     });
-    const confirmation = vi.fn();
-    installFetch({ conversations: () => json([conversation({ messages, version, foreground_agent_role: "preprocessing" })]), selectAgent: switchAgent, confirmation });
+    installFetch({ conversations: () => json([conversation({ messages, version: 4, foreground_agent_role: "preprocessing" })]), turn: autoTurn });
     render(<AgentPage />);
-    await screen.findByText("当前负责：预处理 Agent");
+    await screen.findByText("Agent 自动分派 · 当前：预处理 Agent");
+    expect(screen.queryByLabelText("Work 负责 Agent")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /待确认 · 确认预处理参数/ })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "analysis" } });
-    await screen.findByText("当前负责：数据分析 Agent");
-    expect(screen.queryByRole("button", { name: /待确认/ })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("预处理方案参数")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "比较两组 ALFF 指标" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(autoTurn).toHaveBeenCalledOnce());
+    expect(requestBody).not.toHaveProperty("agent_role");
+    await screen.findByText("Agent 自动分派 · 当前：数据分析 Agent");
     expect(screen.getByText("已保存预处理草稿")).toBeInTheDocument();
     expect(screen.getByText("已保存统计草稿")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "preprocessing" } });
-    await screen.findByText("当前负责：预处理 Agent");
-    expect(screen.getByLabelText("重复时间 TR（秒）")).toHaveValue(2);
-    expect(screen.getByRole("button", { name: /待确认 · 确认预处理参数/ })).toBeInTheDocument();
-    expect(switchAgent).toHaveBeenCalledTimes(2);
-    expect(confirmation).not.toHaveBeenCalled();
-  });
-
-  it("retains the authoritative Agent after a version-conflicted switch and refreshes the current conversation", async () => {
-    const current = conversation({ version: 6, foreground_agent_role: "preprocessing" });
-    const refresh = vi.fn(() => json({ ...current, version: 7 }));
-    installFetch({ conversations: () => json([current]), conversation: refresh,
-      selectAgent: () => json({ error: { code: "version_conflict", message: "会话已变化，请重新核对当前任务。", details: {}, trace_id: null } }, 409) });
-    render(<AgentPage />);
-    await screen.findByRole("option", { name: "DemoData ALFF" });
-    fireEvent.change(screen.getByLabelText("Work 负责 Agent"), { target: { value: "analysis" } });
-    expect(await screen.findByRole("alert")).toHaveTextContent("会话已变化");
-    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
-    expect(screen.getByText("当前负责：预处理 Agent")).toBeInTheDocument();
-    expect(screen.getByLabelText("Work 负责 Agent")).toHaveValue("auto");
   });
 
   it("restores the confirmed input stage when loading a conversation", async () => {
@@ -1409,7 +1394,7 @@ describe("agent workbench page", () => {
 
     expect(await screen.findByRole("heading", { name: "计算失败" })).toBeInTheDocument();
     expect(await screen.findByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
-    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
     expect(run).toHaveBeenCalled();
     expect(diagnosis).toHaveBeenCalledWith("run-preprocessing", expect.any(AbortSignal));
     expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-preprocessing" )).toBe(true);
@@ -1496,7 +1481,7 @@ describe("agent workbench page", () => {
     expect(within(region).getByText("检查 MATLAB 偏好目录写入权限")).toBeInTheDocument();
     expect(within(region).getByText("诊断在本机完成，日志不会发送给模型。")).toBeInTheDocument();
     expect(within(region).queryByText("internal detail must stay hidden")).not.toBeInTheDocument();
-    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-hidden-preprocessing")).toBe(true);
     expect(diagnosis).toHaveBeenCalledWith("run-hidden-preprocessing", expect.any(AbortSignal));
     expect(run).toHaveBeenCalledWith("run-hidden-preprocessing");
@@ -1583,7 +1568,7 @@ describe("agent workbench page", () => {
 
     expect(await screen.findByText("后台准备的统计草稿已到达。", {}, { timeout: 8000 })).toBeInTheDocument();
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("当前负责：数据分析 Agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
   });
 
   it("resumes polling after a manual analysis outbox retry and hides the prior retry action", async () => {

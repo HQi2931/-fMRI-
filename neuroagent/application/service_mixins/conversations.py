@@ -10,6 +10,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from neuroagent.analysis.models import EvidenceChunk, RsFmriAnswer
 from neuroagent.application.automation.analysis_outbox import (
@@ -79,8 +80,8 @@ from neuroagent.application.hashing import content_hash
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.work_agents import (
+    analysis_dependency_for_request,
     handoff_identity,
-    work_agent_role_for_turn,
 )
 from neuroagent.application.work_dialogue import (
     STAGE_CONFIRMATION_PATTERN,
@@ -99,6 +100,12 @@ from neuroagent.application.work_draft import (
     render_draft_review,
     review_issues,
     validate_draft_patch,
+)
+from neuroagent.application.work_routing import (
+    WorkAgentRouter,
+    WorkAgentRoutingContext,
+    WorkAgentRoutingDecision,
+    WorkAgentRoutingStatus,
 )
 from neuroagent.application.work_tasks import run_for_agent_context
 from neuroagent.application.work_tasks import work_task as conversation_work_task
@@ -250,6 +257,7 @@ class ConversationMixin(BaseServiceMixin):
     conversation_context: ConversationContextCoordinator
     conversation_work: ConversationWorkCoordinator
     work_dialogue: WorkDialogue
+    work_agent_router: WorkAgentRouter
     chat_agent: ChatAgent
     workspace_content_consent_granted: Callable[..., bool]
     get_plan: Callable[[str], PlanRevisionView]
@@ -1978,6 +1986,9 @@ class ConversationMixin(BaseServiceMixin):
                 idempotency_key,
             )
 
+        admitted_goal: CompositeGoalIdentity | None = None
+        admitted_user_message_id: str | None = None
+
         async def prepare() -> tuple[
             int,
             WorkActionResult,
@@ -1992,6 +2003,7 @@ class ConversationMixin(BaseServiceMixin):
             str | None,
             str | None,
         ]:
+            nonlocal admitted_goal, admitted_user_message_id
             conversation = self.repository.get_conversation(conversation_id)
             if _confirmation is not None:
                 self._validate_work_confirmation(conversation, _confirmation)
@@ -2016,17 +2028,40 @@ class ConversationMixin(BaseServiceMixin):
                     "analysis_goal_selection_conflict",
                     "请求准备期间 Analysis 角色槽已切换，请基于当前目标重试。",
                 )
+            # Work clients may still send agent_role for compatibility, but it
+            # is never a routing authority. Only server-verified goal/source
+            # assertions constrain the target; ordinary AUTO turns use the
+            # automatic router below.
             requested_role = (
                 WorkAgentRole.ANALYSIS
-                if request.analysis_intent_task_id is not None
-                or request.external_analysis_import_id is not None
-                or request.start_new_analysis_goal
-                else request.agent_role
+                if request.action is ConversationAction.AUTO
+                and (
+                    request.analysis_intent_task_id is not None
+                    or request.preprocessing_task_id is not None
+                    or request.external_analysis_import_id is not None
+                    or request.start_new_analysis_goal
+                )
+                else None
             )
-            selected_role = work_agent_role_for_turn(
-                request.content,
-                requested=requested_role,
-                conversation=conversation,
+            explicit_preprocessing_analysis = None
+            if (
+                conversation.mode is ConversationMode.WORK
+                and request.action is ConversationAction.AUTO
+                and request.preprocessing_task_id is None
+                and request.external_analysis_import_id is None
+                and request.analysis_intent_task_id is None
+                and not request.start_new_analysis_goal
+            ):
+                explicit_preprocessing_analysis = analysis_dependency_for_request(
+                    request.content,
+                    str(project_id) if project_id is not None else None,
+                    conversation_id,
+                    durable_idempotency_key,
+                )
+            selected_role = (
+                WorkAgentRole.PREPROCESSING
+                if explicit_preprocessing_analysis is not None
+                else requested_role or conversation.foreground_agent_role
             )
             if request.analysis_intent_task_id is not None and (
                 request.analysis_intent_task_id != selected_intent_id
@@ -2210,6 +2245,14 @@ class ConversationMixin(BaseServiceMixin):
                     payload={
                         "agent_role": WorkAgentRole.ANALYSIS.value,
                         "agent_name": "数据分析 Agent",
+                        "agent_routing": {
+                            "status": "routed",
+                            "model": None,
+                            "version": None,
+                            "confidence": 1.0,
+                            "source": "explicit_safety_constraint",
+                            "failure_reason_code": None,
+                        },
                         "analysis_dependency": intent,
                         "analysis_intent_envelope": {
                             "status": "active",
@@ -2241,8 +2284,202 @@ class ConversationMixin(BaseServiceMixin):
                     None,
                     selected_intent_id,
                 )
+            if explicit_preprocessing_analysis is not None:
+                if project_id is None:
+                    raise InputValidationError(
+                        "composite_goal_project_required",
+                        "先预处理再分析的目标需要先选择当前 Work 项目。",
+                    )
+                intent_id = str(explicit_preprocessing_analysis["task_id"])
+                request_text = str(explicit_preprocessing_analysis["analysis_request"])
+                admitted_goal = CompositeGoalIdentity(
+                    intent_task_id=intent_id,
+                    conversation_id=conversation_id,
+                    project_id=str(project_id),
+                    analysis_request_hash=content_hash(request_text.strip()),
+                    goal_kind="preprocess_then_analyze",
+                    preprocessing_task_id=None,
+                )
+                admitted_user_message_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"neuroagent:composite-goal-admission:{conversation_id}:{intent_id}",
+                    )
+                )
+                with self.idempotency_store.atomic():
+                    self.repository.admit_preprocessing_goal_intent_message(
+                        conversation_id,
+                        message_id=admitted_user_message_id,
+                        user_content=request.content,
+                        intent_task_id=intent_id,
+                        project_id=str(project_id),
+                        analysis_request_hash=admitted_goal.analysis_request_hash,
+                    )
+                    admitted_goal = self.automation.ensure_preprocessing_composite_goal_intent(
+                        admitted_goal
+                    )
+                conversation = self.repository.get_conversation(conversation_id)
+                conversation = conversation.model_copy(
+                    update={
+                        "messages": [
+                            message
+                            for message in conversation.messages
+                            if message.message_id != admitted_user_message_id
+                        ]
+                    }
+                )
+                persistent_model_budget = _CompositeGoalModelBudgetSession(
+                    self.automation,
+                    intent_task_id=intent_id,
+                    scope=f"composite-goal:{intent_id}:{idempotency_key_hash}",
+                )
+            routing_decision: WorkAgentRoutingDecision | None = None
+            routing_failure_code: str | None = None
+            routing_source = "model"
+            routing_metadata: dict[str, Any] | None = None
+            route_required_role = (
+                WorkAgentRole.PREPROCESSING if admitted_goal is not None else None
+            )
+            if (
+                conversation.mode is ConversationMode.WORK
+                and request.action is ConversationAction.AUTO
+                and _confirmation is None
+            ):
+                if requested_role is not None:
+                    selected_role = requested_role
+                    routing_source = "explicit_safety_constraint"
+                    routing_metadata = {
+                        "status": "routed",
+                        "model": None,
+                        "version": None,
+                        "confidence": 1.0,
+                        "source": routing_source,
+                        "failure_reason_code": None,
+                    }
+                else:
+                    if persistent_model_budget is None and selected_goal is not None:
+                        goal_scope = (
+                            "analysis-only"
+                            if selected_goal.goal_kind == "analysis_only_external_import"
+                            else "composite-goal"
+                        )
+                        persistent_model_budget = _CompositeGoalModelBudgetSession(
+                            self.automation,
+                            intent_task_id=selected_goal.intent_task_id,
+                            scope=f"{goal_scope}:{selected_goal.intent_task_id}:{idempotency_key_hash}",
+                        )
+                    routing_budget = persistent_model_budget
+                    if admitted_goal is None and selected_goal is not None:
+                        # Until the router chooses Analysis, its route request must not
+                        # charge an existing Analysis goal that may be left for
+                        # this turn. An admitted preprocess→analyze root keeps
+                        # its shared budget from before routing.
+                        routing_budget = None
+                    prep_task = conversation_work_task(conversation, WorkAgentRole.PREPROCESSING)
+                    router_context = WorkAgentRoutingContext(
+                        current_agent_role=conversation.foreground_agent_role,
+                        has_project=project_id is not None,
+                        has_bound_preprocessing_run=bool(
+                            prep_task is not None and prep_task.run_id is not None
+                        ),
+                        has_selected_analysis_goal=selected_goal is not None,
+                        required_initial_role=route_required_role,
+                    )
+                    try:
+                        routing_decision = await self.work_agent_router.choose(
+                            request_text=request.content,
+                            context=router_context,
+                            persistent_model_budget=routing_budget,
+                        )
+                    except ApplicationError as exc:
+                        routing_failure_code = exc.code
+                        routing_metadata = {
+                            "status": "failed",
+                            "model": getattr(
+                                self.work_agent_router, "model", "configured profiles"
+                            ),
+                            "version": "model-gateway-v1",
+                            "confidence": None,
+                            "source": "model",
+                            "failure_reason_code": exc.code,
+                        }
+                    else:
+                        routing_metadata = {
+                            "status": routing_decision.status.value,
+                            "model": routing_decision.model,
+                            "version": "model-gateway-v1",
+                            "confidence": routing_decision.confidence,
+                            "source": routing_decision.source,
+                            "profile_id": routing_decision.profile_id,
+                            "failure_reason_code": routing_decision.reason,
+                        }
+                        if routing_decision.status is WorkAgentRoutingStatus.ROUTED:
+                            assert routing_decision.role is not None
+                            selected_role = routing_decision.role
+                        else:
+                            selected_role = (
+                                route_required_role or conversation.foreground_agent_role
+                            )
+                    if routing_failure_code is not None:
+                        selected_role = route_required_role or conversation.foreground_agent_role
+
+                    # The router can select the current Analysis slot even when
+                    # the prior turn belonged to preprocessing. Re-attach the
+                    # already verified goal and its existing durable budget.
+                    if (
+                        selected_role is WorkAgentRole.ANALYSIS
+                        and selected_goal is not None
+                        and selected_goal.goal_kind == "analysis_only_external_import"
+                        and analysis_goal is None
+                    ):
+                        imported = read_external_source(
+                            selected_goal.source_external_import_id or ""
+                        )
+                        _verify_analysis_only_external_source(selected_goal, imported)
+                        analysis_goal = selected_goal
+                        analysis_original_request = _analysis_goal_original_request(
+                            conversation,
+                            selected_goal,
+                            current_request=request.content.strip(),
+                        )
+                        if persistent_model_budget is None:
+                            persistent_model_budget = _CompositeGoalModelBudgetSession(
+                                self.automation,
+                                intent_task_id=selected_goal.intent_task_id,
+                                scope=(
+                                    f"analysis-only:{selected_goal.intent_task_id}:"
+                                    f"{idempotency_key_hash}"
+                                ),
+                            )
+                    elif selected_role is WorkAgentRole.ANALYSIS and selected_goal is not None:
+                        if persistent_model_budget is None:
+                            persistent_model_budget = _CompositeGoalModelBudgetSession(
+                                self.automation,
+                                intent_task_id=selected_goal.intent_task_id,
+                                scope=(
+                                    f"composite-goal:{selected_goal.intent_task_id}:"
+                                    f"{idempotency_key_hash}"
+                                ),
+                            )
+                    elif selected_role is WorkAgentRole.PREPROCESSING and admitted_goal is None:
+                        if analysis_goal is not None:
+                            analysis_goal = None
+                            analysis_original_request = None
+                        persistent_model_budget = None
+
+            turn_selected_goal = (
+                selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
+            )
             turn_goal = analysis_goal or turn_selected_goal
-            dialogue_request = request
+            dialogue_request = (
+                request.model_copy(update={"agent_role": selected_role})
+                if conversation.mode is ConversationMode.WORK
+                else request
+            )
+            if admitted_goal is not None:
+                dialogue_request = request.model_copy(
+                    update={"agent_role": WorkAgentRole.PREPROCESSING}
+                )
             if turn_goal is not None:
                 dialogue_request = request.model_copy(
                     update={
@@ -2334,7 +2571,64 @@ class ConversationMixin(BaseServiceMixin):
                     "context_input_too_large", "当前消息超过所选模型的上下文预算。"
                 ) from exc
 
-            if request.action is ConversationAction.AUTO or frozen_analysis is not None:
+            route_needs_clarification = (
+                routing_decision is not None
+                and routing_decision.status is WorkAgentRoutingStatus.NEEDS_CLARIFICATION
+            )
+            if routing_failure_code is not None or route_needs_clarification:
+                if routing_failure_code == "work_agent_router_not_configured":
+                    route_message = (
+                        "尚未配置 Work Agent 路由模型，因此这轮没有生成方案或启动任何操作。"
+                        "请在模型设置中配置小模型和大模型兜底 Profile。"
+                    )
+                elif routing_failure_code in {
+                    "composite_goal_model_budget_exhausted",
+                    "work_agent_router_budget_exhausted",
+                }:
+                    route_message = (
+                        "自动分派的模型预算已用完，因此这轮没有生成方案或启动任何操作。"
+                        "复合目标的累计预算不会通过重试重置；请检查目标预算后再继续。"
+                    )
+                elif routing_failure_code == "work_agent_router_sensitive_context_blocked":
+                    route_message = (
+                        "本轮文本包含疑似受试者表格、分组对应或影像内容；这类内容不会发送给路由模型。"
+                        "请移除表格/影像及被试分组明细，只保留任务描述后重试。"
+                    )
+                elif routing_failure_code is not None:
+                    route_message = (
+                        "Work Agent 路由模型暂时不可用或返回无效结果，"
+                        "因此这轮没有生成方案或启动任何操作。"
+                        "请检查模型 Profile、密钥和外发脱敏配置后重试。"
+                    )
+                elif (
+                    routing_decision is not None
+                    and routing_decision.reason == "required_initial_role_mismatch"
+                ):
+                    route_message = (
+                        "自动分派结果与已记录的“先预处理、后分析”顺序不一致；"
+                        "本轮未生成方案。请重新说明希望先完成的阶段。"
+                    )
+                else:
+                    route_message = (
+                        "我还不能确定这项请求应交给预处理 Agent 还是数据分析 Agent。"
+                        "请说明你要准备/排查预处理，还是设计/解释统计分析。"
+                    )
+                action_result = WorkActionResult(
+                    assistant_content=route_message,
+                    payload={
+                        "agent_role": selected_role.value,
+                        "agent_name": (
+                            "数据分析 Agent"
+                            if selected_role is WorkAgentRole.ANALYSIS
+                            else "预处理 Agent"
+                        ),
+                        "agent_routing": routing_metadata,
+                    },
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=active_run_id,
+                )
+            elif request.action is ConversationAction.AUTO or frozen_analysis is not None:
                 action_result = await self.work_dialogue.respond(
                     conversation,
                     dialogue_request,
@@ -2354,19 +2648,30 @@ class ConversationMixin(BaseServiceMixin):
                     persistent_model_budget=persistent_model_budget,
                 )
             else:
+                direct_run_id = request.target_run_id or active_run_id
+                direct_role = (
+                    WorkAgentRole.ANALYSIS
+                    if request.action is ConversationAction.GET_STATISTICAL_RESULTS
+                    else next(
+                        (
+                            candidate
+                            for candidate in WorkAgentRole
+                            if (binding := conversation_work_task(conversation, candidate))
+                            is not None
+                            and binding.run_id == direct_run_id
+                        ),
+                        WorkAgentRole.PREPROCESSING,
+                    )
+                )
                 action_result = self.conversation_work.execute(
-                    request,
+                    request.model_copy(update={"agent_role": direct_role}),
                     workspace_path=workspace_path,
                     active_run_id=active_run_id,
                     project_id=project_id,
                     idempotency_key=durable_idempotency_key,
                     conversation_id=conversation_id,
                 )
-                role = request.agent_role or (
-                    WorkAgentRole.ANALYSIS
-                    if request.action is ConversationAction.GET_STATISTICAL_RESULTS
-                    else WorkAgentRole.PREPROCESSING
-                )
+                role = direct_role
                 action_result = replace(
                     action_result,
                     payload={
@@ -2377,6 +2682,10 @@ class ConversationMixin(BaseServiceMixin):
                         **action_result.payload,
                     },
                 )
+            if routing_metadata is not None and action_result.payload.get("agent_routing") is None:
+                payload = dict(action_result.payload)
+                payload["agent_routing"] = routing_metadata
+                action_result = replace(action_result, payload=payload)
             if (
                 analysis_goal is not None
                 and action_result.payload.get("agent_role") == WorkAgentRole.ANALYSIS.value
@@ -2482,6 +2791,13 @@ class ConversationMixin(BaseServiceMixin):
                     "analysis_goal_selection_conflict",
                     "模型准备期间 Analysis 角色槽已切换，迟到结果未写入。",
                 )
+            if admitted_goal is not None:
+                current_goal = self.automation.find_composite_goal(admitted_goal.intent_task_id)
+                if current_goal != admitted_goal:
+                    raise ConflictError(
+                        "composite_goal_admission_changed",
+                        "复合目标在模型准备期间已变化，迟到结果未写入。",
+                    )
             if analysis_goal is not None:
                 try:
                     current_goal = self.automation.get_composite_goal(
@@ -2525,6 +2841,8 @@ class ConversationMixin(BaseServiceMixin):
                     user_content=request.content,
                     payload=payload,
                     project_id=project_id,
+                    admitted_goal=admitted_goal,
+                    admitted_user_message_id=admitted_user_message_id,
                     bind_run=(
                         action_result.tool is not None
                         and action_result.tool.get("tool_name") == "start_dpabi_preprocessing"
@@ -2570,6 +2888,7 @@ class ConversationMixin(BaseServiceMixin):
                     project_id=project_id,
                     active_run_id=active_run_id,
                     work_task_id=work_task_id,
+                    existing_user_message_id=admitted_user_message_id,
                 )
             )
             if registration_source is not None:
@@ -2655,6 +2974,8 @@ class ConversationMixin(BaseServiceMixin):
         payload: dict[str, Any],
         project_id: str | None,
         bind_run: bool = False,
+        admitted_goal: CompositeGoalIdentity | None = None,
+        admitted_user_message_id: str | None = None,
     ) -> str | None:
         """Bind only committed preprocessing Plans and successfully created Runs."""
 
@@ -2725,6 +3046,48 @@ class ConversationMixin(BaseServiceMixin):
                 goal_turns.append(f"执行并核验静息态 fMRI 预处理方案 {plan_revision_id}。")
             return ("用户目标：\n" + "\n".join(f"- {item}" for item in goal_turns))[-4000:]
 
+        def verified_root_binding(
+            intent_task_id: str | None, request_hash: str | None
+        ) -> tuple[str | None, str | None]:
+            if intent_task_id is None and request_hash is None:
+                return None, None
+            if not isinstance(intent_task_id, str) or not isinstance(request_hash, str):
+                raise ConflictError(
+                    "composite_goal_intent_incomplete",
+                    "预处理目标的 intent ID 与请求摘要必须同时存在。",
+                )
+            root = self.automation.find_composite_goal(intent_task_id)
+            plan_value = payload.get("plan_revision")
+            plan_revision_id = (
+                plan_value.get("plan_revision_id")
+                if isinstance(plan_value, dict)
+                and isinstance(plan_value.get("plan_revision_id"), str)
+                else None
+            )
+            expected_task_id = (
+                self.automation.preprocessing_task_id(
+                    conversation.conversation_id, plan_revision_id
+                )
+                if plan_revision_id is not None
+                else None
+            )
+            if (
+                root is None
+                or root.goal_kind != "preprocess_then_analyze"
+                or root.conversation_id != conversation.conversation_id
+                or root.project_id != project_id
+                or root.analysis_request_hash != request_hash
+                or (
+                    expected_task_id is not None
+                    and root.preprocessing_task_id not in {None, expected_task_id}
+                )
+            ):
+                raise ConflictError(
+                    "composite_goal_root_missing_or_mismatched",
+                    "预处理方案只能绑定已存在且与本会话、项目及原始请求匹配的复合目标。",
+                )
+            return intent_task_id, request_hash
+
         def analysis_intent_binding() -> tuple[str | None, str | None]:
             draft_envelope = payload.get("work_draft")
             envelope = payload.get("analysis_intent_envelope")
@@ -2747,10 +3110,102 @@ class ConversationMixin(BaseServiceMixin):
             ):
                 task_id = envelope.get("task_id")
                 request_hash = envelope.get("analysis_request_hash")
+            if admitted_goal is not None:
+                if (
+                    admitted_goal.conversation_id != conversation.conversation_id
+                    or admitted_goal.project_id != project_id
+                    or admitted_goal.goal_kind != "preprocess_then_analyze"
+                    or admitted_goal.preprocessing_task_id is not None
+                ):
+                    raise ConflictError(
+                        "composite_goal_admission_changed",
+                        "已接纳的原始目标身份与预处理方案范围不匹配。",
+                    )
+                if task_id is not None and (
+                    task_id != admitted_goal.intent_task_id
+                    or request_hash != admitted_goal.analysis_request_hash
+                ):
+                    raise ConflictError(
+                        "composite_goal_model_binding_mismatch",
+                        "方案返回的目标引用与已接纳的原始请求不一致。",
+                    )
+                if (
+                    admitted_intent_source(
+                        admitted_goal.intent_task_id,
+                        admitted_goal.analysis_request_hash,
+                    )
+                    is None
+                ):
+                    raise ConflictError(
+                        "composite_goal_admission_source_missing",
+                        "已接纳目标没有可核验的原始用户消息。",
+                    )
+                return verified_root_binding(
+                    admitted_goal.intent_task_id, admitted_goal.analysis_request_hash
+                )
+            if task_id is not None or request_hash is not None:
+                return verified_root_binding(
+                    task_id if isinstance(task_id, str) else None,
+                    request_hash if isinstance(request_hash, str) else None,
+                )
             return (
                 task_id if isinstance(task_id, str) else None,
                 request_hash if isinstance(request_hash, str) else None,
             )
+
+        def admitted_intent_source(intent_id: str, request_hash: str) -> dict[str, Any] | None:
+            if admitted_goal is not None and (
+                admitted_user_message_id is None
+                or admitted_goal.intent_task_id != intent_id
+                or admitted_goal.analysis_request_hash != request_hash
+            ):
+                raise ConflictError(
+                    "composite_goal_admission_source_missing",
+                    "已接纳目标缺少唯一且精确绑定的原始用户消息。",
+                )
+            admissions = [
+                message
+                for message in conversation.messages
+                if message.role is ConversationRole.USER
+                and (
+                    admitted_user_message_id is None
+                    or message.message_id == admitted_user_message_id
+                )
+                and isinstance(message.payload.get("composite_goal_admission"), dict)
+                and message.payload["composite_goal_admission"].get("intent_task_id") == intent_id
+            ]
+            if not admissions:
+                return None
+            if len(admissions) != 1:
+                raise ConflictError(
+                    "composite_goal_admission_source_ambiguous",
+                    "同一复合目标对应多条已接纳原始用户消息。",
+                )
+            message = admissions[0]
+            metadata = message.payload["composite_goal_admission"]
+            if (
+                metadata.get("conversation_id") != conversation.conversation_id
+                or metadata.get("project_id") != project_id
+                or metadata.get("analysis_request_hash") != request_hash
+                or content_hash(message.content.strip()) != request_hash
+                or (
+                    user_content is not None
+                    and admitted_goal is not None
+                    and message.content != user_content
+                )
+            ):
+                raise ConflictError(
+                    "composite_goal_admission_source_mismatch",
+                    "已接纳的原始用户消息与复合目标身份或请求摘要不匹配。",
+                )
+            return {
+                "task_kind": "preprocess_then_analyze",
+                "task_id": intent_id,
+                "conversation_id": conversation.conversation_id,
+                "project_id": project_id,
+                "analysis_request": message.content.strip(),
+                "status": "waiting_for_preprocessing",
+            }
 
         task: Any | None = None
         plan = plan_identity(payload.get("plan_revision"))
@@ -2826,24 +3281,46 @@ class ConversationMixin(BaseServiceMixin):
         intent_id = bound_task.authority_refs.analysis_intent_task_id
         intent = None
         if intent_id is not None:
-            intent = next(
-                (
-                    message.payload.get("analysis_dependency")
-                    for message in conversation.messages
-                    if isinstance(message.payload.get("analysis_dependency"), dict)
-                    and message.payload["analysis_dependency"].get("task_id") == intent_id
-                    and message.payload["analysis_dependency"].get("conversation_id")
-                    == conversation.conversation_id
-                    and message.payload["analysis_dependency"].get("project_id") == run_project_id
-                    and content_hash(
-                        str(
-                            message.payload["analysis_dependency"].get("analysis_request", "")
-                        ).strip()
-                    )
-                    == bound_task.authority_refs.analysis_request_hash
-                ),
-                None,
-            )
+            request_hash = bound_task.authority_refs.analysis_request_hash
+            if request_hash is None:
+                raise ConflictError(
+                    "analysis_intent_source_missing",
+                    "持久预处理任务缺少原始复合请求摘要。",
+                )
+            root = self.automation.find_composite_goal(intent_id)
+            if (
+                root is None
+                or root.goal_kind != "preprocess_then_analyze"
+                or root.conversation_id != conversation.conversation_id
+                or root.project_id != run_project_id
+                or root.analysis_request_hash != request_hash
+                or root.preprocessing_task_id != task_id
+            ):
+                raise ConflictError(
+                    "analysis_intent_source_missing",
+                    "持久预处理任务没有匹配的复合目标根身份。",
+                )
+            intent = admitted_intent_source(intent_id, request_hash)
+            if intent is None:
+                intent = next(
+                    (
+                        message.payload.get("analysis_dependency")
+                        for message in conversation.messages
+                        if isinstance(message.payload.get("analysis_dependency"), dict)
+                        and message.payload["analysis_dependency"].get("task_id") == intent_id
+                        and message.payload["analysis_dependency"].get("conversation_id")
+                        == conversation.conversation_id
+                        and message.payload["analysis_dependency"].get("project_id")
+                        == run_project_id
+                        and content_hash(
+                            str(
+                                message.payload["analysis_dependency"].get("analysis_request", "")
+                            ).strip()
+                        )
+                        == request_hash
+                    ),
+                    None,
+                )
             if intent is None:
                 raise ConflictError(
                     "analysis_intent_source_missing",

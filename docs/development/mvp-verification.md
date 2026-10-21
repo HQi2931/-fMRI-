@@ -6,6 +6,14 @@
 - 更新日期：2026-10-21
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-21 显式预处理目标 admission 与预算
+
+显式 `preprocess_then_analyze` intent 会在 Work 模型生成之前将原始用户消息、复合目标身份和共享模型预算写入 SQLite，并以确定性消息 ID 与请求幂等键保证故障后恢复和重放稳定。成功准备 Plan 后，应用层从已接纳用户消息核对 conversation/project/hash，再在同一事务中保存预处理 WorkTask 并只绑定一个 Task。缺失 root、错项目、错 hash、错配第二个 Task 或模型 payload 改写身份均 fail closed。迁移 0035 保留旧库记录并允许未绑定 root；若存在未绑定 root，降级会拒绝而不丢失它。提案和结果解释 outbox 未改变；Plan 审查、批准、QC 审查与显式 Run 启动仍是既有边界。本切片不声称统计阶段已被自动启动。
+
+`tests/backend/test_composite_goal_admission.py`、`test_work_task_conversation_bindings.py::test_preprocessing_work_task_binds_plan_and_run_atomically`、`test_migrations.py::test_preprocessing_goal_admission_migration_preserves_ledger_and_guards_downgrade` 与 `test_analysis_outbox_consumer.py` 共 21 项通过。测试使用 Mock Gateway/本地 SQLite，覆盖 budget-before-Gateway、admission 后中断及重放、显式 Analysis role 仍路由到预处理、从已接纳原始消息绑定 Plan/Task、admission-only 请求建立提案 outbox、outbox source 重核读取 root/raw-text hash、篡改原文失败关闭、legacy assistant dependency 兼容及迁移升级/降级保护。未运行真实 Provider、MATLAB 或 DPABI。
+
+扩展执行 `test_work_dialogue.py` 与 WorkTask conversation-binding 回归时，有 5 项失败：`test_planning_asks_only_unresolved_questions_and_labels_recommendation_reason[3]`、`test_page_selected_stage_gets_a_confirmation_without_model_stage_recommendation`、`test_work_uses_redacted_gateway_json_protocol`、`test_truncated_work_response_records_safe_finish_reason` 和 `test_work_schema_error_does_not_log_model_values_or_unknown_keys`。这些结果仍需单独核查，不能据 7 项定向通过推断全套 Work 对话测试通过。Python Ruff 检查与文档检查结果以本次交付验证为准。
+
 ## 2026-10-21 MATLAB 运行错误自动跟踪
 
 Work 运行卡片会在运行期间及失败、超时、取消后轮询只读 GET 诊断接口。API 只读取当前 attempt 目录下有界日志，在本机运行确定性分类器，并脱敏本机路径、受试者编号和邮箱。浏览器不会上传日志文本到 Provider。没有日志时返回空 evidence 和 `unknown/info`；识别到 `CreateFile failed`、拒绝访问和 `system:5` 时，会反馈 MATLAB 启动权限线索及本地检查建议。经过路径包含校验后，每个 attempt 的 `MATLAB_PREFDIR` 只传给对应 MATLAB 子进程，不改用户默认设置。这是针对偏好目录权限的本地隔离方案，不能证明根因唯一。

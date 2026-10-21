@@ -103,7 +103,7 @@ def work_agent_role_for_turn(
     conversation: ConversationView,
     analysis_ready: bool = False,
 ) -> WorkAgentRole:
-    """Resolve the UI selection or infer the role for a new task."""
+    """Resolve a trusted internal target or infer the role for a new task."""
 
     if requested is not None:
         return requested

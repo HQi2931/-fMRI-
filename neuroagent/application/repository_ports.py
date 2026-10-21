@@ -134,6 +134,17 @@ class ConversationRepositoryPort(Protocol):
 
     def get_conversation(self, conversation_id: str) -> ConversationView: ...
 
+    def admit_preprocessing_goal_intent_message(
+        self,
+        conversation_id: str,
+        *,
+        message_id: str,
+        user_content: str,
+        intent_task_id: str,
+        project_id: str,
+        analysis_request_hash: str,
+    ) -> ConversationMessageView: ...
+
     def select_work_agent(
         self, conversation_id: str, request: WorkAgentSelection
     ) -> ConversationView: ...
@@ -199,6 +210,7 @@ class ConversationRepositoryPort(Protocol):
         active_run_id: str | None,
         tool_calls: Sequence[dict[str, Any]] | None = None,
         work_task_id: str | None = None,
+        existing_user_message_id: str | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,

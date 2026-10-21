@@ -266,7 +266,7 @@ class CompositeGoalLinkRow(Base):
             name="ck_composite_goal_kind",
         ),
         CheckConstraint(
-            "(goal_kind = 'preprocess_then_analyze' AND preprocessing_task_id IS NOT NULL "
+            "(goal_kind = 'preprocess_then_analyze' "
             "AND source_external_import_id IS NULL AND source_import_version IS NULL "
             "AND source_tree_hash IS NULL AND source_inclusion_hash IS NULL "
             "AND source_manifest_hash IS NULL AND source_revision_hash IS NULL) OR "

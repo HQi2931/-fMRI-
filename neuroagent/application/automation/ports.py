@@ -43,6 +43,10 @@ class WorkTaskRepositoryPort(Protocol):
 
     def ensure_preprocessing_composite_goal(self, task: WorkTask) -> CompositeGoalIdentity: ...
 
+    def ensure_preprocessing_composite_goal_intent(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity: ...
+
     def ensure_analysis_only_external_goal(
         self, goal: CompositeGoalIdentity, budget: TaskBudget
     ) -> CompositeGoalIdentity: ...

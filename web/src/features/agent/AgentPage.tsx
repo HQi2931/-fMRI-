@@ -448,7 +448,6 @@ import {
   modelChoice,
   rememberedModel,
   type ModelChoice,
-  type WorkAgentRole,
 } from "./conversation-model";
 
 type PreprocessingAnalysisSource = { key: string; taskId: string; runId: string };
@@ -467,7 +466,6 @@ export function AgentPage() {
   const workspace = useWorkspace();
   const initialWorkspace = useRef(workspace.workspacePath ?? "").current;
   const [mode, setMode] = useState<ConversationMode>("work");
-  const [agentRole, setAgentRole] = useState<WorkAgentRole>("auto");
   const [externalSource, setExternalSource] = useState<{ projectId: string; conversationId: string | null; importId: string | null } | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [compositeGoalView, setCompositeGoalView] = useState<{
@@ -574,14 +572,24 @@ export function AgentPage() {
     })?.payload.analysis_draft;
   const savedAnalysisDraft = latestAnalysisPayload && typeof latestAnalysisPayload === "object" && "draft" in latestAnalysisPayload ? latestAnalysisPayload.draft : null;
   const savedExternalImportId = savedAnalysisDraft && typeof savedAnalysisDraft === "object" && "external_import_id" in savedAnalysisDraft && typeof savedAnalysisDraft.external_import_id === "string" ? savedAnalysisDraft.external_import_id : null;
-  const selectedExternalImportId = agentRole === "preprocessing" || !boundProjectId || selectedPreprocessingSource ? null
-    : externalSource?.projectId === boundProjectId && externalSource?.conversationId === (activeConversation?.conversation_id ?? null) ? externalSource.importId : savedExternalImportId;
-  const autoPreprocessingPlanRequest = mode === "work" && agentRole === "auto"
+  const externalSourceSelectionCurrent = Boolean(boundProjectId)
+    && externalSource?.projectId === boundProjectId
+    && externalSource?.conversationId === (activeConversation?.conversation_id ?? null);
+  const selectedExternalImportId = !boundProjectId || selectedPreprocessingSource
+    ? null
+    : externalSourceSelectionCurrent
+      ? externalSource?.importId ?? null
+      : activeConversation?.foreground_agent_role === "analysis"
+        ? savedExternalImportId
+        : null;
+  const autoPreprocessingPlanRequest = mode === "work"
     && NEW_PREPROCESSING_PLAN_REQUEST.test(prompt.trim());
   const routedRole = [...(activeConversation?.messages ?? [])].reverse()
     .find((message) => message.role === "assistant" && (message.payload.agent_role === "analysis" || message.payload.agent_role === "preprocessing"))
     ?.payload.agent_role;
-  const effectiveAgentRole = selectedPreprocessingSource ? "analysis" : agentRole === "auto" ? (autoPreprocessingPlanRequest ? "preprocessing" : activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing")) : agentRole;
+  const effectiveAgentRole = selectedPreprocessingSource || selectedExternalImportId
+    ? "analysis" : autoPreprocessingPlanRequest ? "preprocessing"
+      : activeConversation?.foreground_agent_role ?? (routedRole === "analysis" ? "analysis" : "preprocessing");
   const analysisGoalCreationContext = JSON.stringify([
     mode,
     activeConversation?.conversation_id ?? null,
@@ -614,7 +622,6 @@ export function AgentPage() {
   const receiveStatisticsRun = useCallback((run: Run) => {
     const conversationId = activeConversation?.conversation_id;
     if (!conversationId || currentConversationId.current !== conversationId) return;
-    setAgentRole("analysis");
     setActiveRun(run);
     updateWorkspace({ runId: run.run_id, runVersion: run.version, runState: run.state });
   }, [activeConversation?.conversation_id]);
@@ -630,7 +637,6 @@ export function AgentPage() {
     try {
       const latest = await agentApi.retryAnalysisOutbox(activeConversation.conversation_id, intentTaskId);
       cache(latest);
-      setAgentRole("analysis");
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -644,7 +650,6 @@ export function AgentPage() {
     try {
       const latest = await agentApi.retryStatisticalResultInterpretation(activeConversation.conversation_id, taskId);
       cache(latest);
-      setAgentRole("analysis");
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -872,23 +877,12 @@ export function AgentPage() {
     }
   }
 
-  async function selectAgent(role: WorkAgentRole): Promise<void> {
-    if (role === "auto" || !activeConversation) { setAgentRole(role); return; }
-    setBusy(true); setError("");
-    try {
-      cache(await agentApi.selectWorkAgent(activeConversation.conversation_id, { agent_role: role, expected_version: activeConversation.version }));
-      setAgentRole(role);
-    } catch (caught) { setError(describeError(caught)); await refreshWorkTask().catch(() => {}); }
-    finally { setBusy(false); }
-  }
-
   async function selectCompositeGoal(intentTaskId: string): Promise<void> {
     if (!activeConversation || busy || draftDirty) return;
     setBusy(true); setError("");
     try {
       const selected = await agentApi.selectCompositeGoal(activeConversation.conversation_id, intentTaskId, activeConversation.version);
       cache(selected);
-      setAgentRole("analysis");
       setExternalSource(null);
       setAnalysisSourceSelection(null);
       setAnalysisGoalCreationSelection(null);
@@ -923,7 +917,7 @@ export function AgentPage() {
         workspace_path: mode === "work" ? workspacePath.trim() || null : null,
         preferred_profile_id: selectedModel?.profileId ?? null,
       });
-      cache(created); setPendingTurn(null); setAgentRole("auto");
+      cache(created); setPendingTurn(null);
     } catch (caught) { setError(describeError(caught)); } finally { setBusy(false); }
   }
 
@@ -940,7 +934,6 @@ export function AgentPage() {
       });
       cache(created);
       setPendingTurn(null);
-      setAgentRole("auto");
       setExternalSource(null);
       setAnalysisSourceSelection(null);
       setAnalysisGoalCreationSelection(null);
@@ -1066,7 +1059,7 @@ export function AgentPage() {
       }
       const hasExplicitAnalysisContext = mode === "work" && !selectedPreprocessingSource
         && !autoPreprocessingPlanRequest
-        && (agentRole === "analysis" || createIndependentAnalysisGoal || effectiveAgentRole === "analysis");
+        && (selectedExternalImportId !== null || createIndependentAnalysisGoal);
       const analysisGoalTurnFields = hasExplicitAnalysisContext
         ? createIndependentAnalysisGoal
           ? { start_new_analysis_goal: true }
@@ -1079,7 +1072,6 @@ export function AgentPage() {
         model: selectedModel?.model ?? null,
         allow_remote_search: mode === "chat" && allowRemoteSearch,
         project_id: mode === "work" ? boundProjectId : null,
-        agent_role: selectedPreprocessingSource ? "analysis" : mode === "work" && agentRole !== "auto" ? agentRole : null,
         preprocessing_task_id: selectedPreprocessingSource?.taskId,
         external_analysis_import_id: hasExplicitAnalysisContext ? selectedExternalImportId : null,
         target_run_id: selectedPreprocessingSource?.runId ?? (mode === "work" && boundToSelectedWorkspace && !(hasExplicitAnalysisContext && selectedExternalImportId) ? workspace.runId ?? null : null),
@@ -1200,12 +1192,9 @@ export function AgentPage() {
       <div className="conversation-toolbar">
         <select disabled={busy || draftDirty} aria-label="当前会话" value={activeIds[mode] ?? ""} onChange={(event) => {
           const selected = conversations.find((item) => item.conversation_id === event.target.value);
-          if (selected) { cache(selected); setPendingTurn(null); setAgentRole("auto"); }
+          if (selected) { cache(selected); setPendingTurn(null); }
         }}><option value="">新会话</option>{modeConversations.map((item) => <option key={item.conversation_id} value={item.conversation_id}>{item.title}</option>)}</select>
-        {mode === "work" && <select aria-label="Work 负责 Agent" value={agentRole} disabled={busy || draftDirty} onChange={(event) => void selectAgent(event.target.value as WorkAgentRole)}>
-          <option value="auto">自动分派</option><option value="preprocessing">预处理 Agent</option><option value="analysis">数据分析 Agent</option>
-        </select>}
-        {mode === "work" && <span className="work-agent-status" aria-live="polite">当前负责：{effectiveAgentRole === "analysis" ? "数据分析 Agent" : "预处理 Agent"}</span>}
+        {mode === "work" && <span className="work-agent-status" aria-live="polite">Agent 自动分派 · 当前：{effectiveAgentRole === "analysis" ? "数据分析 Agent" : "预处理 Agent"}</span>}
         <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => void newConversation()}>新会话</button>
         {activeConversation && <button className="button button-secondary" type="button" disabled={busy || draftDirty} onClick={() => {
           setError(""); void agentApi.conversation(activeConversation.conversation_id).then(cache).catch((caught) => setError(describeError(caught)));
@@ -1252,7 +1241,7 @@ export function AgentPage() {
       />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">
-      {mode === "work" && !registerAnalysisFromPreprocessing && effectiveAgentRole === "analysis" && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={selectedExternalImportId} onSelect={(importId) => { setAnalysisGoalCreationSelection(null); setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); setAgentRole("analysis"); }} />}
+        {mode === "work" && !registerAnalysisFromPreprocessing && boundProjectId && <ExternalAnalysisImportPanel projectId={boundProjectId} disabled={busy || draftDirty} selectedImportId={externalSourceSelectionCurrent ? selectedExternalImportId : effectiveAgentRole === "analysis" ? savedExternalImportId : null} onSelect={(importId) => { setAnalysisGoalCreationSelection(null); setExternalSource({ projectId: boundProjectId, conversationId: activeConversation?.conversation_id ?? null, importId }); }} />}
       {metricOnlyCheckpointContext && <MetricOnlyCheckpointPicker
         key={metricOnlyCheckpointContext.key}
         context={metricOnlyCheckpointContext}

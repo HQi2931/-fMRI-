@@ -412,6 +412,8 @@ Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志�
 
 当 Work 选择器处于自动分派、会话前台角色仍为数据分析且该槽绑定旧分析目标时，用户明确请求新建 DPABI/预处理方案会按新意图路由到预处理 Agent。前端在编辑这类请求时同步显示预处理角色，并省略旧分析目标 ID 和外部指标导入绑定；普通分析目标续接仍保留当前目标。后端显式两阶段“先预处理再分析”继续优先进入预处理。
 
+Work AUTO 路由先用规则处理清晰请求和服务端锁定的复合目标首阶段；规则无法判断时调用百炼 `qwen3.8-flash` 小模型（默认 Profile ID `dashscope`），低置信度、无效 JSON 或调用失败时调用现有 DeepSeek `deepseek` Profile 兜底；仍不确定时追问。普通 Work 回复/草稿仍交给已配置的 Work 模型。小/大路由 Profile ID 可分别由 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 和 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 调整。需要模型判别时，本轮用户请求与有限角色/绑定状态经 `OutboundContextPolicy` 脱敏后发送到相应外部模型；不发送历史、工作区文件、影像、参与者表或样本-组别映射，检测到敏感表格/对应关系/影像 payload 时阻止路由模型调用。显式冻结来源和两阶段首阶段由服务端约束；复合目标 root 与共享预算先持久化，路由尝试按目标预算预留和结算，切走的旧分析目标预算不会被扣除。路由仅保存状态、模型/Profile ID、置信度、来源和失败原因码，不记录输入、API Key 或 Provider body。
+
 定向验证：路由后端 53 项、Agent 页面 71 项通过；Ruff、TypeScript 类型检查与差异空白检查通过。未调用 Provider、未启动 MATLAB/DPABI，未执行本轮对话草稿的真实模型验收。
 
 Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模型身份订阅；组件清理后，已中止请求的成功或失败回调都不能覆盖新上下文状态。Agent 页面回归测试覆盖旧授权查询与旧文件清单在新会话响应之后才因 AbortSignal 取消的竞态。Agent 页面测试 72 项、TypeScript 类型检查与 ESLint 均通过。本地浏览器恢复后，受限白名单保持仅选两份元数据；真实 DeepSeek Flash 在 ds002748 会话创建了 ALFF/fALFF 待审草稿并引用 TR、SliceTiming 数组及第 13 层证据。草稿未批准、未创建 Run，未启动 MATLAB。Agent 首轮没有明确回答 ALFF/fALFF 与 ReHo 能否同批；追问后回答可以放入同一 `DPARSFA_run`，并指出分支检查点。项目的 reviewed combined Skill 与执行单元测试支持同一次 DPARSFA 调用：ALFF/fALFF 消费未滤波时序，`AfterNormalize` 的时序滤波在 ALFF 后、ReHo 前，ReHo 再读取相应检查点；同一执行合同不能表达两套独立全局滤波配置。Validator/dry-run 可检查滤波阶段、fALFF 预滤波、ReHo/CUT、频带和输入 lineage 等约束，但不会探测本机 MATLAB 或真实影像。Agent 对分支的总体判断正确，具体滤波阶段描述不够准确。该工程能力判断不改变本轮仅请求 ALFF/fALFF 的选择。
@@ -421,6 +423,14 @@ Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模
 [ADR 0052](../adr/0052-composite-goal-handoff-decision.md) 已实现一个受限的只读 handoff decision：进度投影和两个已有 outbox consumer 共用同一纯决议函数。CompositeGoal 快照在同一只读 SQLite 一致性边界中加入当前目标对应的最小 Plan、Run 与 QC 事实；只有 Task wait reference、Plan/Run 项目、输入修订和绑定关系、活跃 Run 状态及 QC review 事实均精确匹配时，才显示等待审查或等待已绑定 Run。缺失、未知或错绑证据保持待核验/原等待状态。仅允许现有 `preprocess_then_analyze` proposal outbox 和统计结果解释 outbox 在 handoff action、当前 root、outbox claim ID 一致且状态 ready 时调用模型；原有来源重核、预算、租约、幂等和 fencing 继续有效。阶段暂不可交接不调用模型；proposal handoff 经五次自动尝试仍未就绪时暂停至用户手动重试，避免无限后台重试。
 
 此切片没有创建 Plan/Run、批准 Plan/QC、改变科学选择或引入通用 DAG；零显著结果合同和真实结果/continuation 完成证据不变。定向回归覆盖快照阶段识别、plan/run/QC 身份错配失败关闭、ready proposal/result action、consumer 暂不就绪时不调用模型及 analysis-only 结果续接。最终验证数及其范围记录在 [MVP 验证记录](../development/mvp-verification.md)；未运行真实 Provider、MATLAB 或 DPABI，也没有据此声称计划 0014 已完成。
+
+### 阶段 B 显式预处理复合目标 admission（2026-10-21）
+
+显式“先预处理再分析”请求在首次模型调用前，通过同一 Unit of Work 幂等保存确定性消息 ID 对应的原始用户消息、稳定 CompositeGoal 身份和初始共享 TaskBudget。故障发生在回复写入之前时，按相同请求/幂等键重放复用同一消息、root 和预算；若重放内容、项目、hash 或已有身份不一致则失败关闭。该 intent 优先路由到预处理 Agent，即使调用者提供 Analysis 角色选择；缺少项目时不创建 root，也不从自由文本补造目标身份。已接纳原始用户消息只从模型上下文中排除一次，最终仍作为同一用户回合消息保留。
+
+准备出的 Plan 只有在服务端校验会话、项目、Plan 和 admission 原始消息身份后才可绑定。成功持久化 WorkTask 与 CompositeGoal 的精确任务链接在同一事务提交；重试复用同一个 Task，已有 root 链接到第二个 Task、hash 或项目不一致、原始消息缺失/歧义均拒绝。模型 payload 不能改写已接纳的 root 或请求 hash。提案 outbox 创建、持久化源匹配、目标快照投影和后台来源重核现在都以 admission 用户行、raw-text hash 和精确 root 为权威；历史会话在没有 admission 行时仍走旧 assistant dependency 校验，发现 admission 但消息/root 无效时不回退到模型 metadata。新增迁移 0035 仅允许预处理 goal root 在 Task 生成前为空任务引用，并在降级可能丢失此类记录时拒绝降级。分析提案 outbox 和统计结果解释 outbox 仍各自保持模型续接边界；本切片不自动创建统计 Plan、批准 Plan/QC、启动 Run 或写跨阶段 TaskStep。
+
+admission/Plan 绑定、admission-only outbox 创建与来源重核、legacy outbox consumer 兼容及 0035 旧库升级/受保护降级定向验证共 21 项通过；无复合目标的普通 Work 问答和本地注册确认回归另 2 项通过。扩展 Work 对话回归中仍有 5 项未通过，详见 [MVP 验证记录](../development/mvp-verification.md)；不得把该范围宣称为全套 Work 回归通过。未调用真实 Provider、MATLAB 或 DPABI。
 
 ### 本轮实现记录（2026-10-12）
 

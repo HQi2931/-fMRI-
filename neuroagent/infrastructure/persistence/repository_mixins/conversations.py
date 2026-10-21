@@ -320,6 +320,7 @@ class ConversationMixin(RepositoryBaseMixin):
         active_run_id: str | None,
         tool_calls: Sequence[dict[str, Any]] | None = None,
         work_task_id: str | None = None,
+        existing_user_message_id: str | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,
@@ -342,14 +343,31 @@ class ConversationMixin(RepositoryBaseMixin):
                     ConversationMessageRow.conversation_id == conversation_id
                 )
             )
-            user_row = ConversationMessageRow(
-                message_id=_id(),
-                conversation_id=conversation_id,
-                sequence=int(last_sequence or 0) + 1,
-                role=ConversationRole.USER.value,
-                content=user_content,
-                payload_json="{}",
-            )
+            if existing_user_message_id is None:
+                user_row = ConversationMessageRow(
+                    message_id=_id(),
+                    conversation_id=conversation_id,
+                    sequence=int(last_sequence or 0) + 1,
+                    role=ConversationRole.USER.value,
+                    content=user_content,
+                    payload_json="{}",
+                )
+            else:
+                existing_user_row = session.get(
+                    ConversationMessageRow, existing_user_message_id
+                )
+                if (
+                    existing_user_row is None
+                    or existing_user_row.conversation_id != conversation_id
+                    or existing_user_row.role != ConversationRole.USER.value
+                    or existing_user_row.content != user_content
+                    or existing_user_row.sequence != int(last_sequence or 0)
+                ):
+                    raise ConflictError(
+                        "conversation_admitted_message_changed",
+                        "已持久化的复合目标用户消息已变化或不再是本轮最新消息。",
+                    )
+                user_row = existing_user_row
             assistant_row = ConversationMessageRow(
                 message_id=_id(),
                 conversation_id=conversation_id,
@@ -358,7 +376,9 @@ class ConversationMixin(RepositoryBaseMixin):
                 content=assistant_content,
                 payload_json=canonical_json(assistant_payload),
             )
-            session.add_all((user_row, assistant_row))
+            if existing_user_message_id is None:
+                session.add(user_row)
+            session.add(assistant_row)
             session.flush()
             tool_row: ConversationToolCallRow | None = None
             if tool is not None:
@@ -522,6 +542,74 @@ class ConversationMixin(RepositoryBaseMixin):
                 self._message(assistant_row),
                 self._tool_call(tool_row) if tool_row is not None else None,
             )
+
+    def admit_preprocessing_goal_intent_message(
+        self,
+        conversation_id: str,
+        *,
+        message_id: str,
+        user_content: str,
+        intent_task_id: str,
+        project_id: str,
+        analysis_request_hash: str,
+    ) -> ConversationMessageView:
+        """Durably admit one explicit two-stage user request before model work."""
+
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if row.mode != ConversationMode.WORK.value or row.project_id not in {
+                None,
+                project_id,
+            }:
+                raise ConflictError(
+                    "composite_goal_conversation_mismatch",
+                    "复合预处理目标必须绑定到同项目的 Work 会话。",
+                )
+            existing = session.get(ConversationMessageRow, message_id)
+            admission_payload = canonical_json(
+                {
+                    "composite_goal_admission": {
+                        "intent_task_id": intent_task_id,
+                        "conversation_id": conversation_id,
+                        "project_id": project_id,
+                        "analysis_request_hash": analysis_request_hash,
+                    }
+                }
+            )
+            if existing is not None:
+                if (
+                    existing.conversation_id != conversation_id
+                    or existing.role != ConversationRole.USER.value
+                    or existing.content != user_content
+                    or existing.payload_json != admission_payload
+                ):
+                    raise ConflictError(
+                        "composite_goal_admission_message_conflict",
+                        "幂等复合目标身份已绑定到不同的用户消息。",
+                    )
+                return self._message(existing)
+            last_sequence = session.scalar(
+                select(func.max(ConversationMessageRow.sequence)).where(
+                    ConversationMessageRow.conversation_id == conversation_id
+                )
+            )
+            message = ConversationMessageRow(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                sequence=int(last_sequence or 0) + 1,
+                role=ConversationRole.USER.value,
+                content=user_content,
+                payload_json=admission_payload,
+            )
+            session.add(message)
+            if row.project_id is None:
+                row.project_id = project_id
+            row.version += 1
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+            return self._message(message)
 
     def append_assistant_continuation(
         self,

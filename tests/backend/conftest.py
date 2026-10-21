@@ -18,6 +18,8 @@ from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
 
+from .work_router_fakes import FakeWorkAgentRouter
+
 
 @pytest.fixture
 def source_root(tmp_path: Path) -> Path:
@@ -55,7 +57,7 @@ def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[Appl
         secrets_file=tmp_path / ".env",  # Never read the developer's real API keys.
         worker_lease_seconds=1,
     )
-    app_service = build_service(settings)
+    app_service = build_service(settings, work_agent_router=FakeWorkAgentRouter())
     yield app_service
     app_service.close()
 

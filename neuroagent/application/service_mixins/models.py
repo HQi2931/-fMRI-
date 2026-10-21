@@ -201,6 +201,7 @@ class ModelAgentMixin(BaseServiceMixin):
         summary_mode: bool = False,
         memory_mode: bool = False,
         work_mode: bool = False,
+        work_agent_routing: bool = False,
         system_prompt: str | None = None,
     ) -> ChatGatewayResult:
         try:
@@ -214,6 +215,7 @@ class ModelAgentMixin(BaseServiceMixin):
                 summary_mode=summary_mode,
                 memory_mode=memory_mode,
                 work_mode=work_mode,
+                work_agent_routing=work_agent_routing,
                 system_prompt=system_prompt,
                 evidence=evidence,
                 preferred_profile_id=preferred_profile_id,

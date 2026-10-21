@@ -32,11 +32,11 @@ from neuroagent.application.automation.model_budget import (
     CompositeGoalModelCallSettlement,
 )
 from neuroagent.application.automation.models import (
+    DEFAULT_TASK_BUDGET,
     AuthoritativeRunSnapshot,
     EventConsumptionDecision,
     EventReconciliationReceipt,
     RunReadiness,
-    TaskBudget,
     TaskStatus,
     TaskStep,
     TaskStepStatus,
@@ -78,7 +78,7 @@ from neuroagent.application.automation.step_readiness import (
     StepReadinessStepKind,
 )
 from neuroagent.application.contracts.automation import StepPlanReviewView
-from neuroagent.application.contracts.conversations import ConversationMode
+from neuroagent.application.contracts.conversations import ConversationMode, ConversationRole
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.runs import ArtifactView
 from neuroagent.application.contracts.statistics import (
@@ -865,12 +865,21 @@ class WorkTaskApplicationService:
         )
         return self._repository.ensure_analysis_only_external_goal(
             goal,
-            TaskBudget(
-                max_steps=100,
-                max_model_calls=40,
-                max_tokens=200_000,
-                max_elapsed_seconds=86_400,
-            ),
+            DEFAULT_TASK_BUDGET,
+        )
+
+    def ensure_preprocessing_composite_goal_intent(
+        self, goal: CompositeGoalIdentity
+    ) -> CompositeGoalIdentity:
+        """Persist an explicit two-stage target and its shared budget before generation."""
+
+        if goal.goal_kind != "preprocess_then_analyze" or goal.preprocessing_task_id is not None:
+            raise ValueError("an unbound preprocessing composite goal root is required")
+        conversation = self._conversation_repository.get_conversation(goal.conversation_id)
+        self._require_work_conversation(conversation, goal.conversation_id, goal.project_id)
+        return self._repository.ensure_preprocessing_composite_goal_intent(
+            goal,
+            DEFAULT_TASK_BUDGET,
         )
 
     def create_task(self, task: WorkTask) -> WorkTask:
@@ -1525,6 +1534,22 @@ class WorkTaskApplicationService:
             ):
                 raise NotFoundError("复合自动化目标", f"{conversation_id}:{intent_task_id}")
             return
+        if goal.preprocessing_task_id is None:
+            if (
+                goal.conversation_id != conversation_id
+                or goal.intent_task_id != intent_task_id
+                or snapshot.conversation_mode != ConversationMode.WORK.value
+                or snapshot.conversation_project_id not in {None, goal.project_id}
+                or snapshot.preprocessing_task is not None
+                or snapshot.analysis_proposal_outbox is not None
+                or snapshot.analysis_task is not None
+                or snapshot.result_interpretation_outbox is not None
+                or goal.analysis_proposal_outbox_intent_task_id is not None
+                or goal.analysis_work_task_id is not None
+                or goal.result_interpretation_outbox_task_id is not None
+            ):
+                raise NotFoundError("复合自动化目标", f"{conversation_id}:{intent_task_id}")
+            return
         task = snapshot.preprocessing_task
         refs = task.authority_refs if task is not None else None
         preprocessing_root_matches = bool(
@@ -1848,24 +1873,42 @@ class WorkTaskApplicationService:
                 "analysis_outbox_conversation_missing", "续接来源会话已不存在。"
             ) from exc
         self._require_work_conversation(conversation, outbox.conversation_id, outbox.project_id)
-        candidates: list[dict[str, Any]] = []
-        for message in conversation.messages:
-            candidate = message.payload.get("analysis_dependency")
-            if isinstance(candidate, dict) and candidate.get("task_id") == outbox.intent_task_id:
-                candidates.append(candidate)
-        intent = next(
-            (
-                item
-                for item in reversed(candidates)
-                if item.get("task_kind") == "preprocess_then_analyze"
-                and item.get("conversation_id") == outbox.conversation_id
-                and item.get("project_id") == outbox.project_id
-                and isinstance(item.get("analysis_request"), str)
-                and content_hash(str(item["analysis_request"]).strip())
-                == outbox.analysis_request_hash
-            ),
-            None,
+        has_admission, admitted_request = self._admitted_analysis_outbox_request(
+            conversation,
+            intent_task_id=outbox.intent_task_id,
+            conversation_id=outbox.conversation_id,
+            project_id=outbox.project_id,
+            request_hash=outbox.analysis_request_hash,
+            preprocessing_task_id=outbox.preprocessing_task_id,
         )
+        if has_admission:
+            intent = (
+                {"analysis_request": admitted_request}
+                if admitted_request is not None
+                else None
+            )
+        else:
+            candidates: list[dict[str, Any]] = []
+            for message in conversation.messages:
+                candidate = message.payload.get("analysis_dependency")
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("task_id") == outbox.intent_task_id
+                ):
+                    candidates.append(candidate)
+            intent = next(
+                (
+                    item
+                    for item in reversed(candidates)
+                    if item.get("task_kind") == "preprocess_then_analyze"
+                    and item.get("conversation_id") == outbox.conversation_id
+                    and item.get("project_id") == outbox.project_id
+                    and isinstance(item.get("analysis_request"), str)
+                    and content_hash(str(item["analysis_request"]).strip())
+                    == outbox.analysis_request_hash
+                ),
+                None,
+            )
         if intent is None:
             raise ConflictError(
                 "analysis_outbox_intent_mismatch", "续接记录无法绑定到精确的原始分析请求。"
@@ -2563,12 +2606,7 @@ class WorkTaskApplicationService:
                     },
                 ),
             ),
-            budget=TaskBudget(
-                max_steps=100,
-                max_model_calls=40,
-                max_tokens=200_000,
-                max_elapsed_seconds=86_400,
-            ),
+            budget=DEFAULT_TASK_BUDGET,
         )
         with self.atomic():
             if current is None:
@@ -2973,20 +3011,12 @@ class WorkTaskApplicationService:
                     expected_artifacts=expected_artifacts,
                 ),
             ),
-            budget=TaskBudget(
-                max_steps=100,
-                max_model_calls=40,
-                max_tokens=200_000,
-                max_elapsed_seconds=86_400,
-            ),
+            budget=DEFAULT_TASK_BUDGET,
         )
         try:
             current = self._repository.get_task(task_id)
         except NotFoundError:
-            created = self._repository.create_task(task)
-            if analysis_intent_task_id is not None or analysis_request_hash is not None:
-                self._repository.ensure_preprocessing_composite_goal(created)
-            return created
+            return self._repository.create_task(task)
         if (
             current.authority_refs.conversation_id != conversation_id
             or current.authority_refs.plan_revision_id != plan_revision_id
@@ -3980,6 +4010,16 @@ class WorkTaskApplicationService:
             return False
         if conversation.project_id != outbox.project_id:
             return False
+        has_admission, admitted_request = self._admitted_analysis_outbox_request(
+            conversation,
+            intent_task_id=outbox.intent_task_id,
+            conversation_id=outbox.conversation_id,
+            project_id=outbox.project_id,
+            request_hash=outbox.analysis_request_hash,
+            preprocessing_task_id=outbox.preprocessing_task_id,
+        )
+        if has_admission:
+            return admitted_request is not None
         matches: list[Mapping[str, Any]] = []
         for message in conversation.messages:
             intent = message.payload.get("analysis_dependency")
@@ -3998,6 +4038,53 @@ class WorkTaskApplicationService:
             ):
                 return False
         return True
+
+    def _admitted_analysis_outbox_request(
+        self,
+        conversation: Any,
+        *,
+        intent_task_id: str,
+        conversation_id: str,
+        project_id: str,
+        request_hash: str,
+        preprocessing_task_id: str,
+    ) -> tuple[bool, str | None]:
+        """Resolve an admitted request only from its original user row and root."""
+
+        admissions = [
+            message
+            for message in conversation.messages
+            if isinstance(message.payload.get("composite_goal_admission"), dict)
+            and message.payload["composite_goal_admission"].get("intent_task_id")
+            == intent_task_id
+        ]
+        if not admissions:
+            return False, None
+        if len(admissions) != 1:
+            return True, None
+        message = admissions[0]
+        admission = message.payload["composite_goal_admission"]
+        if message.role is not ConversationRole.USER:
+            return True, None
+        if (
+            admission.get("conversation_id") != conversation_id
+            or admission.get("project_id") != project_id
+            or admission.get("analysis_request_hash") != request_hash
+            or content_hash(message.content.strip()) != request_hash
+        ):
+            return True, None
+        goal = self._repository.find_composite_goal(intent_task_id)
+        if (
+            goal is None
+            or goal.goal_kind != "preprocess_then_analyze"
+            or goal.intent_task_id != intent_task_id
+            or goal.conversation_id != conversation_id
+            or goal.project_id != project_id
+            or goal.analysis_request_hash != request_hash
+            or goal.preprocessing_task_id != preprocessing_task_id
+        ):
+            return True, None
+        return True, message.content.strip()
 
     @staticmethod
     def _outbox_matches_preprocessing_completion(

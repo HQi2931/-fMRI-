@@ -19,7 +19,7 @@ from neuroagent.agent.models import (
     StructuredRecommendation,
 )
 from neuroagent.agent.providers import ModelProvider, ProviderError, RetryableProviderError
-from neuroagent.agent.redaction import OutboundContextPolicy
+from neuroagent.agent.redaction import OutboundContextPolicy, reject_sensitive_work_context
 from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import SecretResolver
 from neuroagent.agent.streaming import current_answer_stream
@@ -77,6 +77,16 @@ _ROUTING_SYSTEM_PROMPT = (
     "不要回答问题, 不要编造历史未提供的信息。"
     "查找方案、检索文献、解释步骤及否定执行都是知识咨询；"
     "提到预处理或运行不等于请求执行。只有明确要求实际处理数据才是 work_request。"
+)
+
+WORK_AGENT_ROUTING_SYSTEM_PROMPT = (
+    "将当前 Work 请求路由到 preprocessing、analysis 或 clarify。"
+    "preprocessing 负责数据检查、预处理方案、DPABI/SPM 预处理执行与质控故障；"
+    "analysis 负责统计设计、指标结果解释、组间比较与统计故障；"
+    "如果信息不足、同时涉及两个阶段但未说明顺序，或不确定，就选择 clarify。"
+    "server_required_initial_agent 若不为空，必须选择它。只根据当前请求和提供的少量状态判断；"
+    "不得声称已执行任务，不得生成方案或采取行动。只返回 JSON 对象，字段严格为："
+    '{"agent_role":"preprocessing|analysis|clarify","confidence":0 到 1 的数值}。'
 )
 
 _WORK_JSON_SYSTEM_PROMPT = "Return a JSON object with an answer and an action."
@@ -193,6 +203,7 @@ class ModelGateway:
         summary_mode: bool = False,
         memory_mode: bool = False,
         work_mode: bool = False,
+        work_agent_routing: bool = False,
         system_prompt: str | None = None,
     ) -> ChatGatewayResult:
         rendered = self.build_chat_messages(
@@ -206,6 +217,7 @@ class ModelGateway:
             summary_mode=summary_mode,
             memory_mode=memory_mode,
             work_mode=work_mode,
+            work_agent_routing=work_agent_routing,
             system_prompt=system_prompt,
             allow_web_search=allow_web_search,
         )
@@ -247,8 +259,10 @@ class ModelGateway:
                     api_key,
                     messages,
                     web_search=allow_web_search,
-                    json_object=routing or summary_mode or memory_mode or work_mode,
-                    visible=not (routing or summary_mode or memory_mode),
+                    json_object=(
+                        routing or summary_mode or memory_mode or work_mode or work_agent_routing
+                    ),
+                    visible=not (routing or summary_mode or memory_mode or work_agent_routing),
                 )
             except RetryableProviderError as exc:
                 last_retryable = exc
@@ -285,6 +299,7 @@ class ModelGateway:
         summary_mode: bool = False,
         memory_mode: bool = False,
         work_mode: bool = False,
+        work_agent_routing: bool = False,
         system_prompt: str | None = None,
     ) -> ChatMessages:
         """Redact the chat payload and render it into provider messages.
@@ -293,6 +308,17 @@ class ModelGateway:
         turn can never be sent with a weaker prompt or weaker redaction.
         """
 
+        if work_mode or work_agent_routing:
+            reject_sensitive_work_context(
+                {
+                    "question": question,
+                    "local_evidence": evidence,
+                    "recent_messages": recent_messages or [],
+                    "pinned_context": pinned_context or [],
+                    "conversation_summary": conversation_summary,
+                    "work_context": work_context or {},
+                }
+            )
         del preferred_profile_id, model
         context = self._outbound_policy.redact(
             {
@@ -307,7 +333,11 @@ class ModelGateway:
         resolved_system_prompt = system_prompt
         if resolved_system_prompt is None:
             resolved_system_prompt = _CHAT_SYSTEM_PROMPT + _CHAT_CITATION_PROMPT
-        if routing:
+        if work_agent_routing:
+            resolved_system_prompt = (
+                WORK_AGENT_ROUTING_SYSTEM_PROMPT if system_prompt is None else system_prompt
+            )
+        elif routing:
             resolved_system_prompt = _ROUTING_SYSTEM_PROMPT
         elif work_mode:
             resolved_system_prompt = (
