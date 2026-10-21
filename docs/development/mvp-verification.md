@@ -565,3 +565,9 @@ DPABI 执行输出与 WorkTask 共用不可变目标合同，精确表达冻结 
 Work 预处理候选现在通过同一只读准备流程调用真实 SkillResolver、SkillValidator 和 SkillCompiler；执行前后重核项目版本、数据集归属、当前 manifest ID 与 hash。该 dry-run 仅验证已登记 Skill 合同，不探测本机 MATLAB/SPM/DPABI 文件、不读取或验证真实影像头、不创建 Plan、Approval、Run、事件、授权或任务。`ready` 明确带 `scope=skill_contract_compile_only` 和 `environment_probed=false`，模型提示与回复均限定其含义。科研参数阻断和输入冲突要求用户决定，编译能力缺口以 `BLOCKED_CAPABILITY` 停止；预处理自动模型修订 allowlist 为空，统计设计装配仍未纳入该回路。
 
 定向回归 24 项通过、1 项跳过，覆盖真实解析/校验/编译、dry-run 前后项目版本和 manifest 重核、并发输入变化失败关闭、数据库所有表计数和工作目录内容不变、首轮未持久化草稿预检、科学 Skill blocker 阻止模型改写参数、相同 issue/evidence 指纹稳定、DICOM/未审查 Skill/编译器能力与治理缺口分类，以及常规编译路径先校验 manifest 再探测本机环境。Ruff 检查和格式检查通过。没有调用真实模型或 MATLAB/DPABI；dry-run 的 `ready` 不是环境可用、真实影像有效、方案已批准或可运行的证据。
+
+## 2026-10-21 MATLAB 错误反馈时序补强
+
+Work 运行卡片继续只在本机对当前 attempt 的有界日志做确定性诊断。原本已知错误在运行中会立即显示，但未识别类别的脱敏证据被隐藏；终态若先于 stderr 落盘，首次空诊断也不会再检查。现在只有带明确错误标记的未识别输出会显示摘要和建议，最多四条脱敏线索放在默认折叠的详情中；普通 MATLAB 输出不会被误报。失败、超时或取消后，如果诊断尚无证据，则最多每秒检查一次、共五次；出现证据即停止。日志不发送给模型，不自动改方案或重试。
+
+WorkRunPanel 定向前端测试 30 项通过，覆盖未识别错误线索默认折叠与展开、普通输出不误报、终态延迟写入后补获错误、无日志时五次后停止，以及已知错误、诊断不可用、取消、活动运行持续轮询和跨运行隔离。未启动 MATLAB/DPABI，也未访问演示影像；该验证只证明前端重试和本机诊断反馈合同。

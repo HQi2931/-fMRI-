@@ -62,7 +62,18 @@ def test_matlab_startup_permission_diagnosis_is_actionable_and_redacted() -> Non
 
 def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:
     assert diagnose_dpabi_log("user cancelled").code is FailureCode.CANCELLED
-    assert diagnose_dpabi_log("unexpected output").code is FailureCode.UNKNOWN
+    ordinary = diagnose_dpabi_log("DPABI started\nprocessing volume 42\n")
+    assert ordinary.code is FailureCode.UNKNOWN
+    assert ordinary.severity == "info"
+    assert ordinary.evidence == ()
+
+    unknown_error = diagnose_dpabi_log(
+        "Error using custom_step (line 42)\nC:\\Users\\Researcher\\project\\subject-07\\bold.nii"
+    )
+    assert unknown_error.code is FailureCode.UNKNOWN
+    assert unknown_error.severity == "error"
+    assert "Error using custom_step" in unknown_error.evidence[0]
+    assert "C:\\Users\\Researcher" not in "\n".join(unknown_error.evidence)
 
 
 def test_t1_conversion_diagnosis_does_not_infer_a_specific_root_cause() -> None:

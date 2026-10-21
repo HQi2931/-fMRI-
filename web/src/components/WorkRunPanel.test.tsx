@@ -93,6 +93,32 @@ describe("Work run and results", () => {
     expect(screen.getByText("重新运行以使用本次 attempt 的隔离偏好目录")).toBeInTheDocument();
     expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
   });
+  it("shows a collapsed sanitized excerpt when a live MATLAB error is not recognized", async () => {
+    const unknown: RunDiagnosis = { run_id: "run-1", diagnosis: {
+      code: "unknown", severity: "error", summary: "发现尚未匹配已知规则的 MATLAB/DPABI 错误",
+      evidence: ["Error using run_preprocessing (<path>)", "sub<id>: matrix dimensions do not agree"],
+      suggestions: ["保留本次 attempt 的日志和产物"], confidence: 0.1,
+      requires_new_plan: true, source: "deterministic_log_classifier",
+    } };
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(unknown);
+    render(<WorkRunPanel run={run("running")} />);
+
+    expect(await screen.findByText(/尚未匹配已知规则的 MATLAB\/DPABI 错误/)).toBeInTheDocument();
+    const evidenceSummary = screen.getByText("查看脱敏日志线索");
+    expect(evidenceSummary.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(evidenceSummary);
+    expect(screen.getByText("Error using run_preprocessing (<path>)")).toBeVisible();
+    expect(screen.getByText("sub<id>: matrix dimensions do not agree")).toBeVisible();
+    expect(screen.getByText("保留本次 attempt 的日志和产物")).toBeInTheDocument();
+  });
+  it("does not report ordinary MATLAB output as a live error", async () => {
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
+    render(<WorkRunPanel run={run("running")} />);
+
+    await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/Agent 已从本地日志检测到运行异常/)).not.toBeInTheDocument();
+    expect(screen.queryByText("查看脱敏日志线索")).not.toBeInTheDocument();
+  });
   it("keeps checking for a MATLAB error while other run details are still loading", async () => {
     vi.useFakeTimers();
     const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
@@ -111,6 +137,40 @@ describe("Work run and results", () => {
 
     expect(api.latestDiagnosis).toHaveBeenCalledTimes(2);
     expect(screen.getByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
+  });
+  it("rechecks a terminal run briefly when MATLAB logs have not appeared yet", async () => {
+    vi.useFakeTimers();
+    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+      code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
+      evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
+      suggestions: ["检查 MATLAB 偏好目录写入权限"], confidence: 0.8,
+      requires_new_plan: false, source: "deterministic_log_classifier",
+    } };
+    vi.mocked(api.latestDiagnosis).mockResolvedValueOnce(noDiagnosis).mockResolvedValueOnce(startup);
+    render(<WorkRunPanel run={run("failed_terminal")} />);
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("具体原因尚未确定");
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("MATLAB 启动时无权写入偏好设置目录")).toBeInTheDocument();
+  });
+  it("stops terminal diagnosis polling after five empty checks", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
+    render(<WorkRunPanel run={run("failed_terminal")} />);
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    for (let check = 0; check < 4; check += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
   });
   it("shows the detected local log diagnosis after a run is cancelled", async () => {
     const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {

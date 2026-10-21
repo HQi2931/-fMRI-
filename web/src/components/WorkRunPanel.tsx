@@ -17,6 +17,8 @@ const PHASE_LABELS: Record<string, string> = { queued: "等待排队", staging: 
 const activeStates = new Set(["queued", "running", "cancelling"]);
 const failedStates = new Set(["failed_retryable", "failed_terminal", "timed_out"]);
 const diagnosableStates = new Set([...activeStates, ...failedStates, "cancelled"]);
+const TERMINAL_DIAGNOSIS_RETRY_LIMIT = 5;
+const TERMINAL_DIAGNOSIS_RETRY_MS = 1000;
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {
   "metric.alff": "ALFF 指标图", "metric.alff.raw": "原始 ALFF", "metric.alff.global_mean": "均值归一化 ALFF", "metric.alff.z_score": "z 标准化 ALFF",
@@ -263,17 +265,26 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     if (!diagnosableStates.has(run.state)) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let checks = 0;
     const checkDiagnosis = async () => {
+      checks += 1;
+      let hasEvidence = false;
       try {
         const result = await runsApi.latestDiagnosis(run.run_id, controller.signal);
         if (!controller.signal.aborted && result.run_id === run.run_id) {
           setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: result.diagnosis });
+          hasEvidence = result.diagnosis.evidence.length > 0;
         }
       } catch {
         // Run diagnosis is read-only and should not hide the rest of the run card.
       }
-      if (!controller.signal.aborted && activeStates.has(run.state)) {
-        timer = setTimeout(() => void checkDiagnosis(), 4000);
+      const active = activeStates.has(run.state);
+      const terminalRetry = !active && checks < TERMINAL_DIAGNOSIS_RETRY_LIMIT && !hasEvidence;
+      if (!controller.signal.aborted && (active || terminalRetry)) {
+        timer = setTimeout(
+          () => void checkDiagnosis(),
+          active ? 4000 : TERMINAL_DIAGNOSIS_RETRY_MS,
+        );
       }
     };
     void checkDiagnosis();
@@ -293,13 +304,14 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const hasDiagnosisEvidence = Boolean(currentDiagnosis?.evidence.length);
   const activeDiagnosis = activeStates.has(run.state)
     && currentDiagnosis
-    && currentDiagnosis.code !== "unknown"
+    && currentDiagnosis.severity === "error"
     && currentDiagnosis.code !== "cancelled"
     && hasDiagnosisEvidence
     ? currentDiagnosis : null;
   const terminalDiagnosis = diagnosableStates.has(run.state)
     && !activeStates.has(run.state)
     && hasDiagnosisEvidence
+    && currentDiagnosis?.severity === "error"
     && (failedStates.has(run.state) || (run.state === "cancelled" && currentDiagnosis?.code !== "unknown" && currentDiagnosis?.code !== "cancelled"))
     ? currentDiagnosis : null;
   const elapsed = elapsedLabel(events, now);
@@ -332,6 +344,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {activeDiagnosis && <div className="work-run-failure work-run-live-diagnosis">
       <p role="alert"><strong>Agent 已从本地日志检测到运行异常：</strong>{activeDiagnosis.summary}</p>
       {activeDiagnosis.suggestions.length > 0 && <ul>{activeDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+      {activeDiagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{activeDiagnosis.evidence.slice(0, 4).map((line, index) => <li key={index}><pre>{line}</pre></li>)}</ul></details>}
       <p>正在跟踪本次运行日志；诊断在本机完成，不会发送给模型。</p>
     </div>}
     {completedPhases.length > 0 && <p>已观察到完成：{completedPhases.map((phase) => PHASE_LABELS[phase] ?? "处理步骤").join("、")}</p>}
@@ -342,6 +355,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {(failedStates.has(run.state) || (run.state === "cancelled" && terminalDiagnosis)) && <div className="work-run-failure">
       <p role="alert">{terminalDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
       {terminalDiagnosis && terminalDiagnosis.suggestions.length > 0 && <ul>{terminalDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
+      {terminalDiagnosis && terminalDiagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{terminalDiagnosis.evidence.slice(0, 4).map((line, index) => <li key={index}><pre>{line}</pre></li>)}</ul></details>}
       {terminalDiagnosis && <p>Agent 已自动检查本次 attempt 的本地日志，诊断未发送给模型。</p>}
       <p>如需调整输入或参数，请在对话中准备新方案并重新审查。</p>
       {run.error && <details><summary>错误技术详情</summary><pre>{run.error}</pre></details>}

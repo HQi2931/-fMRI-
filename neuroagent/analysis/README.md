@@ -15,7 +15,7 @@
 | 模块 | 职责 |
 | --- | --- |
 | `models.py` | 稳定的分析合同（Pydantic frozen 模型），不含绝对路径、可执行文本或可变状态 |
-| `diagnostics.py` | 确定性 DPABI/MATLAB 日志分类器（含 Windows MATLAB `CreateFile` 权限错误规则，以及路径/ID/邮箱脱敏） |
+| `diagnostics.py` | 确定性 DPABI/MATLAB 日志分类器（含 Windows MATLAB `CreateFile` 权限错误规则、未知错误标记识别，以及路径/ID/邮箱脱敏；普通输出不作为错误证据） |
 | `clusters.py` | DPABI cluster 表解析与 atlas 坐标最近邻匹配（几何启发式，校验坐标空间一致） |
 | `dpabi_atlas.py` | 只读检查配置 DPABI 的 AAL/AAL3/Brodmann 图谱，以 NIfTI 仿射采样峰值并计算 26 邻域簇覆盖比例 |
 | `cluster_roi.py` | 在复核峰值及正负簇的 26 邻域范围后，逐图读取同网格指标均值；仅用于描述性展示 |

@@ -80,6 +80,13 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
 )
 
+_UNRECOGNIZED_ERROR_LINE = re.compile(
+    r"^(?:\?\?\?\s*)?(?:fatal(?:\s+startup)?\s+error|"
+    r"error(?:\s+(?:using|in)\b|\s*:)|uncaught\s+(?:exception|error)\b|"
+    r"(?:std::)?exception\b|assertion failed\b|matlab\s*:\s*error)",
+    re.IGNORECASE,
+)
+
 
 def _safe_line(line: str) -> str:
     value = line.strip()
@@ -119,12 +126,26 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
             confidence=0.85,
             requires_new_plan=False,
         )
+    error_lines = tuple(line for line in lines if _UNRECOGNIZED_ERROR_LINE.search(line))
+    if error_lines:
+        return FailureDiagnosis(
+            code=FailureCode.UNKNOWN,
+            severity="error",
+            summary="发现尚未匹配已知规则的 MATLAB/DPABI 错误",
+            evidence=error_lines[-max_evidence:],
+            suggestions=(
+                "检查脱敏日志线索及本次 attempt 的完整日志",
+                "保留本次 attempt 的日志和产物",
+            ),
+            confidence=0.25,
+            requires_new_plan=True,
+        )
     return FailureDiagnosis(
         code=FailureCode.UNKNOWN,
-        severity="error",
-        summary="未识别的 MATLAB/DPABI 错误, 需要人工查看日志",
-        evidence=tuple(lines[-max_evidence:]),
-        suggestions=("保留本次 attempt 的日志和产物", "确认无敏感信息后提交诊断上下文"),
+        severity="info",
+        summary="当前日志中尚未发现明确错误线索",
+        evidence=(),
+        suggestions=(),
         confidence=0.1,
-        requires_new_plan=True,
+        requires_new_plan=False,
     )
