@@ -131,14 +131,21 @@ def diagnose_run(
 
 
 @router.get("/runs/{run_id}/diagnosis", response_model=RunDiagnosisView, tags=["runs"])
-def diagnose_latest_run(run_id: str, request: Request) -> RunDiagnosisView:
+def diagnose_latest_run(
+    run_id: str,
+    request: Request,
+    expected_attempt: Annotated[int | None, Query(ge=0)] = None,
+) -> RunDiagnosisView:
     """Read a local diagnosis of the current attempt without uploading its logs."""
 
-    diagnosis = capability_from(request, "runs").diagnose_latest_run(run_id)
+    result = capability_from(request, "runs").diagnose_latest_run(
+        run_id, expected_attempt=expected_attempt, include_attempt=True
+    )
+    attempt = int(result["attempt"])
     return cast(
         RunDiagnosisView,
         to_http_response(
-            {"run_id": run_id, "diagnosis": diagnosis},
+            {"run_id": run_id, "attempt": attempt, "diagnosis": result["diagnosis"]},
             RunDiagnosisView,
         ),
     )

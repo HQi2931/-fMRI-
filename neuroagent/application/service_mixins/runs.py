@@ -260,60 +260,87 @@ class RunMixin(BaseServiceMixin):
 
         run = self.repository.get_run(run_id)
         diagnosis = diagnose_dpabi_log(request.log_text)
-        return RunDiagnosisView(run_id=run.run_id, diagnosis=diagnosis)
+        return RunDiagnosisView(run_id=run.run_id, attempt=run.attempt, diagnosis=diagnosis)
 
-    def diagnose_latest_run(self, run_id: str) -> dict[str, object]:
+    def diagnose_latest_run(
+        self,
+        run_id: str,
+        *,
+        expected_attempt: int | None = None,
+        include_attempt: bool = False,
+    ) -> dict[str, object]:
         """Classify the current attempt's bounded local logs without exposing paths."""
 
         run = self.repository.get_run(run_id)
+        if expected_attempt is not None and run.attempt != expected_attempt:
+            raise ConflictError(
+                "run_attempt_changed",
+                "运行已进入新的 attempt。请读取最新运行状态后再诊断。",
+            )
         try:
             attempt_root = self._latest_attempt_root(run).resolve()
         except ConflictError as exc:
             if exc.code != "head_motion_qc_attempt_missing":
                 raise
-            return self._diagnosis_without_logs().model_dump(mode="json")
-        project = self.project_repository.get_project(run.project_id)
-        work_root = Path(project.work_root).resolve()
-        attempts_root = (work_root / run.run_id / "attempts").resolve()
-        try:
-            attempts_root.relative_to(work_root)
-            attempt_root.relative_to(attempts_root)
-        except ValueError as exc:
-            raise ConflictError(
-                "run_diagnosis_attempt_path_invalid",
-                "运行诊断日志越过项目工作区边界。",
-            ) from exc
-        log_root = (attempt_root / "logs").resolve()
-        try:
-            log_root.relative_to(attempt_root)
-        except ValueError:
-            return self._diagnosis_without_logs().model_dump(mode="json")
-        allowed_names = {"matlab.log", "matlab.stdout.log", "matlab.stderr.log"}
-        chunks: list[str] = []
-        remaining = 64_000
-        for path in sorted(log_root.rglob("*"), key=lambda item: str(item)):
-            if not path.is_file() or path.name.lower() not in allowed_names:
-                continue
-            resolved = path.resolve()
+            diagnosis = self._diagnosis_without_logs()
+        else:
+            project = self.project_repository.get_project(run.project_id)
+            work_root = Path(project.work_root).resolve()
+            attempts_root = (work_root / run.run_id / "attempts").resolve()
             try:
-                resolved.relative_to(attempt_root)
+                attempts_root.relative_to(work_root)
+                attempt_root.relative_to(attempts_root)
+            except ValueError as exc:
+                raise ConflictError(
+                    "run_diagnosis_attempt_path_invalid",
+                    "运行诊断日志越过项目工作区边界。",
+                ) from exc
+            log_root = (attempt_root / "logs").resolve()
+            try:
+                log_root.relative_to(attempt_root)
             except ValueError:
-                continue
-            try:
-                with resolved.open("rb") as stream:
-                    stream.seek(max(0, resolved.stat().st_size - min(remaining, 24_000)))
-                    content = stream.read(min(remaining, 24_000)).decode("utf-8", errors="replace")
-            except OSError:
-                continue
-            if content.strip():
-                chunks.append(content)
-                remaining -= len(content.encode("utf-8", errors="replace"))
-            if remaining <= 0:
-                break
-        diagnosis = (
-            diagnose_dpabi_log("\n".join(chunks)) if chunks else self._diagnosis_without_logs()
-        )
-        return diagnosis.model_dump(mode="json")
+                diagnosis = self._diagnosis_without_logs()
+            else:
+                allowed_names = {"matlab.log", "matlab.stdout.log", "matlab.stderr.log"}
+                chunks: list[str] = []
+                remaining = 64_000
+                for path in sorted(log_root.rglob("*"), key=lambda item: str(item)):
+                    if not path.is_file() or path.name.lower() not in allowed_names:
+                        continue
+                    resolved = path.resolve()
+                    try:
+                        resolved.relative_to(attempt_root)
+                    except ValueError:
+                        continue
+                    try:
+                        with resolved.open("rb") as stream:
+                            stream.seek(max(0, resolved.stat().st_size - min(remaining, 24_000)))
+                            content = stream.read(min(remaining, 24_000)).decode(
+                                "utf-8", errors="replace"
+                            )
+                    except OSError:
+                        continue
+                    if content.strip():
+                        chunks.append(content)
+                        remaining -= len(content.encode("utf-8", errors="replace"))
+                    if remaining <= 0:
+                        break
+                diagnosis = (
+                    diagnose_dpabi_log("\n".join(chunks))
+                    if chunks
+                    else self._diagnosis_without_logs()
+                )
+
+        latest = self.repository.get_run(run_id)
+        if latest.attempt != run.attempt:
+            raise ConflictError(
+                "run_attempt_changed",
+                "运行在读取日志期间进入了新的 attempt。请重新读取运行状态。",
+            )
+        payload = diagnosis.model_dump(mode="json")
+        if include_attempt:
+            return {"attempt": run.attempt, "diagnosis": payload}
+        return payload
 
     @staticmethod
     def _diagnosis_without_logs() -> FailureDiagnosis:

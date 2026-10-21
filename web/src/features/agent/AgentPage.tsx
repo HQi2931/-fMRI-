@@ -170,7 +170,7 @@ function compositeGoalRunStateLabel(state: string): string {
 }
 
 type CompositeGoalRunObservation = {
-  run: Run;
+  run: Run | null;
   diagnosis: RunDiagnosis["diagnosis"] | null;
   diagnosisChecked: boolean;
   connectionError: boolean;
@@ -222,6 +222,7 @@ function CompositeGoalRunFeedback({
     for (const runId of JSON.parse(runIdsKey) as string[]) {
       let connectionFailures = 0;
       let terminalDiagnosisChecks = 0;
+      let diagnosedAttempt: number | null = null;
       const observe = async () => {
         if (controller.signal.aborted) return;
         let run: Run | null = null;
@@ -230,9 +231,13 @@ function CompositeGoalRunFeedback({
           if (controller.signal.aborted || loaded.run_id !== runId) return;
           run = loaded;
           connectionFailures = 0;
+          if (diagnosedAttempt !== loaded.attempt) {
+            diagnosedAttempt = loaded.attempt;
+            terminalDiagnosisChecks = 0;
+          }
           setObservations((previous) => {
             const prior = previous[runId];
-            const sameAttempt = prior?.run.attempt === loaded.attempt;
+            const sameAttempt = prior?.run?.attempt === loaded.attempt;
             return {
               ...previous,
               [runId]: {
@@ -248,19 +253,24 @@ function CompositeGoalRunFeedback({
           connectionFailures += 1;
           setObservations((previous) => {
             const prior = previous[runId];
-            return prior ? { ...previous, [runId]: { ...prior, connectionError: true } } : previous;
+            return {
+              ...previous,
+              [runId]: prior
+                ? { ...prior, connectionError: true }
+                : { run: null, diagnosis: null, diagnosisChecked: false, connectionError: true },
+            };
           });
-          if (connectionFailures < 6) {
-            schedule(() => void observe(), Math.min(1000 * 2 ** connectionFailures, 15_000));
-          }
+          schedule(() => void observe(), Math.min(1000 * 2 ** Math.min(connectionFailures, 5), 30_000));
           return;
         }
 
         let diagnosis: RunDiagnosis["diagnosis"] | null = null;
         if (["queued", "running", "cancelling", "failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)) {
           try {
-            const result = await runsApi.latestDiagnosis(runId, controller.signal);
-            if (!controller.signal.aborted && result.run_id === runId) diagnosis = result.diagnosis;
+            const result = await runsApi.latestDiagnosis(runId, controller.signal, run.attempt);
+            if (!controller.signal.aborted && result.run_id === runId && result.attempt === run.attempt) {
+              diagnosis = result.diagnosis;
+            }
           } catch {
             // Local log diagnosis is optional; the run state remains visible when it is unavailable.
           }
@@ -274,7 +284,7 @@ function CompositeGoalRunFeedback({
         const diagnosisChecked = !active && !retryTerminalDiagnosis;
         setObservations((previous) => {
           const prior = previous[runId];
-          if (!prior || prior.run.attempt !== run.attempt) return previous;
+          if (!prior || prior.run?.attempt !== run.attempt) return previous;
           return { ...previous, [runId]: { ...prior, diagnosis: diagnosis ?? prior.diagnosis, diagnosisChecked } };
         });
 

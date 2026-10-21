@@ -1384,6 +1384,7 @@ describe("agent workbench page", () => {
     }));
     const diagnosis = vi.fn(() => json({
       run_id: "run-preprocessing",
+      attempt: 1,
       diagnosis: {
         code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
         evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
@@ -1412,6 +1413,7 @@ describe("agent workbench page", () => {
     expect(run).toHaveBeenCalled();
     expect(diagnosis).toHaveBeenCalledWith("run-preprocessing", expect.any(AbortSignal));
     expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/runs/run-preprocessing" )).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("expected_attempt=1"))).toBe(true);
   });
 
   it("tracks MATLAB failures for unselected composite goals after the conversation is restored", async () => {
@@ -1451,6 +1453,7 @@ describe("agent workbench page", () => {
     }));
     const diagnosis = vi.fn((runId: string) => json({
       run_id: runId,
+      attempt: 1,
       diagnosis: runId === "run-hidden-preprocessing" ? {
         code: "path_policy",
         severity: "error",
@@ -1499,6 +1502,45 @@ describe("agent workbench page", () => {
     expect(run).toHaveBeenCalledWith("run-hidden-preprocessing");
     expect(fetchMock.mock.calls.filter(([input]) => pathOf(input) === "/api/v1/runs/run-hidden-preprocessing")).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("automatically resumes CompositeGoal run tracking after prolonged API failures", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const run = vi.fn(() => {
+      attempts += 1;
+      if (attempts <= 6) throw new Error("temporary connection failure");
+      return json({
+        run_id: "run-reconnect", project_id: "project-1", plan_revision_id: "plan-1",
+        state: "running", version: 2, attempt: 1, cancel_requested: false, error: null,
+        qc_mode: "require", qc_status: "pending", stage: "running", stage_progress: 0,
+        created_at: now, updated_at: now,
+      });
+    });
+    installFetch({
+      conversations: () => json([conversation({ project_id: "project-1" })]),
+      compositeGoals: () => json([{
+        ...compositeGoal("waiting_analysis", "goal-reconnect"),
+        analysis_run_id: "run-reconnect",
+      }]),
+      run,
+      diagnosis: () => json({
+        run_id: "run-reconnect", attempt: 1,
+        diagnosis: { code: "unknown", severity: "info", summary: "尚无错误", evidence: [], suggestions: [], confidence: 0, requires_new_plan: false, source: "deterministic_log_classifier" },
+      }),
+    });
+
+    render(<AgentPage />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/状态连接中断，正在重试/)).toBeInTheDocument();
+
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
+    }
+
+    expect(run).toHaveBeenCalledTimes(7);
+    expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("流程 1 · 统计分析运行：计算中"))).toBe(true);
   });
 
   it("refreshes a delayed assistant analysis continuation after preprocessing succeeds", async () => {

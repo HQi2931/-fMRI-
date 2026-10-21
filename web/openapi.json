@@ -7357,6 +7357,17 @@
       "RunDiagnosisView": {
         "additionalProperties": false,
         "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
           "diagnosis": {
             "$ref": "#/components/schemas/FailureDiagnosis"
           },
@@ -18914,6 +18925,23 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_attempt",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Attempt"
             }
           }
         ],

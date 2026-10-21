@@ -65,6 +65,7 @@ class AgentTaskView(StrictModel):
 
 class RunDiagnosisView(StrictModel):
     run_id: str | None = None
+    attempt: int | None = None
     diagnosis: FailureDiagnosis
 
 

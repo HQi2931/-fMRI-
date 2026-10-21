@@ -270,8 +270,8 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       checks += 1;
       let hasEvidence = false;
       try {
-        const result = await runsApi.latestDiagnosis(run.run_id, controller.signal);
-        if (!controller.signal.aborted && result.run_id === run.run_id) {
+        const result = await runsApi.latestDiagnosis(run.run_id, controller.signal, run.attempt);
+        if (!controller.signal.aborted && result.run_id === run.run_id && result.attempt === run.attempt) {
           setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: result.diagnosis });
           hasEvidence = result.diagnosis.evidence.length > 0;
         }

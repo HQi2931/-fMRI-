@@ -4296,6 +4296,8 @@ export interface components {
         };
         /** RunDiagnosisView */
         RunDiagnosisView: {
+            /** Attempt */
+            attempt?: number | null;
             diagnosis: components["schemas"]["FailureDiagnosis"];
             /** Run Id */
             run_id?: string | null;
@@ -11392,7 +11394,9 @@ export interface operations {
     };
     diagnose_latest_run_api_v1_runs__run_id__diagnosis_get: {
         parameters: {
-            query?: never;
+            query?: {
+                expected_attempt?: number | null;
+            };
             header?: never;
             path: {
                 run_id: string;

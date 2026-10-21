@@ -312,7 +312,7 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | `POST` | `/runs` | 从已批准且当前有效的计划创建 Mock 或逐次确认的 MATLAB 运行 |
 | `GET` | `/runs` | 按项目/状态列出运行 |
 | `GET` | `/runs/{run_id}` | 读取运行 |
-| `GET` | `/runs/{run_id}/diagnosis` | 读取当前 attempt 本地日志的确定性诊断；运行中可轮询，适用于失败、超时和取消终态，不外发日志 |
+| `GET` | `/runs/{run_id}/diagnosis?expected_attempt={attempt}` | 读取指定 attempt 本地日志的确定性诊断；不外发日志，attempt 已变化时返回 `run_attempt_changed` |
 | `POST` | `/runs/{run_id}/cancel` | 提交显式取消原因 |
 | `POST` | `/runs/{run_id}/retry` | 在已批准重试预算内重试 |
 | `POST` | `/runs/{run_id}/diagnosis` | 对受限日志片段执行本地确定性失败分类，不自动修复或重跑 |
@@ -321,7 +321,8 @@ Paper 增加 `index_status`（not_indexed/indexing/ready/failed）及可空 `ind
 | `GET` | `/artifacts/{artifact_id}` | 读取单个 Artifact 元数据 |
 
 `GET /runs/{run_id}/diagnosis` 只在本机读取当前 attempt 下有界的 stdout/stderr/`matlab.log`，
-返回 `{run_id, diagnosis}`；不存在可读日志时返回 `unknown`、空 evidence 和 `info` severity，
+返回 `{run_id, attempt, diagnosis}`；调用方可提供 `expected_attempt`，服务端在读取前后核对该编号，
+避免把新 attempt 的日志关联到旧状态；不存在可读日志时返回 `unknown`、空 evidence 和 `info` severity，
 避免把“尚无日志”误报成执行故障。证据会脱敏本机路径、受试者编号和邮箱。运行中可轮询捕获已识别线索，
 失败、超时或取消后可继续读取同一 attempt。旧 `POST /diagnosis` 保留兼容，接收调用方提供的有界文本，
 仍只运行本地确定性分类器；两个接口都不调用模型、不修改方案，也不自动重试。

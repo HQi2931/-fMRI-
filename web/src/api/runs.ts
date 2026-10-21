@@ -22,8 +22,10 @@ export const runsApi = {
     post<Run>(`/runs/${runId}/retry`, body, signal),
   diagnoseRun: (runId: string, body: Schemas["RunDiagnosisRequest"], signal?: AbortSignal) =>
     post<RunDiagnosis>(`/runs/${runId}/diagnosis`, body, signal),
-  latestDiagnosis: (runId: string, signal?: AbortSignal) =>
-    request<RunDiagnosis>(`/runs/${runId}/diagnosis`, { signal }),
+  latestDiagnosis: (runId: string, signal?: AbortSignal, expectedAttempt?: number) => {
+    const query = expectedAttempt === undefined ? "" : `?expected_attempt=${expectedAttempt}`;
+    return request<RunDiagnosis>(`/runs/${runId}/diagnosis${query}`, { signal });
+  },
   artifacts: (runId: string, signal?: AbortSignal) =>
     request<Artifact[]>(`/runs/${runId}/artifacts`, { signal }),
   createHeadMotionQc: (

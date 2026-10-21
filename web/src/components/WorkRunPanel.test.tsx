@@ -20,8 +20,8 @@ const api = { ...runsApi, ...plansApi, ...statisticsApi };
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const run = (state: Run["state"] = "qc_review"): Run => ({ run_id: "run-1", project_id: "project", plan_revision_id: "plan", version: 4, attempt: 1, state, stage: "running", cancel_requested: false, qc_status: "awaiting_review", created_at: "2026-10-06T10:00:00Z", updated_at: "2026-10-06T10:09:00Z", qc_mode: "require", diagnosis_available: false, log_cursor: 0 });
 const event = (id: number, type: string, time: string): RuntimeEvent => ({ event_id: id, event_type: type, trace_id: "trace", run_id: "run-1", payload: { stage: "running" }, severity: "info", created_at: time });
-const diagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "input_format", severity: "error", summary: "T1 重定向与裁剪未完成", evidence: ["T1 converter failed"], suggestions: ["检查本次转换工具日志与输入文件"], confidence: 0.6, requires_new_plan: true, source: "deterministic_log_classifier" } };
-const noDiagnosis: RunDiagnosis = { run_id: "run-1", diagnosis: { code: "unknown", severity: "info", summary: "暂未发现明确错误", evidence: [], suggestions: [], confidence: 0.1, requires_new_plan: false, source: "deterministic_log_classifier" } };
+const diagnosis: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: { code: "input_format", severity: "error", summary: "T1 重定向与裁剪未完成", evidence: ["T1 converter failed"], suggestions: ["检查本次转换工具日志与输入文件"], confidence: 0.6, requires_new_plan: true, source: "deterministic_log_classifier" } };
+const noDiagnosis: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: { code: "unknown", severity: "info", summary: "暂未发现明确错误", evidence: [], suggestions: [], confidence: 0.1, requires_new_plan: false, source: "deterministic_log_classifier" } };
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.artifacts).mockResolvedValue([]);
@@ -69,7 +69,7 @@ describe("Work run and results", () => {
     expect(technical.closest("details")).not.toHaveAttribute("open");
     expect(technical).not.toBeVisible();
     expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/log/content");
-    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
+    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal), 1);
   });
   it("retains neutral failure guidance when diagnosis is unavailable", async () => {
     vi.mocked(api.latestDiagnosis).mockRejectedValue(new Error("diagnosis unavailable"));
@@ -80,7 +80,7 @@ describe("Work run and results", () => {
     expect(screen.getByText("internal stack")).not.toBeVisible();
   });
   it("tracks a MATLAB startup error from local logs while execution is still running", async () => {
-    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+    const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
       code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
       evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
       suggestions: ["检查 MATLAB 偏好目录写入权限", "重新运行以使用本次 attempt 的隔离偏好目录"],
@@ -91,10 +91,22 @@ describe("Work run and results", () => {
     expect(await screen.findByText(/MATLAB 启动时无权写入偏好设置目录/)).toBeInTheDocument();
     expect(screen.getByText(/诊断在本机完成，不会发送给模型/)).toBeInTheDocument();
     expect(screen.getByText("重新运行以使用本次 attempt 的隔离偏好目录")).toBeInTheDocument();
-    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
+    expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal), 1);
+  });
+  it("does not attach a diagnosis returned for a later attempt", async () => {
+    const laterAttemptDiagnosis: RunDiagnosis = {
+      ...diagnosis,
+      attempt: 2,
+      diagnosis: { ...diagnosis.diagnosis, summary: "下一次尝试的错误" },
+    };
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(laterAttemptDiagnosis);
+    render(<WorkRunPanel run={run("running")} />);
+
+    await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal), 1));
+    expect(screen.queryByText("下一次尝试的错误")).not.toBeInTheDocument();
   });
   it("shows a collapsed sanitized excerpt when a live MATLAB error is not recognized", async () => {
-    const unknown: RunDiagnosis = { run_id: "run-1", diagnosis: {
+    const unknown: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
       code: "unknown", severity: "error", summary: "发现尚未匹配已知规则的 MATLAB/DPABI 错误",
       evidence: ["Error using run_preprocessing (<path>)", "sub<id>: matrix dimensions do not agree"],
       suggestions: ["保留本次 attempt 的日志和产物"], confidence: 0.1,
@@ -121,7 +133,7 @@ describe("Work run and results", () => {
   });
   it("keeps checking for a MATLAB error while other run details are still loading", async () => {
     vi.useFakeTimers();
-    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+    const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
       code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
       evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
       suggestions: ["检查 MATLAB 偏好目录写入权限"], confidence: 0.8,
@@ -140,7 +152,7 @@ describe("Work run and results", () => {
   });
   it("rechecks a terminal run briefly when MATLAB logs have not appeared yet", async () => {
     vi.useFakeTimers();
-    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+    const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
       code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
       evidence: ["CreateFile failed: 拒绝访问。 [system:5]"],
       suggestions: ["检查 MATLAB 偏好目录写入权限"], confidence: 0.8,
@@ -173,7 +185,7 @@ describe("Work run and results", () => {
     expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
   });
   it("shows the detected local log diagnosis after a run is cancelled", async () => {
-    const startup: RunDiagnosis = { run_id: "run-1", diagnosis: {
+    const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
       code: "path_policy", severity: "error", summary: "MATLAB 启动时无权写入偏好设置目录",
       evidence: ["CreateFile failed: 拒绝访问。 [system:5]"], suggestions: ["检查 MATLAB 偏好目录写入权限"],
       confidence: 0.8, requires_new_plan: false, source: "deterministic_log_classifier",

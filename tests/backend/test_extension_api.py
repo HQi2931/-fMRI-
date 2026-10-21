@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from neuroagent.api import create_app
@@ -9,6 +10,7 @@ from neuroagent.application.contracts.runs import (
     RunAction,
     RunCreate,
 )
+from neuroagent.application.errors import ConflictError
 from neuroagent.application.services import ApplicationServices
 
 from .conftest import make_approved_plan, make_project
@@ -41,6 +43,7 @@ def test_extension_analysis_endpoints_are_local_and_typed(
             json={"log_text": "Undefined function spm_vol"},
         )
         assert diagnosis.status_code == 200
+        assert diagnosis.json()["attempt"] == run.attempt
         assert diagnosis.json()["diagnosis"]["code"] == "software_environment"
 
         inspected = client.post(
@@ -147,12 +150,23 @@ def test_get_run_diagnosis_reads_active_and_cancelled_attempt_logs_locally(
     )
 
     with TestClient(create_app(service=service)) as client:
-        active = client.get(f"/api/v1/runs/{run.run_id}/diagnosis")
+        active = client.get(
+            f"/api/v1/runs/{run.run_id}/diagnosis",
+            params={"expected_attempt": run.attempt},
+        )
         assert active.status_code == 200
         assert active.json()["run_id"] == run.run_id
+        assert active.json()["attempt"] == run.attempt
         assert active.json()["diagnosis"]["code"] == "path_policy"
         assert private_path not in active.text
         assert "MATLAB 启动" in active.json()["diagnosis"]["summary"]
+
+        stale_attempt = client.get(
+            f"/api/v1/runs/{run.run_id}/diagnosis",
+            params={"expected_attempt": run.attempt + 1},
+        )
+        assert stale_attempt.status_code == 409
+        assert stale_attempt.json()["error"]["code"] == "run_attempt_changed"
 
         cancelled_run = service.runs.cancel_run(
             run.run_id,
@@ -184,6 +198,43 @@ def test_get_run_diagnosis_without_an_attempt_reports_no_evidence(
         response = client.get(f"/api/v1/runs/{run.run_id}/diagnosis")
 
     assert response.status_code == 200
+    assert response.json()["attempt"] == run.attempt
     assert response.json()["diagnosis"]["code"] == "unknown"
     assert response.json()["diagnosis"]["severity"] == "info"
     assert response.json()["diagnosis"]["evidence"] == []
+
+
+def test_diagnosis_rejects_an_attempt_change_while_reading_logs(
+    service: ApplicationServices,
+    source_root: Path,
+    work_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(service, source_root, work_root)
+    plan = make_approved_plan(service, project.project_id)
+    run = service.runs.create_run(
+        RunCreate(
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            expected_plan_hash=plan.plan_hash,
+        ),
+        "diagnosis-race-key",
+    )
+    repository = service.runs.repository
+    get_run = repository.get_run
+    calls = 0
+
+    def change_attempt_after_read(run_id: str):
+        nonlocal calls
+        calls += 1
+        current = get_run(run_id)
+        if calls == 2:
+            return current.model_copy(update={"attempt": current.attempt + 1})
+        return current
+
+    monkeypatch.setattr(repository, "get_run", change_attempt_after_read)
+
+    with pytest.raises(ConflictError) as caught:
+        service.runs.diagnose_latest_run(run.run_id, expected_attempt=run.attempt)
+
+    assert caught.value.code == "run_attempt_changed"
