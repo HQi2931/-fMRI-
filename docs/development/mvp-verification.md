@@ -6,6 +6,12 @@
 - 更新日期：2026-10-21
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-21 CompositeGoal 预算耗尽反馈
+
+分析提案和统计结果解释 outbox 的累计模型预算耗尽状态，现在通过其 `last_error_code` 映射为专属进度原因。Work 流程卡显示相应阶段的预算耗尽和续接暂停说明；分析提案预算耗尽时不再显示“继续此分析”，结果解释阶段仍可只读查看。普通科研决定的继续入口保留。对话提示、outbox 不可重试语义及现有人工重试门禁未改变；没有增加预算编辑或重置能力，也未增加 Plan/Approval/Run 操作。
+
+`test_composite_goal.py`、`test_analysis_only_result_continuation.py` 共 52 项通过；`AgentPage.test.tsx` 77 项通过。前端 TypeScript 类型检查和改动文件 ESLint、改动 Python 文件 Ruff check/format、`composite_goal.py` Mypy、`scripts/check-docs.ps1` 与 `git diff --check` 通过。验证使用本地 SQLite/Mock UI，不调用 Provider、MATLAB 或 DPABI，也未创建 Run。
+
 ## 2026-10-21 步骤 Run 授权重放与 MATLAB UI 修复
 
 TaskStep 已绑定 Run 后，服务从对应持久 Job 的执行策略和 Run 的 QC 字段读取实际选择，只接受已消费到该 Run 的原确认挑战重放；未消费的新挑战或执行后端、工作区、QC 不匹配会返回冲突，不改变绑定和 Run。已消费挑战即使过期也只允许绑定 Run 的同挑战重放。Work 对每种 MATLAB 步骤显示真实计算确认框；切换后端会清除确认和授权，切到 Mock 时工作区回到 isolated。统计步骤保持其冻结 QC 来源及隔离工作区约束。

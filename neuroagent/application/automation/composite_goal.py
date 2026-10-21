@@ -461,9 +461,14 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     analysis_task = snapshot.analysis_task
     if analysis_task is None:
         if outbox.status.value == "waiting_user":
+            reason = (
+                "analysis_proposal_model_budget_exhausted"
+                if outbox.last_error_code == "composite_goal_model_budget_exhausted"
+                else "analysis_decision_required"
+            )
             return result(
                 CompositeGoalStatus.WAITING_USER,
-                "analysis_decision_required",
+                reason,
                 proposal_status=outbox.status.value,
             )
         return result(
@@ -553,7 +558,12 @@ def project_composite_goal(snapshot: CompositeGoalSnapshot) -> CompositeGoalProg
     if result_status == "blocked":
         status, reason = CompositeGoalStatus.BLOCKED, "result_interpretation_blocked"
     elif result_status == "waiting_user":
-        status, reason = CompositeGoalStatus.WAITING_USER, "result_interpretation_user_decision"
+        reason = (
+            "result_interpretation_model_budget_exhausted"
+            if interpretation.last_error_code == "composite_goal_model_budget_exhausted"
+            else "result_interpretation_user_decision"
+        )
+        status = CompositeGoalStatus.WAITING_USER
     elif result_status == "completed" and interpretation.continuation_message_id:
         message = snapshot.result_continuation_message
         message_payload = message.payload if message is not None else {}
@@ -948,7 +958,12 @@ def _project_result_interpretation(
     if result_status == "blocked":
         status, reason = CompositeGoalStatus.BLOCKED, "result_interpretation_blocked"
     elif result_status == "waiting_user":
-        status, reason = CompositeGoalStatus.WAITING_USER, "result_interpretation_user_decision"
+        reason = (
+            "result_interpretation_model_budget_exhausted"
+            if outbox.last_error_code == "composite_goal_model_budget_exhausted"
+            else "result_interpretation_user_decision"
+        )
+        status = CompositeGoalStatus.WAITING_USER
     elif result_status == "completed" and outbox.continuation_message_id:
         message_payload = message.payload if message is not None else {}
         completion = message_payload.get("statistical_result_interpretation")

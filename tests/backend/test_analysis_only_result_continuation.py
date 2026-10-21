@@ -372,6 +372,11 @@ def test_external_result_consumer_exhausted_cumulative_budget_does_not_reset(
     assert after.used_tokens == before.used_tokens
     outbox = service.automation.get_result_interpretation_outbox(role_task.work_task_id)
     assert outbox.last_error_code == "composite_goal_model_budget_exhausted"
+    progress = service.automation.get_composite_goal_progress(
+        goal.conversation_id, goal.intent_task_id
+    )
+    assert progress.status.value == "waiting_user"
+    assert progress.reason_code == "result_interpretation_model_budget_exhausted"
 
 
 @pytest.mark.parametrize("mutation", ["source", "result", "plan"])

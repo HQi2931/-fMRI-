@@ -561,6 +561,44 @@ describe("agent workbench page", () => {
     expect(screen.queryByText("external-complete")).not.toBeInTheDocument();
   });
 
+  it("explains exhausted goal budgets without offering proposal continuation", async () => {
+    const goals = [
+      {
+        ...compositeGoal("waiting_user", "proposal-budget", "analysis_proposal_model_budget_exhausted"),
+        analysis_work_task_id: null,
+        result_interpretation_outbox_task_id: null,
+        analysis_proposal_status: "waiting_user",
+        analysis_status: null,
+        result_interpretation_status: null,
+      },
+      {
+        ...externalAnalysisGoal("waiting_user", "result-budget", "result_interpretation_model_budget_exhausted"),
+        analysis_status: "completed",
+        result_interpretation_status: "waiting_user",
+      },
+      {
+        ...externalAnalysisGoal("waiting_user", "science-decision", "analysis_user_decision"),
+        analysis_status: "waiting_user",
+      },
+    ];
+    installFetch({ compositeGoals: () => json(goals) });
+
+    render(<AgentPage />);
+
+    await screen.findByRole("region", { name: "自动化流程进度" });
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[0]).getByText(
+      "此目标的累计模型预算已用完，分析提案自动续接已暂停；重试不会重置额度。请检查会话提示并决定后续处理。",
+    )).toBeInTheDocument();
+    expect(within(cards[0]).queryByRole("button", { name: "继续此分析" })).not.toBeInTheDocument();
+    expect(within(cards[1]).getByText(
+      "此目标的累计模型预算已用完，结果解释自动续接已暂停；重试不会重置额度。请检查会话提示并决定后续处理。",
+    )).toBeInTheDocument();
+    expect(within(cards[1]).getByRole("button", { name: "查看此分析" })).toBeInTheDocument();
+    expect(within(cards[2]).getByRole("button", { name: "继续此分析" })).toBeInTheDocument();
+    expect(within(cards[2]).getByText("统计分析需要你的决定。")).toBeInTheDocument();
+  });
+
   it("selects an analysis-only goal and sends the server-selected intent as a turn assertion", async () => {
     let requestBody: Record<string, unknown> | null = null;
     const savedDraft = message("draft-external", "assistant", "外部指标分析草稿", {

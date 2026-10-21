@@ -104,6 +104,7 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
     proposal_outbox_authority_mismatch: "分析准备任务的来源信息不一致。",
     analysis_proposal_blocked: "准备分析方案时遇到阻断。",
     analysis_proposal_pending: "正在准备分析方案。",
+    analysis_proposal_model_budget_exhausted: "此目标的累计模型预算已用完，分析提案自动续接已暂停；重试不会重置额度。请检查会话提示并决定后续处理。",
     proposal_analysis_task_missing: "找不到对应的分析方案任务。",
     proposal_analysis_task_mismatch: "分析方案任务的来源需要核验。",
     proposal_analysis_attempt_missing: "分析方案的记录不完整。",
@@ -135,6 +136,7 @@ function compositeGoalReasonView(reasonCode: string | null | undefined): string 
     result_interpretation_binding_missing: "结果解释任务的关联信息需要核验。",
     result_interpretation_blocked: "生成结果解释时遇到阻断。",
     result_interpretation_user_decision: "结果解释需要你的决定。",
+    result_interpretation_model_budget_exhausted: "此目标的累计模型预算已用完，结果解释自动续接已暂停；重试不会重置额度。请检查会话提示并决定后续处理。",
     result_interpretation_pending: "正在整理统计结果说明。",
     result_continuation_mismatch: "结果说明与当前任务的关联需要核验。",
     result_interpretation_incomplete: "结果说明状态尚未完整，需要核验。",
@@ -385,6 +387,14 @@ function CompositeGoalProgressPanel({
         const reason = compositeGoalReasonView(goal.reason_code);
         const analysisOnly = goal.goal_kind === "analysis_only_external_import";
         const title = compositeGoalTitle(goal);
+        const canSelectAnalysis = (analysisOnly
+          && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
+          || !analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
+          && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
+          && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
+          && !["blocked", "cancelled"].includes(goal.analysis_status ?? ""));
+        const continueBlockedByBudget = goal.reason_code === "analysis_proposal_model_budget_exhausted"
+          && (!goal.analysis_status || goal.analysis_status === "waiting_user");
         return <li key={goal.intent_task_id}>
           <article className="composite-goal-card">
             <h3 className="composite-goal-heading" aria-label={`${title}，${status.label}`}>
@@ -399,11 +409,7 @@ function CompositeGoalProgressPanel({
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
-            {(analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
-              || !analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
-              && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
-              && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
-              && !["blocked", "cancelled"].includes(goal.analysis_status ?? ""))
+            {canSelectAnalysis && !continueBlockedByBudget
               && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>{!goal.analysis_status || goal.analysis_status === "waiting_user" ? "继续此分析" : "查看此分析"}</button>}
           </article>
         </li>;

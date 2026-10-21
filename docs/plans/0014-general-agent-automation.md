@@ -440,6 +440,12 @@ Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模
 
 admission/Plan 绑定、admission-only outbox 创建与来源重核、legacy outbox consumer 兼容及 0035 旧库升级/受保护降级定向验证共 21 项通过；无复合目标的普通 Work 问答和本地注册确认回归另 2 项通过。扩展 Work 对话回归中仍有 5 项未通过，详见 [MVP 验证记录](../development/mvp-verification.md)；不得把该范围宣称为全套 Work 回归通过。未调用真实 Provider、MATLAB 或 DPABI。
 
+### 阶段 B CompositeGoal 预算耗尽用户反馈（2026-10-21）
+
+CompositeGoal 只读进度现在从分析提案和结果解释 outbox 的权威 `last_error_code` 投影专属预算耗尽原因码。Work 流程卡说明累计预算耗尽及续接暂停；分析提案耗尽时隐藏无法恢复当前预算的“继续此分析”入口，普通科研决定仍可继续，结果阶段保留只读查看。既有对话提示及不可重试语义不变，不新增预算修改、重试、Plan 审批或 Run 操作；没有新增持久化或 API 字段。
+
+后端 CompositeGoal 与 analysis-only 结果续接定向回归共 52 项通过；AgentPage 测试 77 项通过。前端类型检查、相关文件 ESLint、Python Ruff/Mypy、文档规范和差异空白验证结果见 [MVP 验证记录](../development/mvp-verification.md)。未调用真实 Provider、MATLAB 或 DPABI，未创建 Run。
+
 ### 本轮实现记录（2026-10-12）
 
 本轮形成了四个可独立审查的垂直切片：

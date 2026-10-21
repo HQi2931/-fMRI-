@@ -245,6 +245,66 @@ def test_result_projection_uses_active_attempt_after_proposal_revision() -> None
     assert progress.continuation_message_id == "result-message"
 
 
+def test_proposal_budget_exhaustion_has_a_specific_waiting_user_reason() -> None:
+    snapshot = _completed_snapshot()
+    proposal = snapshot.analysis_proposal_outbox
+    assert proposal is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "goal": snapshot.goal.model_copy(
+                update={
+                    "analysis_work_task_id": None,
+                    "result_interpretation_outbox_task_id": None,
+                }
+            ),
+            "analysis_proposal_outbox": proposal.model_copy(
+                update={
+                    "status": AnalysisOutboxStatus.WAITING_USER,
+                    "last_error_code": "composite_goal_model_budget_exhausted",
+                    "analysis_work_task_id": None,
+                }
+            ),
+            "analysis_attempts": (),
+            "proposal_analysis_task": None,
+            "analysis_task": None,
+            "analysis_plan": None,
+            "analysis_run": None,
+            "result_interpretation_outbox": None,
+            "result_continuation_message": None,
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.WAITING_USER
+    assert progress.analysis_proposal_status == AnalysisOutboxStatus.WAITING_USER.value
+    assert progress.reason_code == "analysis_proposal_model_budget_exhausted"
+
+
+def test_result_interpretation_budget_exhaustion_has_a_specific_waiting_user_reason() -> None:
+    snapshot = _completed_snapshot()
+    interpretation = snapshot.result_interpretation_outbox
+    assert interpretation is not None
+    snapshot = snapshot.model_copy(
+        update={
+            "result_interpretation_outbox": interpretation.model_copy(
+                update={
+                    "status": ResultInterpretationStatus.WAITING_USER,
+                    "last_error_code": "composite_goal_model_budget_exhausted",
+                    "continuation_message_id": None,
+                }
+            ),
+            "result_continuation_message": None,
+        }
+    )
+
+    progress = project_composite_goal(snapshot)
+
+    assert progress.status is CompositeGoalStatus.WAITING_USER
+    assert progress.result_interpretation_status == ResultInterpretationStatus.WAITING_USER.value
+    assert progress.reason_code == "result_interpretation_model_budget_exhausted"
+
+
 def test_late_initial_attempt_cannot_project_goal_completion() -> None:
     snapshot = _completed_snapshot()
     late_old_task = snapshot.proposal_analysis_task
