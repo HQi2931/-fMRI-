@@ -2,6 +2,7 @@
 
 ## 2026-10-21
 
+- The Work page can register a scanned BIDS folder as a project and dataset, inspect and freeze its manifest, and open a project-bound conversation. The calculation directory defaults under the application-configured safe work root and remains separate from the read-only source; the existing unbound conversation stays available. BIDS staging is limited to manifest-listed single-session, single-run functional NIfTI and paired T1 inputs in isolated DPABI directories.
 - Added `POST /api/v1/skill-plans/dry-run` for read-only preprocessing and explicit metric-only Skill preflight. Metric-only callers must supply a registered `input_artifact_id`; existing manifest, source Plan, lineage, and single-subject checks remain active. The endpoint uses configured version labels without probing MATLAB/SPM/DPABI and creates no Plan, Approval, Run, event, or workspace files. It does not add a persistent metric-only Work draft.
 - Work now offers a separate metric-only checkpoint panel when the active conversation has a preprocessing task/run and a current project, dataset, and manifest context. The user explicitly selects a succeeded run, a verified functional-timeseries Artifact, metrics, and scientific parameters; the panel previews the image and calls the read-only Skill dry-run only. It does not create a Work draft, Plan, Approval, or Run, and the image preview is not scientific QC.
 

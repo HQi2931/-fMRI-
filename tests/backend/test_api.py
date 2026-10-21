@@ -946,6 +946,7 @@ def test_environment_config_accepts_user_selected_local_paths(
         assert response.status_code == 200
         assert response.json()["configured"] is True
         assert response.json()["dpabi_version"] == "DPABI-local"
+        assert response.json()["allowed_work_root"] == str(service.settings.allowed_work_root.resolve())
 
         restored = client.get("/api/v1/environment/config")
         assert restored.status_code == 200

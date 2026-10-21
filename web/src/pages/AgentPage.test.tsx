@@ -152,6 +152,9 @@ type Options = {
   retryResultInterpretation?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
   selectCompositeGoal?: (intentTaskId: string, init?: RequestInit) => Promise<Response>;
+  createProject?: (init?: RequestInit) => Promise<Response>;
+  createDataset?: (projectId: string, init?: RequestInit) => Promise<Response>;
+  inspectDataset?: (datasetId: string, init?: RequestInit) => Promise<Response>;
 };
 
 function installFetch(options: Options = {}) {
@@ -165,10 +168,19 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
     if (path.endsWith("/providers/models")) return json({ models: ["deepseek-chat", "deepseek-reasoner"] });
+    if (path.endsWith("/environment/config")) return json({
+      allowed_work_root: "D:/app/work", matlab_executable: null, spm_dir: null, dpabi_dir: null,
+      matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false,
+    });
     if (path.endsWith("/workspace/consents")) {
       if (method === "POST") return (options.grantWorkspaceConsent ?? (() => json({ error: { code: "workspace_tool_probe_failed", message: "所选模型未能通过工具调用测试。", details: {}, trace_id: "probe-trace" } }, 422)))();
       return (options.workspaceConsents ?? (() => json([])))();
     }
+    if (path.endsWith("/projects") && method === "POST") return options.createProject?.(init) ?? notFound();
+    const projectDatasets = path.match(/\/projects\/([^/]+)\/datasets$/)?.[1];
+    if (projectDatasets && method === "POST") return options.createDataset?.(decodeURIComponent(projectDatasets), init) ?? notFound();
+    const datasetInspection = path.match(/\/datasets\/([^/]+)\/inspect$/)?.[1];
+    if (datasetInspection && method === "POST") return options.inspectDataset?.(decodeURIComponent(datasetInspection), init) ?? notFound();
     if (path.endsWith("/workspaces/pick")) {
       return (options.picked ?? (() => json({ path: "D:/picked-work" })))();
     }
@@ -250,6 +262,61 @@ describe("agent workbench page", () => {
     expect(screen.queryByRole("checkbox", { name: "以指定的预处理结果新建分析目标" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "新建独立分析目标" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("预处理来源")).not.toBeInTheDocument();
+  });
+
+  it("registers a scanned BIDS source and opens a project session while keeping the unbound conversation", async () => {
+    const user = userEvent.setup();
+    const project = {
+      project_id: "project-demo", name: "rs-fMRI 项目 · demo-work",
+      source_roots: ["D:/demo-work"], work_root: "D:/app/work/demo-work-project", version: 1, created_at: now,
+    };
+    const dataset = {
+      dataset_id: "dataset-demo", project_id: project.project_id, name: "demo-work",
+      source_path: "D:/demo-work", version: 1, current_manifest_id: "manifest-demo", created_at: now,
+    };
+    const manifest = {
+      manifest_id: "manifest-demo", dataset_id: dataset.dataset_id, revision: 1,
+      content_hash: "a".repeat(64), created_at: now,
+      profile: { kind: "bids", file_count: 4, nifti_count: 2, dicom_count: 0, subject_count: 1, issues: [], warnings: [] },
+      subjects: [{ subject_id: "sub-01", session_id: null, functional_files: ["sub-01_task-rest_bold.nii.gz"], anatomical_files: ["sub-01_T1w.nii.gz"], dicom_files: [] }],
+    };
+    const boundConversation = conversation({
+      conversation_id: "work-bound", title: project.name, project_id: project.project_id,
+      workspace_path: "D:/demo-work",
+    });
+    const fetchMock = installFetch({
+      conversations: () => json([conversation()]),
+      workspaceCheck: () => json({
+        path: "D:/demo-work", kind: "bids", file_count: 4, nifti_count: 2, dicom_count: 0,
+        subject_count: 1, functional_subject_count: 1, anatomical_subject_count: 1,
+        input_stage: null, selected_input_stage: null, stage_selection_required: false,
+        stage_candidates: [], output_directories: [], invalid_nifti_files: [], issues: [], warnings: [],
+        subjects: [], checked_at: now,
+      }),
+      createProject: () => json(project, 201),
+      createDataset: () => json(dataset, 201),
+      inspectDataset: () => json(manifest),
+      created: () => json(boundConversation, 201),
+      dataset: () => json(dataset),
+      manifest: () => json(manifest),
+    });
+
+    render(<AgentPage />);
+
+    await user.click(await screen.findByText("将当前 BIDS 数据集登记为项目"));
+    expect(await screen.findByLabelText("项目名称")).toHaveValue("rs-fMRI 项目 · demo-work");
+    await waitFor(() => expect(screen.getByLabelText("独立计算目录")).toHaveValue("D:/app/work/demo-work-project"));
+    await user.click(screen.getByRole("checkbox", { name: /我已核对来源目录/ }));
+    await user.click(screen.getByRole("button", { name: "登记项目并扫描清单" }));
+
+    await screen.findByText("登记人口学表");
+    expect(screen.getByRole("option", { name: "DemoData ALFF" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: project.name })).toBeInTheDocument();
+    const projectCall = fetchMock.mock.calls.find(([input]) => pathOf(input) === "/api/v1/projects");
+    expect(projectCall?.[1]?.body).toBe(JSON.stringify({
+      name: project.name, source_roots: ["D:/demo-work"], work_root: "D:/app/work/demo-work-project",
+    }));
+    expect(fetchMock.mock.calls.some(([input]) => pathOf(input) === "/api/v1/datasets/dataset-demo/inspect")).toBe(true);
   });
 
   it("limits metric-only checkpoint sources to preprocessing Runs from the active conversation", async () => {

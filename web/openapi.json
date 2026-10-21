@@ -2484,6 +2484,10 @@
       "EnvironmentConfigView": {
         "additionalProperties": false,
         "properties": {
+          "allowed_work_root": {
+            "title": "Allowed Work Root",
+            "type": "string"
+          },
           "configured": {
             "title": "Configured",
             "type": "boolean"
@@ -2535,6 +2539,7 @@
           }
         },
         "required": [
+          "allowed_work_root",
           "matlab_version",
           "spm_version",
           "dpabi_version",

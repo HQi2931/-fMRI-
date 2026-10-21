@@ -37,6 +37,7 @@ class EnvironmentConfigUpdate(StrictModel):
 
 
 class EnvironmentConfigView(StrictModel):
+    allowed_work_root: str
     matlab_executable: str | None = None
     spm_dir: str | None = None
     dpabi_dir: str | None = None

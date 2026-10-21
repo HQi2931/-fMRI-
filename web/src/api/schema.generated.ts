@@ -2456,6 +2456,8 @@ export interface components {
         };
         /** EnvironmentConfigView */
         EnvironmentConfigView: {
+            /** Allowed Work Root */
+            allowed_work_root: string;
             /** Configured */
             configured: boolean;
             /** Dpabi Dir */

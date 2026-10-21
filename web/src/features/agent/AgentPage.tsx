@@ -26,6 +26,7 @@ import { WorkDraftPanel } from "../../components/WorkDraftPanel";
 import { WorkRunPanel } from "../../components/WorkRunPanel";
 import { ExternalAnalysisImportPanel } from "../../components/ExternalAnalysisImportPanel";
 import { DatasetDemographicsPanel } from "../../components/DatasetDemographicsPanel";
+import { WorkspaceProjectSetupPanel, type WorkspaceProjectRegistration } from "../../components/WorkspaceProjectSetupPanel";
 import { MetricOnlyCheckpointPicker } from "./MetricOnlyCheckpointPicker";
 import { updateWorkspace, useWorkspace } from "../../workspace";
 import "./agent-work.css";
@@ -723,6 +724,39 @@ export function AgentPage() {
     } catch (caught) { setError(describeError(caught)); } finally { setBusy(false); }
   }
 
+  async function openRegisteredProject(registration: WorkspaceProjectRegistration): Promise<void> {
+    if (busy || draftDirty) return;
+    setBusy(true); setError("");
+    try {
+      const created = await agentApi.createConversation({
+        mode: "work",
+        title: registration.project.name,
+        project_id: registration.project.project_id,
+        workspace_path: workspacePath,
+        preferred_profile_id: selectedModel?.profileId ?? null,
+      });
+      cache(created);
+      setPendingTurn(null);
+      setAgentRole("auto");
+      setExternalSource(null);
+      setAnalysisSourceSelection(null);
+      setAnalysisGoalCreationSelection(null);
+      updateWorkspace({
+        workspacePath,
+        projectId: registration.project.project_id,
+        projectVersion: registration.project.version,
+        datasetId: registration.dataset.dataset_id,
+        datasetVersion: registration.dataset.version + 1,
+        manifestId: registration.manifest.manifest_id,
+        manifestHash: registration.manifest.content_hash,
+        subjectIds: registration.manifest.subjects.map((subject) => subject.subject_id),
+      });
+    } catch (caught) {
+      setError(describeError(caught));
+      throw caught;
+    } finally { setBusy(false); }
+  }
+
   async function chooseWorkspace(): Promise<void> {
     setBusy(true); setError("");
     try {
@@ -989,6 +1023,13 @@ export function AgentPage() {
         onStageChange={setSelectedInputStage}
         onConsent={() => void (workspaceConsent ? revokeWorkspaceConsent() : grantWorkspaceConsent())}
       >
+        {mode === "work" && workspaceCheck?.kind === "bids" && workspaceCheck.issues.length === 0
+          && !boundProjectId && !workspace.projectId && <WorkspaceProjectSetupPanel
+            path={workspacePath}
+            check={workspaceCheck}
+            disabled={busy || draftDirty}
+            onProjectReady={openRegisteredProject}
+          />}
         {boundProjectId && workspace.datasetId && <DatasetDemographicsPanel
           key={`${boundProjectId}:${workspace.datasetId}`}
           datasetId={workspace.datasetId}
