@@ -773,6 +773,9 @@ export function AgentPage() {
   const observedRunState = activeRun?.state;
   const pendingResultInterpretationId = observedRunId && observedRunState === "succeeded"
     ? pendingResultInterpretationTaskId(activeConversation, observedRunId) : null;
+  const hasAnalysisTaskForObservedRun = Boolean(observedRunId && activeConversation?.work_tasks?.some(
+    (item) => item.agent_role === "analysis" && item.run_id === observedRunId,
+  ));
 
   useEffect(() => {
     const runId = monitoredRunId;
@@ -814,10 +817,7 @@ export function AgentPage() {
     const controller = new AbortController();
     const intentTaskId = pendingOutboxIntentId;
     const resultTaskId = pendingResultInterpretationId;
-    const hasAnalysisTaskForRun = activeConversation?.work_tasks?.some(
-      (item) => item.agent_role === "analysis" && item.run_id === observedRunId,
-    ) ?? false;
-    if (observedRunState === "succeeded" && hasAnalysisTaskForRun && !resultTaskId) return;
+    if (observedRunState === "succeeded" && hasAnalysisTaskForObservedRun && !resultTaskId) return;
     const maxRefreshes = ((intentTaskId || resultTaskId) && observedRunState === "succeeded")
       ? MAX_OUTBOX_CONVERSATION_REFRESHES : 1;
     let refreshes = 0;
@@ -845,7 +845,7 @@ export function AgentPage() {
     };
     void refresh();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [activeConversation?.conversation_id, activeConversation?.version, activeConversation?.work_tasks, boundToSelectedWorkspace, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
+  }, [activeConversation?.conversation_id, activeConversation?.version, boundToSelectedWorkspace, hasAnalysisTaskForObservedRun, mode, monitoredRunId, observedRunId, observedRunState, pendingOutboxIntentId, pendingResultInterpretationId, taskRunId]);
 
   useEffect(() => {
     if (mode !== "work" || !activeConversationId || !workspacePath) { setWorkspaceEntries([]); return; }

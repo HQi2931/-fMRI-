@@ -6,6 +6,12 @@
 - 更新日期：2026-10-21
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-21 Work 会话详情 GET 风暴修复
+
+本地 Work 浏览器发现终态运行观察会在会话详情刷新后重新触发自身：刷新将返回的新 `work_tasks` 数组引用作为 effect 依赖，即使会话版本和任务内容不变也会再次请求详情。现场性能记录约 4 秒出现 231 次同一会话 GET，关闭页面后请求停止。前端改为按稳定会话/运行身份、会话版本和任务语义布尔值订阅，稳定终态快照只触发一次详情读取；待处理 outbox 的有限退避刷新仍保留。
+
+新增 AgentPage 回归在旧实现下稳定复现第二次详情请求；修复后 `AgentPage.test.tsx` 76 项通过，覆盖无 outbox 的同快照只读取一次。TypeScript、改动文件 ESLint、生产构建和 `scripts/check-docs.ps1`（92 份 Markdown）通过。重新打开本机生产页面并保持已有终态运行卡片时，Performance Resource API 记录该会话详情 GET 1 次；页面稳定期间没有重复请求。验证使用 Mock API/现有只读会话，不调用真实 Provider、MATLAB 或 DPABI，也未发送新的 Work 回合。
+
 ## 2026-10-21 显式预处理目标 admission 与预算
 
 显式 `preprocess_then_analyze` intent 会在 Work 模型生成之前将原始用户消息、复合目标身份和共享模型预算写入 SQLite，并以确定性消息 ID 与请求幂等键保证故障后恢复和重放稳定。成功准备 Plan 后，应用层从已接纳用户消息核对 conversation/project/hash，再在同一事务中保存预处理 WorkTask 并只绑定一个 Task。缺失 root、错项目、错 hash、错配第二个 Task 或模型 payload 改写身份均 fail closed。迁移 0035 保留旧库记录并允许未绑定 root；若存在未绑定 root，降级会拒绝而不丢失它。提案和结果解释 outbox 未改变；Plan 审查、批准、QC 审查与显式 Run 启动仍是既有边界。本切片不声称统计阶段已被自动启动。

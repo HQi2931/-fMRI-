@@ -1366,6 +1366,36 @@ describe("agent workbench page", () => {
     expect(fetchSpy.mock.calls.filter(([input]) => /^\/api\/v1\/runs\/run-1$/.test(pathOf(input))).length).toBeGreaterThanOrEqual(2);
   });
 
+  it("refreshes a terminal run's conversation once when the task snapshot is unchanged", async () => {
+    const workTasks = [{ agent_role: "preprocessing", work_task_id: "prep-1", run_id: "run-1" }];
+    const trackedConversation = conversation({
+      active_run_id: "run-1",
+      foreground_agent_role: "preprocessing",
+      work_tasks: workTasks,
+    });
+    const run = () => json({
+      run_id: "run-1", project_id: null, plan_revision_id: "plan-1", state: "failed_terminal",
+      version: 2, attempt: 1, cancel_requested: false, error: null, qc_mode: "require",
+      qc_status: "not_required", stage: "failed_terminal", stage_progress: 0,
+      created_at: now, updated_at: now,
+    });
+    let refreshCount = 0;
+    const refreshConversation = vi.fn(() => {
+      refreshCount += 1;
+      return refreshCount === 1
+        ? json({ ...trackedConversation, work_tasks: [...workTasks] })
+        : new Promise<Response>(() => {});
+    });
+    installFetch({ conversations: () => json([trackedConversation]), conversation: refreshConversation, run });
+
+    render(<AgentPage />);
+
+    expect(await screen.findByRole("heading", { name: "计算失败" })).toBeInTheDocument();
+    await waitFor(() => expect(refreshConversation).toHaveBeenCalledOnce());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(refreshConversation).toHaveBeenCalledOnce();
+  });
+
   it("tracks and reports a preprocessing MATLAB failure while the analysis Agent is selected", async () => {
     const run = vi.fn(() => json({
       run_id: "run-preprocessing", project_id: "project-1", plan_revision_id: "plan-1",
