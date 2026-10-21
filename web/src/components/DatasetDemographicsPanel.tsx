@@ -7,14 +7,13 @@ import { updateWorkspace } from "../workspace";
 
 type Props = {
   datasetId: string;
-  workspacePath?: string;
   disabled?: boolean;
 };
 
-function defaultTablePath(workspacePath: string | undefined): string {
-  if (!workspacePath) return "";
-  const trimmed = workspacePath.replace(/[\\/]+$/, "");
-  const separator = workspacePath.includes("\\") ? "\\" : "/";
+function defaultTablePath(datasetPath: string): string {
+  if (!datasetPath) return "";
+  const trimmed = datasetPath.replace(/[\\/]+$/, "");
+  const separator = datasetPath.includes("\\") ? "\\" : "/";
   return `${trimmed}${separator}participants.tsv`;
 }
 
@@ -22,14 +21,14 @@ function supportedTablePath(path: string): boolean {
   return /\.(csv|tsv)$/i.test(path.trim());
 }
 
-export function DatasetDemographicsPanel({ datasetId, workspacePath, disabled = false }: Props) {
+export function DatasetDemographicsPanel({ datasetId, disabled = false }: Props) {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
-  const [sourcePath, setSourcePath] = useState(() => defaultTablePath(workspacePath));
+  const [sourcePath, setSourcePath] = useState("");
   const [subjectIdColumn, setSubjectIdColumn] = useState("");
   const [groupColumn, setGroupColumn] = useState("");
   const [ageColumn, setAgeColumn] = useState("");
@@ -44,10 +43,17 @@ export function DatasetDemographicsPanel({ datasetId, workspacePath, disabled = 
     setDataset(null);
     setManifest(null);
     setRevision(null);
+    setSourcePath("");
+    setSubjectIdColumn("");
+    setGroupColumn("");
+    setAgeColumn("");
+    setSexColumn("");
+    setMappingConfirmed(false);
     void projectsApi.dataset(datasetId, controller.signal)
       .then(async (value) => {
         if (controller.signal.aborted) return;
         setDataset(value);
+        setSourcePath(defaultTablePath(value.source_path));
         if (!value.current_manifest_id) {
           setManifest(null);
           return;
@@ -63,15 +69,6 @@ export function DatasetDemographicsPanel({ datasetId, workspacePath, disabled = 
       });
     return () => controller.abort();
   }, [datasetId]);
-
-  useEffect(() => {
-    setSourcePath(defaultTablePath(workspacePath));
-    setSubjectIdColumn("");
-    setGroupColumn("");
-    setAgeColumn("");
-    setSexColumn("");
-    setMappingConfirmed(false);
-  }, [datasetId, workspacePath]);
 
   const selectedSourceColumns = useMemo(
     () => [subjectIdColumn.trim(), groupColumn.trim(), ageColumn.trim(), sexColumn.trim()].filter(Boolean),

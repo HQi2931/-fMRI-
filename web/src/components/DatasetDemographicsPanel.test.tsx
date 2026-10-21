@@ -25,7 +25,7 @@ const dataset = {
   dataset_id: "dataset-1",
   project_id: "project-1",
   name: "OpenNeuro demo",
-  source_path: "D:\\Study",
+  source_path: "D:\\Study\\ds002748-v1.0.5",
   version: 4,
   current_manifest_id: "manifest-1",
   created_at: "2026-10-21T00:00:00Z",
@@ -67,11 +67,11 @@ beforeEach(() => {
 
 describe("project demographics registration", () => {
   it("requires explicit source columns and confirmation before registering a CSV/TSV", async () => {
-    render(<DatasetDemographicsPanel datasetId="dataset-1" workspacePath={"D:\\Study"} />);
+    render(<DatasetDemographicsPanel datasetId="dataset-1" />);
 
     expect(await screen.findByText("冻结清单：2 名受试者 · 修订 2")).toBeInTheDocument();
     const path = screen.getByLabelText("CSV/TSV 文件路径");
-    expect(path).toHaveValue("D:\\Study\\participants.tsv");
+    expect(path).toHaveValue("D:\\Study\\ds002748-v1.0.5\\participants.tsv");
     const subjectId = screen.getByLabelText("受试者 ID 列（例如 participant_id）");
     const group = screen.getByLabelText("组别列 → 分析字段 group（例如 group）");
     expect(subjectId).toHaveValue("");
@@ -90,7 +90,7 @@ describe("project demographics registration", () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(projectsApi.importDemographics).toHaveBeenCalledWith("dataset-1", {
-      source_path: "D:\\Study\\participants.tsv",
+      source_path: "D:\\Study\\ds002748-v1.0.5\\participants.tsv",
       subject_id_column: "participant_id",
       column_mapping: { group: "group" },
       encoding: "utf-8-sig",
@@ -112,7 +112,7 @@ describe("project demographics registration", () => {
       missing_subject_ids: ["sub-02"],
       extra_subject_ids: ["sub-99"],
     });
-    render(<DatasetDemographicsPanel datasetId="dataset-1" workspacePath="D:\\Study" />);
+    render(<DatasetDemographicsPanel datasetId="dataset-1" />);
     await screen.findByText("冻结清单：2 名受试者 · 修订 2");
     fireEvent.change(screen.getByLabelText("受试者 ID 列（例如 participant_id）"), { target: { value: "participant_id" } });
     fireEvent.change(screen.getByLabelText("组别列 → 分析字段 group（例如 group）"), { target: { value: "group" } });
@@ -125,7 +125,7 @@ describe("project demographics registration", () => {
 
   it("shows server validation failures and refuses repeated source columns", async () => {
     vi.mocked(projectsApi.importDemographics).mockRejectedValue(new Error("重复的受试者编号"));
-    render(<DatasetDemographicsPanel datasetId="dataset-1" workspacePath="D:\\Study" />);
+    render(<DatasetDemographicsPanel datasetId="dataset-1" />);
     await screen.findByText("冻结清单：2 名受试者 · 修订 2");
     const subjectId = screen.getByLabelText("受试者 ID 列（例如 participant_id）");
     const group = screen.getByLabelText("组别列 → 分析字段 group（例如 group）");
@@ -142,7 +142,7 @@ describe("project demographics registration", () => {
 
   it("blocks registration when there is no frozen manifest", async () => {
     vi.mocked(projectsApi.dataset).mockResolvedValue({ ...dataset, current_manifest_id: null });
-    render(<DatasetDemographicsPanel datasetId="dataset-1" workspacePath="D:\\Study" />);
+    render(<DatasetDemographicsPanel datasetId="dataset-1" />);
     expect(await screen.findByText("请先检查并冻结当前数据集的受试者清单，再登记人口学表。")).toBeInTheDocument();
     expect(projectsApi.importDemographics).not.toHaveBeenCalled();
   });

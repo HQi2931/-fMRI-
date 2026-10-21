@@ -992,7 +992,6 @@ export function AgentPage() {
         {boundProjectId && workspace.datasetId && <DatasetDemographicsPanel
           key={`${boundProjectId}:${workspace.datasetId}`}
           datasetId={workspace.datasetId}
-          workspacePath={workspacePath}
           disabled={busy || draftDirty}
         />}
         {workspaceEntries.length > 0 && <details className="workspace-scope"><summary>文件范围（{selectedScope.length ? `已选 ${selectedScope.length} 项` : "默认按需读取"}）</summary><p>仅勾选的文件会暴露给本轮文件工具；不选择则使用整个已授权工作区。</p>{workspaceEntries.map((entry) => <label key={entry.path}><input type="checkbox" checked={selectedScope.includes(entry.path)} onChange={(event) => setSelectedScope((items) => event.target.checked ? [...items, entry.path] : items.filter((item) => item !== entry.path))} /> <code>{entry.path}</code></label>)}</details>}
