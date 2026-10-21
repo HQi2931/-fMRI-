@@ -60,6 +60,37 @@ def test_matlab_startup_permission_diagnosis_is_actionable_and_redacted() -> Non
     assert private_path not in "\n".join(diagnosis.evidence)
 
 
+@pytest.mark.parametrize(
+    ("private_path", "private_fragments"),
+    [
+        (
+            r"C:\Users\Jane Doe\Research Data\sub-001\func.nii",
+            ("Jane Doe", "Research Data", "func.nii"),
+        ),
+        (
+            r"\\ResearchServer\Studies With Space\Lab Members\sub-001\func.nii",
+            ("ResearchServer", "Studies With Space", "Lab Members", "func.nii"),
+        ),
+    ],
+)
+def test_dpabi_diagnosis_redacts_full_windows_and_unc_paths_with_spaces(
+    private_path: str, private_fragments: tuple[str, ...]
+) -> None:
+    diagnosis = diagnose_dpabi_log(f"Error using load: cannot read {private_path}")
+
+    assert diagnosis.code is FailureCode.UNKNOWN
+    assert diagnosis.severity == "error"
+    evidence = "\n".join(diagnosis.evidence)
+    assert "<path>" in evidence
+    assert all(fragment not in evidence for fragment in private_fragments)
+
+
+def test_dpabi_log_redaction_keeps_non_path_slashes() -> None:
+    diagnosis = diagnose_dpabi_log("Error using compare: expected ratio 4 / 2")
+
+    assert "4 / 2" in "\n".join(diagnosis.evidence)
+
+
 def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:
     assert diagnose_dpabi_log("user cancelled").code is FailureCode.CANCELLED
     ordinary = diagnose_dpabi_log("DPABI started\nprocessing volume 42\n")

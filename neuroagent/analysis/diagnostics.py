@@ -86,11 +86,19 @@ _UNRECOGNIZED_ERROR_LINE = re.compile(
     r"(?:std::)?exception\b|assertion failed\b|matlab\s*:\s*error)",
     re.IGNORECASE,
 )
+_ABSOLUTE_PATH_START = re.compile(
+    r"(?i)(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|"
+    r"(?<![\w:/])/(?!/)(?=\S))"
+)
 
 
 def _safe_line(line: str) -> str:
     value = line.strip()
-    value = re.sub(r"(?i)([A-Z]:\\|/)(?:[^\s\\/]+[\\/])*[^\s]+", "<path>", value)
+    # Windows and UNC paths can contain spaces, so redact from an absolute-path
+    # prefix through the end of the line instead of stopping at the first space.
+    path_start = _ABSOLUTE_PATH_START.search(value)
+    if path_start is not None:
+        value = f"{value[: path_start.start()]}<path>"
     value = re.sub(r"(?i)(subject|sub|participant)[-_ ]?[A-Za-z0-9]+", r"\1<id>", value)
     value = re.sub(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "<email>", value)
     return value[:500]
