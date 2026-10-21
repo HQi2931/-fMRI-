@@ -245,11 +245,13 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 应用层通过 `StepPreparationClaim` 重新解析 task/step/version/input fingerprint，并核验 Work 会话、项目及类型专属 Plan/input 身份后，使用 `save_task(expected_version, step_preparation_claim=claim)` 原子提交。预处理只接受可审查的冻结 SkillPlan，并重新推导确切目标 Artifact 集；它按精确 Plan revision、项目和冻结 manifest/hash 验证输入。统计 Plan 校验 conversation、proposal hash、draft hash、design 和 Plan hash。新增只读 review API 在查询时重读上述身份：预处理返回精确修订、项目、冻结输入和 outputs；统计返回与当前会话及提案匹配的 work_context 和 design。当前 `PlanRevision` 没有 `conversation_id` 字段，因此预处理服务不能证明该 Plan 是由当前会话创建的；这是明确记录的身份边界。Plan 可以待审查，但查询不会审批、创建 Run 或生成对话消息。
 
-现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务。新增 review route 只返回 DTO；为避免误选同类型前驱或重复步骤，本切片不放宽旧入口，也未增加步骤级 approval/confirmation 或 Run 创建接口。统计 Run 的 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。后续仍需把精确步骤身份传入确认、Run 创建绑定与多步 readiness/finalizer。因此当前实现提供的是可核验的只读审查数据，不是多步骤用户可执行闭环。
+在只读审查 API 切片完成时，现有 Work confirmation 和 Run 创建入口仍根据 `preprocessing_task_id(conversation, plan)`、`analysis_proposal_task_id(conversation, proposal)` 与角色级任务链接选择单步骤任务；该切片没有增加步骤级 approval/confirmation 或 Run 创建接口。统计 Run 的 APPROVED 检查继续有效，但尚不能由多步骤待审查状态触达。2026-10-21 的后续闭环见下方记录。
 
 2026-10-21 Work 前端已接入只读审查面板。列表只返回经服务端重核的预处理/统计参数摘要；统计纳入明细仅在用户主动展开时读取，并采用 allow-list DTO，仅包含表格所需的被试编号、组别、条件和协变量。详情从同一个 deferred SQLite read snapshot 重核身份，不返回完整 Plan 或 Artifact ID，也不占用 `BEGIN IMMEDIATE` 写锁。活动目标或待审查项会定时刷新，并提示候选截断。该切片仍没有步骤级批准/启动入口；当前生产 WorkTask 也尚未创建 READY 后继，所以它不代表多步骤执行或 20 人数据的 MATLAB 端到端验收已完成。
 
-新增 lifecycle/service/persistence 覆盖 Plan 审查转换、前驱引用保留、精确 review wait、多步骤 Run 绑定重放/拒绝条件、权威项目/输入核验及过期 claim 写入拒绝。未运行 MATLAB/DPABI。
+2026-10-21 后续接通精确步骤操作：用户可以批准仍绑定当前唯一 READY TaskStep 的 `awaiting_approval` Plan。批准请求同时提交 Task、Step、Plan 版本和 Plan hash，服务端在同一 Unit of Work 重读身份后复用既有 Plan approval；启动前必须再由用户选择 Mock 或本机 MATLAB、工作区和预处理 QC 处理，签发的短时 ConfirmationChallenge 绑定 conversation/project/task/step、各版本、Plan hash、后端、工作区与 QC。Run 创建、Challenge 单次消费和精确 TaskStep/Task Run 绑定原子提交；统计步骤仍强制已批准的统计 Plan、隔离工作区及必需 QC 来源。任何版本/引用改变、缺少当前批准、错项目/会话或错 Challenge 均明确阻断；Run 的执行仍由原 Worker 和 QC/结果检查器负责。Mock 参数仅写入 Mock executor payload。该接口只启动一个已进入精确 review wait 的步骤，不生成 READY successor、不自动推进后续步骤，也未验证生产系统能产生后继步骤。
+
+定向验证：步骤审查与精确步骤操作后端 API/service 测试 16 项通过，统计 Run 误指向其他步骤会在 Run 创建前阻断且不改 Task；0036 升级/降级测试 1 项通过。`StepPlanReviewPanel` 测试 9 项通过，覆盖精确版本批准、独立签发一次性确认、再次确认前不发起 Run，以及按预处理/统计步骤约束展示的启动设置。涉及后端 15 个 Python 文件 Ruff check/format 通过，11 个源文件 Mypy 通过；前端 typecheck、ESLint、生产构建、OpenAPI/TypeScript 生成、文档规范与 `git diff --check` 通过。集成测试仅创建并持久化 Mock queued Run，没有运行 Worker；未调用 Provider、MATLAB 或 DPABI。真实生产 Task 生成 READY successor、后续步骤自动推进和 20 人数据验收仍未完成。
 
 ### 阶段 B 多步骤准备链路接线审查（2026-10-15）
 

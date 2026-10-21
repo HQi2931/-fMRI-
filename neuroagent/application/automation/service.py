@@ -80,20 +80,33 @@ from neuroagent.application.automation.step_readiness import (
 from neuroagent.application.contracts.automation import (
     PreprocessingPlanSummaryView,
     StatisticalPlanSummaryView,
+    StepPlanActionIdentity,
+    StepPlanApproveCreate,
+    StepPlanApproveView,
     StepPlanReviewCovariateDetailView,
     StepPlanReviewCovariateValueDetailView,
     StepPlanReviewDetailView,
     StepPlanReviewImageDetailView,
     StepPlanReviewListView,
     StepPlanReviewSummaryView,
+    StepRunAuthorizationCreate,
+    StepRunAuthorizationView,
+    StepRunStartCreate,
+    StepRunStartView,
     VerifiedStepPlanReviewSnapshot,
 )
-from neuroagent.application.contracts.conversations import ConversationMode, ConversationRole
+from neuroagent.application.contracts.conversations import (
+    ConfirmationChallengeView,
+    ConversationMode,
+    ConversationRole,
+)
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
-from neuroagent.application.contracts.runs import ArtifactView
+from neuroagent.application.contracts.plans import ApprovalCreate, ApprovalView
+from neuroagent.application.contracts.runs import ArtifactView, RunCreate, RunView
 from neuroagent.application.contracts.statistics import (
     StatisticalResultDetailView,
     StatisticalResultView,
+    StatisticsRunCreate,
 )
 from neuroagent.application.errors import (
     ConflictError,
@@ -133,7 +146,7 @@ from neuroagent.domain.fmri.preprocessing_outputs import (
 )
 from neuroagent.domain.fmri.results import StatisticalResultMode
 from neuroagent.domain.fmri.statistics import StatisticalDesignRevision
-from neuroagent.domain.lifecycle import PlanState, WorkflowState
+from neuroagent.domain.lifecycle import ApprovalDecision, PlanState, WorkflowState
 from neuroagent.skills.models import SkillPlan, stable_hash
 
 
@@ -1279,14 +1292,357 @@ class WorkTaskApplicationService:
                 conversation_id=review.conversation_id,
                 project_id=review.project_id,
                 task_id=review.task_id,
+                task_version=review.task_version,
                 step_id=review.step_id,
                 step_sequence=review.step_sequence,
+                step_version=review.step_version,
                 plan_revision_id=review.plan_revision_id,
                 plan_revision=review.plan.revision,
+                plan_version=review.plan_version,
                 plan_hash=review.plan_hash,
                 images=images,
                 covariates=covariates,
             )
+
+    @staticmethod
+    def _require_step_action_identity(
+        review: VerifiedStepPlanReviewSnapshot, identity: StepPlanActionIdentity
+    ) -> None:
+        expected = (
+            review.task_version,
+            review.step_version,
+            review.plan_revision_id,
+            review.plan_version,
+            review.plan_hash,
+        )
+        received = (
+            identity.task_version,
+            identity.step_version,
+            identity.plan_revision_id,
+            identity.plan_version,
+            identity.plan_hash,
+        )
+        if received != expected:
+            raise ConflictError(
+                "step_plan_review_identity_stale",
+                "Task、步骤或冻结 Plan 已变化；请刷新方案后重新确认。",
+                task_id=review.task_id,
+                step_id=review.step_id,
+                plan_revision_id=review.plan_revision_id,
+            )
+
+    def approve_step_plan(
+        self,
+        conversation_id: str,
+        task_id: str,
+        step_id: str,
+        request: StepPlanApproveCreate,
+        *,
+        idempotency_key: str,
+        approve_plan: Callable[[str, ApprovalCreate, str], ApprovalView],
+    ) -> StepPlanApproveView:
+        """Approve only the unchanged Plan currently bound to this READY step."""
+
+        with self.atomic():
+            review = self._read_step_plan_review(conversation_id, task_id, step_id)
+            self._require_step_action_identity(review, request)
+            if review.plan_state is PlanState.APPROVED:
+                raise ConflictError(
+                    "step_plan_already_approved", "该步骤方案已经批准；请刷新后继续启动确认。"
+                )
+            if review.plan_state is not PlanState.AWAITING_APPROVAL:
+                raise ConflictError(
+                    "step_plan_not_reviewable",
+                    "当前 Plan 尚未进入可批准状态；请重新准备或校验方案。",
+                )
+            approval = approve_plan(
+                review.plan_revision_id,
+                ApprovalCreate(
+                    expected_version=review.plan_version,
+                    plan_hash=review.plan_hash,
+                    actor=request.actor,
+                    decision=ApprovalDecision.APPROVED,
+                    reason=request.reason,
+                ),
+                idempotency_key,
+            )
+            return StepPlanApproveView(
+                conversation_id=conversation_id,
+                project_id=review.project_id,
+                task_id=task_id,
+                step_id=step_id,
+                plan_revision_id=review.plan_revision_id,
+                plan_hash=review.plan_hash,
+                approval=approval,
+            )
+
+    def create_step_run_authorization(
+        self,
+        conversation_id: str,
+        task_id: str,
+        step_id: str,
+        request: StepRunAuthorizationCreate,
+    ) -> StepRunAuthorizationView:
+        """Issue a one-use challenge scoped to one approved TaskStep and Run choice."""
+
+        with self.atomic():
+            review = self._read_step_plan_review(conversation_id, task_id, step_id)
+            self._require_step_action_identity(review, request)
+            self._require_approved_step_plan(review)
+            if review.step_kind == "statistical_run" and request.qc_mode.value != "require":
+                raise ConflictError(
+                    "step_statistics_qc_mode_invalid",
+                    "统计步骤沿用冻结设计中的 QC 来源，不能在启动确认中跳过 QC。",
+                )
+            if review.step_kind == "statistical_run" and request.workspace_mode.value != "isolated":
+                raise ConflictError(
+                    "step_statistics_workspace_mode_invalid",
+                    "统计步骤只支持隔离工作区。",
+                )
+            authorization = self._conversation_repository.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=review.project_id,
+                plan_revision_id=review.plan_revision_id,
+                plan_hash=review.plan_hash,
+                qc_mode=request.qc_mode,
+                task_id=task_id,
+                step_id=step_id,
+                task_version=review.task_version,
+                step_version=review.step_version,
+                plan_version=review.plan_version,
+                execution_backend=request.execution_backend,
+                workspace_mode=request.workspace_mode,
+            )
+            return StepRunAuthorizationView(
+                conversation_id=conversation_id,
+                project_id=review.project_id,
+                task_id=task_id,
+                step_id=step_id,
+                plan_revision_id=review.plan_revision_id,
+                plan_hash=review.plan_hash,
+                authorization=authorization,
+            )
+
+    @staticmethod
+    def _require_approved_step_plan(review: VerifiedStepPlanReviewSnapshot) -> None:
+        if review.plan_state is not PlanState.APPROVED:
+            raise ConflictError(
+                "step_plan_approval_required",
+                "启动被阻断：请先批准当前精确步骤的冻结 Plan。",
+                task_id=review.task_id,
+                step_id=review.step_id,
+                plan_revision_id=review.plan_revision_id,
+            )
+
+    def start_step_run(
+        self,
+        conversation_id: str,
+        task_id: str,
+        step_id: str,
+        request: StepRunStartCreate,
+        *,
+        idempotency_key: str,
+        create_run: Callable[[RunCreate, str], RunView],
+        create_statistics_run: Callable[[StatisticsRunCreate, str], RunView],
+    ) -> StepRunStartView:
+        """Create, authorize and bind one Run atomically to the reviewed step."""
+
+        with self.atomic():
+            task = self._repository.get_task(task_id)
+            if task.authority_refs.workflow_run_id is not None:
+                step = next((item for item in task.steps if item.step_id == step_id), None)
+                if (
+                    step is None
+                    or step.authority_refs.workflow_run_id is None
+                    or task.authority_refs.plan_revision_id != request.plan_revision_id
+                ):
+                    raise ConflictError(
+                        "step_run_already_bound",
+                        "当前 WorkTask 已绑定其他 Run 或方案；请刷新任务状态。",
+                    )
+                run_id = step.authority_refs.workflow_run_id
+                run = self._run_repository.get_run(run_id)
+                conversation = self._conversation_repository.get_conversation(conversation_id)
+                self._require_work_conversation(conversation, conversation_id, run.project_id)
+                plan = self._plan_repository.get_plan(request.plan_revision_id)
+                if (
+                    task.authority_refs.conversation_id != conversation_id
+                    or run.plan_revision_id != request.plan_revision_id
+                    or plan.project_id != run.project_id
+                    or plan.plan_hash != request.plan_hash
+                    or plan.state is not PlanState.APPROVED
+                    or step.authority_refs.workflow_run_id != run_id
+                ):
+                    raise ConflictError(
+                        "step_run_binding_mismatch", "现有步骤 Run 引用无法通过项目和 Plan 核验。"
+                    )
+                self._consume_step_run_authorization(
+                    request,
+                    conversation_id=conversation_id,
+                    task_id=task_id,
+                    step_id=step_id,
+                    project_id=run.project_id,
+                    run_id=run_id,
+                )
+                return StepRunStartView(
+                    conversation_id=conversation_id,
+                    project_id=run.project_id,
+                    task_id=task_id,
+                    step_id=step_id,
+                    plan_revision_id=request.plan_revision_id,
+                    run=run,
+                )
+
+            review = self._read_step_plan_review(conversation_id, task_id, step_id)
+            self._require_step_action_identity(review, request)
+            self._require_approved_step_plan(review)
+            run_key = f"{idempotency_key}:step-run"
+            if review.step_kind == "preprocessing_run":
+                run = create_run(
+                    RunCreate(
+                        project_id=review.project_id,
+                        plan_revision_id=review.plan_revision_id,
+                        expected_plan_hash=review.plan_hash,
+                        max_attempts=request.max_attempts,
+                        execution_backend=request.execution_backend,
+                        workspace_mode=request.workspace_mode,
+                        real_execution_confirmed=request.real_execution_confirmed,
+                        qc_mode=request.qc_mode,
+                        mock_outcome=request.mock_outcome,
+                        mock_delay_ms=request.mock_delay_ms,
+                    ),
+                    run_key,
+                )
+            elif review.step_kind == "statistical_run":
+                run = create_statistics_run(
+                    StatisticsRunCreate(
+                        project_id=review.project_id,
+                        statistical_design_revision_id=review.plan_revision_id,
+                        expected_plan_hash=review.plan_hash,
+                        max_attempts=request.max_attempts,
+                        execution_backend=request.execution_backend,
+                        real_execution_confirmed=request.real_execution_confirmed,
+                        work_task_id=task_id,
+                        work_step_id=step_id,
+                    ),
+                    run_key,
+                )
+            else:
+                raise ConflictError(
+                    "step_run_kind_unsupported", "当前步骤类型没有已注册的 Run 创建器。"
+                )
+
+            if (
+                run.project_id != review.project_id
+                or run.plan_revision_id != review.plan_revision_id
+            ):
+                raise ConflictError(
+                    "step_run_created_scope_mismatch", "新建 Run 的项目或 Plan 身份与步骤不匹配。"
+                )
+            self._consume_step_run_authorization(
+                request,
+                conversation_id=conversation_id,
+                task_id=task_id,
+                step_id=step_id,
+                project_id=review.project_id,
+                run_id=run.run_id,
+            )
+            self._bind_reviewed_step_run(review, run)
+            return StepRunStartView(
+                conversation_id=conversation_id,
+                project_id=review.project_id,
+                task_id=task_id,
+                step_id=step_id,
+                plan_revision_id=review.plan_revision_id,
+                run=run,
+            )
+
+    def _consume_step_run_authorization(
+        self,
+        request: StepRunStartCreate,
+        *,
+        conversation_id: str,
+        task_id: str,
+        step_id: str,
+        project_id: str,
+        run_id: str,
+    ) -> ConfirmationChallengeView:
+        return self._conversation_repository.consume_confirmation_challenge(
+            confirmation_id=request.confirmation_id,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            plan_revision_id=request.plan_revision_id,
+            plan_hash=request.plan_hash,
+            qc_mode=request.qc_mode,
+            run_id=run_id,
+            task_id=task_id,
+            step_id=step_id,
+            task_version=request.task_version,
+            step_version=request.step_version,
+            plan_version=request.plan_version,
+            execution_backend=request.execution_backend,
+            workspace_mode=request.workspace_mode,
+        )
+
+    def _bind_reviewed_step_run(
+        self, review: VerifiedStepPlanReviewSnapshot, run: RunView
+    ) -> WorkTask:
+        current = self._read_step_plan_review(
+            review.conversation_id, review.task_id, review.step_id
+        )
+        self._require_step_action_identity(
+            current,
+            StepPlanActionIdentity(
+                task_version=review.task_version,
+                step_version=review.step_version,
+                plan_revision_id=review.plan_revision_id,
+                plan_version=review.plan_version,
+                plan_hash=review.plan_hash,
+            ),
+        )
+        self._require_approved_step_plan(current)
+        if run.project_id != current.project_id or run.plan_revision_id != current.plan_revision_id:
+            raise ConflictError(
+                "step_run_binding_mismatch", "Run 项目或 Plan 与当前步骤方案不一致。"
+            )
+        task = self._repository.get_task(current.task_id)
+        step = next((item for item in task.steps if item.step_id == current.step_id), None)
+        if step is None:
+            raise ConflictError("step_run_step_missing", "当前步骤已删除，Run 没有绑定。")
+        if current.step_kind == "statistical_run":
+            proposal_hash = step.input_version
+            if not proposal_hash:
+                raise ConflictError("step_run_statistical_input_missing", "统计步骤缺少提案哈希。")
+            self._require_active_composite_analysis_task(task, proposal_hash)
+        updated = bind_step_to_run(
+            task,
+            step,
+            run_id=run.run_id,
+            waiting_reason=(
+                "用户已批准并确认启动该步骤；等待统计 Workflow Run 和结果登记。"
+                if current.step_kind == "statistical_run"
+                else "用户已批准并确认启动该步骤；等待预处理 Workflow Run 完成。"
+            ),
+        )
+        if current.step_kind == "preprocessing_run":
+            conditions = tuple(
+                item
+                for item in updated.goal.completion_conditions
+                if not item.startswith("该 Run 存在 ")
+            )
+            condition = (
+                "该 Run 存在 approved 的头动 QC 审查记录。"
+                if run.qc_mode.value == "require"
+                else "该 Run 存在用户明确作出的 QC skip 记录。"
+            )
+            updated = updated.model_copy(
+                update={
+                    "goal": updated.goal.model_copy(
+                        update={"completion_conditions": (*conditions, condition)}
+                    )
+                }
+            )
+        return self._repository.save_task(updated, expected_version=task.version)
 
     def list_step_plan_reviews(self, conversation_id: str) -> StepPlanReviewListView:
         """List a bounded best-effort set of pending, verified Plan summaries.
@@ -1430,12 +1786,15 @@ class WorkTaskApplicationService:
             conversation_id=review.conversation_id,
             project_id=review.project_id,
             task_id=review.task_id,
+            task_version=review.task_version,
             step_id=review.step_id,
             step_sequence=review.step_sequence,
+            step_version=review.step_version,
             step_kind=review.step_kind,
             step_status=review.step_status,
             plan_revision_id=review.plan_revision_id,
             plan_revision=review.plan.revision,
+            plan_version=review.plan_version,
             plan_hash=review.plan_hash,
             plan_state=review.plan_state,
             execution_authorized=False,
@@ -1645,6 +2004,7 @@ class WorkTaskApplicationService:
             waiting_reference=waiting.reference,
             plan_revision_id=plan.plan_revision_id,
             plan_hash=plan.plan_hash,
+            plan_version=plan.version,
             plan_state=plan.state,
             plan=plan,
             expected_artifacts=expected_artifacts,

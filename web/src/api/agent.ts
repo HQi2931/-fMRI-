@@ -39,6 +39,12 @@ export const agentApi = {
     request<Schemas["StepPlanReviewListView"]>(`/conversations/${encodeURIComponent(conversationId)}/step-plan-reviews`, { signal }),
   stepPlanReview: (conversationId: string, taskId: string, stepId: string, signal?: AbortSignal) =>
     request<StepPlanReviewDetail>(`/conversations/${encodeURIComponent(conversationId)}/work-tasks/${encodeURIComponent(taskId)}/steps/${encodeURIComponent(stepId)}/review`, { signal }),
+  approveStepPlan: (conversationId: string, taskId: string, stepId: string, body: Schemas["StepPlanApproveCreate"]) =>
+    post<Schemas["StepPlanApproveView"]>(`/conversations/${encodeURIComponent(conversationId)}/work-tasks/${encodeURIComponent(taskId)}/steps/${encodeURIComponent(stepId)}/approve`, body),
+  createStepRunAuthorization: (conversationId: string, taskId: string, stepId: string, body: Schemas["StepRunAuthorizationCreate"]) =>
+    post<Schemas["StepRunAuthorizationView"]>(`/conversations/${encodeURIComponent(conversationId)}/work-tasks/${encodeURIComponent(taskId)}/steps/${encodeURIComponent(stepId)}/run-authorizations`, body),
+  startStepRun: (conversationId: string, taskId: string, stepId: string, body: Schemas["StepRunStartCreate"]) =>
+    post<Schemas["StepRunStartView"]>(`/conversations/${encodeURIComponent(conversationId)}/work-tasks/${encodeURIComponent(taskId)}/steps/${encodeURIComponent(stepId)}/run`, body),
   selectCompositeGoal: (conversationId: string, intentTaskId: string, expectedVersion: number, signal?: AbortSignal) =>
     post<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/composite-goals/${encodeURIComponent(intentTaskId)}/select`, { expected_version: expectedVersion }, signal),
   selectWorkAgent: (conversationId: string, body: Schemas["WorkAgentSelection"], signal?: AbortSignal) =>

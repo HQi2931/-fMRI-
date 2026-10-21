@@ -164,8 +164,6 @@ class RunMixin(BaseServiceMixin):
                 )
             self._require_plan_current(plan, verify_source_files=False)
             payload: dict[str, object] = {
-                "outcome": request.mock_outcome.value,
-                "delay_ms": request.mock_delay_ms,
                 "execution_backend": request.execution_backend.value,
                 "workspace_mode": request.workspace_mode.value,
                 "executor_type": (
@@ -179,6 +177,13 @@ class RunMixin(BaseServiceMixin):
                 "input_manifest_hash": plan.manifest_hash,
                 "environment_hash": plan.environment_hash,
             }
+            if request.execution_backend is ExecutionBackend.MOCK:
+                payload.update(
+                    {
+                        "outcome": request.mock_outcome.value,
+                        "delay_ms": request.mock_delay_ms,
+                    }
+                )
             if plan.plan.get("skill_plan"):
                 payload["workflow_plan"] = plan.plan["skill_plan"]
             if plan.state is PlanState.APPROVED:
@@ -466,6 +471,29 @@ class RunMixin(BaseServiceMixin):
         )
 
         def require_unstarted_work_task(plan: PlanRevisionView) -> None:
+            if request.work_task_id is not None and request.work_step_id is not None:
+                context = plan.plan.get("work_context")
+                if not isinstance(context, dict) or not isinstance(
+                    context.get("conversation_id"), str
+                ):
+                    raise ConflictError(
+                        "statistics_step_work_context_missing",
+                        "精确统计步骤缺少可核验的 Work 会话上下文。",
+                    )
+                review = self.automation._read_step_plan_review(
+                    context["conversation_id"], request.work_task_id, request.work_step_id
+                )
+                if (
+                    review.step_kind != "statistical_run"
+                    or review.plan_revision_id != plan.plan_revision_id
+                    or review.plan_hash != plan.plan_hash
+                    or review.plan_state is not PlanState.APPROVED
+                ):
+                    raise ConflictError(
+                        "statistics_step_work_binding_mismatch",
+                        "统计方案、TaskStep 或批准状态已变化。运行未创建。",
+                    )
+                return
             task = require_statistical_work_plan(
                 self.conversation_repository.get_conversation, plan
             )
@@ -517,10 +545,8 @@ class RunMixin(BaseServiceMixin):
             # source-file scan just completed outside this writer transaction.
             plan = self.plan_repository.get_plan(request.statistical_design_revision_id)
             require_unstarted_work_task(plan)
-            work_task_id = ensure_statistical_work_task_for_plan(
-                self.automation,
-                self.conversation_repository.get_conversation,
-                plan,
+            work_task_id = request.work_task_id or ensure_statistical_work_task_for_plan(
+                self.automation, self.conversation_repository.get_conversation, plan
             )
             work_context = plan.plan.get("work_context")
             if work_context is not None and work_task_id is None:
@@ -539,8 +565,6 @@ class RunMixin(BaseServiceMixin):
                 )
             self._require_plan_current(plan, verify_source_files=False)
             payload: dict[str, object] = {
-                "outcome": "succeed",
-                "delay_ms": 0,
                 "run_kind": (
                     "statistics_mock"
                     if request.execution_backend is ExecutionBackend.MOCK
@@ -563,6 +587,8 @@ class RunMixin(BaseServiceMixin):
                     else None
                 ),
             }
+            if request.execution_backend is ExecutionBackend.MOCK:
+                payload.update({"outcome": "succeed", "delay_ms": 0})
             if plan.state is PlanState.APPROVED:
                 payload["approval_record_id"] = self.plan_repository.get_approved_plan_approval(
                     plan.plan_revision_id
@@ -576,21 +602,22 @@ class RunMixin(BaseServiceMixin):
             )
             if work_context is not None:
                 assert work_task_id is not None
-                self.automation.bind_statistical_run(
-                    task_id=work_task_id,
-                    conversation_id=work_context["conversation_id"],
-                    project_id=result.project_id,
-                    plan_revision_id=plan.plan_revision_id,
-                    run_id=result.run_id,
-                )
-                self.conversation_repository.bind_statistics_task(
-                    conversation_id=work_context["conversation_id"],
-                    project_id=result.project_id,
-                    proposal_hash=work_context["proposal_hash"],
-                    plan_revision_id=plan.plan_revision_id,
-                    run_id=result.run_id,
-                    work_task_id=work_task_id,
-                )
+                if request.work_task_id is None:
+                    self.automation.bind_statistical_run(
+                        task_id=work_task_id,
+                        conversation_id=work_context["conversation_id"],
+                        project_id=result.project_id,
+                        plan_revision_id=plan.plan_revision_id,
+                        run_id=result.run_id,
+                    )
+                    self.conversation_repository.bind_statistics_task(
+                        conversation_id=work_context["conversation_id"],
+                        project_id=result.project_id,
+                        proposal_hash=work_context["proposal_hash"],
+                        plan_revision_id=plan.plan_revision_id,
+                        run_id=result.run_id,
+                        work_task_id=work_task_id,
+                    )
             self.event_store.append_event(
                 project_id=result.project_id,
                 run_id=result.run_id,

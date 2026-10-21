@@ -40,6 +40,52 @@ def test_migrations_do_not_disable_application_loggers(tmp_path: Path) -> None:
     )
 
 
+def test_task_step_run_authorization_migration_adds_and_removes_exact_scope_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "task-step-authorization.sqlite"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+    command.upgrade(config, "0035_preprocessing_goal_admission")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        columns_before = {
+            column["name"] for column in inspect(engine).get_columns("confirmation_challenges")
+        }
+        assert "task_id" not in columns_before
+        command.upgrade(config, "head")
+        columns_after = {
+            column["name"] for column in inspect(engine).get_columns("confirmation_challenges")
+        }
+        assert {
+            "task_id",
+            "step_id",
+            "task_version",
+            "step_version",
+            "plan_version",
+            "execution_backend",
+            "workspace_mode",
+        } <= columns_after
+        command.downgrade(config, "0035_preprocessing_goal_admission")
+        columns_downgraded = {
+            column["name"] for column in inspect(engine).get_columns("confirmation_challenges")
+        }
+        assert (
+            not {
+                "task_id",
+                "step_id",
+                "task_version",
+                "step_version",
+                "plan_version",
+                "execution_backend",
+                "workspace_mode",
+            }
+            & columns_downgraded
+        )
+    finally:
+        engine.dispose()
+
+
 def test_composite_goal_migration_backfills_only_exact_legacy_links(tmp_path: Path) -> None:
     from neuroagent.infrastructure.persistence.models import (
         AnalysisProposalOutboxRow,

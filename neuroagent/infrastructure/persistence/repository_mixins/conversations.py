@@ -32,6 +32,7 @@ from neuroagent.application.errors import ConflictError, InputValidationError, N
 from neuroagent.application.hashing import canonical_json
 from neuroagent.application.work_agents import analysis_payload_intent_id
 from neuroagent.application.work_tasks import require_analysis_task
+from neuroagent.domain.execution import ExecutionBackend, ExecutionWorkspaceMode
 from neuroagent.infrastructure.persistence.models import (
     ConfirmationChallengeRow,
     ContextSnapshotRow,
@@ -183,6 +184,17 @@ class ConversationMixin(RepositoryBaseMixin):
             plan_revision_id=row.plan_revision_id,
             plan_hash=row.plan_hash,
             qc_mode=QcExecutionMode(row.qc_mode),
+            task_id=row.task_id,
+            step_id=row.step_id,
+            task_version=row.task_version,
+            step_version=row.step_version,
+            plan_version=row.plan_version,
+            execution_backend=(
+                ExecutionBackend(row.execution_backend) if row.execution_backend else None
+            ),
+            workspace_mode=(
+                ExecutionWorkspaceMode(row.workspace_mode) if row.workspace_mode else None
+            ),
             issued_at=_as_utc(row.issued_at),
             expires_at=_as_utc(row.expires_at),
             consumed_at=_as_utc(row.consumed_at) if row.consumed_at else None,
@@ -197,6 +209,13 @@ class ConversationMixin(RepositoryBaseMixin):
         plan_revision_id: str,
         plan_hash: str,
         qc_mode: Any,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
         ttl_seconds: int = 600,
     ) -> ConfirmationChallengeView:
         with self._write_session() as session:
@@ -213,6 +232,21 @@ class ConversationMixin(RepositoryBaseMixin):
                 plan_revision_id=plan_revision_id,
                 plan_hash=plan_hash,
                 qc_mode=str(getattr(qc_mode, "value", qc_mode)),
+                task_id=task_id,
+                step_id=step_id,
+                task_version=task_version,
+                step_version=step_version,
+                plan_version=plan_version,
+                execution_backend=(
+                    str(getattr(execution_backend, "value", execution_backend))
+                    if execution_backend is not None
+                    else None
+                ),
+                workspace_mode=(
+                    str(getattr(workspace_mode, "value", workspace_mode))
+                    if workspace_mode is not None
+                    else None
+                ),
                 issued_at=now,
                 expires_at=now + timedelta(seconds=max(30, min(ttl_seconds, 3600))),
             )
@@ -230,6 +264,13 @@ class ConversationMixin(RepositoryBaseMixin):
         plan_hash: str,
         qc_mode: Any,
         run_id: str,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
     ) -> ConfirmationChallengeView:
         with self._write_session() as session:
             row = session.get(ConfirmationChallengeRow, confirmation_id)
@@ -242,15 +283,33 @@ class ConversationMixin(RepositoryBaseMixin):
                 or row.plan_revision_id != plan_revision_id
                 or row.plan_hash != plan_hash
                 or row.qc_mode != expected_qc
-                or row.consumed_at is not None
+                or row.task_id != task_id
+                or row.step_id != step_id
+                or row.task_version != task_version
+                or row.step_version != step_version
+                or row.plan_version != plan_version
+                or row.execution_backend
+                != (
+                    str(getattr(execution_backend, "value", execution_backend))
+                    if execution_backend
+                    else None
+                )
+                or row.workspace_mode
+                != (
+                    str(getattr(workspace_mode, "value", workspace_mode))
+                    if workspace_mode
+                    else None
+                )
+                or (row.consumed_at is not None and row.consumed_run_id != run_id)
                 or _as_utc(row.expires_at) <= now
             ):
                 raise ConflictError(
                     "confirmation_challenge_invalid",
                     "启动确认无效、已使用、已过期或与当前方案不匹配。",
                 )
-            row.consumed_at = now
-            row.consumed_run_id = run_id
+            if row.consumed_at is None:
+                row.consumed_at = now
+                row.consumed_run_id = run_id
             session.flush()
             return self._confirmation_challenge(row)
 
@@ -353,9 +412,7 @@ class ConversationMixin(RepositoryBaseMixin):
                     payload_json="{}",
                 )
             else:
-                existing_user_row = session.get(
-                    ConversationMessageRow, existing_user_message_id
-                )
+                existing_user_row = session.get(ConversationMessageRow, existing_user_message_id)
                 if (
                     existing_user_row is None
                     or existing_user_row.conversation_id != conversation_id

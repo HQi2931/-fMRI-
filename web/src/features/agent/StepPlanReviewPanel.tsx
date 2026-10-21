@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import { describeError } from "../../api/transport";
 import type { StepPlanReviewDetail, StepPlanReviewSummary } from "../../api/types";
 import { agentApi } from "../../api/agent";
+import type { components } from "../../api/schema.generated";
+
+type Schemas = components["schemas"];
 
 type Props = {
   conversationId: string;
@@ -144,11 +147,26 @@ function subjectTable(detail: StepPlanReviewDetail) {
   </div>;
 }
 
-function StepPlanReviewCard({ conversationId, summary }: { conversationId: string; summary: StepPlanReviewSummary }) {
+function StepPlanReviewCard({
+  conversationId,
+  summary,
+  onChanged,
+}: {
+  conversationId: string;
+  summary: StepPlanReviewSummary;
+  onChanged: () => void;
+}) {
   const [detail, setDetail] = useState<StepPlanReviewDetail | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [executionBackend, setExecutionBackend] = useState<Schemas["ExecutionBackend"]>("mock");
+  const [workspaceMode, setWorkspaceMode] = useState<Schemas["ExecutionWorkspaceMode"]>("isolated");
+  const [qcMode, setQcMode] = useState<Schemas["QcExecutionMode"]>("require");
+  const [realExecutionConfirmed, setRealExecutionConfirmed] = useState(false);
+  const [authorization, setAuthorization] = useState<Schemas["StepRunAuthorizationView"] | null>(null);
   const facts = summary.preprocessing
     ? preprocessingFacts(summary.preprocessing)
     : summary.statistical ? statisticalFacts(summary.statistical) : [];
@@ -165,12 +183,14 @@ function StepPlanReviewCard({ conversationId, summary }: { conversationId: strin
       if (result.conversation_id !== conversationId
         || result.project_id !== summary.project_id
         || result.task_id !== summary.task_id
+        || result.task_version !== summary.task_version
         || result.step_id !== summary.step_id
         || result.step_sequence !== summary.step_sequence
+        || result.step_version !== summary.step_version
         || result.plan_revision_id !== summary.plan_revision_id
         || result.plan_revision !== summary.plan_revision
-        || result.plan_hash !== summary.plan_hash
-        ) {
+        || result.plan_version !== summary.plan_version
+        || result.plan_hash !== summary.plan_hash) {
         throw new Error("方案身份已变化，请刷新列表后重新打开。");
       }
       setDetail(result);
@@ -181,6 +201,114 @@ function StepPlanReviewCard({ conversationId, summary }: { conversationId: strin
       setLoadingDetail(false);
     }
   };
+
+  const actionIdentity = {
+    task_version: summary.task_version,
+    step_version: summary.step_version,
+    plan_revision_id: summary.plan_revision_id,
+    plan_version: summary.plan_version,
+    plan_hash: summary.plan_hash,
+  };
+
+  const approve = async () => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const result = await agentApi.approveStepPlan(conversationId, summary.task_id, summary.step_id, {
+        ...actionIdentity,
+        actor: "用户",
+        reason: "用户在步骤级方案审查面板中明确批准此冻结 Plan。",
+      });
+      if (result.conversation_id !== conversationId
+        || result.project_id !== summary.project_id
+        || result.task_id !== summary.task_id
+        || result.step_id !== summary.step_id
+        || result.plan_revision_id !== summary.plan_revision_id
+        || result.plan_hash !== summary.plan_hash
+        || result.approval.plan_hash !== summary.plan_hash) {
+        throw new Error("批准结果与当前步骤方案不匹配，请刷新状态后检查。");
+      }
+      setAuthorization(null);
+      onChanged();
+    } catch (error: unknown) {
+      setActionError(describeError(error));
+      setAuthorization(null);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const issueRunAuthorization = async () => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const result = await agentApi.createStepRunAuthorization(
+        conversationId,
+        summary.task_id,
+        summary.step_id,
+        {
+          ...actionIdentity,
+          execution_backend: executionBackend,
+          workspace_mode: workspaceMode,
+          real_execution_confirmed: realExecutionConfirmed,
+          qc_mode: summary.step_kind === "statistical_run" ? "require" : qcMode,
+        },
+      );
+      if (result.conversation_id !== conversationId
+        || result.project_id !== summary.project_id
+        || result.task_id !== summary.task_id
+        || result.step_id !== summary.step_id
+        || result.plan_revision_id !== summary.plan_revision_id
+        || result.plan_hash !== summary.plan_hash) {
+        throw new Error("授权与当前步骤方案不匹配，请刷新后重新确认。");
+      }
+      setAuthorization(result);
+    } catch (error: unknown) {
+      setActionError(describeError(error));
+      setAuthorization(null);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startRun = async () => {
+    if (!authorization) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      const result = await agentApi.startStepRun(conversationId, summary.task_id, summary.step_id, {
+        ...actionIdentity,
+        confirmation_id: authorization.confirmation_id,
+        execution_backend: executionBackend,
+        workspace_mode: workspaceMode,
+        real_execution_confirmed: realExecutionConfirmed,
+        qc_mode: summary.step_kind === "statistical_run" ? "require" : qcMode,
+        max_attempts: 1,
+        mock_outcome: "succeed",
+        mock_delay_ms: 0,
+      });
+      if (result.conversation_id !== conversationId
+        || result.project_id !== summary.project_id
+        || result.task_id !== summary.task_id
+        || result.step_id !== summary.step_id
+        || result.plan_revision_id !== summary.plan_revision_id
+        || result.run.project_id !== summary.project_id
+        || result.run.plan_revision_id !== summary.plan_revision_id) {
+        throw new Error("Run 返回身份与当前步骤方案不匹配，请刷新任务状态。");
+      }
+      setAuthorization(null);
+      onChanged();
+    } catch (error: unknown) {
+      setActionError(describeError(error));
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const invalidateAuthorization = () => setAuthorization(null);
 
   return <li>
     <article className="step-plan-review-card">
@@ -198,8 +326,67 @@ function StepPlanReviewCard({ conversationId, summary }: { conversationId: strin
       <details>
         <summary>查看版本核验信息</summary>
         <p>方案版本 {summary.plan_revision} · 内容校验码 {summary.plan_hash.slice(0, 12)}…</p>
-        <p>输入与步骤身份已由本机服务核验。批准和启动操作将在后续闭环中提供。</p>
+        <p>Task v{summary.task_version} · Step v{summary.step_version} · Plan v{summary.plan_version}</p>
       </details>
+      {summary.plan_state === "awaiting_approval" && <div className="step-plan-actions">
+        <p>审查摘要与版本后，批准将只记录在此步骤绑定的 Plan 上。</p>
+        <button className="button button-primary" type="button" disabled={busy} onClick={() => void approve()}>
+          {busy ? "正在记录批准…" : "批准此步骤方案"}
+        </button>
+      </div>}
+      {summary.plan_state === "approved" && <div className="step-plan-actions">
+        <h4>启动已批准的步骤</h4>
+        <label>执行后端
+          <select value={executionBackend} disabled={busy} onChange={(event) => {
+            setExecutionBackend(event.target.value as Schemas["ExecutionBackend"]);
+            invalidateAuthorization();
+          }}>
+            <option value="mock">Mock 验收</option>
+            <option value="matlab">本机 MATLAB / DPABI 真实运行</option>
+          </select>
+        </label>
+        {executionBackend === "matlab" && summary.step_kind === "preprocessing_run" && <>
+          <label>工作区模式
+            <select value={workspaceMode} disabled={busy} onChange={(event) => {
+              setWorkspaceMode(event.target.value as Schemas["ExecutionWorkspaceMode"]);
+              invalidateAuthorization();
+            }}>
+              <option value="isolated">隔离工作区</option>
+              <option value="in_place">原目录执行</option>
+            </select>
+          </label>
+          <label className="step-plan-confirmation">
+            <input type="checkbox" checked={realExecutionConfirmed} disabled={busy} onChange={(event) => {
+              setRealExecutionConfirmed(event.target.checked);
+              invalidateAuthorization();
+            }} />
+            我明确授权启动本机 MATLAB / DPABI 真实计算。
+          </label>
+        </>}
+        {summary.step_kind === "preprocessing_run" ? <label>计算后的 QC
+          <select value={qcMode} disabled={busy} onChange={(event) => {
+            setQcMode(event.target.value as Schemas["QcExecutionMode"]);
+            invalidateAuthorization();
+          }}>
+            <option value="require">保留 QC 审核门</option>
+            <option value="skip">明确跳过 QC</option>
+          </select>
+        </label> : <p>统计步骤使用冻结设计中的 QC 来源，启动确认不能跳过 QC。</p>}
+        {!authorization ? <button
+          className="button button-primary"
+          type="button"
+          disabled={busy || (executionBackend === "matlab" && !realExecutionConfirmed)}
+          onClick={() => void issueRunAuthorization()}
+        >
+          {busy ? "正在签发一次性授权…" : "签发此步骤的一次性启动授权"}
+        </button> : <div className="step-plan-authorization" role="status">
+          <p>授权已绑定本步骤、Plan 哈希和当前版本，将于 {new Date(authorization.expires_at).toLocaleTimeString()} 到期。</p>
+          <button className="button button-primary" type="button" disabled={busy} onClick={() => void startRun()}>
+            {busy ? "正在创建并绑定 Run…" : "确认并创建 Run"}
+          </button>
+        </div>}
+      </div>}
+      {actionError && <p className="step-plan-review-error" role="alert">{actionError}</p>}
     </article>
   </li>;
 }
@@ -260,7 +447,7 @@ export function StepPlanReviewPanel({ conversationId, projectId, conversationVer
       <div>
         <span className="eyebrow">Work 自动化</span>
         <h2>待审查方案</h2>
-        <p>显示本机核验并绑定到当前步骤的方案摘要；此处只读，不会批准或启动计算。</p>
+        <p>方案身份按 Task/Step/Plan 版本核验。批准、一次性启动授权和 Run 创建分别确认并绑定到当前步骤。</p>
       </div>
       <button className="button button-secondary" type="button" disabled={state.loading} onClick={() => setRefreshNonce((value) => value + 1)}>
         刷新方案
@@ -271,7 +458,7 @@ export function StepPlanReviewPanel({ conversationId, projectId, conversationVer
     {!loading && !error && reviews.length === 0 && <p>当前会话没有等待审查的多步骤方案。</p>}
     {truncated && <p role="status">待审查候选超过 100 项，目前显示的项目可能不完整。请缩小当前会话的待处理目标后刷新。</p>}
     {reviews.length > 0 && <ol className="step-plan-review-list">
-      {reviews.map((review) => <StepPlanReviewCard key={`${conversationId}:${projectId}:${review.task_id}:${review.step_id}:${review.plan_revision_id}:${review.plan_hash}`} conversationId={conversationId} summary={review} />)}
+      {reviews.map((review) => <StepPlanReviewCard key={`${conversationId}:${projectId}:${review.task_id}:${review.step_id}:${review.plan_revision_id}:${review.plan_hash}`} conversationId={conversationId} summary={review} onChanged={() => setRefreshNonce((value) => value + 1)} />)}
     </ol>}
     {refreshWhileActive && <p className="chat-technical" role="status">自动化进行中，每 10 秒检查一次步骤方案；空闲后停止轮询。</p>}
   </section>;

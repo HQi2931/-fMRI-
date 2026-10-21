@@ -34,6 +34,14 @@ from neuroagent.api.schemas.agent import (
     ProviderTestRequest,
     RsFmriQuestionRequest,
 )
+from neuroagent.api.schemas.automation import (
+    StepPlanApproveCreate,
+    StepPlanApproveView,
+    StepRunAuthorizationCreate,
+    StepRunAuthorizationView,
+    StepRunStartCreate,
+    StepRunStartView,
+)
 from neuroagent.api.schemas.conversations import (
     CompositeGoalSelection,
     ConversationCreate,
@@ -52,6 +60,15 @@ from neuroagent.application.contracts.agent import ModelListRequest as AppModelL
 from neuroagent.application.contracts.agent import ModelProfileCreate as AppModelProfileCreate
 from neuroagent.application.contracts.agent import ProviderTestRequest as AppProviderTestRequest
 from neuroagent.application.contracts.agent import RsFmriQuestionRequest as AppRsFmriQuestionRequest
+from neuroagent.application.contracts.automation import (
+    StepPlanApproveCreate as AppStepPlanApproveCreate,
+)
+from neuroagent.application.contracts.automation import (
+    StepRunAuthorizationCreate as AppStepRunAuthorizationCreate,
+)
+from neuroagent.application.contracts.automation import (
+    StepRunStartCreate as AppStepRunStartCreate,
+)
 from neuroagent.application.contracts.conversations import (
     CompositeGoalSelection as AppCompositeGoalSelection,
 )
@@ -188,6 +205,104 @@ def get_step_plan_review(
         StepPlanReviewDetailView,
         to_http_response(review, StepPlanReviewDetailView),
     )
+
+
+@router.post(
+    "/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/approve",
+    response_model=StepPlanApproveView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["agent", "plans"],
+)
+def approve_step_plan(
+    conversation_id: str,
+    task_id: str,
+    step_id: str,
+    body: StepPlanApproveCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> StepPlanApproveView:
+    services = capability_from(request, "conversations")
+    result = services.automation.approve_step_plan(
+        conversation_id,
+        task_id,
+        step_id,
+        to_application_message(body, AppStepPlanApproveCreate),
+        idempotency_key=idempotency_key,
+        approve_plan=capability_from(request, "plans").approve_plan,
+    )
+    return cast(
+        StepPlanApproveView,
+        to_http_response(
+            {
+                **result.model_dump(mode="python", exclude={"approval"}),
+                "approval": result.approval.model_dump(mode="python"),
+            },
+            StepPlanApproveView,
+        ),
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run-authorizations",
+    response_model=StepRunAuthorizationView,
+    status_code=status.HTTP_201_CREATED,
+    tags=["agent", "runs"],
+)
+def create_step_run_authorization(
+    conversation_id: str,
+    task_id: str,
+    step_id: str,
+    body: StepRunAuthorizationCreate,
+    request: Request,
+) -> StepRunAuthorizationView:
+    result = capability_from(request, "conversations").automation.create_step_run_authorization(
+        conversation_id,
+        task_id,
+        step_id,
+        to_application_message(body, AppStepRunAuthorizationCreate),
+    )
+    return cast(
+        StepRunAuthorizationView,
+        to_http_response(
+            {
+                "conversation_id": result.conversation_id,
+                "project_id": result.project_id,
+                "task_id": result.task_id,
+                "step_id": result.step_id,
+                "plan_revision_id": result.plan_revision_id,
+                "plan_hash": result.plan_hash,
+                "confirmation_id": result.authorization.confirmation_id,
+                "expires_at": result.authorization.expires_at,
+            },
+            StepRunAuthorizationView,
+        ),
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run",
+    response_model=StepRunStartView,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["agent", "runs"],
+)
+def start_step_run(
+    conversation_id: str,
+    task_id: str,
+    step_id: str,
+    body: StepRunStartCreate,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> StepRunStartView:
+    result = capability_from(request, "conversations").automation.start_step_run(
+        conversation_id,
+        task_id,
+        step_id,
+        to_application_message(body, AppStepRunStartCreate),
+        idempotency_key=idempotency_key,
+        create_run=capability_from(request, "runs").create_run,
+        create_statistics_run=capability_from(request, "runs").create_statistics_run,
+    )
+    return cast(StepRunStartView, to_http_response(result, StepRunStartView))
 
 
 @router.post(

@@ -599,3 +599,9 @@ WorkRunPanel 定向前端测试 30 项通过，覆盖未识别错误线索默认
 Work 页面现列出当前会话中经服务端身份重核的 READY 步骤 Plan 摘要。预处理摘要仅包含已登记的采集、去噪、标准化和指标参数；统计摘要返回检验与矩阵计数，不传被试、组别标签、协变量值、Artifact ID 或路径。用户主动展开统计纳入表后，前端才请求精确步骤详情；API 返回严格 allow-list 字段。列表查询最多验证 100 个候选并返回截断标记，不使用 SQLite writer transaction；详情查询在 task、conversation、project、plan 仓库共享的 deferred read snapshot 中重核绑定。活动目标和已有审查项会每 10 秒刷新，后台 Worker 更新无需改变 conversation version。
 
 验证：步骤审查 API/服务定向测试 12 项通过；StepPlanReviewPanel、AgentPage、App 定向前端测试 85 项通过；TypeScript typecheck、ESLint、生产构建、变更文件 Ruff/Mypy 与差异空白检查通过。全量前端 Vitest 仍有 14 项既有失败，集中在 workspace 迁移、StatisticalClusterRoiPanel 和 WorkStatisticalResults 测试；本次新增组件测试及相关页面测试通过。未调用 Provider、MATLAB 或 DPABI；当前仍没有步骤级批准/启动闭环，也没有生产 READY successor，因此这些检查不证明真实 20 人预处理已运行。
+
+## 2026-10-21 WorkTask 精确步骤批准与 Run 绑定
+
+Work 页面现在可对一个 READY TaskStep 的冻结方案执行批准，针对同一 task/step、task/step/plan 版本、Plan revision/hash、会话和项目签发一次性执行授权，再显式创建并绑定对应 Run。服务端在授权和启动时重新验证 READY、前驱、方案身份与现有批准；一次性 challenge 在 Run 创建和精确 TaskStep 绑定事务中消费。统计步骤通过独立的统计 Run 创建路径绑定，并拒绝错绑目标。真实 MATLAB 执行仍要求显式确认；统计步骤使用隔离工作区；Mock 参数仅对 Mock 后端有效，MATLAB 请求携带非默认 Mock 控制会被拒绝。
+
+验证：步骤 API/服务定向回归 16 项与授权迁移升级/降级测试 1 项通过；StepPlanReviewPanel 测试 9 项通过；TypeScript 类型检查、生产构建、ESLint、变更文件 Ruff/Mypy、OpenAPI 与前端 schema 同步、92 份 Markdown 规范检查和 `git diff --check` 通过。端到端只创建了 queued Mock Run；未调用 Provider、MATLAB 或 DPABI，也未批准或启动真实 Run。多步骤 successor 自动调度、完成判定与后续步骤的自动执行仍未实现。

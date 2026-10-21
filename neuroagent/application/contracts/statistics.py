@@ -58,11 +58,15 @@ class StatisticsRunCreate(StrictModel):
     max_attempts: int = Field(default=1, ge=1, le=5)
     execution_backend: ExecutionBackend = ExecutionBackend.MOCK
     real_execution_confirmed: bool = False
+    work_task_id: str | None = None
+    work_step_id: str | None = None
 
     @model_validator(mode="after")
     def require_real_execution_confirmation(self) -> StatisticsRunCreate:
         if self.execution_backend is ExecutionBackend.MATLAB and not self.real_execution_confirmed:
             raise ValueError("real MATLAB execution requires explicit confirmation")
+        if (self.work_task_id is None) != (self.work_step_id is None):
+            raise ValueError("work_task_id and work_step_id must be provided together")
         return self
 
 

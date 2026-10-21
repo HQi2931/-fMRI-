@@ -17,8 +17,8 @@ ADR 0014 建立了 Agent 工具分级和有界循环，但后续审查发现，�
 2. 异步模型/工具调用使用可强制的 deadline；同步模型可见工具仅限只读或幂等操作，不把长时间 MATLAB 工作暴露给 Agent dispatcher。
 3. 循环产生的所有工具 outcome，无论最终回答是否为空、非法或触发单次回退，都必须与会话消息在同一收口事务中保存。
 4. Work 的项目型工具按请求级 conversation/project/run 作用域构建；越界对象对模型统一表现为不可用。
-5. 真实执行统一使用服务端签发、绑定 conversation/project/plan hash/QC 选择、短时有效且单次消费的 ConfirmationChallenge。`real_execution_confirmed` 不能独立授权。
-6. Challenge 消费、计划批准和运行创建在同一应用事务内完成，并继续保留 Worker 的环境、冻结计划、路径和 Artifact 谱系纵深校验。
+5. 真实执行统一使用服务端签发、短时有效且单次消费的 ConfirmationChallenge。传统 Work 入口绑定 conversation/project/plan hash/QC 选择；显式多步骤入口还绑定 task/step 与 Task、Step、Plan 版本，以及执行后端和工作区模式。`real_execution_confirmed` 不能独立授权。
+6. 计划批准仍先由用户显式作出；步骤级启动时，Challenge 消费、Run 创建和精确 TaskStep 绑定在同一应用事务内完成，并继续保留 Worker 的环境、冻结计划、路径和 Artifact 谱系纵深校验。
 
 ## 后果
 

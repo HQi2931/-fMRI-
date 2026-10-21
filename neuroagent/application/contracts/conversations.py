@@ -26,7 +26,13 @@ from neuroagent.domain.conversation import (
 from neuroagent.domain.conversation import (
     MemoryStatus as MemoryStatus,
 )
-from neuroagent.domain.execution import QcExecutionMode as QcExecutionMode
+from neuroagent.domain.execution import (
+    ExecutionBackend,
+    ExecutionWorkspaceMode,
+)
+from neuroagent.domain.execution import (
+    QcExecutionMode as QcExecutionMode,
+)
 from neuroagent.multi_agent.registry import WorkAgentRole
 
 from .plans import SkillPlanIntent
@@ -193,6 +199,13 @@ class ConfirmationChallengeView(StrictModel):
     plan_revision_id: str
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     qc_mode: QcExecutionMode
+    task_id: str | None = None
+    step_id: str | None = None
+    task_version: int | None = Field(default=None, ge=1)
+    step_version: int | None = Field(default=None, ge=1)
+    plan_version: int | None = Field(default=None, ge=1)
+    execution_backend: ExecutionBackend | None = None
+    workspace_mode: ExecutionWorkspaceMode | None = None
     issued_at: datetime
     expires_at: datetime
     consumed_at: datetime | None = None

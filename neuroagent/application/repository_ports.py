@@ -177,6 +177,13 @@ class ConversationRepositoryPort(Protocol):
         plan_revision_id: str,
         plan_hash: str,
         qc_mode: QcExecutionMode,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
         ttl_seconds: int = 600,
     ) -> ConfirmationChallengeView: ...
 
@@ -190,6 +197,13 @@ class ConversationRepositoryPort(Protocol):
         plan_hash: str,
         qc_mode: QcExecutionMode,
         run_id: str,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
     ) -> ConfirmationChallengeView: ...
 
     def list_conversations(

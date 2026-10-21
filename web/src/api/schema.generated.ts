@@ -396,6 +396,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Step Plan */
+        post: operations["approve_step_plan_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review": {
         parameters: {
             query?: never;
@@ -407,6 +424,40 @@ export interface paths {
         get: operations["get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Step Run */
+        post: operations["start_step_run_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run-authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Step Run Authorization */
+        post: operations["create_step_run_authorization_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_authorizations_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5251,6 +5302,39 @@ export interface components {
             /** Statistical Design Revision Id */
             statistical_design_revision_id: string;
         };
+        /** StepPlanApproveCreate */
+        StepPlanApproveCreate: {
+            /** Actor */
+            actor: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** Reason */
+            reason: string;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+        };
+        /** StepPlanApproveView */
+        StepPlanApproveView: {
+            approval: components["schemas"]["ApprovalView"];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Task Id */
+            task_id: string;
+        };
         /** StepPlanReviewCovariateDetailView */
         StepPlanReviewCovariateDetailView: {
             centering: components["schemas"]["Centering"];
@@ -5280,14 +5364,20 @@ export interface components {
             plan_revision: number;
             /** Plan Revision Id */
             plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
             /** Project Id */
             project_id: string;
             /** Step Id */
             step_id: string;
             /** Step Sequence */
             step_sequence: number;
+            /** Step Version */
+            step_version: number;
             /** Task Id */
             task_id: string;
+            /** Task Version */
+            task_version: number;
         };
         /** StepPlanReviewImageDetailView */
         StepPlanReviewImageDetailView: {
@@ -5324,6 +5414,8 @@ export interface components {
             /** Plan Revision Id */
             plan_revision_id: string;
             plan_state: components["schemas"]["PlanState"];
+            /** Plan Version */
+            plan_version: number;
             preprocessing: components["schemas"]["PreprocessingPlanSummaryView"] | null;
             /** Project Id */
             project_id: string;
@@ -5335,6 +5427,106 @@ export interface components {
             /** Step Sequence */
             step_sequence: number;
             step_status: components["schemas"]["TaskStepStatus"];
+            /** Step Version */
+            step_version: number;
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /** StepRunAuthorizationCreate */
+        StepRunAuthorizationCreate: {
+            execution_backend: components["schemas"]["ExecutionBackend"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+            /** @default isolated */
+            workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
+        };
+        /** StepRunAuthorizationView */
+        StepRunAuthorizationView: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /** StepRunStartCreate */
+        StepRunStartCreate: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            execution_backend: components["schemas"]["ExecutionBackend"];
+            /**
+             * Max Attempts
+             * @default 1
+             */
+            max_attempts: number;
+            /**
+             * Mock Delay Ms
+             * @default 0
+             */
+            mock_delay_ms: number;
+            /** @default succeed */
+            mock_outcome: components["schemas"]["MockOutcome"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+            /** @default isolated */
+            workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
+        };
+        /** StepRunStartView */
+        StepRunStartView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            run: components["schemas"]["RunView"];
+            /** Step Id */
+            step_id: string;
             /** Task Id */
             task_id: string;
         };
@@ -7747,6 +7939,90 @@ export interface operations {
             };
         };
     };
+    approve_step_plan_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__approve_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepPlanApproveCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanApproveView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get: {
         parameters: {
             query?: never;
@@ -7767,6 +8043,172 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StepPlanReviewDetailView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_step_run_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepRunStartCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepRunStartView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_step_run_authorization_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_authorizations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepRunAuthorizationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepRunAuthorizationView"];
                 };
             };
             /** @description Bad Request */

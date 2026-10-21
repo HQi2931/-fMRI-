@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from neuroagent.api import create_app
+from neuroagent.api.schemas.automation import StepRunStartCreate as ApiStepRunStartCreate
 from neuroagent.application.automation.models import (
     AuthorityReferences,
     TaskBudget,
@@ -21,13 +24,17 @@ from neuroagent.application.automation.models import (
     WorkTask,
 )
 from neuroagent.application.automation.step_lifecycle import step_plan_review_reference
+from neuroagent.application.contracts.automation import StepRunStartCreate
 from neuroagent.application.contracts.conversations import ConversationCreate
 from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
     PlanRevisionCreate,
     SkillPlanIntent,
     SkillPlanResolveRequest,
 )
 from neuroagent.application.contracts.projects import DatasetCreate, ManifestScanRequest
+from neuroagent.application.contracts.statistics import StatisticsRunCreate
+from neuroagent.application.errors import ConflictError
 from neuroagent.application.hashing import content_hash
 from neuroagent.domain.fmri import (
     AnalysisImage,
@@ -296,10 +303,13 @@ def test_step_plan_review_api_returns_allow_list_details_without_writer_lock(
         conversation.conversation_id, task.task_id, step.step_id
     )
     assert service_view.task_id == task.task_id
+    assert service_view.task_version == task.version
+    assert service_view.step_version == step.version
     assert service_view.project_id == project.project_id
     assert service_view.step_sequence == step.sequence
     assert service_view.plan_revision_id == plan.plan_revision_id
     assert service_view.plan_revision == plan.revision
+    assert service_view.plan_version == plan.version
     assert service_view.plan_hash == plan.plan_hash
 
     with TestClient(create_app(service=service)) as client:
@@ -322,10 +332,13 @@ def test_step_plan_review_api_returns_allow_list_details_without_writer_lock(
         "conversation_id",
         "project_id",
         "task_id",
+        "task_version",
         "step_id",
         "step_sequence",
+        "step_version",
         "plan_revision_id",
         "plan_revision",
+        "plan_version",
         "plan_hash",
         "images",
         "covariates",
@@ -418,12 +431,15 @@ def test_step_plan_review_list_is_scoped_verified_and_refreshed(
         "conversation_id",
         "project_id",
         "task_id",
+        "task_version",
         "step_id",
         "step_sequence",
+        "step_version",
         "step_kind",
         "step_status",
         "plan_revision_id",
         "plan_revision",
+        "plan_version",
         "plan_hash",
         "plan_state",
         "execution_authorized",
@@ -525,6 +541,236 @@ def test_step_plan_review_list_projects_only_preprocessing_parameters(
     assert "dataset_ref" not in str(item)
     assert "structural_artifact_id" not in str(item)
     assert plan.plan["skill_plan"]["input_artifact_id"] not in str(item)
+
+
+def test_exact_step_plan_approval_and_mock_run_authorization_are_bound_atomically(
+    service, source_root, work_root
+) -> None:
+    project, conversation, plan, task = _preprocessing_review_task(
+        service, source_root, work_root, "step-action-flow"
+    )
+    step = task.steps[1]
+    root = (
+        f"/api/v1/conversations/{conversation.conversation_id}/work-tasks/"
+        f"{task.task_id}/steps/{step.step_id}"
+    )
+    identity = {
+        "task_version": task.version,
+        "step_version": step.version,
+        "plan_revision_id": plan.plan_revision_id,
+        "plan_version": plan.version,
+        "plan_hash": plan.plan_hash,
+    }
+
+    with TestClient(create_app(service=service)) as client:
+        stale_approval = client.post(
+            f"{root}/approve",
+            json={**identity, "task_version": task.version + 1, "actor": "用户", "reason": "stale"},
+            headers={"Idempotency-Key": "step-approve-stale"},
+        )
+        assert stale_approval.status_code == 409, stale_approval.text
+        assert stale_approval.json()["error"]["code"] == "step_plan_review_identity_stale"
+        assert service.plans.get_plan(plan.plan_revision_id).state.value == "awaiting_approval"
+
+        approved = client.post(
+            f"{root}/approve",
+            json={**identity, "actor": "用户", "reason": "用户审查当前步骤冻结方案"},
+            headers={"Idempotency-Key": "step-approve-valid"},
+        )
+        assert approved.status_code == 201, approved.text
+        approved_payload = approved.json()
+        assert approved_payload["conversation_id"] == conversation.conversation_id
+        assert approved_payload["project_id"] == project.project_id
+        assert approved_payload["task_id"] == task.task_id
+        assert approved_payload["step_id"] == step.step_id
+        assert approved_payload["plan_hash"] == plan.plan_hash
+        current_plan = service.plans.get_plan(plan.plan_revision_id)
+        assert current_plan.state.value == "approved"
+        assert current_plan.plan_hash == plan.plan_hash
+
+        current_identity = {**identity, "plan_version": current_plan.version}
+        issued = client.post(
+            f"{root}/run-authorizations",
+            json={
+                **current_identity,
+                "execution_backend": "mock",
+                "workspace_mode": "isolated",
+                "real_execution_confirmed": False,
+                "qc_mode": "require",
+            },
+        )
+        assert issued.status_code == 201, issued.text
+        authorization = issued.json()
+        assert authorization["conversation_id"] == conversation.conversation_id
+        assert authorization["project_id"] == project.project_id
+        assert authorization["task_id"] == task.task_id
+        assert authorization["step_id"] == step.step_id
+        assert authorization["plan_revision_id"] == plan.plan_revision_id
+        assert authorization["plan_hash"] == plan.plan_hash
+
+        start_body = {
+            **current_identity,
+            "confirmation_id": authorization["confirmation_id"],
+            "execution_backend": "mock",
+            "workspace_mode": "isolated",
+            "real_execution_confirmed": False,
+            "qc_mode": "require",
+            "max_attempts": 1,
+            "mock_outcome": "succeed",
+            "mock_delay_ms": 0,
+        }
+        started = client.post(
+            f"{root}/run",
+            json=start_body,
+            headers={"Idempotency-Key": "step-run-start-valid"},
+        )
+        assert started.status_code == 202, started.text
+        started_payload = started.json()
+        run_id = started_payload["run"]["run_id"]
+        assert started_payload["conversation_id"] == conversation.conversation_id
+        assert started_payload["project_id"] == project.project_id
+        assert started_payload["task_id"] == task.task_id
+        assert started_payload["step_id"] == step.step_id
+        assert started_payload["run"]["project_id"] == project.project_id
+        assert started_payload["run"]["plan_revision_id"] == plan.plan_revision_id
+        replayed = client.post(
+            f"{root}/run",
+            json=start_body,
+            headers={"Idempotency-Key": "step-run-start-valid"},
+        )
+        assert replayed.status_code == 202, replayed.text
+        assert replayed.json() == started_payload
+        assert len(service.runs.list_runs(project_id=project.project_id)) == 1
+
+        persisted = service.automation.get_task(task.task_id)
+        bound_step = next(item for item in persisted.steps if item.step_id == step.step_id)
+        assert persisted.status is TaskStatus.WAITING_RUN
+        assert persisted.authority_refs.workflow_run_id == run_id
+        assert bound_step.authority_refs.workflow_run_id == run_id
+        assert bound_step.status is TaskStepStatus.WAITING
+        with service.database.session_factory() as session:
+            job = session.execute(
+                text("SELECT executor_type, payload_json FROM jobs WHERE run_id=:run_id"),
+                {"run_id": run_id},
+            ).one()
+            challenge = session.execute(
+                text(
+                    "SELECT conversation_id, project_id, plan_revision_id, plan_hash, qc_mode, "
+                    "task_id, step_id, task_version, step_version, plan_version, "
+                    "execution_backend, workspace_mode, consumed_run_id "
+                    "FROM confirmation_challenges WHERE confirmation_id=:confirmation_id"
+                ),
+                {"confirmation_id": authorization["confirmation_id"]},
+            ).one()
+        assert job.executor_type == "workflow_mock"
+        job_envelope = json.loads(job.payload_json)
+        assert job_envelope["kind"] == "workflow.mock"
+        assert job_envelope["command"]["outcome"] == "succeed"
+        assert job_envelope["command"]["delay_ms"] == 0
+        assert tuple(challenge) == (
+            conversation.conversation_id,
+            project.project_id,
+            plan.plan_revision_id,
+            plan.plan_hash,
+            "require",
+            task.task_id,
+            step.step_id,
+            task.version,
+            step.version,
+            current_plan.version,
+            "mock",
+            "isolated",
+            run_id,
+        )
+
+
+def test_step_run_authorization_rejects_stale_step_identity(
+    service, source_root, work_root
+) -> None:
+    _project, conversation, plan, task = _preprocessing_review_task(
+        service, source_root, work_root, "step-action-stale"
+    )
+    step = task.steps[1]
+    service.plans.approve_plan(
+        plan.plan_revision_id,
+        ApprovalCreate(
+            expected_version=plan.version,
+            plan_hash=plan.plan_hash,
+            actor="test",
+            decision="approved",
+            reason="test fixture approval",
+        ),
+        "step-action-stale-plan-approval",
+    )
+    approved_plan = service.plans.get_plan(plan.plan_revision_id)
+    with TestClient(create_app(service=service)) as client:
+        response = client.post(
+            f"/api/v1/conversations/{conversation.conversation_id}/work-tasks/"
+            f"{task.task_id}/steps/{step.step_id}/run-authorizations",
+            json={
+                "task_version": task.version,
+                "step_version": step.version + 1,
+                "plan_revision_id": plan.plan_revision_id,
+                "plan_version": approved_plan.version,
+                "plan_hash": plan.plan_hash,
+                "execution_backend": "mock",
+                "workspace_mode": "isolated",
+                "qc_mode": "require",
+            },
+        )
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "step_plan_review_identity_stale"
+    with service.database.session_factory() as session:
+        count = session.execute(
+            text("SELECT COUNT(*) FROM confirmation_challenges WHERE task_id=:task_id"),
+            {"task_id": task.task_id},
+        ).scalar_one()
+    assert count == 0
+
+
+def test_statistical_run_target_cannot_be_redirected_to_a_different_task_step(
+    service, source_root, work_root
+) -> None:
+    project, _conversation, plan, task = _statistical_review_task(
+        service, source_root, work_root, "step-statistical-target"
+    )
+    active_step = task.steps[1]
+    prior_step = task.steps[0]
+    with pytest.raises(ConflictError) as failure:
+        service.runs.create_statistics_run(
+            StatisticsRunCreate(
+                project_id=project.project_id,
+                statistical_design_revision_id=plan.plan_revision_id,
+                expected_plan_hash=plan.plan_hash,
+                work_task_id=task.task_id,
+                work_step_id=prior_step.step_id,
+            ),
+            "step-statistical-wrong-target",
+        )
+    assert failure.value.code == "step_plan_review_step_not_current"
+    assert service.automation.get_task(task.task_id) == task
+    assert service.runs.list_runs(project_id=project.project_id) == []
+    assert active_step.status is TaskStepStatus.READY
+
+
+def test_matlab_start_contract_rejects_mock_only_controls() -> None:
+    shared = {
+        "task_version": 1,
+        "step_version": 1,
+        "plan_revision_id": "plan-1",
+        "plan_version": 1,
+        "plan_hash": "a" * 64,
+        "confirmation_id": "confirmation-1",
+        "execution_backend": "matlab",
+        "workspace_mode": "isolated",
+        "real_execution_confirmed": True,
+        "mock_outcome": "fail_terminal",
+        "mock_delay_ms": 0,
+    }
+    with pytest.raises(ValidationError, match="mock run options"):
+        ApiStepRunStartCreate.model_validate(shared)
+    with pytest.raises(ValidationError, match="mock run options"):
+        StepRunStartCreate.model_validate(shared)
 
 
 def test_step_plan_review_list_truncates_after_validating_at_most_100_candidates(

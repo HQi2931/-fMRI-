@@ -5,18 +5,27 @@ import { agentApi } from "../../api/agent";
 import type { StepPlanReviewDetail, StepPlanReviewSummary } from "../../api/types";
 import { StepPlanReviewPanel } from "./StepPlanReviewPanel";
 
-vi.mock("../../api/agent", () => ({ agentApi: { stepPlanReviews: vi.fn(), stepPlanReview: vi.fn() } }));
+vi.mock("../../api/agent", () => ({ agentApi: {
+  stepPlanReviews: vi.fn(),
+  stepPlanReview: vi.fn(),
+  approveStepPlan: vi.fn(),
+  createStepRunAuthorization: vi.fn(),
+  startStepRun: vi.fn(),
+} }));
 
 const summary = (overrides: Partial<StepPlanReviewSummary> = {}): StepPlanReviewSummary => ({
   conversation_id: "conversation-1",
   project_id: "project-1",
   task_id: "task-internal",
+  task_version: 7,
   step_id: "step-internal",
   step_sequence: 1,
+  step_version: 3,
   step_kind: "preprocessing_run",
   step_status: "ready",
   plan_revision_id: "plan-internal",
   plan_revision: 4,
+  plan_version: 1,
   plan_hash: "a".repeat(64),
   plan_state: "awaiting_approval",
   execution_authorized: false,
@@ -49,10 +58,13 @@ const detail = (overrides: Partial<StepPlanReviewDetail> = {}): StepPlanReviewDe
   conversation_id: "conversation-1",
   project_id: "project-1",
   task_id: "task-internal",
+  task_version: 7,
   step_id: "step-internal",
   step_sequence: 1,
+  step_version: 3,
   plan_revision_id: "plan-internal",
   plan_revision: 4,
+  plan_version: 1,
   plan_hash: "a".repeat(64),
   images: [
     { subject_id: "sub-01", group: "control", condition: null },
@@ -85,7 +97,7 @@ describe("step plan review panel", () => {
     expect(screen.getByText("指标").parentElement).toHaveTextContent("ALFF、fALFF");
     expect(screen.getByText("指标频段").parentElement).toHaveTextContent("0.01–0.08 Hz");
     expect(screen.getByText("脑掩膜").parentElement).toHaveTextContent("DPABI AutoMask");
-    expect(screen.getByText(/只读，不会批准或启动计算/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批准此步骤方案" })).toBeInTheDocument();
     expect(agentApi.stepPlanReview).not.toHaveBeenCalled();
     expect(screen.queryByText(/sub-01|artifact-private|participants\.tsv|task-internal|plan-internal/)).not.toBeInTheDocument();
   });
@@ -167,5 +179,65 @@ describe("step plan review panel", () => {
     render(<StepPlanReviewPanel {...props} />);
 
     expect(await screen.findByText(/超过 100 项/)).toBeInTheDocument();
+  });
+
+  it("approves only the exact task, step, and plan versions shown in the review", async () => {
+    vi.mocked(agentApi.stepPlanReviews).mockResolvedValue({ items: [summary()], truncated: false });
+    vi.mocked(agentApi.approveStepPlan).mockResolvedValue({
+      conversation_id: "conversation-1", project_id: "project-1", task_id: "task-internal",
+      step_id: "step-internal", plan_revision_id: "plan-internal", plan_hash: "a".repeat(64),
+      approval: { approval_id: "approval-1", plan_revision_id: "plan-internal", plan_hash: "a".repeat(64),
+        actor: "用户", decision: "approved", reason: "reviewed", created_at: "2026-10-21T00:00:00Z" },
+    } as never);
+    render(<StepPlanReviewPanel {...props} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "批准此步骤方案" }));
+    await waitFor(() => expect(agentApi.approveStepPlan).toHaveBeenCalledWith(
+      "conversation-1", "task-internal", "step-internal", {
+        task_version: 7, step_version: 3, plan_revision_id: "plan-internal", plan_version: 1,
+        plan_hash: "a".repeat(64), actor: "用户",
+        reason: "用户在步骤级方案审查面板中明确批准此冻结 Plan。",
+      },
+    ));
+  });
+
+  it("requires a separate one-time authorization before creating a Mock Run", async () => {
+    const approved = summary({ plan_state: "approved" });
+    vi.mocked(agentApi.stepPlanReviews).mockResolvedValue({ items: [approved], truncated: false });
+    vi.mocked(agentApi.createStepRunAuthorization).mockResolvedValue({
+      conversation_id: "conversation-1", project_id: "project-1", task_id: "task-internal",
+      step_id: "step-internal", plan_revision_id: "plan-internal", plan_hash: "a".repeat(64),
+      confirmation_id: "confirmation-1", expires_at: "2026-10-21T00:05:00Z",
+    } as never);
+    vi.mocked(agentApi.startStepRun).mockResolvedValue({
+      conversation_id: "conversation-1", project_id: "project-1", task_id: "task-internal",
+      step_id: "step-internal", plan_revision_id: "plan-internal",
+      run: { run_id: "run-1", project_id: "project-1", plan_revision_id: "plan-internal", state: "queued",
+        version: 1, attempt: 1, cancel_requested: false, error: null, stage: "queued", stage_progress: null,
+        heartbeat: null, log_cursor: 0, eta_seconds: null, diagnosis_available: false,
+        qc_mode: "require", qc_status: "pending", created_at: "2026-10-21T00:00:00Z",
+        updated_at: "2026-10-21T00:00:00Z" },
+    } as never);
+    render(<StepPlanReviewPanel {...props} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "签发此步骤的一次性启动授权" }));
+    await waitFor(() => expect(agentApi.createStepRunAuthorization).toHaveBeenCalledWith(
+      "conversation-1", "task-internal", "step-internal", {
+        task_version: 7, step_version: 3, plan_revision_id: "plan-internal", plan_version: 1,
+        plan_hash: "a".repeat(64), execution_backend: "mock", workspace_mode: "isolated",
+        real_execution_confirmed: false, qc_mode: "require",
+      },
+    ));
+    expect(agentApi.startStepRun).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole("button", { name: "确认并创建 Run" }));
+    await waitFor(() => expect(agentApi.startStepRun).toHaveBeenCalledWith(
+      "conversation-1", "task-internal", "step-internal", {
+        task_version: 7, step_version: 3, plan_revision_id: "plan-internal", plan_version: 1,
+        plan_hash: "a".repeat(64), confirmation_id: "confirmation-1", execution_backend: "mock",
+        workspace_mode: "isolated", real_execution_confirmed: false, qc_mode: "require",
+        max_attempts: 1, mock_outcome: "succeed", mock_delay_ms: 0,
+      },
+    ));
   });
 });

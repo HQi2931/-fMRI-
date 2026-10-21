@@ -57,12 +57,15 @@ class StepPlanReviewSummaryView(StrictHttpModel):
     conversation_id: str
     project_id: str
     task_id: str
+    task_version: int = Field(ge=1)
     step_id: str
     step_sequence: int
+    step_version: int = Field(ge=1)
     step_kind: str
     step_status: TaskStepStatus
     plan_revision_id: str
     plan_revision: int
+    plan_version: int = Field(ge=1)
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     plan_state: PlanState
     execution_authorized: Literal[False] = False
@@ -97,10 +100,13 @@ class StepPlanReviewDetailView(StrictHttpModel):
     conversation_id: str
     project_id: str
     task_id: str
+    task_version: int = Field(ge=1)
     step_id: str
     step_sequence: int
+    step_version: int = Field(ge=1)
     plan_revision_id: str
     plan_revision: int
+    plan_version: int = Field(ge=1)
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     images: tuple[StepPlanReviewImageDetailView, ...]
     covariates: tuple[StepPlanReviewCovariateDetailView, ...]
