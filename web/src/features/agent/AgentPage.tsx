@@ -29,6 +29,7 @@ import { ExternalAnalysisImportPanel } from "../../components/ExternalAnalysisIm
 import { DatasetDemographicsPanel } from "../../components/DatasetDemographicsPanel";
 import { WorkspaceProjectSetupPanel, type WorkspaceProjectRegistration } from "../../components/WorkspaceProjectSetupPanel";
 import { MetricOnlyCheckpointPicker } from "./MetricOnlyCheckpointPicker";
+import { StepPlanReviewPanel } from "./StepPlanReviewPanel";
 import { updateWorkspace, useWorkspace } from "../../workspace";
 import "./agent-work.css";
 
@@ -1238,6 +1239,14 @@ export function AgentPage() {
         onRefresh={() => setCompositeGoalRefreshNonce((value) => value + 1)}
         disabled={busy || draftDirty}
         onSelect={(intentTaskId) => void selectCompositeGoal(intentTaskId)}
+      />}
+      {mode === "work" && activeConversation && boundProjectId && <StepPlanReviewPanel
+        key={`${activeConversation.conversation_id}:${boundProjectId}`}
+        conversationId={activeConversation.conversation_id}
+        projectId={boundProjectId}
+        conversationVersion={activeConversation.version}
+        refreshWhileActive={!activeCompositeGoalView || activeCompositeGoalView.loading || Boolean(activeCompositeGoalView.error)
+          || activeCompositeGoalView.goals.some(compositeGoalIsActive)}
       />}
       <div className={`work-review-layout${mode === "work" && currentDraftMessage && planOpen ? " has-plan" : ""}`}>
       <div className="work-dialogue-region">

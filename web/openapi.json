@@ -2363,56 +2363,6 @@
         "title": "DemographicsRevisionView",
         "type": "object"
       },
-      "DpabiPreprocessingOutput": {
-        "additionalProperties": false,
-        "description": "One subject-level DPABI output and its registered Artifact identity.",
-        "properties": {
-          "artifact_type": {
-            "minLength": 1,
-            "title": "Artifact Type",
-            "type": "string"
-          },
-          "metric": {
-            "enum": [
-              "timeseries",
-              "brain_mask",
-              "alff",
-              "falff",
-              "reho"
-            ],
-            "title": "Metric",
-            "type": "string"
-          },
-          "relative_path": {
-            "minLength": 1,
-            "title": "Relative Path",
-            "type": "string"
-          },
-          "scaling": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MetricScaling"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "subject_id": {
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
-            "title": "Subject Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "subject_id",
-          "metric",
-          "relative_path",
-          "artifact_type"
-        ],
-        "title": "DpabiPreprocessingOutput",
-        "type": "object"
-      },
       "EnvironmentComponent": {
         "additionalProperties": false,
         "properties": {
@@ -6108,6 +6058,162 @@
         "title": "PreprocessingParameters",
         "type": "object"
       },
+      "PreprocessingPlanSummaryView": {
+        "additionalProperties": false,
+        "properties": {
+          "csf_regression_enabled": {
+            "title": "Csf Regression Enabled",
+            "type": "boolean"
+          },
+          "detrend": {
+            "title": "Detrend",
+            "type": "boolean"
+          },
+          "dummy_scans": {
+            "title": "Dummy Scans",
+            "type": "integer"
+          },
+          "expected_time_points": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Time Points"
+          },
+          "frequency_high_hz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frequency High Hz"
+          },
+          "frequency_low_hz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frequency Low Hz"
+          },
+          "global_signal_regression_enabled": {
+            "title": "Global Signal Regression Enabled",
+            "type": "boolean"
+          },
+          "head_motion_model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadMotionModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mask_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricMaskSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_smoothing": {
+            "title": "Metric Smoothing",
+            "type": "boolean"
+          },
+          "normalization_mode": {
+            "$ref": "#/components/schemas/NormalizationMode"
+          },
+          "realignment_enabled": {
+            "title": "Realignment Enabled",
+            "type": "boolean"
+          },
+          "reference_slice": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Slice"
+          },
+          "requested_metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricKind"
+            },
+            "title": "Requested Metrics",
+            "type": "array"
+          },
+          "requested_scalings": {
+            "items": {
+              "$ref": "#/components/schemas/MetricScaling"
+            },
+            "title": "Requested Scalings",
+            "type": "array"
+          },
+          "slice_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Count"
+          },
+          "slice_timing_enabled": {
+            "title": "Slice Timing Enabled",
+            "type": "boolean"
+          },
+          "tr_seconds": {
+            "title": "Tr Seconds",
+            "type": "number"
+          },
+          "white_matter_regression_enabled": {
+            "title": "White Matter Regression Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tr_seconds",
+          "expected_time_points",
+          "dummy_scans",
+          "detrend",
+          "slice_timing_enabled",
+          "slice_count",
+          "reference_slice",
+          "realignment_enabled",
+          "head_motion_model",
+          "white_matter_regression_enabled",
+          "csf_regression_enabled",
+          "global_signal_regression_enabled",
+          "normalization_mode",
+          "requested_metrics",
+          "frequency_low_hz",
+          "frequency_high_hz",
+          "mask_source",
+          "requested_scalings",
+          "metric_smoothing"
+        ],
+        "title": "PreprocessingPlanSummaryView",
+        "type": "object"
+      },
       "ProjectCreate": {
         "additionalProperties": false,
         "properties": {
@@ -9689,6 +9795,55 @@
         "title": "StatisticalMethodSummary",
         "type": "object"
       },
+      "StatisticalPlanSummaryView": {
+        "additionalProperties": false,
+        "properties": {
+          "condition_count": {
+            "title": "Condition Count",
+            "type": "integer"
+          },
+          "contrast": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Contrast",
+            "type": "array"
+          },
+          "covariate_count": {
+            "title": "Covariate Count",
+            "type": "integer"
+          },
+          "group_count": {
+            "title": "Group Count",
+            "type": "integer"
+          },
+          "image_count": {
+            "title": "Image Count",
+            "type": "integer"
+          },
+          "missing_value_policy": {
+            "$ref": "#/components/schemas/MissingValuePolicy"
+          },
+          "tail": {
+            "$ref": "#/components/schemas/Tail"
+          },
+          "test": {
+            "$ref": "#/components/schemas/StatisticalTest"
+          }
+        },
+        "required": [
+          "test",
+          "group_count",
+          "condition_count",
+          "image_count",
+          "covariate_count",
+          "contrast",
+          "tail",
+          "missing_value_policy"
+        ],
+        "title": "StatisticalPlanSummaryView",
+        "type": "object"
+      },
       "StatisticalQcSource": {
         "enum": [
           "approved_review",
@@ -10134,9 +10289,179 @@
         "title": "StatisticsRunCreate",
         "type": "object"
       },
-      "StepPlanReviewView": {
+      "StepPlanReviewCovariateDetailView": {
         "additionalProperties": false,
-        "description": "Read-only snapshot for rendering the exact Plan bound to a READY step.",
+        "properties": {
+          "centering": {
+            "$ref": "#/components/schemas/Centering"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/StepPlanReviewCovariateValueDetailView"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "centering",
+          "values"
+        ],
+        "title": "StepPlanReviewCovariateDetailView",
+        "type": "object"
+      },
+      "StepPlanReviewCovariateValueDetailView": {
+        "additionalProperties": false,
+        "properties": {
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "subject_id",
+          "value"
+        ],
+        "title": "StepPlanReviewCovariateValueDetailView",
+        "type": "object"
+      },
+      "StepPlanReviewDetailView": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "covariates": {
+            "items": {
+              "$ref": "#/components/schemas/StepPlanReviewCovariateDetailView"
+            },
+            "title": "Covariates",
+            "type": "array"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/StepPlanReviewImageDetailView"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "plan_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "plan_revision": {
+            "title": "Plan Revision",
+            "type": "integer"
+          },
+          "plan_revision_id": {
+            "title": "Plan Revision Id",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "step_id": {
+            "title": "Step Id",
+            "type": "string"
+          },
+          "step_sequence": {
+            "title": "Step Sequence",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "project_id",
+          "task_id",
+          "step_id",
+          "step_sequence",
+          "plan_revision_id",
+          "plan_revision",
+          "plan_hash",
+          "images",
+          "covariates"
+        ],
+        "title": "StepPlanReviewDetailView",
+        "type": "object"
+      },
+      "StepPlanReviewImageDetailView": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "group",
+          "condition"
+        ],
+        "title": "StepPlanReviewImageDetailView",
+        "type": "object"
+      },
+      "StepPlanReviewListView": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepPlanReviewSummaryView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "title": "StepPlanReviewListView",
+        "type": "object"
+      },
+      "StepPlanReviewSummaryView": {
+        "additionalProperties": false,
         "properties": {
           "conversation_id": {
             "title": "Conversation Id",
@@ -10148,25 +10473,18 @@
             "title": "Execution Authorized",
             "type": "boolean"
           },
-          "expected_artifacts": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/DpabiPreprocessingOutput"
-            },
-            "title": "Expected Artifacts",
-            "type": "array"
-          },
-          "input_revision": {
-            "title": "Input Revision",
-            "type": "string"
-          },
-          "plan": {
-            "$ref": "#/components/schemas/PlanRevisionView"
+          "expected_output_count": {
+            "title": "Expected Output Count",
+            "type": "integer"
           },
           "plan_hash": {
             "pattern": "^[a-f0-9]{64}$",
             "title": "Plan Hash",
             "type": "string"
+          },
+          "plan_revision": {
+            "title": "Plan Revision",
+            "type": "integer"
           },
           "plan_revision_id": {
             "title": "Plan Revision Id",
@@ -10175,24 +10493,33 @@
           "plan_state": {
             "$ref": "#/components/schemas/PlanState"
           },
-          "project_id": {
-            "title": "Project Id",
-            "type": "string"
-          },
-          "step_id": {
-            "title": "Step Id",
-            "type": "string"
-          },
-          "step_input_version": {
+          "preprocessing": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/PreprocessingPlanSummaryView"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Step Input Version"
+            ]
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "statistical": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StatisticalPlanSummaryView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step_id": {
+            "title": "Step Id",
+            "type": "string"
           },
           "step_kind": {
             "title": "Step Kind",
@@ -10205,23 +10532,8 @@
           "step_status": {
             "$ref": "#/components/schemas/TaskStepStatus"
           },
-          "step_version": {
-            "title": "Step Version",
-            "type": "integer"
-          },
           "task_id": {
             "title": "Task Id",
-            "type": "string"
-          },
-          "task_status": {
-            "$ref": "#/components/schemas/TaskStatus"
-          },
-          "task_version": {
-            "title": "Task Version",
-            "type": "integer"
-          },
-          "waiting_reference": {
-            "title": "Waiting Reference",
             "type": "string"
           }
         },
@@ -10229,22 +10541,19 @@
           "conversation_id",
           "project_id",
           "task_id",
-          "task_version",
-          "task_status",
           "step_id",
           "step_sequence",
           "step_kind",
           "step_status",
-          "step_version",
-          "step_input_version",
-          "input_revision",
-          "waiting_reference",
           "plan_revision_id",
+          "plan_revision",
           "plan_hash",
           "plan_state",
-          "plan"
+          "expected_output_count",
+          "preprocessing",
+          "statistical"
         ],
-        "title": "StepPlanReviewView",
+        "title": "StepPlanReviewSummaryView",
         "type": "object"
       },
       "StructuredRecommendation": {
@@ -10574,20 +10883,6 @@
           "two_sided"
         ],
         "title": "Tail",
-        "type": "string"
-      },
-      "TaskStatus": {
-        "enum": [
-          "queued",
-          "running",
-          "waiting_user",
-          "waiting_run",
-          "waiting_dependency",
-          "completed",
-          "blocked",
-          "cancelled"
-        ],
-        "title": "TaskStatus",
         "type": "string"
       },
       "TaskStepStatus": {
@@ -13538,6 +13833,98 @@
         ]
       }
     },
+    "/api/v1/conversations/{conversation_id}/step-plan-reviews": {
+      "get": {
+        "operationId": "list_step_plan_reviews_api_v1_conversations__conversation_id__step_plan_reviews_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepPlanReviewListView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Step Plan Reviews",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/conversations/{conversation_id}/turns": {
       "post": {
         "operationId": "send_conversation_turn_api_v1_conversations__conversation_id__turns_post",
@@ -14145,7 +14532,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StepPlanReviewView"
+                  "$ref": "#/components/schemas/StepPlanReviewDetailView"
                 }
               }
             },

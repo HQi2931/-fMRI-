@@ -15,7 +15,10 @@ from neuroagent.api.responses.agent import (
     ProviderTestView,
     RsFmriAnswerView,
 )
-from neuroagent.api.responses.automation import StepPlanReviewView
+from neuroagent.api.responses.automation import (
+    StepPlanReviewDetailView,
+    StepPlanReviewListView,
+)
 from neuroagent.api.responses.conversations import (
     CompositeGoalProgressView,
     ConversationContextView,
@@ -156,19 +159,34 @@ def list_composite_goal_progress(
 
 
 @router.get(
+    "/conversations/{conversation_id}/step-plan-reviews",
+    response_model=StepPlanReviewListView,
+    tags=["agent"],
+)
+def list_step_plan_reviews(conversation_id: str, request: Request) -> StepPlanReviewListView:
+    reviews = capability_from(request, "conversations").automation.list_step_plan_reviews(
+        conversation_id
+    )
+    return cast(
+        StepPlanReviewListView,
+        to_http_response(reviews, StepPlanReviewListView),
+    )
+
+
+@router.get(
     "/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review",
-    response_model=StepPlanReviewView,
+    response_model=StepPlanReviewDetailView,
     tags=["agent"],
 )
 def get_step_plan_review(
     conversation_id: str, task_id: str, step_id: str, request: Request
-) -> StepPlanReviewView:
+) -> StepPlanReviewDetailView:
     review = capability_from(request, "conversations").automation.get_step_plan_review(
         conversation_id, task_id, step_id
     )
     return cast(
-        StepPlanReviewView,
-        to_http_response(review, StepPlanReviewView),
+        StepPlanReviewDetailView,
+        to_http_response(review, StepPlanReviewDetailView),
     )
 
 

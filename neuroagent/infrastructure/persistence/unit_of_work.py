@@ -57,6 +57,26 @@ class SqliteUnitOfWork:
                 self._transaction_session.reset(token)
 
     @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Share one deferred SQLite read snapshot across repository adapters."""
+
+        active = self._transaction_session.get()
+        if active is not None:
+            yield
+            return
+        with self.database.session_factory() as session:
+            # A plain BEGIN is deferred; it does not reserve SQLite's writer
+            # lock. The first SELECT establishes the snapshot shared by all
+            # adapters using this unit of work.
+            session.connection().exec_driver_sql("BEGIN")
+            token = self._transaction_session.set(session)
+            try:
+                yield
+            finally:
+                self._transaction_session.reset(token)
+                session.rollback()
+
+    @contextmanager
     def write_session(self) -> Iterator[Session]:
         active = self._transaction_session.get()
         if active is not None:

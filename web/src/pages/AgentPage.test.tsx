@@ -152,6 +152,7 @@ type Options = {
   review?: (init?: RequestInit) => Promise<Response>;
   conversation?: () => Promise<Response>;
   compositeGoals?: (conversationId: string, signal?: AbortSignal | null) => Promise<Response>;
+  stepPlanReviews?: (conversationId: string, signal?: AbortSignal | null) => Promise<Response>;
   retryOutbox?: (init?: RequestInit) => Promise<Response>;
   retryResultInterpretation?: (init?: RequestInit) => Promise<Response>;
   selectAgent?: (init?: RequestInit) => Promise<Response>;
@@ -209,6 +210,11 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/composite-goals")) {
       const encodedConversationId = path.match(/\/conversations\/([^/]+)\/composite-goals$/)?.[1] ?? "";
       return options.compositeGoals?.(decodeURIComponent(encodedConversationId), init?.signal) ?? json([]);
+    }
+    if (path.endsWith("/step-plan-reviews")) {
+      const encodedConversationId = path.match(/\/conversations\/([^/]+)\/step-plan-reviews$/)?.[1] ?? "";
+      return options.stepPlanReviews?.(decodeURIComponent(encodedConversationId), init?.signal)
+        ?? json({ items: [], truncated: false });
     }
     if (path.endsWith("/work-draft")) return options.draftPatch?.(init) ?? notFound();
     if (path.endsWith("/work-confirmation")) return options.confirmation?.(init) ?? notFound();

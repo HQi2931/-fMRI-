@@ -6,6 +6,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from neuroagent.api import create_app
 from neuroagent.application.automation.models import (
@@ -30,6 +31,9 @@ from neuroagent.application.contracts.projects import DatasetCreate, ManifestSca
 from neuroagent.application.hashing import content_hash
 from neuroagent.domain.fmri import (
     AnalysisImage,
+    Centering,
+    CovariateColumn,
+    CovariateValue,
     MissingValuePolicy,
     StatisticalDesignRevision,
     StatisticalTest,
@@ -168,7 +172,13 @@ def _preprocessing_review_task(service, source_root: Path, work_root: Path, key:
 
 
 def _statistical_review_task(
-    service, source_root: Path, work_root: Path, key: str, *, plan_project_id: str | None = None
+    service,
+    source_root: Path,
+    work_root: Path,
+    key: str,
+    *,
+    plan_project_id: str | None = None,
+    include_covariate: bool = False,
 ):
     project, conversation = _project_conversation(service, source_root, work_root, key)
     plan_project = service.projects.get_project(plan_project_id) if plan_project_id else project
@@ -189,8 +199,22 @@ def _statistical_review_task(
         ),
         group_order=(),
         condition_order=(),
-        covariates=(),
-        contrast=(1.0,),
+        covariates=(
+            (
+                CovariateColumn(
+                    name="age",
+                    values=(
+                        CovariateValue(subject_id="sub-01", value=32.0),
+                        CovariateValue(subject_id="sub-02", value=41.0),
+                        CovariateValue(subject_id="sub-03", value=50.0),
+                    ),
+                    centering=Centering.GRAND_MEAN,
+                ),
+            )
+            if include_covariate
+            else ()
+        ),
+        contrast=(1.0, 0.0) if include_covariate else (1.0,),
         one_sample_baseline=0.0,
         mask_artifact_id=f"{key}-mask",
         tail=Tail.TWO_SIDED,
@@ -231,8 +255,8 @@ def _statistical_review_task(
 
 
 @pytest.mark.parametrize("kind", ["preprocessing", "statistical"])
-def test_step_plan_review_api_returns_exact_read_only_preprocessing_and_statistical_plans(
-    service, source_root, work_root, kind
+def test_step_plan_review_api_returns_allow_list_details_without_writer_lock(
+    service, source_root, work_root, kind, monkeypatch
 ) -> None:
     if kind == "preprocessing":
         project, conversation, plan, task = _preprocessing_review_task(
@@ -240,16 +264,43 @@ def test_step_plan_review_api_returns_exact_read_only_preprocessing_and_statisti
         )
     else:
         project, conversation, plan, task = _statistical_review_task(
-            service, source_root, work_root, "review-statistical"
+            service,
+            source_root,
+            work_root,
+            "review-statistical",
+            include_covariate=True,
         )
     step = task.steps[1]
     before = service.automation.get_task(task.task_id)
+
+    def reject_write_unit_of_work():
+        raise AssertionError("step review reads must not open a write unit of work")
+
+    monkeypatch.setattr(service.automation, "atomic", reject_write_unit_of_work)
+    read_review = service.automation._read_step_plan_review
+
+    def verify_shared_read_snapshot(conversation_id: str, task_id: str, step_id: str):
+        repositories = (
+            service.automation._repository,
+            service.automation._conversation_repository,
+            service.automation._project_repository,
+            service.automation._plan_repository,
+        )
+        sessions = tuple(repository.unit_of_work.current_session() for repository in repositories)
+        assert sessions[0] is not None
+        assert all(session is sessions[0] for session in sessions)
+        return read_review(conversation_id, task_id, step_id)
+
+    monkeypatch.setattr(service.automation, "_read_step_plan_review", verify_shared_read_snapshot)
     service_view = service.automation.get_step_plan_review(
         conversation.conversation_id, task.task_id, step.step_id
     )
-    assert service_view.task_version == task.version
+    assert service_view.task_id == task.task_id
+    assert service_view.project_id == project.project_id
+    assert service_view.step_sequence == step.sequence
     assert service_view.plan_revision_id == plan.plan_revision_id
-    assert service_view.execution_authorized is False
+    assert service_view.plan_revision == plan.revision
+    assert service_view.plan_hash == plan.plan_hash
 
     with TestClient(create_app(service=service)) as client:
         response = client.get(
@@ -262,24 +313,251 @@ def test_step_plan_review_api_returns_exact_read_only_preprocessing_and_statisti
     assert payload["conversation_id"] == conversation.conversation_id
     assert payload["project_id"] == project.project_id
     assert payload["task_id"] == task.task_id
-    assert payload["task_version"] == task.version
-    assert payload["task_status"] == "waiting_user"
     assert payload["step_id"] == step.step_id
-    assert payload["step_version"] == step.version
-    assert payload["step_input_version"] == step.input_version
-    assert payload["input_revision"] == task.authority_refs.input_revision
+    assert payload["step_sequence"] == step.sequence
     assert payload["plan_revision_id"] == plan.plan_revision_id
+    assert payload["plan_revision"] == plan.revision
     assert payload["plan_hash"] == plan.plan_hash
-    assert payload["plan_state"] == plan.state.value
-    assert payload["execution_authorized"] is False
-    assert payload["plan"]["plan_revision_id"] == plan.plan_revision_id
-    assert payload["plan"]["plan"] == plan.plan
+    assert set(payload) == {
+        "conversation_id",
+        "project_id",
+        "task_id",
+        "step_id",
+        "step_sequence",
+        "plan_revision_id",
+        "plan_revision",
+        "plan_hash",
+        "images",
+        "covariates",
+    }
     if kind == "preprocessing":
-        assert payload["expected_artifacts"]
+        assert payload["images"] == []
+        assert payload["covariates"] == []
     else:
-        assert payload["expected_artifacts"] == []
+        assert payload["images"] == [
+            {"subject_id": "sub-01", "group": None, "condition": None},
+            {"subject_id": "sub-02", "group": None, "condition": None},
+            {"subject_id": "sub-03", "group": None, "condition": None},
+        ]
+        assert payload["covariates"] == [
+            {
+                "name": "age",
+                "centering": "grand_mean",
+                "values": [
+                    {"subject_id": "sub-01", "value": 32.0},
+                    {"subject_id": "sub-02", "value": 41.0},
+                    {"subject_id": "sub-03", "value": 50.0},
+                ],
+            }
+        ]
+    assert "artifact_id" not in str(payload)
+    assert 'plan"' not in str(payload)
+    assert "manifest_hash" not in payload
+    assert "subject_order" not in str(payload)
     assert service.automation.get_task(task.task_id) == before
     assert service.plans.get_plan(plan.plan_revision_id).state == plan.state
+
+
+def test_step_plan_review_list_is_scoped_verified_and_refreshed(
+    service, source_root, work_root, monkeypatch
+) -> None:
+    project, conversation, _plan, task = _statistical_review_task(
+        service, source_root, work_root, "review-list"
+    )
+    step = task.steps[1]
+    other_conversation = service.conversations.create_conversation(
+        ConversationCreate(mode="work", project_id=project.project_id),
+        "review-list-other-conversation",
+    )
+
+    with TestClient(create_app(service=service)) as client:
+        direct = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/work-tasks/"
+            f"{task.task_id}/steps/{step.step_id}/review"
+        )
+
+    def reject_write_unit_of_work():
+        raise AssertionError("list_step_plan_reviews must not open a write unit of work")
+
+    monkeypatch.setattr(service.automation, "atomic", reject_write_unit_of_work)
+    with TestClient(create_app(service=service)) as client:
+        listed = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/step-plan-reviews"
+        )
+        wrong_conversation = client.get(
+            f"/api/v1/conversations/{other_conversation.conversation_id}/step-plan-reviews"
+        )
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["truncated"] is False
+    assert len(listed.json()["items"]) == 1
+    item = listed.json()["items"][0]
+    assert item["conversation_id"] == conversation.conversation_id
+    assert item["project_id"] == project.project_id
+    assert item["task_id"] == task.task_id
+    assert item["step_id"] == step.step_id
+    assert item["step_sequence"] == step.sequence
+    assert item["step_kind"] == "statistical_run"
+    assert item["plan_revision_id"] == direct.json()["plan_revision_id"]
+    assert item["plan_revision"] == direct.json()["plan_revision"]
+    assert item["plan_hash"] == direct.json()["plan_hash"]
+    assert item["expected_output_count"] == 0
+    assert item["execution_authorized"] is False
+    assert item["preprocessing"] is None
+    assert item["statistical"] == {
+        "test": "one_sample_t",
+        "group_count": 0,
+        "condition_count": 0,
+        "image_count": 3,
+        "covariate_count": 0,
+        "contrast": [1.0],
+        "tail": "two_sided",
+        "missing_value_policy": "error",
+    }
+    assert set(item) == {
+        "conversation_id",
+        "project_id",
+        "task_id",
+        "step_id",
+        "step_sequence",
+        "step_kind",
+        "step_status",
+        "plan_revision_id",
+        "plan_revision",
+        "plan_hash",
+        "plan_state",
+        "execution_authorized",
+        "expected_output_count",
+        "preprocessing",
+        "statistical",
+    }
+    serialized_item = str(item)
+    assert "sub-01" not in serialized_item
+    assert f"{task.task_id}-sub-01-metric" not in serialized_item
+    assert "subject_order" not in serialized_item
+    assert "plan" not in item
+    assert wrong_conversation.status_code == 200, wrong_conversation.text
+    assert wrong_conversation.json() == {"items": [], "truncated": False}
+
+    current = service.automation.get_task(task.task_id)
+    service.automation._repository.save_task(
+        current.model_copy(
+            update={
+                "waiting_condition": current.waiting_condition.model_copy(
+                    update={"reference": "stale-step-plan-review"}
+                ),
+                "version": current.version + 1,
+            }
+        ),
+        expected_version=current.version,
+    )
+    with TestClient(create_app(service=service)) as client:
+        refreshed = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/step-plan-reviews"
+        )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json() == {"items": [], "truncated": False}
+
+
+def test_step_plan_review_candidates_ignore_malformed_persisted_json(
+    service, source_root, work_root
+) -> None:
+    _, conversation, _plan, task = _statistical_review_task(
+        service, source_root, work_root, "review-malformed"
+    )
+    repository = service.automation._repository
+    with repository.database.session_factory() as session:
+        session.execute(
+            text("UPDATE work_tasks SET authority_refs_json=:invalid WHERE task_id=:task_id"),
+            {"invalid": "{not-json", "task_id": task.task_id},
+        )
+        session.commit()
+
+    with TestClient(create_app(service=service)) as client:
+        response = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/step-plan-reviews"
+        )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"items": [], "truncated": False}
+
+
+def test_step_plan_review_list_projects_only_preprocessing_parameters(
+    service, source_root, work_root
+) -> None:
+    project, conversation, plan, task = _preprocessing_review_task(
+        service, source_root, work_root, "review-list-preprocessing"
+    )
+    with TestClient(create_app(service=service)) as client:
+        response = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/step-plan-reviews"
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["truncated"] is False
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["project_id"] == project.project_id
+    assert item["plan_revision_id"] == plan.plan_revision_id
+    assert item["expected_output_count"] == len(task.steps[1].expected_artifacts)
+    assert item["preprocessing"] == {
+        "tr_seconds": 2.0,
+        "expected_time_points": 120,
+        "dummy_scans": 0,
+        "detrend": False,
+        "slice_timing_enabled": False,
+        "slice_count": None,
+        "reference_slice": None,
+        "realignment_enabled": False,
+        "head_motion_model": None,
+        "white_matter_regression_enabled": False,
+        "csf_regression_enabled": False,
+        "global_signal_regression_enabled": False,
+        "normalization_mode": 0,
+        "requested_metrics": [],
+        "frequency_low_hz": None,
+        "frequency_high_hz": None,
+        "mask_source": None,
+        "requested_scalings": [],
+        "metric_smoothing": False,
+    }
+    assert item["statistical"] is None
+    assert "dataset_ref" not in str(item)
+    assert "structural_artifact_id" not in str(item)
+    assert plan.plan["skill_plan"]["input_artifact_id"] not in str(item)
+
+
+def test_step_plan_review_list_truncates_after_validating_at_most_100_candidates(
+    service, source_root, work_root
+) -> None:
+    project, conversation, plan, base_task = _statistical_review_task(
+        service, source_root, work_root, "review-truncate"
+    )
+    for index in range(100):
+        task = _task(
+            task_id=f"review-truncate-{index:03d}",
+            conversation_id=conversation.conversation_id,
+            project_id=project.project_id,
+            plan_revision_id=plan.plan_revision_id,
+            plan_hash=plan.plan_hash,
+            input_revision=base_task.authority_refs.input_revision,
+            step_kind="statistical_run",
+            step_input_version=base_task.steps[1].input_version,
+        )
+        service.automation.create_task(task)
+
+    candidate_ids = service.automation._repository.list_step_plan_review_candidate_task_ids(
+        conversation.conversation_id, limit=101
+    )
+    assert len(candidate_ids) == 101
+    with TestClient(create_app(service=service)) as client:
+        response = client.get(
+            f"/api/v1/conversations/{conversation.conversation_id}/step-plan-reviews"
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["truncated"] is True
+    assert len(response.json()["items"]) == 100
 
 
 @pytest.mark.parametrize(

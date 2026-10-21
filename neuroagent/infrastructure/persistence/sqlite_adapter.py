@@ -33,6 +33,11 @@ class SqliteAdapterMixin:
             yield
 
     @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        with self.unit_of_work.read_snapshot():
+            yield
+
+    @contextmanager
     def _write_session(self) -> Iterator[Session]:
         with self.unit_of_work.write_session() as session:
             yield session

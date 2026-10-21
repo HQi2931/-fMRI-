@@ -4,6 +4,24 @@
 .composite-goal-heading { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .composite-goal-title-text { display: -webkit-box; flex: 1 1 auto; min-width: 0; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .composite-goal-heading .status-pill { flex: 0 0 auto; }
+.step-plan-review-list { display: grid; gap: 12px; margin: 0; padding-left: 22px; }
+.step-plan-review-card { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.step-plan-review-card h3 { margin: 0 0 8px; font-size: 14px; }
+.step-plan-review-card p { margin: 6px 0; }
+.step-plan-review-card dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 16px; margin: 12px 0; }
+.step-plan-review-card dl > div { min-width: 0; }
+.step-plan-review-card dt { color: var(--muted); font-size: 11px; }
+.step-plan-review-card dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+.step-plan-review-card details { margin-top: 10px; color: var(--muted); font-size: 12px; }
+.step-plan-review-card details p { margin: 6px 0 0; }
+.step-plan-review-error { color: var(--danger, #a32222); }
+.step-plan-detail { margin-top: 12px; }
+.step-plan-local-data-note { color: var(--muted); font-size: 12px; }
+.step-plan-table-scroll { max-width: 100%; overflow-x: auto; }
+.step-plan-table-scroll table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.step-plan-table-scroll caption { padding: 8px 0; text-align: left; font-weight: 700; }
+.step-plan-table-scroll th, .step-plan-table-scroll td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.step-plan-detail > details { margin-top: 10px; }
 .work-review-layout { display: grid; align-items: start; }
 .work-review-layout.has-plan { grid-template-columns: minmax(300px, .85fr) minmax(420px, 1.15fr); margin-top: 20px; border-top: 1px solid var(--line); }
 .work-dialogue-region, .work-plan-region { min-width: 0; }

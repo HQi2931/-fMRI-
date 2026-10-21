@@ -29,6 +29,7 @@ function baseApi(input: RequestInfo | URL, init?: RequestInit): Promise<Response
   if (path.endsWith("/health")) return json({ status: "ok", database: "ok" });
   if (path.endsWith("/model-profiles")) return json([]);
   if (path.endsWith("/conversations") && init?.method !== "POST") return json([conversation()]);
+  if (path.endsWith("/step-plan-reviews")) return json({ items: [], truncated: false });
   if (path.endsWith("/turns")) {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     const current = conversation();
@@ -74,13 +75,17 @@ describe("single conversation workbench", () => {
     expect(screen.queryByText("打开功能卡片")).not.toBeInTheDocument();
   });
 
-  it("sends a natural Work request and persists returned plan context", async () => {
+  it("sends a natural Work request and persists the selected workspace context", async () => {
     const user = userEvent.setup();
     renderAt("/agent");
     await user.type(screen.getByPlaceholderText(/DemoData/), "用当前 DemoData 准备 ALFF 预处理方案");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(await screen.findByText("方案已准备，请明确确认后启动。")).toBeInTheDocument();
-    await waitFor(() => expect(window.localStorage.getItem("rsfmri-workspace-v1")).toContain("plan-1"));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("rsfmri-workspace-v1") ?? "{}")).toMatchObject({
+      workspacePath: "D:/demo-work",
+      projectId: "project-1",
+    }));
+    expect(JSON.parse(window.localStorage.getItem("rsfmri-workspace-v1") ?? "{}")).not.toHaveProperty("planRevisionId");
     const call = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => pathOf(input).endsWith("/turns"));
     expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ content: "用当前 DemoData 准备 ALFF 预处理方案" });
   });

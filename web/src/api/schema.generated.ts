@@ -294,6 +294,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/step-plan-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Step Plan Reviews */
+        get: operations["list_step_plan_reviews_api_v1_conversations__conversation_id__step_plan_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -2409,24 +2426,6 @@ export interface components {
             /** Row Count */
             row_count: number;
         };
-        /**
-         * DpabiPreprocessingOutput
-         * @description One subject-level DPABI output and its registered Artifact identity.
-         */
-        DpabiPreprocessingOutput: {
-            /** Artifact Type */
-            artifact_type: string;
-            /**
-             * Metric
-             * @enum {string}
-             */
-            metric: "timeseries" | "brain_mask" | "alff" | "falff" | "reho";
-            /** Relative Path */
-            relative_path: string;
-            scaling?: components["schemas"]["MetricScaling"] | null;
-            /** Subject Id */
-            subject_id: string;
-        };
         /** EnvironmentComponent */
         EnvironmentComponent: {
             /** Available */
@@ -3839,6 +3838,44 @@ export interface components {
             /** Tr Seconds */
             tr_seconds: number;
         };
+        /** PreprocessingPlanSummaryView */
+        PreprocessingPlanSummaryView: {
+            /** Csf Regression Enabled */
+            csf_regression_enabled: boolean;
+            /** Detrend */
+            detrend: boolean;
+            /** Dummy Scans */
+            dummy_scans: number;
+            /** Expected Time Points */
+            expected_time_points: number | null;
+            /** Frequency High Hz */
+            frequency_high_hz: number | null;
+            /** Frequency Low Hz */
+            frequency_low_hz: number | null;
+            /** Global Signal Regression Enabled */
+            global_signal_regression_enabled: boolean;
+            head_motion_model: components["schemas"]["HeadMotionModel"] | null;
+            mask_source: components["schemas"]["MetricMaskSource"] | null;
+            /** Metric Smoothing */
+            metric_smoothing: boolean;
+            normalization_mode: components["schemas"]["NormalizationMode"];
+            /** Realignment Enabled */
+            realignment_enabled: boolean;
+            /** Reference Slice */
+            reference_slice: number | null;
+            /** Requested Metrics */
+            requested_metrics: components["schemas"]["MetricKind"][];
+            /** Requested Scalings */
+            requested_scalings: components["schemas"]["MetricScaling"][];
+            /** Slice Count */
+            slice_count: number | null;
+            /** Slice Timing Enabled */
+            slice_timing_enabled: boolean;
+            /** Tr Seconds */
+            tr_seconds: number;
+            /** White Matter Regression Enabled */
+            white_matter_regression_enabled: boolean;
+        };
         /** ProjectCreate */
         ProjectCreate: {
             /** Name */
@@ -5033,6 +5070,22 @@ export interface components {
             /** Voxel P Threshold */
             voxel_p_threshold?: number | null;
         };
+        /** StatisticalPlanSummaryView */
+        StatisticalPlanSummaryView: {
+            /** Condition Count */
+            condition_count: number;
+            /** Contrast */
+            contrast: number[];
+            /** Covariate Count */
+            covariate_count: number;
+            /** Group Count */
+            group_count: number;
+            /** Image Count */
+            image_count: number;
+            missing_value_policy: components["schemas"]["MissingValuePolicy"];
+            tail: components["schemas"]["Tail"];
+            test: components["schemas"]["StatisticalTest"];
+        };
         /**
          * StatisticalQcSource
          * @enum {string}
@@ -5198,11 +5251,62 @@ export interface components {
             /** Statistical Design Revision Id */
             statistical_design_revision_id: string;
         };
-        /**
-         * StepPlanReviewView
-         * @description Read-only snapshot for rendering the exact Plan bound to a READY step.
-         */
-        StepPlanReviewView: {
+        /** StepPlanReviewCovariateDetailView */
+        StepPlanReviewCovariateDetailView: {
+            centering: components["schemas"]["Centering"];
+            /** Name */
+            name: string;
+            /** Values */
+            values: components["schemas"]["StepPlanReviewCovariateValueDetailView"][];
+        };
+        /** StepPlanReviewCovariateValueDetailView */
+        StepPlanReviewCovariateValueDetailView: {
+            /** Subject Id */
+            subject_id: string;
+            /** Value */
+            value: number;
+        };
+        /** StepPlanReviewDetailView */
+        StepPlanReviewDetailView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Covariates */
+            covariates: components["schemas"]["StepPlanReviewCovariateDetailView"][];
+            /** Images */
+            images: components["schemas"]["StepPlanReviewImageDetailView"][];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision */
+            plan_revision: number;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Step Sequence */
+            step_sequence: number;
+            /** Task Id */
+            task_id: string;
+        };
+        /** StepPlanReviewImageDetailView */
+        StepPlanReviewImageDetailView: {
+            /** Condition */
+            condition: string | null;
+            /** Group */
+            group: string | null;
+            /** Subject Id */
+            subject_id: string;
+        };
+        /** StepPlanReviewListView */
+        StepPlanReviewListView: {
+            /** Items */
+            items: components["schemas"]["StepPlanReviewSummaryView"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** StepPlanReviewSummaryView */
+        StepPlanReviewSummaryView: {
             /** Conversation Id */
             conversation_id: string;
             /**
@@ -5211,39 +5315,28 @@ export interface components {
              * @constant
              */
             execution_authorized: false;
-            /**
-             * Expected Artifacts
-             * @default []
-             */
-            expected_artifacts: components["schemas"]["DpabiPreprocessingOutput"][];
-            /** Input Revision */
-            input_revision: string;
-            plan: components["schemas"]["PlanRevisionView"];
+            /** Expected Output Count */
+            expected_output_count: number;
             /** Plan Hash */
             plan_hash: string;
+            /** Plan Revision */
+            plan_revision: number;
             /** Plan Revision Id */
             plan_revision_id: string;
             plan_state: components["schemas"]["PlanState"];
+            preprocessing: components["schemas"]["PreprocessingPlanSummaryView"] | null;
             /** Project Id */
             project_id: string;
+            statistical: components["schemas"]["StatisticalPlanSummaryView"] | null;
             /** Step Id */
             step_id: string;
-            /** Step Input Version */
-            step_input_version: string | null;
             /** Step Kind */
             step_kind: string;
             /** Step Sequence */
             step_sequence: number;
             step_status: components["schemas"]["TaskStepStatus"];
-            /** Step Version */
-            step_version: number;
             /** Task Id */
             task_id: string;
-            task_status: components["schemas"]["TaskStatus"];
-            /** Task Version */
-            task_version: number;
-            /** Waiting Reference */
-            waiting_reference: string;
         };
         /**
          * StructuredRecommendation
@@ -5370,11 +5463,6 @@ export interface components {
          * @enum {string}
          */
         Tail: "one_sided_positive" | "one_sided_negative" | "two_sided";
-        /**
-         * TaskStatus
-         * @enum {string}
-         */
-        TaskStatus: "queued" | "running" | "waiting_user" | "waiting_run" | "waiting_dependency" | "completed" | "blocked" | "cancelled";
         /**
          * TaskStepStatus
          * @enum {string}
@@ -7172,6 +7260,82 @@ export interface operations {
             };
         };
     };
+    list_step_plan_reviews_api_v1_conversations__conversation_id__step_plan_reviews_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanReviewListView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     send_conversation_turn_api_v1_conversations__conversation_id__turns_post: {
         parameters: {
             query?: never;
@@ -7602,7 +7766,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StepPlanReviewView"];
+                    "application/json": components["schemas"]["StepPlanReviewDetailView"];
                 };
             };
             /** @description Bad Request */

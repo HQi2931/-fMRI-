@@ -149,6 +149,148 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
         with self._read_session() as session:
             return self._task_from_session(session, task_id)
 
+    def list_step_plan_review_candidate_task_ids(
+        self, conversation_id: str, *, limit: int
+    ) -> tuple[str, ...]:
+        """Return bounded IDs whose persisted refs look like a current step-plan review.
+
+        JSON is untrusted persisted input. Every extraction is guarded with
+        CASE, and malformed task or step rows are excluded. The application
+        review verifier remains authoritative for returned candidates.
+        """
+
+        if not conversation_id or not 1 <= limit <= 101:
+            raise ValueError("step-plan review candidate scope must be bounded")
+        query = text(
+            """WITH task_candidates AS (
+                   SELECT task.task_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.conversation_id'
+                                      )
+                                  END
+                          END AS conversation_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.plan_revision_id'
+                                      )
+                                  END
+                          END AS plan_revision_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.input_revision'
+                                      )
+                                  END
+                          END AS input_revision,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.workflow_run_id'
+                                      )
+                                  END
+                          END AS workflow_run_id,
+                          CASE
+                              WHEN json_valid(task.waiting_condition_json) = 1 THEN
+                                  CASE WHEN json_type(task.waiting_condition_json) = 'object'
+                                      THEN json_extract(task.waiting_condition_json, '$.kind')
+                                  END
+                          END AS waiting_kind,
+                          CASE
+                              WHEN json_valid(task.waiting_condition_json) = 1 THEN
+                                  CASE WHEN json_type(task.waiting_condition_json) = 'object'
+                                      THEN json_extract(task.waiting_condition_json, '$.reference')
+                                  END
+                          END AS waiting_reference
+                   FROM work_tasks AS task
+                   WHERE task.status = 'waiting_user'
+                     AND json_valid(task.goal_json) = 1
+                     AND json_valid(task.waiting_condition_json) = 1
+                     AND json_valid(task.authority_refs_json) = 1
+                     AND json_valid(task.recovery_steps_json) = 1
+                     AND json_valid(task.budget_json) = 1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM work_task_steps AS malformed_step
+                         WHERE malformed_step.task_id = task.task_id
+                           AND (
+                               json_valid(malformed_step.step_json) != 1
+                               OR CASE
+                                   WHEN json_valid(malformed_step.step_json) = 1
+                                   THEN json_type(malformed_step.step_json)
+                                   ELSE NULL
+                               END != 'object'
+                           )
+                     )
+               )
+               SELECT candidate.task_id
+               FROM task_candidates AS candidate
+               WHERE candidate.conversation_id = :conversation_id
+                 AND candidate.plan_revision_id IS NOT NULL
+                 AND candidate.input_revision IS NOT NULL
+                 AND candidate.workflow_run_id IS NULL
+                 AND candidate.waiting_kind = 'user_decision'
+                 AND (SELECT count(*) FROM work_task_steps AS ready_count
+                      WHERE ready_count.task_id = candidate.task_id
+                        AND ready_count.status = 'ready') = 1
+                 AND (SELECT count(*) FROM work_task_steps AS active_count
+                      WHERE active_count.task_id = candidate.task_id
+                        AND active_count.status IN ('ready', 'running', 'waiting')) = 1
+                 AND EXISTS (
+                     SELECT 1
+                     FROM work_task_steps AS step
+                     WHERE step.task_id = candidate.task_id
+                       AND step.status = 'ready'
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.status')
+                           ELSE NULL
+                       END = 'ready'
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.step_id')
+                           ELSE NULL
+                       END = step.step_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.conversation_id')
+                           ELSE NULL
+                       END = :conversation_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.plan_revision_id')
+                           ELSE NULL
+                       END = candidate.plan_revision_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.input_revision')
+                           ELSE NULL
+                       END = candidate.input_revision
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.workflow_run_id')
+                           ELSE NULL
+                       END IS NULL
+                       AND candidate.waiting_reference =
+                           'step-plan:' || candidate.task_id || ':' || step.step_id || ':' ||
+                           candidate.plan_revision_id
+                       AND (SELECT count(*) FROM work_task_steps AS count_step
+                            WHERE count_step.task_id = candidate.task_id) >= 2
+                 )
+               ORDER BY candidate.task_id
+               LIMIT :limit"""
+        )
+        with self._read_session() as session:
+            rows = session.execute(
+                query, {"conversation_id": conversation_id, "limit": limit}
+            ).scalars()
+            return tuple(str(task_id) for task_id in rows)
+
     @staticmethod
     def _task_from_session(session: Session, task_id: str) -> WorkTask:
         row = (

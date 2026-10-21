@@ -16,6 +16,7 @@
 - 输入失效反馈提供明确的阶段重确认选项，确认接口允许该恢复操作并复查实时阶段与路径；重新冻结不能自动恢复采集事实，必须附本轮成功读取证据。历史带事实却未绑定修订的草稿同样撤回核实状态。
 - Work 完整草稿可自动编译待审查候选，使用独立 `proposal` 来源；确认接口直接复用服务端签发的操作与执行授权，不调用模型解释启动意图。来源与校验状态分别展示，审批仍为独立记录。完整体验验收仍按[计划 0012](../../docs/plans/0012-work-conversation-ux.md)执行。
 - `automation.get_step_plan_review()` 为多步骤 WorkTask 提供只读步骤级 Plan review 查询：重读并核验 Work conversation/project、合法线性序列中的唯一 READY 步骤、精确 `step-plan:<task>:<step>:<plan>` 等待引用，以及根/步骤 Plan 与输入投影。统计 Plan 校验 `work_context`、proposal/draft hash、design 和 Plan hash；预处理 Plan 校验精确 revision/project、冻结 manifest/SkillPlan hash 和推导出的 Artifact 集。预处理 `PlanRevision` 尚无 conversation 身份字段，故不能证明原始创建 conversation；该查询只返回 review DTO，不批准、不创建 Run。
+- `automation.list_step_plan_reviews(conversation_id)` 只从持久 authority refs、唯一 READY 步骤和精确 review wait 引用查询最多 101 个候选 Task ID，并至多验证前 100 个；过期、错绑或 malformed JSON 记录会被省略，不向会话返回非审查任务。`GET /conversations/{conversation_id}/step-plan-reviews` 返回 `{items, truncated}`，每项仅含会话/项目/任务/步骤/Plan 修订身份、输出数量和预处理或统计方案摘要，不返回完整 Plan、受试者/组别明细、Artifact 身份或路径。列表是无需写锁的 best-effort 读取；任何后续审查命令仍须重新验证身份。它不批准 Plan 或启动 Run。
 - 确认请求使用独立幂等作用域并绑定完整请求；先恢复已保存响应，再校验当前草稿与签发选项，保证响应丢失后的重放不重复批准或创建运行。显式选择输入阶段时冻结完整文件证据，快速概况检查不能替代冻结。
 
 - T1 重定向、裁剪与后续分割/DARTEL 合并为一次预处理运行；不再提供独立准备或中途审查 API；

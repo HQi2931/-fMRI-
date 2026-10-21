@@ -77,7 +77,17 @@ from neuroagent.application.automation.step_readiness import (
     StepReadinessResultKind,
     StepReadinessStepKind,
 )
-from neuroagent.application.contracts.automation import StepPlanReviewView
+from neuroagent.application.contracts.automation import (
+    PreprocessingPlanSummaryView,
+    StatisticalPlanSummaryView,
+    StepPlanReviewCovariateDetailView,
+    StepPlanReviewCovariateValueDetailView,
+    StepPlanReviewDetailView,
+    StepPlanReviewImageDetailView,
+    StepPlanReviewListView,
+    StepPlanReviewSummaryView,
+    VerifiedStepPlanReviewSnapshot,
+)
 from neuroagent.application.contracts.conversations import ConversationMode, ConversationRole
 from neuroagent.application.contracts.external_imports import ExternalAnalysisImportView
 from neuroagent.application.contracts.runs import ArtifactView
@@ -109,10 +119,14 @@ from neuroagent.application.statistical_result_facts import (
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
+    MetricKind,
     MetricMaskSource,
     RehoParameters,
 )
-from neuroagent.domain.fmri.preprocessing import PreprocessingParameters
+from neuroagent.domain.fmri.preprocessing import (
+    NormalizationMode,
+    PreprocessingParameters,
+)
 from neuroagent.domain.fmri.preprocessing_outputs import (
     DpabiPreprocessingOutput,
     enumerate_dpabi_preprocessing_outputs,
@@ -1219,15 +1233,220 @@ class WorkTaskApplicationService:
 
     def get_step_plan_review(
         self, conversation_id: str, task_id: str, step_id: str
-    ) -> StepPlanReviewView:
-        """Read one step review using a consistent repository snapshot."""
+    ) -> StepPlanReviewDetailView:
+        """Read only the explicitly requested table fields for a verified review.
 
-        with self.atomic():
-            return self._read_step_plan_review(conversation_id, task_id, step_id)
+        This is a best-effort read without a SQLite writer lock. A later
+        mutating command must revalidate the returned identity fields.
+        """
+
+        with self._repository.read_snapshot():
+            review = self._read_step_plan_review(conversation_id, task_id, step_id)
+            if review.step_kind == "statistical_run":
+                raw_design = review.plan.plan.get("design")
+                if not isinstance(raw_design, dict):
+                    raise ConflictError(
+                        "step_plan_review_statistical_plan_invalid",
+                        "冻结统计 Plan 缺少可核验的 design。",
+                    )
+                design = StatisticalDesignRevision.model_validate(raw_design)
+                images = tuple(
+                    StepPlanReviewImageDetailView(
+                        subject_id=image.subject_id,
+                        group=image.group,
+                        condition=image.condition,
+                    )
+                    for image in design.images
+                )
+                covariates = tuple(
+                    StepPlanReviewCovariateDetailView(
+                        name=covariate.name,
+                        centering=covariate.centering,
+                        values=tuple(
+                            StepPlanReviewCovariateValueDetailView(
+                                subject_id=value.subject_id,
+                                value=value.value,
+                            )
+                            for value in covariate.values
+                        ),
+                    )
+                    for covariate in design.covariates
+                )
+            else:
+                images = ()
+                covariates = ()
+            return StepPlanReviewDetailView(
+                conversation_id=review.conversation_id,
+                project_id=review.project_id,
+                task_id=review.task_id,
+                step_id=review.step_id,
+                step_sequence=review.step_sequence,
+                plan_revision_id=review.plan_revision_id,
+                plan_revision=review.plan.revision,
+                plan_hash=review.plan_hash,
+                images=images,
+                covariates=covariates,
+            )
+
+    def list_step_plan_reviews(self, conversation_id: str) -> StepPlanReviewListView:
+        """List a bounded best-effort set of pending, verified Plan summaries.
+
+        The underlying candidate and authority reads are deliberately not held
+        inside a write unit of work. A later review command must revalidate its
+        identities before it performs any mutation.
+        """
+
+        task_ids = self._repository.list_step_plan_review_candidate_task_ids(
+            conversation_id, limit=101
+        )
+        reviews: list[StepPlanReviewSummaryView] = []
+        for task_id in task_ids[:100]:
+            try:
+                task = self._repository.get_task(task_id)
+            except (NotFoundError, ValidationError, ValueError, TypeError):
+                # Candidate discovery is advisory. Corrupt or concurrently
+                # deleted rows are omitted rather than projected to Work.
+                continue
+            for step in task.steps:
+                if step.status is not TaskStepStatus.READY:
+                    continue
+                try:
+                    review = self._read_step_plan_review(conversation_id, task_id, step.step_id)
+                    reviews.append(self._summarize_step_plan_review(review))
+                except (
+                    ConflictError,
+                    NotFoundError,
+                    ValidationError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    AttributeError,
+                ):
+                    continue
+        return StepPlanReviewListView(
+            items=tuple(reviews),
+            truncated=len(task_ids) > 100,
+        )
+
+    @staticmethod
+    def _summarize_step_plan_review(
+        review: VerifiedStepPlanReviewSnapshot,
+    ) -> StepPlanReviewSummaryView:
+        preprocessing_summary: PreprocessingPlanSummaryView | None = None
+        statistical_summary: StatisticalPlanSummaryView | None = None
+
+        if review.step_kind == "preprocessing_run":
+            raw_skill_plan = review.plan.plan.get("skill_plan")
+            if not isinstance(raw_skill_plan, dict):
+                raise ValueError("verified preprocessing review has no SkillPlan")
+            skill_plan = SkillPlan.model_validate(raw_skill_plan)
+            resolved = dict(skill_plan.resolved_parameters)
+            raw_preprocessing = resolved.get("preprocessing")
+            if not isinstance(raw_preprocessing, dict):
+                raise ValueError("verified preprocessing review has no parameters")
+            preprocessing = PreprocessingParameters.model_validate(raw_preprocessing)
+            alff_falff = (
+                AlffFalffParameters.model_validate(resolved["alff_falff"])
+                if isinstance(resolved.get("alff_falff"), dict)
+                else None
+            )
+            reho = (
+                RehoParameters.model_validate(resolved["reho"])
+                if isinstance(resolved.get("reho"), dict)
+                else None
+            )
+            requested_metrics: list[MetricKind] = []
+            if alff_falff is not None:
+                requested_metrics.extend(alff_falff.requested_metrics)
+            if reho is not None:
+                requested_metrics.append(MetricKind.REHO)
+            requested_scalings = tuple(
+                dict.fromkeys(
+                    scaling
+                    for parameters in (alff_falff, reho)
+                    if parameters is not None
+                    for scaling in parameters.requested_scalings
+                )
+            )
+            frequency_band = (
+                alff_falff.frequency_band
+                if alff_falff is not None
+                else preprocessing.temporal_filter.frequency_band
+            )
+            nuisance = preprocessing.nuisance
+            mask_source = (
+                alff_falff.mask_source
+                if alff_falff is not None
+                else reho.mask_source
+                if reho is not None
+                else None
+            )
+            metric_smoothing = bool(
+                (alff_falff is not None and alff_falff.result_smoothing)
+                or (reho is not None and (reho.smooth_reho or reho.global_result_smoothing))
+            )
+            preprocessing_summary = PreprocessingPlanSummaryView(
+                tr_seconds=preprocessing.tr_seconds,
+                expected_time_points=preprocessing.expected_time_points,
+                dummy_scans=preprocessing.dummy_scans,
+                detrend=preprocessing.detrend,
+                slice_timing_enabled=preprocessing.slice_timing.enabled,
+                slice_count=preprocessing.slice_timing.slice_count,
+                reference_slice=preprocessing.slice_timing.reference_slice,
+                realignment_enabled=preprocessing.realignment.enabled,
+                head_motion_model=(nuisance.head_motion_model if nuisance.enabled else None),
+                white_matter_regression_enabled=bool(
+                    nuisance.white_matter is not None and nuisance.white_matter.enabled
+                ),
+                csf_regression_enabled=bool(nuisance.csf is not None and nuisance.csf.enabled),
+                global_signal_regression_enabled=bool(
+                    nuisance.global_signal is not None and nuisance.global_signal.enabled
+                ),
+                normalization_mode=NormalizationMode(preprocessing.normalization.mode),
+                requested_metrics=tuple(dict.fromkeys(requested_metrics)),
+                frequency_low_hz=(frequency_band.low_hz if frequency_band else None),
+                frequency_high_hz=(frequency_band.high_hz if frequency_band else None),
+                mask_source=mask_source,
+                requested_scalings=requested_scalings,
+                metric_smoothing=metric_smoothing,
+            )
+        elif review.step_kind == "statistical_run":
+            raw_design = review.plan.plan.get("design")
+            if not isinstance(raw_design, dict):
+                raise ValueError("verified statistical review has no design")
+            design = StatisticalDesignRevision.model_validate(raw_design)
+            statistical_summary = StatisticalPlanSummaryView(
+                test=design.test,
+                group_count=len(design.group_order),
+                condition_count=len(design.condition_order),
+                image_count=len(design.images),
+                covariate_count=len(design.covariates),
+                contrast=design.contrast,
+                tail=design.tail,
+                missing_value_policy=design.missing_value_policy,
+            )
+
+        return StepPlanReviewSummaryView(
+            conversation_id=review.conversation_id,
+            project_id=review.project_id,
+            task_id=review.task_id,
+            step_id=review.step_id,
+            step_sequence=review.step_sequence,
+            step_kind=review.step_kind,
+            step_status=review.step_status,
+            plan_revision_id=review.plan_revision_id,
+            plan_revision=review.plan.revision,
+            plan_hash=review.plan_hash,
+            plan_state=review.plan_state,
+            execution_authorized=False,
+            expected_output_count=len(review.expected_artifacts),
+            preprocessing=preprocessing_summary,
+            statistical=statistical_summary,
+        )
 
     def _read_step_plan_review(
         self, conversation_id: str, task_id: str, step_id: str
-    ) -> StepPlanReviewView:
+    ) -> VerifiedStepPlanReviewSnapshot:
         """Read the exact frozen Plan bound to one READY step awaiting user review.
 
         This projection is intentionally read-only. It neither records Plan
@@ -1410,7 +1629,7 @@ class WorkTaskApplicationService:
                     "步骤输出投影与冻结预处理 Plan 推导结果不一致。",
                 )
 
-        return StepPlanReviewView(
+        return VerifiedStepPlanReviewSnapshot(
             conversation_id=conversation_id,
             project_id=project.project_id,
             task_id=task.task_id,
@@ -1883,9 +2102,7 @@ class WorkTaskApplicationService:
         )
         if has_admission:
             intent = (
-                {"analysis_request": admitted_request}
-                if admitted_request is not None
-                else None
+                {"analysis_request": admitted_request} if admitted_request is not None else None
             )
         else:
             candidates: list[dict[str, Any]] = []
@@ -4055,8 +4272,7 @@ class WorkTaskApplicationService:
             message
             for message in conversation.messages
             if isinstance(message.payload.get("composite_goal_admission"), dict)
-            and message.payload["composite_goal_admission"].get("intent_task_id")
-            == intent_task_id
+            and message.payload["composite_goal_admission"].get("intent_task_id") == intent_task_id
         ]
         if not admissions:
             return False, None
