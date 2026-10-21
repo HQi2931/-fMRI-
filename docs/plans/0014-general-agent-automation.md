@@ -412,7 +412,7 @@ Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志�
 
 定向验证：路由后端 53 项、Agent 页面 71 项通过；Ruff、TypeScript 类型检查与差异空白检查通过。未调用 Provider、未启动 MATLAB/DPABI，未执行本轮对话草稿的真实模型验收。
 
-Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模型身份订阅；组件清理后，已中止请求的成功或失败回调都不能覆盖新上下文状态。Agent 页面回归测试覆盖旧授权查询与旧文件清单在新会话响应之后才因 AbortSignal 取消的竞态。Agent 页面测试 72 项、TypeScript 类型检查与 ESLint 均通过。本地浏览器恢复后，受限白名单保持仅选两份元数据；真实 DeepSeek Flash 在 ds002748 会话创建了 ALFF/fALFF 待审草稿并引用 TR、SliceTiming 数组及第 13 层证据。草稿未批准、未创建 Run，未启动 MATLAB。Agent 的回复没有明确回答 ALFF/fALFF 与 ReHo 能否同批；本计划 Skill 文档与编译测试显示可在同一 `DPARSFA_run` 中沿不同已验证时序检查点执行，差异属于分支处理顺序而非一律禁止同批的科学规则。该工程能力判断不改变本轮仅请求 ALFF/fALFF 的选择。
+Work 文件授权与文件列表刷新现在按稳定的会话、工作区和模型身份订阅；组件清理后，已中止请求的成功或失败回调都不能覆盖新上下文状态。Agent 页面回归测试覆盖旧授权查询与旧文件清单在新会话响应之后才因 AbortSignal 取消的竞态。Agent 页面测试 72 项、TypeScript 类型检查与 ESLint 均通过。本地浏览器恢复后，受限白名单保持仅选两份元数据；真实 DeepSeek Flash 在 ds002748 会话创建了 ALFF/fALFF 待审草稿并引用 TR、SliceTiming 数组及第 13 层证据。草稿未批准、未创建 Run，未启动 MATLAB。Agent 首轮没有明确回答 ALFF/fALFF 与 ReHo 能否同批；追问后回答可以放入同一 `DPARSFA_run`，并指出分支检查点。项目的 reviewed combined Skill 与执行单元测试支持同一次 DPARSFA 调用：ALFF/fALFF 消费未滤波时序，`AfterNormalize` 的时序滤波在 ALFF 后、ReHo 前，ReHo 再读取相应检查点；同一执行合同不能表达两套独立全局滤波配置。Validator/dry-run 可检查滤波阶段、fALFF 预滤波、ReHo/CUT、频带和输入 lineage 等约束，但不会探测本机 MATLAB 或真实影像。Agent 对分支的总体判断正确，具体滤波阶段描述不够准确。该工程能力判断不改变本轮仅请求 ALFF/fALFF 的选择。
 
 ### 阶段 B CompositeGoal 阶段交接判定（2026-10-20）
 
