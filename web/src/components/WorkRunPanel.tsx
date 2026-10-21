@@ -19,6 +19,14 @@ const failedStates = new Set(["failed_retryable", "failed_terminal", "timed_out"
 const diagnosableStates = new Set([...activeStates, ...failedStates, "cancelled"]);
 const TERMINAL_DIAGNOSIS_RETRY_LIMIT = 5;
 const TERMINAL_DIAGNOSIS_RETRY_MS = 1000;
+type DiagnosisReadState = {
+  runId: string;
+  attempt: number;
+  status: "checking" | "available" | "unavailable";
+  diagnosis: RunDiagnosis["diagnosis"] | null;
+  retrying: boolean;
+  checked: boolean;
+};
 const contentUrl = (artifact: Artifact) => `/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content`;
 const ARTIFACT_LABELS: Record<string, string> = {
   "metric.alff": "ALFF 指标图", "metric.alff.raw": "原始 ALFF", "metric.alff.global_mean": "均值归一化 ALFF", "metric.alff.z_score": "z 标准化 ALFF",
@@ -205,9 +213,10 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const [diagnosis, setDiagnosis] = useState<{ runId: string; attempt: number; value: RunDiagnosis["diagnosis"] } | null>(null);
-  const currentDiagnosis = diagnosis && diagnosis.runId === run.run_id && diagnosis.attempt === run.attempt
-    ? diagnosis.value : null;
+  const [diagnosisRead, setDiagnosisRead] = useState<DiagnosisReadState | null>(null);
+  const currentDiagnosisRead = diagnosisRead && diagnosisRead.runId === run.run_id && diagnosisRead.attempt === run.attempt
+    ? diagnosisRead : null;
+  const currentDiagnosis = currentDiagnosisRead?.diagnosis ?? null;
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -266,13 +275,17 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let checks = 0;
+    setDiagnosisRead({ runId: run.run_id, attempt: run.attempt, status: "checking", diagnosis: null, retrying: true, checked: false });
     const checkDiagnosis = async () => {
       checks += 1;
       let hasEvidence = false;
+      let readSucceeded = false;
+      let value: RunDiagnosis["diagnosis"] | null = null;
       try {
         const result = await runsApi.latestDiagnosis(run.run_id, controller.signal, run.attempt);
         if (!controller.signal.aborted && result.run_id === run.run_id && result.attempt === run.attempt) {
-          setDiagnosis({ runId: run.run_id, attempt: run.attempt, value: result.diagnosis });
+          readSucceeded = true;
+          value = result.diagnosis;
           hasEvidence = result.diagnosis.evidence.length > 0;
         }
       } catch {
@@ -280,6 +293,19 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       }
       const active = activeStates.has(run.state);
       const terminalRetry = !active && checks < TERMINAL_DIAGNOSIS_RETRY_LIMIT && !hasEvidence;
+      if (!controller.signal.aborted) {
+        setDiagnosisRead((previous) => {
+          const sameAttempt = previous?.runId === run.run_id && previous.attempt === run.attempt;
+          return {
+            runId: run.run_id,
+            attempt: run.attempt,
+            status: readSucceeded ? "available" : "unavailable",
+            diagnosis: readSucceeded ? value : sameAttempt ? previous.diagnosis : null,
+            retrying: active || terminalRetry,
+            checked: !active && !terminalRetry,
+          };
+        });
+      }
       if (!controller.signal.aborted && (active || terminalRetry)) {
         timer = setTimeout(
           () => void checkDiagnosis(),
@@ -302,6 +328,10 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
   const review = current?.review;
   const statisticalResults = current?.statisticalResults ?? [];
   const hasDiagnosisEvidence = Boolean(currentDiagnosis?.evidence.length);
+  const diagnosisReadEmpty = currentDiagnosisRead?.status === "available"
+    && currentDiagnosisRead.checked
+    && currentDiagnosis?.code === "unknown"
+    && currentDiagnosis.evidence.length === 0;
   const activeDiagnosis = activeStates.has(run.state)
     && currentDiagnosis
     && currentDiagnosis.severity === "error"
@@ -347,6 +377,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       {activeDiagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{activeDiagnosis.evidence.slice(0, 4).map((line, index) => <li key={index}><pre>{line}</pre></li>)}</ul></details>}
       <p>正在跟踪本次运行日志；诊断在本机完成，不会发送给模型。</p>
     </div>}
+    {activeStates.has(run.state) && currentDiagnosisRead?.status === "unavailable" && <p role="status">本机日志诊断暂不可用，系统会继续自动检查；运行状态仍可查看。</p>}
     {completedPhases.length > 0 && <p>已观察到完成：{completedPhases.map((phase) => PHASE_LABELS[phase] ?? "处理步骤").join("、")}</p>}
     {!activeStates.has(run.state) && elapsed && <p>计算耗时：{elapsed}</p>}
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
@@ -354,6 +385,9 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     {run.state === "succeeded" && <p>{statisticalResults.length > 0 ? "统计计算及结果登记已完成，请结合本次检验和校正阈值查看结果。" : run.qc_status === "skipped" ? "QC 已明确跳过，请自行评估使用限制。" : run.qc_status === "approved" ? "QC 审查已通过。" : "请查看 QC 记录确认审查结论。"}</p>}
     {(failedStates.has(run.state) || (run.state === "cancelled" && terminalDiagnosis)) && <div className="work-run-failure">
       <p role="alert">{terminalDiagnosis?.summary ?? "本次计算未能完成。具体原因尚未确定，请查看本次日志。"}</p>
+      {!terminalDiagnosis && currentDiagnosisRead?.status === "unavailable" && <p role="status">本机日志诊断暂不可用{currentDiagnosisRead.retrying ? "，正在重试；运行状态仍可查看。" : "，自动检查已结束。"}</p>}
+      {!terminalDiagnosis && diagnosisReadEmpty && <p role="status">已读取本机日志，暂未找到可识别的错误线索。</p>}
+      {!terminalDiagnosis && currentDiagnosisRead?.status === "unavailable" && currentDiagnosisRead.checked && <button type="button" onClick={() => setReload((value) => value + 1)}>重新检查本机日志</button>}
       {terminalDiagnosis && terminalDiagnosis.suggestions.length > 0 && <ul>{terminalDiagnosis.suggestions.map((suggestion, index) => <li key={index}>{suggestion}</li>)}</ul>}
       {terminalDiagnosis && terminalDiagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{terminalDiagnosis.evidence.slice(0, 4).map((line, index) => <li key={index}><pre>{line}</pre></li>)}</ul></details>}
       {terminalDiagnosis && <p>Agent 已自动检查本次 attempt 的本地日志，诊断未发送给模型。</p>}

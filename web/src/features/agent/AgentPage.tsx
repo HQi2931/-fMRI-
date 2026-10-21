@@ -173,6 +173,8 @@ function compositeGoalRunStateLabel(state: string): string {
 type CompositeGoalRunObservation = {
   run: Run | null;
   diagnosis: RunDiagnosis["diagnosis"] | null;
+  diagnosisReadStatus: "checking" | "available" | "unavailable";
+  diagnosisRetrying: boolean;
   diagnosisChecked: boolean;
   connectionError: boolean;
 };
@@ -206,6 +208,7 @@ function CompositeGoalRunFeedback({
   }, [goals]);
   const runIdsKey = JSON.stringify(runIds);
   const [observations, setObservations] = useState<Record<string, CompositeGoalRunObservation>>({});
+  const [retryVersion, setRetryVersion] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -244,6 +247,8 @@ function CompositeGoalRunFeedback({
               [runId]: {
                 run: loaded,
                 diagnosis: sameAttempt ? prior.diagnosis : null,
+                diagnosisReadStatus: sameAttempt ? prior.diagnosisReadStatus : "checking",
+                diagnosisRetrying: sameAttempt ? prior.diagnosisRetrying : true,
                 diagnosisChecked: sameAttempt ? prior.diagnosisChecked : false,
                 connectionError: false,
               },
@@ -258,7 +263,7 @@ function CompositeGoalRunFeedback({
               ...previous,
               [runId]: prior
                 ? { ...prior, connectionError: true }
-                : { run: null, diagnosis: null, diagnosisChecked: false, connectionError: true },
+                : { run: null, diagnosis: null, diagnosisReadStatus: "checking", diagnosisRetrying: true, diagnosisChecked: false, connectionError: true },
             };
           });
           schedule(() => void observe(), Math.min(1000 * 2 ** Math.min(connectionFailures, 5), 30_000));
@@ -266,11 +271,13 @@ function CompositeGoalRunFeedback({
         }
 
         let diagnosis: RunDiagnosis["diagnosis"] | null = null;
+        let diagnosisReadSucceeded = false;
         if (["queued", "running", "cancelling", "failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)) {
           try {
             const result = await runsApi.latestDiagnosis(runId, controller.signal, run.attempt);
             if (!controller.signal.aborted && result.run_id === runId && result.attempt === run.attempt) {
               diagnosis = result.diagnosis;
+              diagnosisReadSucceeded = true;
             }
           } catch {
             // Local log diagnosis is optional; the run state remains visible when it is unavailable.
@@ -286,7 +293,13 @@ function CompositeGoalRunFeedback({
         setObservations((previous) => {
           const prior = previous[runId];
           if (!prior || prior.run?.attempt !== run.attempt) return previous;
-          return { ...previous, [runId]: { ...prior, diagnosis: diagnosis ?? prior.diagnosis, diagnosisChecked } };
+          return { ...previous, [runId]: {
+            ...prior,
+            diagnosis: diagnosisReadSucceeded ? diagnosis : prior.diagnosis,
+            diagnosisReadStatus: diagnosisReadSucceeded ? "available" : "unavailable",
+            diagnosisRetrying: active || retryTerminalDiagnosis,
+            diagnosisChecked,
+          } };
         });
 
         if (active || retryTerminalDiagnosis) {
@@ -300,7 +313,7 @@ function CompositeGoalRunFeedback({
       controller.abort();
       timers.forEach((timer) => clearTimeout(timer));
     };
-  }, [conversationId, runIdsKey]);
+  }, [conversationId, runIdsKey, retryVersion]);
 
   if (runIds.length === 0) return null;
   return <ul className="composite-goal-run-feedback" aria-label="自动化目标运行反馈">
@@ -320,9 +333,19 @@ function CompositeGoalRunFeedback({
           {diagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{diagnosis.evidence.slice(0, 4).map((line, index) => <li key={`${runId}:evidence:${index}`}><pre>{line}</pre></li>)}</ul></details>}
           <p>诊断在本机完成，日志不会发送给模型。</p>
         </div>}
+        {run && ["queued", "running", "cancelling"].includes(run.state)
+          && !hasErrorDiagnosis && observation?.diagnosisReadStatus === "unavailable"
+          && <p role="status">本机日志诊断暂不可用，系统会继续自动检查；运行状态仍可查看。</p>}
         {run && ["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)
-          && observation?.diagnosisChecked && !hasErrorDiagnosis
-          && <p role="status">尚未从本机日志找到可识别的错误原因，请检查这次运行的日志。</p>}
+          && !hasErrorDiagnosis && observation?.diagnosisReadStatus === "unavailable"
+          && <p role="status">本机日志诊断暂不可用{observation.diagnosisRetrying ? "，正在重试；运行状态仍可查看。" : "，自动检查已结束。"}</p>}
+        {run && ["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)
+          && observation?.diagnosisChecked && observation.diagnosisReadStatus === "available"
+          && observation.diagnosis?.code === "unknown" && observation.diagnosis.evidence.length === 0 && !hasErrorDiagnosis
+          && <p role="status">已读取本机日志，暂未找到可识别的错误线索。</p>}
+        {run && ["failed_retryable", "failed_terminal", "timed_out", "cancelled"].includes(run.state)
+          && !hasErrorDiagnosis && observation?.diagnosisReadStatus === "unavailable" && observation.diagnosisChecked
+          && <button type="button" onClick={() => setRetryVersion((value) => value + 1)}>重新检查本机日志</button>}
       </li>;
     })}
   </ul>;

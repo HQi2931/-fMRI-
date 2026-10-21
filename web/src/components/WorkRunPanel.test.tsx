@@ -181,8 +181,38 @@ describe("Work run and results", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     }
     expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
+    expect(screen.getByText("已读取本机日志，暂未找到可识别的错误线索。", { selector: "p" })).toBeInTheDocument();
+    expect(screen.queryByText(/本机日志诊断暂不可用/)).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
+  });
+  it("reports terminal diagnosis request failures separately and lets the user retry", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.latestDiagnosis).mockRejectedValue(new Error("private endpoint path and stack"));
+    render(<WorkRunPanel run={{ ...run("failed_terminal"), error: "internal MATLAB stack" }} />);
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText("本机日志诊断暂不可用，正在重试；运行状态仍可查看。", { selector: "p" })).toBeInTheDocument();
+    for (let check = 0; check < 4; check += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(5);
+    expect(screen.getByText("本机日志诊断暂不可用，自动检查已结束。", { selector: "p" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新检查本机日志" })).toBeInTheDocument();
+    expect(screen.queryByText(/private endpoint path/)).not.toBeInTheDocument();
+    expect(screen.getByText("internal MATLAB stack")).not.toBeVisible();
+
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "重新检查本机日志" }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    for (let check = 0; check < 4; check += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+    expect(screen.getByText("已读取本机日志，暂未找到可识别的错误线索。", { selector: "p" })).toBeInTheDocument();
+    expect(api.latestDiagnosis).toHaveBeenCalledTimes(10);
   });
   it("shows the detected local log diagnosis after a run is cancelled", async () => {
     const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {

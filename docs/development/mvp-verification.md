@@ -586,6 +586,8 @@ WorkRunPanel 定向前端测试 30 项通过，覆盖未识别错误线索默认
 
 定向验证：CompositeGoal、分析结果续接、API 与 WorkTask 来源绑定后端回归共 75 项通过；Agent 页面测试 73 项通过，TypeScript 类型检查、ESLint、后端 Ruff、Mypy、OpenAPI/TypeScript schema 同步、文档规范检查与 `git diff --check` 通过。存在一项既有 Starlette/httpx deprecation warning。未启动 MATLAB/DPABI，未访问演示影像或调用 Provider，因此验证的是目标 Run 恢复、状态/诊断轮询和本机反馈行为，不是一次真实 MATLAB 计算验收，也不表示计划 0014 整体完成。
 
+诊断读取状态补强：WorkRunPanel 与复合目标反馈分别区分“诊断请求不可用”和“成功读取但没有可识别错误线索”；终态请求失败经过五次检查仍不可用时，可由“重新检查本机日志”重新启动原有读取流程。新增两条前端回归覆盖暂不可用、原始异常/Run 错误隐藏、手动重查后成功空诊断；这两份前端测试共 107 项通过，TypeScript 类型检查与涉及文件 ESLint 通过。未启动 MATLAB 或调用 Provider。
+
 ## 2026-10-21 多步骤方案只读审查面板
 
 Work 页面现列出当前会话中经服务端身份重核的 READY 步骤 Plan 摘要。预处理摘要仅包含已登记的采集、去噪、标准化和指标参数；统计摘要返回检验与矩阵计数，不传被试、组别标签、协变量值、Artifact ID 或路径。用户主动展开统计纳入表后，前端才请求精确步骤详情；API 返回严格 allow-list 字段。列表查询最多验证 100 个候选并返回截断标记，不使用 SQLite writer transaction；详情查询在 task、conversation、project、plan 仓库共享的 deferred read snapshot 中重核绑定。活动目标和已有审查项会每 10 秒刷新，后台 Worker 更新无需改变 conversation version。

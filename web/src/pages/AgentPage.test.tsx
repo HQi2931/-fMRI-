@@ -1495,6 +1495,62 @@ describe("agent workbench page", () => {
     expect(fetchMock.mock.calls.filter(([input, init]) => pathOf(input).includes("/runs/") && init?.method === "POST")).toHaveLength(0);
   });
 
+  it("distinguishes unavailable local diagnosis from an empty log in composite goal feedback", async () => {
+    vi.useFakeTimers();
+    const runId = "run-diagnosis-unavailable";
+    const run = vi.fn((runId = "unknown-run") => json({
+      run_id: runId, project_id: "project-1", plan_revision_id: `plan-${runId}`,
+      state: "failed_terminal", version: 2, attempt: 1, cancel_requested: false,
+      error: "private MATLAB stack", qc_mode: "require", qc_status: "pending",
+      stage: "failed", stage_progress: 0, created_at: now, updated_at: now,
+    }));
+    const diagnosis = vi.fn((requestedRunId?: string): Promise<Response> => {
+      expect(requestedRunId).toBe(runId);
+      return Promise.reject(new Error("private endpoint path and stack"));
+    });
+    installFetch({
+      conversations: () => json([conversation({ project_id: "project-1" })]),
+      compositeGoals: () => json([{
+        ...compositeGoal("blocked", "goal-diagnosis-unavailable", "preprocessing_terminal_block"),
+        preprocessing_status: "blocked", preprocessing_run_id: runId, analysis_status: "blocked",
+      }]),
+      run,
+      diagnosis,
+    });
+
+    render(<AgentPage />);
+    await act(async () => { for (let i = 0; i < 12; i += 1) await Promise.resolve(); });
+    const region = screen.getByRole("region", { name: "自动化流程进度" });
+    expect(within(region).getByText("本机日志诊断暂不可用，正在重试；运行状态仍可查看。", { selector: "p" })).toBeInTheDocument();
+    for (let check = 0; check < 4; check += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+
+    expect(diagnosis).toHaveBeenCalledTimes(5);
+    expect(within(region).getByText("本机日志诊断暂不可用，自动检查已结束。", { selector: "p" })).toBeInTheDocument();
+    expect(within(region).getByRole("button", { name: "重新检查本机日志" })).toBeInTheDocument();
+    expect(within(region).queryByText(/private endpoint path|private MATLAB stack/)).not.toBeInTheDocument();
+
+    diagnosis.mockImplementation((requestedRunId?: string): Promise<Response> => {
+      expect(requestedRunId).toBe(runId);
+      return json({
+        run_id: runId, attempt: 1,
+        diagnosis: { code: "unknown", severity: "info", summary: "尚无错误线索", evidence: [], suggestions: [], confidence: 0.1, requires_new_plan: false, source: "deterministic_log_classifier" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(within(region).getByRole("button", { name: "重新检查本机日志" }));
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    });
+    for (let check = 0; check < 4; check += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+
+    expect(diagnosis).toHaveBeenCalledTimes(10);
+    expect(within(region).getByText("已读取本机日志，暂未找到可识别的错误线索。", { selector: "p" })).toBeInTheDocument();
+    expect(within(region).queryByText(/本机日志诊断暂不可用/)).not.toBeInTheDocument();
+  });
+
   it("automatically resumes CompositeGoal run tracking after prolonged API failures", async () => {
     vi.useFakeTimers();
     let attempts = 0;
