@@ -756,7 +756,8 @@ export function AgentPage() {
         }, controller.signal)));
         setChoices(profiles.flatMap((profile, index) => {
           const result = lists[index];
-          const models = result?.status === "fulfilled" && result.value.models.length ? result.value.models : [profile.profile.model];
+          const discoveredModels = result?.status === "fulfilled" ? result.value.models : [];
+          const models = [...new Set([profile.profile.model, ...discoveredModels])];
           return models.map((model) => modelChoice(profile, model));
         }));
         setConversations(loaded);

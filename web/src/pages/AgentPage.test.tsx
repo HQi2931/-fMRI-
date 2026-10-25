@@ -110,13 +110,13 @@ function toolCall(
   };
 }
 
-function profile(id: string, capabilities: string[]) {
+function profile(id: string, capabilities: string[], model = "deepseek-chat") {
   return {
     profile: {
       id,
       provider: "openai-compatible",
       base_url: "https://api.deepseek.com",
-      model: "deepseek-chat",
+      model,
       api_key_env: "DEEPSEEK_API_KEY",
       priority: 100,
       capabilities,
@@ -138,6 +138,7 @@ type Options = {
   run?: (runId?: string) => Promise<Response>;
   picked?: () => Promise<Response>;
   profiles?: () => Promise<Response>;
+  models?: () => Promise<Response>;
   project?: (projectId: string, signal?: AbortSignal | null) => Promise<Response>;
   dataset?: (datasetId: string, signal?: AbortSignal | null) => Promise<Response>;
   manifest?: (manifestId: string, signal?: AbortSignal | null) => Promise<Response>;
@@ -172,7 +173,7 @@ function installFetch(options: Options = {}) {
     if (path.endsWith("/work-review")) return options.review?.(init) ?? notFound();
     if (path.endsWith("/workspaces/check")) return options.workspaceCheck?.() ?? notFound();
     if (path.endsWith("/model-profiles")) return (options.profiles ?? (() => json([])))();
-    if (path.endsWith("/providers/models")) return json({ models: ["deepseek-chat", "deepseek-reasoner"] });
+    if (path.endsWith("/providers/models")) return (options.models ?? (() => json({ models: ["deepseek-chat", "deepseek-reasoner"] })))();
     if (path.endsWith("/environment/config")) return json({
       allowed_work_root: "D:/app/work", matlab_executable: null, spm_dir: null, dpabi_dir: null,
       matlab_version: "unspecified", spm_version: "unspecified", dpabi_version: "unspecified", configured: false,
@@ -1933,6 +1934,23 @@ describe("agent workbench page", () => {
     await user.selectOptions(screen.getByLabelText("模型"), "deepseek:deepseek-reasoner");
 
     expect(screen.getByLabelText("模型")).toHaveValue("deepseek:deepseek-reasoner");
+  });
+
+  it("keeps the configured Profile model when discovery omits it and removes duplicate choices", async () => {
+    installFetch({
+      profiles: () => json([profile("deepseek", ["json_object"], "deepseek-v4-flash")]),
+      models: () => json({ models: ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-pro"] }),
+    });
+
+    render(<AgentPage />);
+
+    const selector = await screen.findByLabelText("模型");
+    expect(screen.getByRole("option", { name: "api.deepseek.com · deepseek-v4-flash" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "api.deepseek.com · deepseek-flash" })).toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: "api.deepseek.com · deepseek-v4-pro" })).toHaveLength(1);
+
+    await userEvent.selectOptions(selector, "deepseek:deepseek-v4-flash");
+    expect(selector).toHaveValue("deepseek:deepseek-v4-flash");
   });
 
   it("restores the selected model when reopening without granting file authorization", async () => {

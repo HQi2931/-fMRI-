@@ -410,6 +410,10 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 
 真实本机工作台的 DashScope 与 DeepSeek 结构化连接均成功，路由结果分别选中 `dashscope`、`deepseek`。设置页定向回归 20 项、TypeScript typecheck、ESLint、生产构建、92 份 Markdown 规范与 `git diff --check` 通过。连接测试只发送 Provider 测试构造的合成 JSON 请求，不发送数据集元数据、参与者/组别明细、MRI 影像或工作区文件；未验证实际 AUTO 分类质量、错误兜底比例，也未启动 MATLAB/DPABI 或运行真实演示数据。密钥保留在本机配置，未进入聊天、SQLite Profile 或 Git。计划 0014 尚未整体完成。
 
+### AgentPage Profile 模型列表保留绑定 model ID（2026-10-26）
+
+模型选择器现在显示 Provider 发现的模型，同时保留每个 Profile 当前绑定的 model ID；两个来源按 Profile 内精确 ID 去重。这样 `/providers/models` 返回其它候选模型时，不会让已绑定的模型从 Work 选择器消失。回归测试以 DeepSeek Profile `deepseek-v4-flash` 和发现列表 `deepseek-flash`、`deepseek-v4-pro`（含重复项）覆盖缺失绑定值及列表去重；AgentPage 定向测试 78 项通过，TypeScript typecheck、两个改动文件 ESLint、92 份 Markdown 文档规范与 `git diff --check` 通过。验证使用 Mock API，不改本机 Profile/API Key，不调用 Provider、工作区或 MATLAB。
+
 ### 多分析目标的当前选择提示（2026-10-26）
 
 Work 多分析目标流程卡现在根据会话服务端保存的 analysis WorkTask intent ID 标记“当前目标”，并在对应列表项提供 `aria-current` 状态。该提示不使用乐观前端状态；切换目标后只有持久化选择得到服务端响应才改变标记，随后发送请求仍携带同一 intent ID。AgentPage Mock API 回归覆盖两目标切换、唯一标记移动及下一条请求身份。此次只改善选择可见性，不提供通用 dispatcher、READY 后继生产创建或完整跨步骤恢复；没有运行 Provider、MATLAB/DPABI 或真实数据作业。
