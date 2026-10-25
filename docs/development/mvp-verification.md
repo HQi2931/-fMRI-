@@ -12,6 +12,12 @@
 
 修复路径及失败安全反馈的 Work 对话定向回归 6 项通过；Work 模型运行时/共享预算定向回归 15 项通过。完整 `test_work_dialogue.py` 为 32 项通过、5 项失败，涉及 TR 冲突时建议说明、页面起始阶段确认、确认挑战重放、旧 Gateway mock 方法，以及 ALFF 编译用例缺少 Aliyun/DeepSeek 路由 Provider；需另行清理，不能据专项测试推断整份 Work 对话回归通过。改动文件 Ruff、Mypy、92 份 Markdown 文档规范和 `git diff --check` 通过。验证使用 Mock Gateway；没有录入 Aliyun API Key，也没有调用真实 Provider、MATLAB/DPABI，未运行演示数据端到端验收。该切片不表示计划 0014 已完成。
 
+## 2026-10-26 真实 Provider 与 20 人 Demo 运行反馈
+
+本机 `dashscope / qwen3.8-flash` 与项目 `deepseek / deepseek-v4-flash` Profile 均通过设置页的合成 JSON 结构化连接测试；API Key 未写入聊天、文档或仓库。DeepSeek 本轮只获得 `dataset_description.json` 与 `task-rest_bold.json` 的文件访问范围。BIDS 扫描显示 20 名受试者、20 份功能像和 20 份结构像；本机参与者表聚合得到 `control=10`、`depr=10`，其中 `depr` 为临床抑郁组，不是随机干预实验组。
+
+按用户已批准的 ALFF/fALFF 基线生成并校验方案后，启动第 1 次真实 Run。MATLAB 约 6 秒后在启动阶段以 `CreateFile failed: 拒绝访问 [system:5]` 退出；没有进入 DPABI 处理、没有生成指标或统计结果。Work 自动读取当前 attempt 的本地 stderr，展示已识别的权限诊断与脱敏日志线索，且明确诊断未发送给模型。stdout 为空；本机路径写入检查未发现 attempt、MATLAB_PREFDIR、run、系统临时及 AppData 目录不可写，但 stderr 未指明被拒绝的文件，因此根因仍未确定，也没有自动重试。需要在同一 Worker 身份下捕获具体拒绝路径，再处理并重新授权运行。本次证明了真实 Provider 配置测试与本机 MATLAB 失败追踪，不证明真实 DPABI/ALFF/fALFF 计算成功；计划 0014 仍在实施。
+
 ## 2026-10-26 多分析目标的当前选择提示
 
 多目标进度卡片以服务端返回的当前 analysis WorkTask intent ID 为准，对匹配项显示“当前目标”并提供 `aria-current="true"`。只有选择 API 成功后标记才切换；下一轮消息沿用相同的持久 intent ID。`AgentPage.test.tsx` 两目标切换与请求身份回归 77 项通过，TypeScript typecheck、改动文件 ESLint 与 `git diff --check` 通过。验证使用 Mock API，没有真实 Provider、MATLAB/DPABI 或真实数据操作；该提示不替代通用目标 dispatch 和跨阶段自动恢复。
