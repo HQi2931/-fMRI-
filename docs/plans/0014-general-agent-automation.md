@@ -416,6 +416,10 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 
 真实本机工作台的 DashScope 与 DeepSeek 结构化连接均成功，路由结果分别选中 `dashscope`、`deepseek`。设置页定向回归 20 项、TypeScript typecheck、ESLint、生产构建、92 份 Markdown 规范与 `git diff --check` 通过。连接测试只发送 Provider 测试构造的合成 JSON 请求，不发送数据集元数据、参与者/组别明细、MRI 影像或工作区文件；未验证实际 AUTO 分类质量、错误兜底比例，也未启动 MATLAB/DPABI 或运行真实演示数据。密钥保留在本机配置，未进入聊天、SQLite Profile 或 Git。计划 0014 尚未整体完成。
 
+### Work 回复中的 AUTO 分派来源提示（2026-10-26）
+
+带有 `agent_routing` 的 assistant 回复现在显示简短中文分派信息。前端只解析 `status`、`source`、`model`、`profile_id`，对模型名和 Profile ID 做受限标识符校验；不读取或显示置信度、原因码及未知字段。规则、小模型、大模型兜底和显式服务端约束分别标记；需要澄清与分派失败使用不同状态。只有后端明确给出 `large_model_fallback` 时才显示“大模型兜底”；`source=model` 不会被推断为 DeepSeek 或 fallback，失败时也不显示可能只是配置占位的 model 字段。该展示不改变服务端路由或 API 契约。
+
 ### AgentPage Profile 模型列表保留绑定 model ID（2026-10-26）
 
 模型选择器现在显示 Provider 发现的模型，同时保留每个 Profile 当前绑定的 model ID；两个来源按 Profile 内精确 ID 去重。这样 `/providers/models` 返回其它候选模型时，不会让已绑定的模型从 Work 选择器消失。回归测试以 DeepSeek Profile `deepseek-v4-flash` 和发现列表 `deepseek-flash`、`deepseek-v4-pro`（含重复项）覆盖缺失绑定值及列表去重；AgentPage 定向测试 78 项通过，TypeScript typecheck、两个改动文件 ESLint、92 份 Markdown 文档规范与 `git diff --check` 通过。验证使用 Mock API，不改本机 Profile/API Key，不调用 Provider、工作区或 MATLAB。

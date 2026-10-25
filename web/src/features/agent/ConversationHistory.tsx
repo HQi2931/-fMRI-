@@ -5,7 +5,7 @@ import { AgentHandoffPanel } from "../../components/AgentHandoffPanel";
 import { ConversationText } from "../../components/ConversationText";
 import { WorkDraftPanel } from "../../components/WorkDraftPanel";
 import { WorkTimingDetails } from "../../components/WorkTimingDetails";
-import { type Message } from "./conversation-model";
+import { agentRoutingSummary, type Message } from "./conversation-model";
 import { AnalysisProposalActions } from "./AnalysisProposalActions";
 
 function HistoricalPlan({ item }: { item: Message }) {
@@ -30,6 +30,7 @@ export function ConversationHistory({ messages, busy, onApply, onUndo, onRetryAn
         </li>)}
       </ol></details>}
       <ConversationText text={item.text} />
+      {item.agentRouting && <p className="chat-routing-info">本轮分派：{agentRoutingSummary(item.agentRouting)}</p>}
       {item.analysisOutboxRecovery && conversation && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onRetryAnalysisOutbox(item.analysisOutboxRecovery!.intentTaskId)}>重新尝试准备草稿</button>}
       {item.resultInterpretationRecovery && conversation && <button className="button button-secondary" type="button" disabled={busy} onClick={() => onRetryResultInterpretation(item.resultInterpretationRecovery!.taskId)}>重新生成结果解读草稿</button>}
       {item.analysisDraft && <details className="chat-technical" open>

@@ -6,6 +6,12 @@
 - 更新日期：2026-10-26
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-26 Work AUTO 分派来源提示
+
+带有 `agent_routing` 的 assistant 回复会显示规则、小模型、大模型兜底、显式服务端约束、待澄清或分派失败状态。前端只解析白名单字段 `status`、`source`、`model` 和 `profile_id`，模型名与 Profile ID 必须符合受限标识符格式；未知字段、置信度和原因码不会显示。只有后端显式提供 `large_model_fallback` 时才标为大模型兜底，通用 `model` 来源不推断所用 Profile 或 fallback；失败状态也隐藏后端可能用作配置占位的 model 字段。此改动只提供本轮来源可见性，不改变路由行为或 API。
+
+新增 parser 与回复渲染回归 6 项通过，覆盖规则、小模型、兜底、服务端约束、通用模型、待澄清、失败、无效字段及模型/Profile 文案。前端 TypeScript、相关文件 ESLint、文档规范和 `git diff --check` 通过。使用本地 Mock 元数据，未调用 Provider、MATLAB/DPABI 或真实数据。
+
 ## 2026-10-26 Work 运行卡只显示脱敏诊断
 
 普通运行卡不再读取或渲染 `run.error`/原始 stderr，只显示与当前 attempt 绑定的本机脱敏诊断摘要、建议和证据。当前运行诊断未知或读取不可用时，卡片明确说明尚未发现可识别线索或本机诊断暂不可用；已登记的原始日志 Artifact 仍可由用户显式下载。后端 `Run.error` 和 API 公共契约未改变，诊断不发送给模型。

@@ -20,6 +20,7 @@ export type Message = {
   proposal?: WorkspaceProposal;
   streamingStatus?: string;
   workDraft?: WorkDraftSnapshot;
+  agentRouting?: AgentRoutingInfo;
   draftIssues?: string[];
   planPreview?: unknown;
   workTimings?: unknown;
@@ -34,6 +35,14 @@ export type Message = {
   resultInterpretationRecovery?: { taskId: string };
 };
 export type WorkAgentRole = "auto" | "preprocessing" | "analysis";
+export type AgentRoutingStatus = "routed" | "needs_clarification" | "failed" | "unknown";
+export type AgentRoutingSource = "rule" | "small_model" | "large_model_fallback" | "explicit_safety_constraint" | "model" | "unknown";
+export type AgentRoutingInfo = {
+  status: AgentRoutingStatus;
+  source: AgentRoutingSource;
+  model?: string;
+  profileId?: string;
+};
 export type ModelChoice = {
   key: string;
   profileId: string;
@@ -46,6 +55,54 @@ export const MODEL_SELECTION_KEY = "rsfmri-agent-model-v1";
 export function rememberedModel(): string {
   try { return window.sessionStorage.getItem(MODEL_SELECTION_KEY) ?? ""; }
   catch { return ""; }
+}
+
+function safeRoutingIdentifier(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(value)
+    ? value
+    : undefined;
+}
+
+export function parseAgentRouting(value: unknown): AgentRoutingInfo | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const metadata = value as Record<string, unknown>;
+  const status: AgentRoutingStatus = metadata.status === "routed"
+    || metadata.status === "needs_clarification" || metadata.status === "failed"
+    ? metadata.status : "unknown";
+  const source: AgentRoutingSource = metadata.source === "rule"
+    || metadata.source === "small_model" || metadata.source === "large_model_fallback"
+    || metadata.source === "explicit_safety_constraint" || metadata.source === "model"
+    ? metadata.source : "unknown";
+  if (status === "failed" || status === "unknown") return { status, source };
+
+  const model = source === "rule" || source === "explicit_safety_constraint"
+    ? undefined : safeRoutingIdentifier(metadata.model);
+  const profileId = source === "small_model" || source === "large_model_fallback"
+    ? safeRoutingIdentifier(metadata.profile_id) : undefined;
+  return { status, source, ...(model ? { model } : {}), ...(profileId ? { profileId } : {}) };
+}
+
+export function agentRoutingSummary(routing: AgentRoutingInfo): string {
+  if (routing.status === "failed") return "分派失败 · 模型路由未完成";
+  if (routing.status === "unknown") return "分派状态不可用";
+
+  if (routing.status === "needs_clarification") {
+    const source = routing.source === "rule" ? "规则"
+      : routing.source === "small_model" ? "小模型"
+      : routing.source === "large_model_fallback" ? "大模型兜底"
+      : routing.source === "explicit_safety_constraint" ? "服务端约束"
+      : routing.source === "model" ? "模型" : "来源未记录";
+    return [`待澄清 · ${source}`, routing.model, routing.profileId ? `Profile ${routing.profileId}` : undefined]
+      .filter((part): part is string => Boolean(part)).join(" · ");
+  }
+
+  const source = routing.source === "rule" ? "规则分派"
+    : routing.source === "small_model" ? "小模型分派"
+    : routing.source === "large_model_fallback" ? "大模型兜底分派"
+    : routing.source === "explicit_safety_constraint" ? "服务端约束分派"
+    : routing.source === "model" ? "模型分派" : "自动分派";
+  return [source, routing.model, routing.profileId ? `Profile ${routing.profileId}` : undefined]
+    .filter((part): part is string => Boolean(part)).join(" · ");
 }
 
 export const WELCOME: Record<ConversationMode, Message> = {
@@ -112,6 +169,7 @@ export function messagesFrom(conversation?: Conversation): Message[] {
         citations: (item.payload.chat as { citations?: Citation[] } | undefined)?.citations,
         steps: pending,
         workDraft: readWorkDraft(item.payload.work_draft),
+        agentRouting: parseAgentRouting(item.payload.agent_routing),
         draftIssues: Array.isArray(item.payload.draft_issues) ? item.payload.draft_issues.filter((value): value is string => typeof value === "string") : readWorkDraft(item.payload.work_draft)?.review_issues ?? [],
         planPreview: item.payload.plan_preview,
         workTimings: item.payload.work_timings,
