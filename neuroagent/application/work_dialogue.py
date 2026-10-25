@@ -572,6 +572,7 @@ class WorkDialogue:
         ]
         | None = None,
         model_budget: AgentLoopBudget | None = None,
+        response_repair_profile_id: str | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.generate = generate
@@ -588,11 +589,13 @@ class WorkDialogue:
         self.get_result_facts = get_result_facts
         self.resolve_frozen_analysis = resolve_frozen_analysis
         self.model_budget = model_budget or AgentLoopBudget()
+        self.response_repair_profile_id = response_repair_profile_id
         self.model_runtime = WorkModelRuntime(
             generate=self.generate,
             tool_runner=self.tool_runner,
             model_budget=self.model_budget,
             is_valid_response=self._parses,
+            response_repair_profile_id=self.response_repair_profile_id,
         )
 
     async def _interpret(
@@ -617,6 +620,7 @@ class WorkDialogue:
         self.model_runtime.generate = self.generate
         self.model_runtime.tool_runner = self.tool_runner
         self.model_runtime.model_budget = budget_override or self.model_budget
+        self.model_runtime.response_repair_profile_id = self.response_repair_profile_id
         return await self.model_runtime.interpret(
             model_context,
             preferred_profile_id=preferred_profile_id,
@@ -1621,6 +1625,8 @@ class WorkDialogue:
             async def interpret_preprocessing(
                 context: dict[str, Any], remaining_budget: AgentLoopBudget
             ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+                nonlocal failure_stage, model_metadata
+                failure_stage = "model_request"
                 result = await self._interpret(
                     context,
                     preferred_profile_id=preferred_profile_id,
@@ -1629,15 +1635,21 @@ class WorkDialogue:
                     budget_override=remaining_budget,
                     persistent_model_budget=persistent_model_budget,
                 )
+                model_metadata = result[1]
                 feedback_state["latest_loop_metadata"] = result[2]
                 if result[2] is not None:
                     feedback_state["loop_audits"].append(result[2])
                 return result
 
             def validate_preprocessing(
-                content: str, _metadata: Mapping[str, Any]
+                content: str, metadata: Mapping[str, Any]
             ) -> PlanningIssue | None:
+                nonlocal failure_stage
+                if metadata.get("stop_reason") is not None or metadata.get("finish_reason") == "length":
+                    return None
+                failure_stage = "response_validation"
                 parsed = WorkInterpretation.model_validate_json(content)
+                failure_stage = "draft_validation"
                 if parsed.action != "prepare_preprocessing_plan":
                     return None
                 if feedback_state["initial_skill_feedback"]:
@@ -1839,7 +1851,11 @@ class WorkDialogue:
                 raise ApplicationError(
                     "work_model_unavailable", "模型工具阶段失败；未重复请求。", status_code=503
                 )
-            if metadata.get("stop_reason") in {"budget_steps", "budget_tokens"}:
+            if metadata.get("stop_reason") in {
+                "budget_steps",
+                "budget_tokens",
+                "composite_goal_model_budget_exhausted",
+            }:
                 raise ApplicationError(
                     "work_model_budget_exhausted", "本轮模型预算已用完，草稿和证据已保留。"
                 )
@@ -2595,6 +2611,8 @@ class WorkDialogue:
         persistent_model_budget: PersistentModelCallBudget | None = None,
     ) -> WorkActionResult:
         loop_metadata: dict[str, Any] | None = None
+        model_metadata: dict[str, Any] = {}
+        failure_stage = "model_request"
         saved = (
             None
             if proposal_only_continuation
@@ -2905,6 +2923,8 @@ class WorkDialogue:
         async def interpret_analysis(
             context: dict[str, Any], remaining_budget: AgentLoopBudget
         ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+            nonlocal failure_stage, model_metadata
+            failure_stage = "model_request"
             result = await self._interpret(
                 context,
                 preferred_profile_id=preferred_profile_id,
@@ -2937,6 +2957,7 @@ class WorkDialogue:
                 budget_override=remaining_budget,
                 persistent_model_budget=persistent_model_budget,
             )
+            model_metadata = result[1]
             stop_reason = str(result[1].get("stop_reason") or "")
             if stop_reason.startswith("composite_goal_model_"):
                 raise ApplicationError(
@@ -2948,8 +2969,13 @@ class WorkDialogue:
                 feedback_state["loop_audits"].append(result[2])
             return result
 
-        def validate_analysis(content: str, _metadata: Mapping[str, Any]) -> PlanningIssue | None:
+        def validate_analysis(content: str, metadata: Mapping[str, Any]) -> PlanningIssue | None:
+            nonlocal failure_stage
+            if metadata.get("stop_reason") is not None or metadata.get("finish_reason") == "length":
+                return None
+            failure_stage = "response_validation"
             parsed = WorkInterpretation.model_validate_json(content)
+            failure_stage = "draft_validation"
             if parsed.action != "prepare_statistical_analysis" or not parsed.analysis_patch:
                 return None
             if parsed.workspace_edits or parsed.draft_patch:
@@ -3148,6 +3174,7 @@ class WorkDialogue:
                 feedback.metadata,
                 _combine_loop_audits(feedback_state["loop_audits"]),
             )
+            model_metadata = metadata
             if feedback.rounds > 1:
                 metadata = {
                     **metadata,
@@ -3167,13 +3194,19 @@ class WorkDialogue:
                 raise ApplicationError(
                     "work_model_unavailable", "数据分析 Agent 暂时不可用。", status_code=503
                 )
-            if metadata.get("stop_reason") in {"budget_steps", "budget_tokens"}:
+            if metadata.get("stop_reason") in {
+                "budget_steps",
+                "budget_tokens",
+                "composite_goal_model_budget_exhausted",
+            }:
                 raise ApplicationError(
                     "work_model_budget_exhausted", "本轮模型预算已用完，统计草稿和证据已保留。"
                 )
             if metadata.get("finish_reason") == "length":
                 raise ApplicationError("work_response_truncated", "数据分析回复不完整。")
+            failure_stage = "response_validation"
             interpreted = WorkInterpretation.model_validate_json(raw)
+            failure_stage = "draft_validation"
             if interpreted.action == "prepare_statistical_analysis":
                 interpreted = interpreted.model_copy(
                     update={
@@ -3418,7 +3451,7 @@ class WorkDialogue:
                 return reply("该动作不属于数据分析 Agent 的职责范围，未执行任何操作。", payload)
             return reply(interpreted.answer, payload)
         except (ApplicationError, ValidationError, ValueError) as exc:
-            diagnostic, reason = _work_failure_details(exc, {}, "analysis_response")
+            diagnostic, reason = _work_failure_details(exc, model_metadata, failure_stage)
             return reply(
                 "数据分析 Agent 未能完成本轮请求；已有统计草稿和工作流状态仍保留。\n\n" + reason,
                 {

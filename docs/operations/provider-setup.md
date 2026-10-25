@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Operations
 - 维护者：backend_service_engineer
-- 更新日期：2026-09-27
+- 更新日期：2026-10-22
 - 关联：[模型数据外发策略](../security/data-egress.md)
 
 外部模型是可选能力。未配置 Provider 时，数据检查、Skill 编译、审批、Mock Worker、QC 和统计设计仍可独立使用。
@@ -94,6 +94,8 @@ OPENAI_COMPATIBLE_API_KEY=<local-secret>
 3. 使用当前账号地域对应的 OpenAI-compatible Base URL。北京通用端点为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如果账户提供 workspace 专属端点，优先使用该端点。不同地域的端点见阿里云[Base URL 文档](https://help.aliyun.com/en/model-studio/base-url)。
 4. 指定模型 ID `qwen3.8-flash`，保留 `json_object` 能力。百炼官方将此 ID 列为轻量低成本模型，并标明支持 OpenAI-compatible 与结构化输出：[模型说明](https://help.aliyun.com/en/model-studio/qwen3-8-flash)、[模型能力列表](https://help.aliyun.com/en/model-studio/text-generation-model/)。成功后 Profile ID 由 `DASHSCOPE_API_KEY` 自动生成为 `dashscope`。
 5. 保留 ID 为 `deepseek` 的现有 DeepSeek Profile 作为大模型兜底。路由模型默认 ID 可在服务端 `.env` 中通过 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 和 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 调整；默认分别为 `dashscope` 与 `deepseek`。
+
+`RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 指定的 Profile 也用于 Work 最终 JSON schema 失败后的至多一次结构修复。修复调用会显式选择该 Profile，使用 Profile 自带模型（不覆盖 model ID），关闭联网并且不提供工具；发送内容限于本轮问题和 Agent 角色，Gateway 仍会按 `work_mode` 执行外发敏感内容拒绝与脱敏。它不发送会话历史、固定上下文、工作区读取结果或首次无效回复。修复调用消耗同一轮剩余模型预算；复合目标还会在 Provider 调用前预留持久预算。未配置可用 Profile 或预算不足时 Work 失败关闭，不分发动作或创建 Run。
 
 路由使用本轮用户请求文字及最少布尔/角色状态，并通过 `OutboundContextPolicy` 清洗后发到所配置的模型服务。不会发送对话历史、工作区文件、影像或参与者清单；检测到参与者表、受试者-组别对应或影像/base64 payload 时，该轮路由模型调用会被阻止。本地规则命中的明确请求不调用路由模型。真实请求仍会离开本机；请在提供商侧确认数据处理条件。路由测试使用 mock provider，不会触发真实 API 调用。
 

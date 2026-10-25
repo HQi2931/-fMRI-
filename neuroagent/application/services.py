@@ -424,6 +424,7 @@ class ApplicationServices:
             dry_run_skill_plan=self.skills.dry_run_skill_plan,
             get_result_facts=self._analysis_result_facts,
             resolve_frozen_analysis=self.conversations.resolve_selected_frozen_analysis,
+            response_repair_profile_id=settings.work_router_fallback_profile_id,
             model_budget=AgentLoopBudget(
                 max_steps=settings.agent_max_tool_steps,
                 max_seconds=settings.agent_max_tool_seconds,

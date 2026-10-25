@@ -3,8 +3,14 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-21
+- 更新日期：2026-10-26
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-10-26 Work JSON 格式修复的 DeepSeek 兜底
+
+普通 Work 最终响应未通过 `WorkInterpretation` JSON 校验时，最多追加一次项目 DeepSeek Profile 修复请求。修复提示只含本轮问题和服务端角色，不带历史、固定上下文、首次错误响应、工作区证据或工具结果，并关闭工具/Web。修复产物仍走现有 schema 与服务端动作授权；Provider 失败、截断、预算耗尽有独立安全诊断。AUTO 角色判别继续使用规则优先、DashScope `qwen3.8-flash` 小模型、项目 DeepSeek 回退。
+
+修复路径及失败安全反馈的 Work 对话定向回归 6 项通过；Work 模型运行时/共享预算定向回归 15 项通过。完整 `test_work_dialogue.py` 为 32 项通过、5 项失败，涉及 TR 冲突时建议说明、页面起始阶段确认、确认挑战重放、旧 Gateway mock 方法，以及 ALFF 编译用例缺少 Aliyun/DeepSeek 路由 Provider；需另行清理，不能据专项测试推断整份 Work 对话回归通过。改动文件 Ruff、Mypy、92 份 Markdown 文档规范和 `git diff --check` 通过。验证使用 Mock Gateway；没有录入 Aliyun API Key，也没有调用真实 Provider、MATLAB/DPABI，未运行演示数据端到端验收。该切片不表示计划 0014 已完成。
 
 ## 2026-10-21 CompositeGoal 预算耗尽反馈
 

@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from neuroagent.agent.gateway import ChatGatewayResult, ChatMessages, ToolTurnResult
 from neuroagent.agent.loop import AgentLoopBudget
 from neuroagent.agent.models import ProviderResponse
+from neuroagent.agent.tool_result import ToolCallOutcome, ToolCallStatus
+from neuroagent.agent.tool_spec import ToolTier
 from neuroagent.application.work_model_runtime import WorkModelRuntime
+from neuroagent.application.work_models import WorkInterpretation
 from neuroagent.application.work_tools import (
     AgentExecutionContext,
+    WorkToolLoopResult,
     WorkToolRunner,
 )
+from neuroagent.context.engine import RegexTokenCounter
 
 
 class _PersistentBudget:
@@ -63,17 +69,27 @@ def _context() -> dict[str, Any]:
     }
 
 
+def _valid_work_json(content: str) -> bool:
+    try:
+        WorkInterpretation.model_validate_json(content)
+    except Exception:
+        return False
+    return True
+
+
 def _generated(
     tokens: int = 42,
     attempted_profile_ids: tuple[str, ...] = ("test-profile",),
+    content: str = '{"answer":"已核对","action":"conversation"}',
+    profile_id: str = "test-profile",
 ) -> ChatGatewayResult:
     return ChatGatewayResult(
         response=ProviderResponse(
-            content='{"answer":"已核对","action":"conversation"}',
+            content=content,
             model="budget-test-model",
             usage={"total_tokens": tokens},
         ),
-        selected_profile_id="test-profile",
+        selected_profile_id=profile_id,
         context_hash="a" * 64,
         attempted_profile_ids=attempted_profile_ids,
         remote_search_used=False,
@@ -370,6 +386,247 @@ def test_fallback_provider_timeout_is_capped_by_reserved_goal_elapsed() -> None:
     assert len(budget.settlements) == 1
     assert budget.settlements[0][0] is None
     assert budget.settlements[0][1] >= 1
+
+
+def test_invalid_final_json_uses_one_explicit_no_tool_deepseek_repair_and_aggregates_budget(
+) -> None:
+    budget = _PersistentBudget()
+    first = _generated(
+        tokens=12,
+        content='{"answer":"untrusted malformed result","action":"conversation","extra":"secret"}',
+        profile_id="selected-profile",
+    )
+    repaired = _generated(
+        tokens=23,
+        content='{"answer":"结构已修复","action":"conversation"}',
+        profile_id="deepseek",
+        attempted_profile_ids=("deepseek",),
+    )
+    calls: list[dict[str, Any]] = []
+    tool_runner = AsyncMock()
+    tool_runner.available.return_value = True
+    tool_runner.run.return_value = WorkToolLoopResult(
+        final_text="not JSON",
+        stop_reason="completed",
+        steps=1,
+        usage={"total_tokens": 7},
+        tool_names=("read_workspace_content",),
+        outcomes=(
+            ToolCallOutcome(
+                call_id="read-1",
+                name="read_workspace_content",
+                tier=ToolTier.READ,
+                status=ToolCallStatus.SUCCEEDED,
+                result={"content": "private-workspace-sentinel"},
+            ),
+        ),
+    )
+
+    async def generate(**kwargs: Any) -> ChatGatewayResult:
+        calls.append(kwargs)
+        return first if len(calls) == 1 else repaired
+
+    runtime = WorkModelRuntime(
+        generate=generate,
+        tool_runner=tool_runner,
+        model_budget=AgentLoopBudget(max_steps=3),
+        is_valid_response=_valid_work_json,
+        response_repair_profile_id="deepseek",
+    )
+    context = _context()
+    context["recent_messages"] = [{"role": "user", "content": "private-history-sentinel"}]
+    context["pinned_context"] = [{"content": "private-pinned-sentinel"}]
+    context["conversation_summary"] = "private-summary-sentinel"
+    context["work_context"] = {
+        "agent_role": "analysis",
+        "successful_read_evidence": ["private-workspace-sentinel"],
+    }
+    text, metadata, _audit = asyncio.run(
+        runtime.interpret(
+            context,
+            preferred_profile_id="selected-profile",
+            model="selected-model",
+            allow_tools=True,
+            execution_context=AgentExecutionContext(work_agent_role="analysis"),
+            persistent_model_budget=budget,
+        )
+    )
+
+    assert WorkInterpretation.model_validate_json(text).answer == "结构已修复"
+    assert len(calls) == 2
+    tool_runner.run.assert_awaited_once()
+    assert calls[0]["preferred_profile_id"] == "selected-profile"
+    assert calls[0]["model"] == "selected-model"
+    assert calls[1]["preferred_profile_id"] == "deepseek"
+    assert calls[1]["model"] is None
+    assert calls[1]["allow_web_search"] is False
+    assert calls[1]["work_mode"] is True
+    assert "tools" not in calls[1]
+    assert "malformed result" not in calls[1]["question"]
+    assert calls[1]["recent_messages"] == []
+    assert calls[1]["pinned_context"] == []
+    assert calls[1]["conversation_summary"] is None
+    assert calls[1]["work_context"] == {"agent_role": "analysis"}
+    repair_payload = repr(calls[1])
+    assert "private-history-sentinel" not in repair_payload
+    assert "private-pinned-sentinel" not in repair_payload
+    assert "private-summary-sentinel" not in repair_payload
+    assert "private-workspace-sentinel" not in repair_payload
+    assert metadata["json_repair"]["valid"] is True
+    assert metadata["request_budget"]["model_steps"] == 3
+    assert metadata["request_budget"]["total_tokens"] == 42
+    assert _audit["json_repair_used"] is True
+    assert len(budget.estimates) == len(budget.settlements) == 2
+    assert [item[0] for item in budget.settlements] == [12, 23]
+
+
+def test_json_repair_fails_closed_when_only_one_model_step_is_available() -> None:
+    calls = 0
+
+    async def generate(**_kwargs: Any) -> ChatGatewayResult:
+        nonlocal calls
+        calls += 1
+        return _generated(
+            tokens=12,
+            content='{"answer":"bad","action":"conversation","extra":"field"}',
+        )
+
+    runtime = WorkModelRuntime(
+        generate=generate,
+        tool_runner=None,
+        model_budget=AgentLoopBudget(max_steps=1),
+        is_valid_response=_valid_work_json,
+        response_repair_profile_id="deepseek",
+    )
+    text, metadata, _audit = asyncio.run(
+        runtime.interpret(
+            _context(),
+            preferred_profile_id="selected-profile",
+            model=None,
+            allow_tools=False,
+        )
+    )
+
+    assert text == ""
+    assert calls == 1
+    assert metadata["stop_reason"] == "budget_steps"
+    assert metadata["request_budget"]["model_steps"] == 1
+    assert metadata["request_budget"]["total_tokens"] == 12
+
+
+def test_json_repair_is_blocked_when_its_estimated_tokens_exceed_turn_budget() -> None:
+    calls = 0
+    context = _context()
+    context["max_output_tokens"] = 32
+    context_tokens = RegexTokenCounter().count(
+        {
+            key: value
+            for key, value in context.items()
+            if key not in {"context_window_tokens", "max_output_tokens"}
+        }
+    )
+
+    async def generate(**_kwargs: Any) -> ChatGatewayResult:
+        nonlocal calls
+        calls += 1
+        return _generated(tokens=1, content='{"answer":"bad","extra":"field"}')
+
+    runtime = WorkModelRuntime(
+        generate=generate,
+        tool_runner=None,
+        model_budget=AgentLoopBudget(
+            max_steps=2,
+            max_total_tokens=context_tokens + context["max_output_tokens"],
+        ),
+        is_valid_response=lambda _content: False,
+        response_repair_profile_id="deepseek",
+    )
+    text, metadata, _audit = asyncio.run(
+        runtime.interpret(
+            context,
+            preferred_profile_id="selected-profile",
+            model=None,
+            allow_tools=False,
+        )
+    )
+
+    assert text == ""
+    assert calls == 1
+    assert metadata["stop_reason"] == "budget_tokens"
+    assert metadata["request_budget"]["model_steps"] == 1
+
+
+def test_json_repair_is_blocked_when_single_shot_uses_the_remaining_time() -> None:
+    elapsed = 0.0
+    calls = 0
+
+    async def generate(**_kwargs: Any) -> ChatGatewayResult:
+        nonlocal calls, elapsed
+        calls += 1
+        elapsed = 1.0
+        return _generated(tokens=12, content='{"answer":"bad","extra":"field"}')
+
+    runtime = WorkModelRuntime(
+        generate=generate,
+        tool_runner=None,
+        model_budget=AgentLoopBudget(max_steps=2, max_seconds=1.0),
+        is_valid_response=lambda _content: False,
+        response_repair_profile_id="deepseek",
+    )
+    runtime._clock = lambda: elapsed
+    text, metadata, _audit = asyncio.run(
+        runtime.interpret(
+            _context(),
+            preferred_profile_id="selected-profile",
+            model=None,
+            allow_tools=False,
+        )
+    )
+
+    assert text == ""
+    assert calls == 1
+    assert metadata["stop_reason"] == "budget_time"
+    assert metadata["request_budget"]["model_steps"] == 1
+
+
+def test_persistent_budget_exhaustion_blocks_repair_before_provider_dispatch() -> None:
+    class ExhaustOnSecondReservation(_PersistentBudget):
+        def reserve(self, estimated_tokens: int, estimated_elapsed_seconds: int) -> Any:
+            if len(self.estimates) == 1:
+                self.status = "exhausted"
+            return super().reserve(estimated_tokens, estimated_elapsed_seconds)
+
+    budget = ExhaustOnSecondReservation()
+    calls = 0
+
+    async def generate(**_kwargs: Any) -> ChatGatewayResult:
+        nonlocal calls
+        calls += 1
+        return _generated(tokens=12, content='{"answer":"bad","extra":"field"}')
+
+    runtime = WorkModelRuntime(
+        generate=generate,
+        tool_runner=None,
+        model_budget=AgentLoopBudget(max_steps=2),
+        is_valid_response=lambda _content: False,
+        response_repair_profile_id="deepseek",
+    )
+    text, metadata, _audit = asyncio.run(
+        runtime.interpret(
+            _context(),
+            preferred_profile_id="selected-profile",
+            model=None,
+            allow_tools=False,
+            persistent_model_budget=budget,
+        )
+    )
+
+    assert text == ""
+    assert calls == 1
+    assert metadata["stop_reason"] == "composite_goal_model_budget_exhausted"
+    assert metadata["request_budget"]["model_steps"] == 1
+    assert len(budget.estimates) == 2
+    assert len(budget.settlements) == 1
 
 
 def test_late_fallback_result_after_cancellation_is_discarded_and_charged() -> None:

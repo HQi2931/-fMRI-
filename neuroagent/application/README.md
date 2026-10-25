@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-21
+- 更新日期：2026-10-22
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
@@ -31,7 +31,7 @@
 - 显式外部配对布局按 subject_id 与 condition 绑定两张图；方案装配保留用户条件顺序，编号/条件缺失和源文件变化阻止旧设计执行。
 - `work_actions.py` 是 Work 可选动作的唯一事实来源；
 - `work_prompts.py` 按 Work 角色提供系统提示词；模型网关只接收显式注入的提示词，不再从 `work_context.agent_role` 推断业务角色。提示词中的动作清单直接读取 `work_actions.py`，避免模型契约在应用与 Gateway 之间重复维护；
-- `work_model_runtime.py` 负责角色提示词注入、工具循环、单轮回退和本轮 token/时间预算；`work_dialogue.py` 保留草稿、证据、交接和业务动作编排。
+- `work_model_runtime.py` 负责角色提示词注入、工具循环、单轮回退和本轮 token/时间预算；若最终单次回复不符合 Work schema，可在剩余预算内向配置的 DeepSeek Profile 发起至多一次无工具 JSON 修复。修复上下文仅含当前问题和 Agent 角色，不携带历史、工作区读取证据或坏回复，并沿用外发敏感数据拒绝/脱敏。`work_dialogue.py` 保留草稿、证据、交接和业务动作编排，并继续执行既有 schema 与服务端授权校验。
 - `work_models.py` 独立定义模型输出合同，动作字段只接受 `READ`/`PROPOSE` 白名单；`work_dialogue.py` 继续重导出类型以兼容现有调用点。
 - Work 预处理 Skill 预检还会阻断同计划 ReHo + `CUT` scrubbing，定位 `preprocessing.scrubbing.method` 并要求先生成、核验 retained-volume checkpoint；ALFF-only + CUT 与无 preprocessing 的 metric-only ReHo 不触发该能力 gate。dry-run 与正式 resolve 在 Plan 写入前失败，feedback 为 `BLOCKED_CAPABILITY` 且不自动修改选择。原执行器拒绝和独立 `EFFECTIVE_VOLUME_COUNT_UNKNOWN` 科学证据提示仍保留。
 - 正式 metric-only Skill resolve 与 API dry-run 复用已登记 checkpoint 的现有 manifest、来源 Plan 和 lineage 核验；只有 metric-only 请求要求冻结 manifest 恰有一个 subject，且 Artifact lineage.subject_id 与之相同。跨 session、批量、无效 scope 或身份不匹配在 Plan 写入前失败关闭；预处理同 session 多 subject 仍可走原路径。Work 内部 dry-run 仍只编译预处理草稿，尚无 metric-only Work draft 或 Artifact picker。

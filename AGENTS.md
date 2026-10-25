@@ -23,7 +23,7 @@
 - `docs/archive/architecture/neuroagent-framework-architecture.md` 是已归档的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
 - `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 为 Work 提供最小的预处理/分析角色目录、权限和交接边界；通用多 Agent 框架与插件系统仍不是近期 MVP 的前置依赖。
-- Agent 已具备**有界工具调用循环**（ADR 0014）：Chat 可多跳检索；Work 可提供运行状态、产物类型汇总、统计结果、校正能力、Skill 清单等工具，以及经用户授权的只读工作区文件工具。文件授权绑定工作区、Profile 配置修订和具体模型，创建授权前使用不含工作区内容的探针验证具体模型。循环的最终文本即 Work 原有 JSON 契约，解析与授权路径未变，非法 JSON 会回退单次路径。Work 的动作集合由 `work_actions.py` 单一维护并只允许 READ/PROPOSE；EXECUTE 动作在目录构建阶段即被丢弃。未声明 `ModelCapability.TOOL_USE` 的模型仍走原有单次路径，行为不变。
+- Agent 已具备**有界工具调用循环**（ADR 0014）：Chat 可多跳检索；Work 可提供运行状态、产物类型汇总、统计结果、校正能力、Skill 清单等工具，以及经用户授权的只读工作区文件工具。文件授权绑定工作区、Profile 配置修订和具体模型，创建授权前使用不含工作区内容的探针验证具体模型。循环的最终文本即 Work 原有 JSON 契约，解析与授权路径未变；循环输出无效时回退单次 JSON 请求，若最终单次回复仍未通过 `WorkInterpretation` schema，则在剩余本轮预算内向配置的 DeepSeek Profile 发起最多一次无工具、无联网 JSON 结构修复。修复只携带本轮问题和 Agent 角色，不带会话历史、固定上下文、工作区读取内容或首条坏回复，并通过既有外发敏感数据拒绝/脱敏与服务端 schema/action 校验。Work 的动作集合由 `work_actions.py` 单一维护并只允许 READ/PROPOSE；EXECUTE 动作在目录构建阶段即被丢弃。未声明 `ModelCapability.TOOL_USE` 的模型仍走单次路径，行为不变。
 - 优先建立最小垂直闭环：数据检查 → Skill 解析与方案校验 → 人工确认 → Workflow/MATLAB/DPABI 执行 → QC → 统计分析 → 报告。
 
 ## 3. 已确认的本机科研软件环境

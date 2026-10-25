@@ -74,11 +74,16 @@ class WorkModelRuntime:
         tool_runner: WorkToolRunner | None,
         model_budget: AgentLoopBudget,
         is_valid_response: Callable[[str], bool],
+        response_repair_profile_id: str | None = None,
     ) -> None:
         self.generate = generate
         self.tool_runner = tool_runner
         self.model_budget = model_budget
         self._is_valid_response = is_valid_response
+        self.response_repair_profile_id = response_repair_profile_id
+        # Kept as an instance hook so elapsed-budget boundaries are deterministic
+        # in tests without changing asyncio's own timeout clock.
+        self._clock = time.monotonic
 
     async def interpret(
         self,
@@ -98,7 +103,7 @@ class WorkModelRuntime:
         call, which is the path that guarantees JSON mode today.
         """
 
-        started = time.monotonic()
+        turn_started = self._clock()
         work_context = model_context.get("work_context")
         role = (
             str(work_context.get("agent_role", WorkAgentRole.PREPROCESSING.value))
@@ -119,7 +124,7 @@ class WorkModelRuntime:
             except TimeoutError:
                 return "", {"stop_reason": "budget_time"}, None
         if allow_tools and self.tool_runner is not None and tools_available:
-            remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
+            remaining_seconds = self.model_budget.max_seconds - (self._clock() - turn_started)
             if remaining_seconds <= 0:
                 return "", {"stop_reason": "budget_time"}, None
             looped = await self.tool_runner.run(
@@ -172,7 +177,7 @@ class WorkModelRuntime:
                     loop_metadata,
                 )
             if looped.final_text.strip():
-                metadata = {
+                loop_response_metadata = {
                     "profile_id": looped.profile_id,
                     "model": looped.model,
                     "context_hash": looped.context_hash,
@@ -181,7 +186,7 @@ class WorkModelRuntime:
                     "usage": looped.usage,
                 }
                 if self._is_valid_response(looped.final_text):
-                    return looped.final_text, metadata, loop_metadata
+                    return looped.final_text, loop_response_metadata, loop_metadata
                 # The model answered but not in the required structure; keep the
                 # tool evidence recorded and let the single-shot path retry.
                 logger.warning("Work tool loop answer failed the JSON contract; retrying once")
@@ -211,7 +216,7 @@ class WorkModelRuntime:
                 "它不是工具；"
                 "只引用 successful_read_evidence 中逐字提供的 path 和 locator。"
             )
-        remaining_seconds = self.model_budget.max_seconds - (time.monotonic() - started)
+        remaining_seconds = self.model_budget.max_seconds - (self._clock() - turn_started)
         reason = None
         if remaining_seconds <= 0:
             reason = "budget_time"
@@ -227,14 +232,14 @@ class WorkModelRuntime:
         if reason:
             return "", {"stop_reason": reason}, loop_metadata
         reservation = None
-        estimated_retry_tokens = 0
+        estimated_single_shot_tokens = RegexTokenCounter().count(fallback_context) + int(
+            model_context.get("max_output_tokens", 2048)
+        )
+        estimated_retry_tokens = max(1, estimated_single_shot_tokens)
+        persistent_retry_estimate = max(1, math.ceil(estimated_retry_tokens * 1.2))
         if persistent_model_budget is not None:
-            estimate = RegexTokenCounter().count(fallback_context) + int(
-                model_context.get("max_output_tokens", 2048)
-            )
-            estimated_retry_tokens = max(1, math.ceil(estimate * 1.2))
             reservation = persistent_model_budget.reserve(
-                estimated_retry_tokens,
+                persistent_retry_estimate,
                 max(1, math.ceil(remaining_seconds)),
             )
             reservation_status = str(
@@ -250,19 +255,25 @@ class WorkModelRuntime:
                 remaining_seconds,
                 float(reservation.reservation.reserved_elapsed_seconds),
             )
-        started = time.monotonic()
+        call_started = self._clock()
         generated: ChatGatewayResult | None = None
 
-        def generated_tokens(result: ChatGatewayResult) -> int | None:
+        def generated_tokens(
+            result: ChatGatewayResult, estimated_call_tokens: int
+        ) -> int:
             usage = result.response.usage
             total = usage.get("total_tokens", 0)
             components = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
-            actual_tokens = total if total > 0 else components if components > 0 else None
+            actual_tokens = (
+                total
+                if total > 0
+                else components
+                if components > 0
+                else estimated_call_tokens
+            )
             retry_count = max(len(result.attempted_profile_ids) - 1, 0)
             if retry_count:
-                actual_tokens = (
-                    actual_tokens if actual_tokens is not None else estimated_retry_tokens
-                ) + retry_count * estimated_retry_tokens
+                actual_tokens += retry_count * estimated_call_tokens
             return actual_tokens
 
         try:
@@ -278,32 +289,41 @@ class WorkModelRuntime:
                 ),
                 timeout=remaining_seconds,
             )
-            if time.monotonic() - started > remaining_seconds:
+            if self._clock() - call_started > remaining_seconds:
                 raise TimeoutError("provider response arrived after its elapsed allowance")
         except TimeoutError:
             if reservation is not None and persistent_model_budget is not None:
                 persistent_model_budget.settle(
                     reservation,
-                    actual_tokens=generated_tokens(generated) if generated is not None else None,
-                    elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                    actual_tokens=(
+                        generated_tokens(generated, persistent_retry_estimate)
+                        if generated is not None
+                        else None
+                    ),
+                    elapsed_seconds=max(1, math.ceil(self._clock() - call_started)),
                 )
             return "", {"stop_reason": "provider_timeout"}, loop_metadata
         except BaseException:
             if reservation is not None and persistent_model_budget is not None:
                 persistent_model_budget.settle(
                     reservation,
-                    actual_tokens=generated_tokens(generated) if generated is not None else None,
-                    elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                    actual_tokens=(
+                        generated_tokens(generated, persistent_retry_estimate)
+                        if generated is not None
+                        else None
+                    ),
+                    elapsed_seconds=max(1, math.ceil(self._clock() - call_started)),
                 )
             raise
         assert generated is not None
+        fallback_tokens = generated_tokens(generated, estimated_retry_tokens)
         if reservation is not None and persistent_model_budget is not None:
             persistent_model_budget.settle(
                 reservation,
-                actual_tokens=generated_tokens(generated),
-                elapsed_seconds=max(1, math.ceil(time.monotonic() - started)),
+                actual_tokens=generated_tokens(generated, persistent_retry_estimate),
+                elapsed_seconds=max(1, math.ceil(self._clock() - call_started)),
             )
-        metadata = {
+        metadata: dict[str, Any] = {
             "profile_id": generated.selected_profile_id,
             "model": generated.response.model,
             "context_hash": generated.context_hash,
@@ -311,13 +331,6 @@ class WorkModelRuntime:
             "finish_reason": generated.response.finish_reason,
             "usage": generated.response.usage,
         }
-        fallback_tokens = (
-            generated.response.usage.get("total_tokens", 0)
-            or generated.response.usage.get("prompt_tokens", 0)
-            + generated.response.usage.get("completion_tokens", 0)
-            or RegexTokenCounter().count(fallback_context)
-            + RegexTokenCounter().count(generated.response.content)
-        )
         metadata["request_budget"] = {
             "model_steps": spent_steps + 1,
             "total_tokens": spent_tokens + fallback_tokens,
@@ -335,4 +348,176 @@ class WorkModelRuntime:
         if spent_tokens + fallback_tokens > self.model_budget.max_total_tokens:
             metadata["stop_reason"] = "budget_tokens"
             return "", metadata, loop_metadata
-        return generated.response.content, metadata, loop_metadata
+
+        initial_content = generated.response.content
+        if (
+            generated.response.finish_reason == "length"
+            or self._is_valid_response(initial_content)
+            or not self.response_repair_profile_id
+        ):
+            return initial_content, metadata, loop_metadata
+
+        # A profile-specific workspace consent must not be widened by schema
+        # repair. Send only the current question and role; drop conversation
+        # history, pinned/summary context, and any successful workspace reads.
+        # Gateway work_mode applies the same outbound rejection/redaction policy
+        # as the original model request. WorkDialogue still runs its normal
+        # Pydantic and server checks after this one no-tool response.
+        repair_context: dict[str, Any] = {
+            "question": str(model_context["question"]),
+            "recent_messages": [],
+            "pinned_context": [],
+            "conversation_summary": None,
+            "work_context": {"agent_role": role},
+        }
+        repair_context["question"] = str(repair_context["question"]) + (
+            "\n上一条回复未通过 Work JSON 结构校验。请根据本轮原始问题和上下文重新整理，"
+            "只返回一个符合 WorkInterpretation 字段结构的 JSON 对象；"
+            "不要调用工具、不要执行任何动作，也不要添加 schema 之外的字段。"
+        )
+        counter = RegexTokenCounter()
+        repair_context_tokens = counter.count(repair_context)
+        repair_max_output_tokens = int(model_context.get("max_output_tokens", 2048))
+        repair_estimate = max(1, repair_context_tokens + repair_max_output_tokens)
+        used_steps = spent_steps + 1
+        used_tokens = spent_tokens + fallback_tokens
+        remaining_seconds = self.model_budget.max_seconds - (self._clock() - turn_started)
+        reason = None
+        if remaining_seconds <= 0:
+            reason = "budget_time"
+        elif used_steps >= self.model_budget.max_steps:
+            reason = "budget_steps"
+        elif used_tokens + repair_estimate > self.model_budget.max_total_tokens:
+            reason = "budget_tokens"
+        if reason:
+            metadata["stop_reason"] = reason
+            return "", metadata, loop_metadata
+
+        repair_reservation = None
+        persistent_repair_estimate = max(1, math.ceil(repair_estimate * 1.2))
+        if persistent_model_budget is not None:
+            repair_reservation = persistent_model_budget.reserve(
+                persistent_repair_estimate,
+                max(1, math.ceil(remaining_seconds)),
+            )
+            reservation_status = str(
+                getattr(getattr(repair_reservation, "status", None), "value", "") or ""
+            )
+            if reservation_status != "reserved":
+                reason = {
+                    "exhausted": "composite_goal_model_budget_exhausted",
+                    "duplicate": "composite_goal_model_call_duplicate",
+                }.get(reservation_status, "composite_goal_model_reservation_invalid")
+                metadata["stop_reason"] = reason
+                return "", metadata, loop_metadata
+            remaining_seconds = min(
+                remaining_seconds,
+                float(repair_reservation.reservation.reserved_elapsed_seconds),
+            )
+
+        repair_started = self._clock()
+        repaired: ChatGatewayResult | None = None
+
+        def settle_repair() -> int:
+            charged = (
+                generated_tokens(repaired, repair_estimate)
+                if repaired is not None
+                else repair_estimate
+            )
+            if repair_reservation is not None and persistent_model_budget is not None:
+                persistent_model_budget.settle(
+                    repair_reservation,
+                    actual_tokens=(
+                        generated_tokens(repaired, persistent_repair_estimate)
+                        if repaired is not None
+                        else persistent_repair_estimate
+                    ),
+                    elapsed_seconds=max(1, math.ceil(self._clock() - repair_started)),
+                )
+            return charged
+
+        def repair_audit(repair_tokens: int, *, attempted: bool) -> None:
+            if loop_metadata is None:
+                return
+            loop_metadata.update(
+                {
+                    "json_repair_used": attempted,
+                    "request_model_steps": used_steps + int(attempted),
+                    "request_total_tokens": used_tokens + repair_tokens,
+                }
+            )
+
+        repair_call_started = False
+        try:
+            repair_call_started = True
+            repaired = await asyncio.wait_for(
+                self.generate(
+                    **repair_context,
+                    evidence=[],
+                    preferred_profile_id=self.response_repair_profile_id,
+                    model=None,
+                    allow_web_search=False,
+                    work_mode=True,
+                    system_prompt=system_prompt,
+                ),
+                timeout=remaining_seconds,
+            )
+            if self._clock() - repair_started > remaining_seconds:
+                raise TimeoutError("JSON repair arrived after its elapsed allowance")
+        except TimeoutError:
+            repair_tokens = settle_repair() if repair_call_started else 0
+            metadata["request_budget"] = {
+                **metadata["request_budget"],
+                "model_steps": used_steps + int(repair_call_started),
+                "total_tokens": used_tokens + repair_tokens,
+            }
+            metadata["stop_reason"] = "provider_timeout"
+            repair_audit(repair_tokens, attempted=repair_call_started)
+            return "", metadata, loop_metadata
+        except asyncio.CancelledError:
+            if repair_call_started:
+                settle_repair()
+            raise
+        except Exception:
+            repair_tokens = settle_repair() if repair_call_started else 0
+            metadata["request_budget"] = {
+                **metadata["request_budget"],
+                "model_steps": used_steps + int(repair_call_started),
+                "total_tokens": used_tokens + repair_tokens,
+            }
+            metadata["stop_reason"] = "provider_error"
+            repair_audit(repair_tokens, attempted=repair_call_started)
+            return "", metadata, loop_metadata
+
+        assert repaired is not None
+        repair_tokens = settle_repair()
+        request_steps = used_steps + 1
+        request_tokens = used_tokens + repair_tokens
+        metadata.update(
+            {
+                "profile_id": repaired.selected_profile_id,
+                "model": repaired.response.model,
+                "context_hash": repaired.context_hash,
+                "redaction_count": repaired.redaction_count,
+                "finish_reason": repaired.response.finish_reason,
+                "usage": repaired.response.usage,
+                "json_repair": {
+                    "attempted": True,
+                    "profile_id": repaired.selected_profile_id,
+                    "model": repaired.response.model,
+                    "finish_reason": repaired.response.finish_reason,
+                    "usage": repaired.response.usage,
+                    "valid": self._is_valid_response(repaired.response.content),
+                },
+                "request_budget": {
+                    **metadata["request_budget"],
+                    "model_steps": request_steps,
+                    "total_tokens": request_tokens,
+                },
+            }
+        )
+        repair_audit(repair_tokens, attempted=True)
+        if request_tokens > self.model_budget.max_total_tokens:
+            metadata["stop_reason"] = "budget_tokens"
+            return "", metadata, loop_metadata
+        return repaired.response.content, metadata, loop_metadata

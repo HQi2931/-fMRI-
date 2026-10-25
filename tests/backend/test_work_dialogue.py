@@ -364,6 +364,140 @@ def test_malformed_model_never_dispatches(service, monkeypatch, bad):
     execute.assert_not_called()
 
 
+def test_invalid_single_shot_is_repaired_once_then_uses_existing_work_validation(
+    service, monkeypatch
+):
+    malformed = generated("conversation")
+    object.__setattr__(
+        malformed,
+        "response",
+        ProviderResponse(
+            model="chosen-model",
+            content=json.dumps(
+                {
+                    "answer": "malformed sentinel",
+                    "action": "conversation",
+                    "unexpected": "private field",
+                }
+            ),
+        ),
+    )
+    repaired = generated("conversation", answer="修复后的回答")
+    object.__setattr__(repaired, "selected_profile_id", "deepseek")
+    configure(
+        service,
+        monkeypatch,
+        [malformed, repaired],
+    )
+    execute = Mock(side_effect=AssertionError("repair must not dispatch actions"))
+    monkeypatch.setattr(service.conversation_work, "execute", execute)
+
+    with TestClient(create_app(service=service)) as client:
+        result = turn(client, create(client), "解释当前预处理参数", "json-repair")
+
+    assert result["assistant_message"]["content"] == "修复后的回答"
+    model_metadata = result["assistant_message"]["payload"]["model"]
+    assert model_metadata["json_repair"]["valid"] is True
+    assert model_metadata["request_budget"]["model_steps"] == 2
+    model = service.models._generate_rsfmri_chat
+    assert model.await_count == 2
+    repair_call = model.await_args_list[1].kwargs
+    assert repair_call["preferred_profile_id"] == "deepseek"
+    assert repair_call["model"] is None
+    assert repair_call["allow_web_search"] is False
+    assert repair_call["work_mode"] is True
+    assert repair_call["recent_messages"] == []
+    assert repair_call["pinned_context"] == []
+    assert repair_call["conversation_summary"] is None
+    assert repair_call["work_context"] == {"agent_role": "preprocessing"}
+    assert "malformed sentinel" not in repair_call["question"]
+    assert "private field" not in repr(repair_call)
+    execute.assert_not_called()
+    assert service.repository.list_runs() == []
+
+
+def test_repaired_server_only_action_still_fails_schema_before_dispatch(service, monkeypatch):
+    malformed = generated("conversation")
+    object.__setattr__(
+        malformed,
+        "response",
+        ProviderResponse(
+            model="chosen-model",
+            content='{"answer":"bad","action":"conversation","extra":"field"}',
+        ),
+    )
+    repaired = generated("start_preprocessing", answer="请求启动")
+    object.__setattr__(repaired, "selected_profile_id", "deepseek")
+    configure(service, monkeypatch, [malformed, repaired])
+    execute = Mock(side_effect=AssertionError("server-only action must not dispatch"))
+    monkeypatch.setattr(service.conversation_work, "execute", execute)
+
+    with TestClient(create_app(service=service)) as client:
+        result = turn(client, create(client), "启动预处理", "json-repair-server-action")
+
+    assert "未执行任务" in result["assistant_message"]["content"] or "未能完成" in result[
+        "assistant_message"
+    ]["content"]
+    model = service.models._generate_rsfmri_chat
+    assert model.await_count == 2
+    assert model.await_args_list[1].kwargs["preferred_profile_id"] == "deepseek"
+    execute.assert_not_called()
+    assert service.repository.list_runs() == []
+
+
+@pytest.mark.parametrize("repair_failure", ["invalid_schema", "provider_error"])
+def test_failed_deepseek_repair_returns_safe_feedback_without_dispatch(
+    service, monkeypatch, caplog, repair_failure
+):
+    malformed = generated("conversation")
+    object.__setattr__(
+        malformed,
+        "response",
+        ProviderResponse(
+            model="chosen-model",
+            content='{"answer":"private-first-response","action":"conversation","extra":"field"}',
+        ),
+    )
+    if repair_failure == "invalid_schema":
+        repair_result = generated("conversation")
+        object.__setattr__(
+            repair_result,
+            "response",
+            ProviderResponse(
+                model="deepseek-model",
+                content='{"answer":"private-repair-response","action":"conversation","extra":"field"}',
+            ),
+        )
+        object.__setattr__(repair_result, "selected_profile_id", "deepseek")
+    else:
+        repair_result = ApplicationError(
+            "chat_model_unavailable", "private DeepSeek provider failure", status_code=503
+        )
+    configure(service, monkeypatch, [malformed, repair_result])
+    execute = Mock(side_effect=AssertionError("failed repair must not dispatch"))
+    monkeypatch.setattr(service.conversation_work, "execute", execute)
+
+    with TestClient(create_app(service=service)) as client:
+        result = turn(client, create(client), "请检查预处理方案", f"json-repair-{repair_failure}")
+
+    assistant = result["assistant_message"]
+    assert "未更改参数草稿，也未执行任务" in assistant["content"]
+    diagnostic = assistant["payload"]["model_error"]
+    assert diagnostic["code"] == (
+        "work_response_invalid" if repair_failure == "invalid_schema" else "work_model_unavailable"
+    )
+    assert "private-first-response" not in assistant["content"]
+    assert "private-repair-response" not in assistant["content"]
+    assert "private-first-response" not in json.dumps(diagnostic)
+    assert "private-repair-response" not in json.dumps(diagnostic)
+    assert "private DeepSeek provider failure" not in caplog.text
+    model = service.models._generate_rsfmri_chat
+    assert model.await_count == 2
+    assert model.await_args_list[1].kwargs["preferred_profile_id"] == "deepseek"
+    execute.assert_not_called()
+    assert service.repository.list_runs() == []
+
+
 def test_model_start_intent_and_ui_boolean_cannot_authorize_execution(service, monkeypatch):
     configure(service, monkeypatch, [generated("propose_run_confirmation")])
     execute = Mock(side_effect=AssertionError("must not dispatch"))
@@ -588,7 +722,7 @@ def test_truncated_work_response_records_safe_finish_reason(service, monkeypatch
     )
     configure(service, monkeypatch, [value])
     with TestClient(create_app(service=service)) as client:
-        failed = turn(client, create(client), "检查结构", "truncated")
+        failed = turn(client, create(client), "请检查预处理参数结构", "truncated")
     diagnostic = failed["assistant_message"]["payload"]["model_error"]
     assert diagnostic["code"] == "work_response_truncated"
     assert diagnostic["finish_reason"] == "length"
@@ -614,15 +748,28 @@ def test_work_schema_error_does_not_log_model_values_or_unknown_keys(service, mo
             finish_reason="stop",
         ),
     )
-    configure(service, monkeypatch, [value])
+    repair = generated("conversation")
+    object.__setattr__(
+        repair,
+        "response",
+        ProviderResponse(
+            model="deepseek-model",
+            content='{"answer":"private-repair-response","action":"conversation","private-repair-field":"private-repair-secret"}',
+            finish_reason="stop",
+        ),
+    )
+    object.__setattr__(repair, "selected_profile_id", "deepseek")
+    configure(service, monkeypatch, [value, repair])
     with TestClient(create_app(service=service)) as client:
-        failed = turn(client, create(client), "检查结构", "schema-error")
+        failed = turn(client, create(client), "请检查预处理参数结构", "schema-error")
     diagnostic = failed["assistant_message"]["payload"]["model_error"]
     assert diagnostic["code"] == "work_response_invalid"
     assert diagnostic["issues"] == [{"field": "root_or_unknown_field", "type": "extra_forbidden"}]
     assert "synthetic-secret-content" not in caplog.text
     assert "private-model-field" not in caplog.text
     assert "synthetic-secret-content" not in json.dumps(diagnostic)
+    assert "private-repair-secret" not in caplog.text
+    assert "private-repair-secret" not in json.dumps(diagnostic)
 
 
 def test_work_provider_error_records_status_without_private_exception_text(

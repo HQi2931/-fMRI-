@@ -4,7 +4,7 @@
 - 文档类型：Architecture
 - 维护者：system_architect
 - 创建日期：2026-10-12
-- 更新日期：2026-10-18
+- 更新日期：2026-10-22
 - 关联：[系统设计](system-design.md)、[Skill 层架构](fmri-skill-layer.md)、[计划 0014：静息态 fMRI Agent 通用自动化体验](../plans/0014-general-agent-automation.md)、[ADR 0041：分析提案续接](../adr/0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042：统计结果解释续接](../adr/0042-statistical-result-interpretation-outbox.md)、[ADR 0044：步骤 readiness 与收口边界](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045：有界线性步骤调度（提议）](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0048：复合目标共享模型预算](../adr/0048-composite-goal-model-call-budget.md)、[MVP 验证与已知限制](../development/mvp-verification.md)
 
 本文定义 Agent 如何围绕静息态 fMRI 的预处理和统计分析目标，持续完成调查、方案准备、校验、等待、恢复和结果交付。它描述应保持的架构边界，不表示计划 0014 中的所有能力已经实现；具体实现状态以计划 0014 和验证记录为准。
@@ -225,6 +225,8 @@ composite intent
 界面应区分四种结果：正在自动调查/恢复、等待用户科研决定、等待长作业或 QC、当前能力不支持/执行失败。用户断开页面不应清除任务进度；重新打开时应看到已完成的检查、当前等待条件、最近错误与继续所需操作。成功统计即使没有显著簇，也应生成正常的结果解释和复现材料。
 
 Work AUTO 路由先用确定规则处理清晰的预处理/统计请求及服务端锁定的复合目标首阶段；规则无法确定时调用模型设置中的 `dashscope` 小模型 Profile（默认 `qwen3.8-flash`），结果置信度低、JSON 无效或调用失败时显式调用 `deepseek` 大模型兜底。两个 Profile ID 可分别用 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 与 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 覆盖。路由模型只分类当前 Work 回合，普通回复和草稿仍使用用户当前选定的 Work 模型。客户端 `agent_role` 不参与自动路由，非 AUTO 操作由 `ConversationAction` 和会话内精确的冻结目标/Run 绑定确定角色；模型调用失败、预算耗尽或兜底结果仍不确定时，Work 停止生成并返回可操作反馈。
+
+Work 执行回复的结构修复是独立于 AUTO 角色路由的单次恢复：工具循环不可用或回复无效时，先走原有单次 JSON 请求；只有最终单次结果未通过 `WorkInterpretation` schema，才在本轮剩余步数、token、墙钟和 CompositeGoal 持久模型预算均允许时，向配置的 DeepSeek Profile 发起最多一次显式 JSON 修复。请求固定 `model=None`、关闭联网且不提供工具，因此不会重放读取动作或派发 Work action。修复只包含本轮用户问题与 `agent_role`，不携带 recent/pinned 消息、会话摘要、工作区读取证据或首条无效回复；现有 Gateway `work_mode` 仍拒绝含受限敏感内容的外发上下文并执行脱敏。响应仍经过同一个 `WorkInterpretation` schema、科研草稿校验和服务端动作/授权门禁；无效修复或预算不足均停止，不执行模型提出的动作。修复使用 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 指定的 Profile（默认 `deepseek`），与角色路由逻辑分开，不改变路由决策。
 
 需要模型的路由会把当前请求和最少布尔/角色级状态发送到当前设置的外部 ModelProfile，经 `OutboundContextPolicy` 脱敏。路由调用不带历史消息、工作区文件、参与者表、样本-组别对应或 MRI；本机路径、文件名、受试者编号和常见组别标签会先遮蔽，识别到参与者表、受试者-组别对应或影像/base64 payload 时拒绝进入路由模型。回复只记录 status、模型、Profile ID、confidence、source 和 failure reason code，不记录路由输入、API Key 或 Provider body。显式 `preprocess_then_analyze` admission/root 和复合目标共享预算在模型请求前落库，路由调用按目标预算预留和结算；切换到预处理时不记入离开的分析目标预算。该路由不生成 Plan/Run，不跨越 proposal/result outbox、用户审查/批准或显式运行启动门禁。
 

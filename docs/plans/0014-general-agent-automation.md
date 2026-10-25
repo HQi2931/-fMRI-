@@ -404,6 +404,12 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 
 ## 验证、风险与完成报告
 
+### Work JSON 格式错误的 DeepSeek 兜底（2026-10-26）
+
+Work 自动分派继续采用规则优先；需要模型判别时用阿里云百炼 `qwen3.8-flash`，低置信度、无效路由结果或 Provider 失败则使用项目已配置的 DeepSeek Profile。普通 Work 回答仍由原 Work 模型负责。本切片新增普通 Work 最终响应未通过 `WorkInterpretation` 校验时的一次 DeepSeek JSON 修复调用：只提供当前用户请求和服务端角色，不传会话历史、固定上下文、工作区文件/读取证据或首次模型的无效响应；不启用工具或网页。修复结果仍经过既有 JSON schema、Work action allowlist 和服务端执行授权校验，不能自行批准 Plan 或启动 Run。修复尝试计入单回合及 CompositeGoal 的 step/token/time 预算；Provider 错误、截断与预算停止保留安全诊断，不被后续 schema 错误覆盖。
+
+定向验证覆盖修复成功/失败、DeepSeek Provider 错误、预算阻止、工具隔离、上下文最小化和服务端动作拒绝。专项 Work JSON/失败反馈回归 6 项、模型预算运行时回归 15 项通过；改动文件 Ruff/Mypy、文档规范与 `git diff --check` 通过。完整 `test_work_dialogue.py` 为 32 项通过、5 项失败：科研建议说明、页面起始阶段确认、确认挑战重放、旧 Gateway mock 方法，以及 ALFF 编译用例依赖未配置的 Aliyun/DeepSeek 路由 Provider；这些未通过项不属于本次 JSON 修复专项，仍需单独清理。此切片只验证 Mock Gateway 与本地应用逻辑；未配置或调用阿里云/DeepSeek Provider，未运行 MATLAB/DPABI，也未执行真实 20 人演示数据验收。Aliyun API Key 尚未通过本地“绑定服务商 API”设置录入。该切片不代表计划 0014 整体完成。
+
 ### MATLAB 错误自动跟踪与本地反馈（2026-10-21）
 
 Work 运行卡片会在运行期间轮询当前 attempt 的本地 MATLAB 日志，并在失败、超时或取消后继续检查该 attempt；监控范围按会话绑定的 Run 确定，不受当前选中预处理/分析 Agent 角色影响，诊断轮询也独立于较慢的产物和 QC 读取。GET 诊断端点仅读取有界 stdout/stderr/`matlab.log`，用确定性规则识别错误，脱敏本机路径、受试者编号和邮箱；日志不发送到模型。发现明确错误标记但尚未匹配已知规则时，运行中会标明“尚未匹配已知规则”并提供折叠的日志线索；普通输出不会被误报为运行异常。运行进入失败、超时或取消后，若日志尚未写入，页面最多每秒检查一次、共五次，有证据后立即停止；活动运行按四秒间隔继续追踪。针对 Windows `CreateFile failed`、`拒绝访问`、`system:5` 的分类会说明启动阶段的写入权限线索与检查建议；Agent 不修改设置、不改变已批准参数，也不自动重试。
