@@ -59,6 +59,7 @@ function modelProfile(id = "deepseek", baseUrl = "https://api.deepseek.com") {
       max_output_tokens: 2048,
     },
     created_at: now,
+    version: 1,
   };
 }
 
@@ -71,6 +72,7 @@ type Overrides = {
   saveConfig?: () => Promise<Response>;
   profiles?: () => Promise<Response>;
   listModels?: () => Promise<Response>;
+  providerTest?: () => Promise<Response>;
   deleteProfile?: () => Promise<Response>;
 };
 
@@ -89,6 +91,20 @@ function installFetch(overrides: Overrides = {}) {
       return (
         overrides.listModels ?? (() => json({ models: ["deepseek-chat", "deepseek-reasoner"] }))
       )();
+    }
+    if (path.endsWith("/providers/test")) {
+      return (overrides.providerTest ?? (() => json({
+        profile_id: "deepseek",
+        available: true,
+        routing: {
+          task_type: "plan_explainer",
+          selected_profile_id: "deepseek",
+          candidate_profile_ids: ["deepseek"],
+          required_capabilities: ["json_object"],
+          reason: "explicit_profile",
+        },
+        context_hash: "f".repeat(64),
+      })))();
     }
     if (path.endsWith("/model-profiles")) {
       if (method === "POST") return json(modelProfile());
@@ -377,6 +393,22 @@ describe("settings page", () => {
     expect(await screen.findByText("服务商暂时不可用")).toBeInTheDocument();
   });
 
+  it("runs a synthetic structured request through the selected provider profile", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = installFetch({ profiles: () => json([modelProfile()]) });
+
+    render(<SettingsPage />);
+    await screen.findByText("1 项");
+    await user.click(screen.getByRole("button", { name: "测试模型连接" }));
+
+    expect(await screen.findByText(/服务商结构化测试成功，已通过 deepseek 完成合成请求/)).toBeInTheDocument();
+    const testCall = fetchSpy.mock.calls.find(([input]) => pathOf(input).endsWith("/providers/test"));
+    expect(JSON.parse(String(testCall?.[1]?.body))).toEqual({
+      profile_id: "deepseek",
+      expected_profile_version: 1,
+    });
+  });
+
   it("keeps the binding when the user cancels the confirmation", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -515,7 +547,7 @@ describe("settings page", () => {
     expect(screen.getByLabelText("密钥环境变量名")).toHaveValue("DASHSCOPE_API_KEY");
     expect(screen.getByLabelText("指定模型 ID（可留空）")).toHaveValue("qwen3.8-flash");
     await user.type(screen.getByLabelText("API Key"), "sk-synthetic");
-    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+    await user.click(screen.getByRole("button", { name: "绑定 API（使用指定模型）" }));
 
     await screen.findByText(/服务商 API 已绑定/);
     const create = fetchSpy.mock.calls.find(
@@ -534,9 +566,9 @@ describe("settings page", () => {
     });
   });
 
-  it("rejects an explicitly entered model missing from the provider model list", async () => {
+  it("uses an explicitly entered model without requesting the provider model list", async () => {
     const user = userEvent.setup();
-    installFetch({ listModels: () => json({ models: ["deepseek-chat"] }) });
+    const fetchSpy = installFetch({ listModels: () => json({ models: ["deepseek-chat"] }) });
 
     render(<SettingsPage />);
     await screen.findByText("MATLAB R2024b");
@@ -544,8 +576,9 @@ describe("settings page", () => {
     await user.type(screen.getByLabelText("API 基址"), "https://provider.example/v1");
     await user.type(screen.getByLabelText("密钥环境变量名"), "PROVIDER_API_KEY");
     await user.type(screen.getByLabelText("指定模型 ID（可留空）"), "not-listed");
-    await user.click(screen.getByRole("button", { name: "绑定 API 并读取模型" }));
+    await user.click(screen.getByRole("button", { name: "绑定 API（使用指定模型）" }));
 
-    await screen.findByText(/服务商返回的模型列表中没有 not-listed/);
+    await screen.findByText(/采用手动指定模型 not-listed，本次未读取模型列表/);
+    expect(fetchSpy.mock.calls.some(([input]) => pathOf(input).endsWith("/providers/models"))).toBe(false);
   });
 });

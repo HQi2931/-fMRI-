@@ -25,8 +25,8 @@ const PROVIDER_PRESETS = [
   { label: "智谱 ZAI（海外 Coding）", baseUrl: "https://api.z.ai/api/coding/paas/v4", keyEnv: "ZAI_API_KEY" },
   { label: "月之暗面 Kimi（国内）", baseUrl: "https://api.moonshot.cn/v1", keyEnv: "MOONSHOT_API_KEY" },
   { label: "月之暗面 Kimi（海外）", baseUrl: "https://api.moonshot.ai/v1", keyEnv: "MOONSHOT_API_KEY" },
-  { label: "通义千问 Qwen（国内）", baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
-  { label: "通义千问 Qwen（国际）", baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
+  { label: "百炼 Token Plan（国内，编码工具）", baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
+  { label: "百炼 Token Plan（新加坡，编码工具）", baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
   { label: "阿里云百炼 Model Studio", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", keyEnv: "DASHSCOPE_API_KEY", model: "qwen3.8-flash" },
   { label: "小米 MiMo", baseUrl: "https://api.xiaomimimo.com/v1", keyEnv: "XIAOMI_API_KEY" },
   { label: "蚂蚁灵语 Ant Ling", baseUrl: "https://api.ant-ling.com/v1", keyEnv: "ANT_LING_API_KEY" },
@@ -193,15 +193,15 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const models = await agentApi.listProviderModels({
-        base_url: baseUrl.trim(),
-        api_key: apiKey.trim() || null,
-        api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
-      });
-      if (models.models.length === 0) throw new Error("该服务商没有返回可选择的模型。");
-      if (modelName.trim() && !models.models.includes(modelName.trim())) {
-        throw new Error(`服务商返回的模型列表中没有 ${modelName.trim()}，请核对模型 ID 和地域端点。`);
-      }
+      const selectedModel = modelName.trim();
+      const models = selectedModel
+        ? null
+        : await agentApi.listProviderModels({
+          base_url: baseUrl.trim(),
+          api_key: apiKey.trim() || null,
+          api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
+        });
+      if (models && models.models.length === 0) throw new Error("该服务商没有返回可选择的模型。");
       const existing = profiles.find((item) =>
         item.profile.base_url === baseUrl.trim().replace(/\/$/, "") &&
         item.profile.api_key_env === keyEnv.trim(),
@@ -219,7 +219,7 @@ export function SettingsPage() {
           id: connectionId,
           provider: provider.trim(),
           base_url: baseUrl.trim(),
-          model: modelName.trim() || models.models[0],
+          model: selectedModel || models!.models[0],
           api_key_env: keyEnv.trim(),
           priority,
           capabilities,
@@ -232,7 +232,27 @@ export function SettingsPage() {
       });
       resetForm();
       await refresh();
-      setMessage(`服务商 API 已绑定；Agent 对话框可直接选择其返回的 ${models.models.length} 个模型。API Key 仅写入本地 .env。`);
+      setMessage(models
+        ? `服务商 API 已绑定；Agent 对话框可直接选择其返回的 ${models.models.length} 个模型。API Key 仅写入本地 .env。`
+        : `服务商 API 已绑定；采用手动指定模型 ${selectedModel}，本次未读取模型列表。API Key 仅写入本地 .env。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshProfileModels(item: ModelProfile): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await agentApi.listProviderModels({
+        base_url: item.profile.base_url,
+        api_key: null,
+        api_key_env: item.profile.api_key_env,
+      });
+      setMessage(`服务商连接正常，当前返回 ${result.models.length} 个可选模型。`);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -245,12 +265,12 @@ export function SettingsPage() {
     setError("");
     setMessage("");
     try {
-      const result = await agentApi.listProviderModels({
-        base_url: item.profile.base_url,
-        api_key: null,
-        api_key_env: item.profile.api_key_env,
+      const result = await agentApi.testProvider({
+        profile_id: item.profile.id,
+        expected_profile_version: item.version,
       });
-      setMessage(`服务商连接正常，当前返回 ${result.models.length} 个可选模型。`);
+      if (!result.available) throw new Error("服务商结构化测试未通过。");
+      setMessage(`服务商结构化测试成功，已通过 ${result.routing.selected_profile_id} 完成合成请求。`);
     } catch (caught) {
       setError(describeError(caught));
     } finally {
@@ -347,9 +367,10 @@ export function SettingsPage() {
               ))}
             </fieldset>
           </div>
-          <p className="muted">绑定时会立即验证 API 并读取模型列表。API Key 只在此本机设置页输入并写入未跟踪的本地 <code>.env</code>，不要通过聊天发送密钥；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。指定模型 ID 会先与服务商列表核对。</p>
+          <p className="muted">留空模型 ID 时，绑定会读取服务商模型列表并选择首个模型。填写模型 ID 时会跳过模型列表请求并直接保存该 ID；此方式不验证该模型是否可用，适合未提供 <code>/models</code> 接口的服务商。API Key 只在此本机设置页输入并写入未跟踪的本地 <code>.env</code>，不要通过聊天发送密钥；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
+          {baseUrl.trim().startsWith("https://token-plan.") && <p className="muted">百炼官方将 Token Plan 定位为交互式编码工具套餐，不面向本项目这类后端服务。请改用“阿里云百炼 Model Studio”预设和对应的 Model Studio API Key。</p>}
           <p className="muted">“工具调用”是服务商配置声明。只有确认该服务商支持 OpenAI 兼容的 <code>tools/tool_calls</code> 才应开启；Work 还会在文件授权前验证所选具体模型。</p>
-          <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : "绑定 API 并读取模型"}</button></div>
+          <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : modelName.trim() ? "绑定 API（使用指定模型）" : "绑定 API 并读取模型"}</button></div>
         </section>
         <section className="panel">
           <span className="eyebrow">已绑定服务商</span><h2>{profiles.length} 项</h2>
@@ -389,7 +410,8 @@ export function SettingsPage() {
                   <div className="button-row">
                     <button className="button button-secondary" type="button" disabled={busy || JSON.stringify([...(profileCapabilities[item.profile.id] ?? item.profile.capabilities)].sort()) === JSON.stringify([...item.profile.capabilities].sort())} onClick={() => void saveProfileCapabilities(item)}>保存能力</button>
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => void saveProfileCapabilities(item)}>保存模型设置</button>
-                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>刷新模型列表</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>测试模型连接</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => refreshProfileModels(item)}>刷新模型列表</button>
                     <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>
                   </div>
                 </div>

@@ -92,8 +92,9 @@ OPENAI_COMPATIBLE_API_KEY=<local-secret>
 1. 选择“阿里云百炼 Model Studio”预设；或手工填写 `provider=openai-compatible`、`api_key_env=DASHSCOPE_API_KEY`。
 2. 在本机设置页的密码框输入 API Key。它会由本机后端保存到未跟踪的 `.env`；不要把密钥粘贴到聊天。
 3. 使用当前账号地域对应的 OpenAI-compatible Base URL。北京通用端点为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如果账户提供 workspace 专属端点，优先使用该端点。不同地域的端点见阿里云[Base URL 文档](https://help.aliyun.com/en/model-studio/base-url)。
-4. 指定模型 ID `qwen3.8-flash`，保留 `json_object` 能力。百炼官方将此 ID 列为轻量低成本模型，并标明支持 OpenAI-compatible 与结构化输出：[模型说明](https://help.aliyun.com/en/model-studio/qwen3-8-flash)、[模型能力列表](https://help.aliyun.com/en/model-studio/text-generation-model/)。成功后 Profile ID 由 `DASHSCOPE_API_KEY` 自动生成为 `dashscope`。
+4. 指定模型 ID `qwen3.8-flash`，保留 `json_object` 能力。百炼官方列出此模型 ID，并确认其支持 OpenAI-compatible 与结构化输出：[模型说明](https://help.aliyun.com/en/model-studio/qwen3-8-flash)、[模型能力列表](https://help.aliyun.com/en/model-studio/text-generation-model/)。手填模型 ID 时绑定不会调用模型列表接口，也不会验证模型是否可用；成功后 Profile ID 由 `DASHSCOPE_API_KEY` 自动生成为 `dashscope`。
 5. 保留 ID 为 `deepseek` 的现有 DeepSeek Profile 作为大模型兜底。路由模型默认 ID 可在服务端 `.env` 中通过 `RSFMRI_WORK_ROUTER_SMALL_PROFILE_ID` 和 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 调整；默认分别为 `dashscope` 与 `deepseek`。
+6. 在已绑定 Profile 上点击“测试模型连接”，向指定 Profile 发送本地构造的合成 JSON 请求，以核对 API Key、模型 ID、端点和结构化输出。此操作可能计费。“刷新模型列表”只读取 `/models`，不代表模型推理测试；某些兼容服务没有模型列表接口时仍可使用手填模型 ID 和连接测试。
 
 `RSFMRI_WORK_ROUTER_FALLBACK_PROFILE_ID` 指定的 Profile 也用于 Work 最终 JSON schema 失败后的至多一次结构修复。修复调用会显式选择该 Profile，使用 Profile 自带模型（不覆盖 model ID），关闭联网并且不提供工具；发送内容限于本轮问题和 Agent 角色，Gateway 仍会按 `work_mode` 执行外发敏感内容拒绝与脱敏。它不发送会话历史、固定上下文、工作区读取结果或首次无效回复。修复调用消耗同一轮剩余模型预算；复合目标还会在 Provider 调用前预留持久预算。未配置可用 Profile 或预算不足时 Work 失败关闭，不分发动作或创建 Run。
 
@@ -105,7 +106,7 @@ DeepSeek 配置和兼容性核对以官方 [Chat Completion API](https://api-doc
 
 ## 轻量 smoke
 
-Provider smoke 会向外部服务发送一个已脱敏的连通性和 JSON schema 测试，可能产生费用。它只能由用户显式点击“测试”或调用 `POST /api/v1/providers/test` 触发，CI 不会使用真实密钥。Work 文件授权另外会发送一次合成工具调用探针；该探针不读取工作区内容，也不取代用户对后续文件内容外发的明确授权。
+Provider smoke 会向外部服务发送一个本地构造的合成请求并检查 JSON schema，可能产生费用。它只能由用户显式点击“测试模型连接”或调用 `POST /api/v1/providers/test` 触发，CI 不会使用真实密钥。Work 文件授权另外会发送一次合成工具调用探针；该探针不读取工作区内容，也不取代用户对后续文件内容外发的明确授权。
 
 smoke 前确认：
 
