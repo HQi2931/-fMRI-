@@ -104,7 +104,7 @@ flowchart TD
 
 ### 阶段 A：结构化预检与有限的校验反馈
 
-当前状态：结构化反馈合同、预检上下文及 Work 两角色的同轮回路已接入。预处理未批准草稿（包括首轮尚未持久化的候选）可通过只读 `SkillResolver → SkillValidator → SkillCompiler` dry-run；Work 统计候选调用正式 proposal assembler，并复用来源绑定、完整 lineage、源文件哈希、校正/设计矩阵及 Skill 参数 schema 校验。文件核验后会重读项目及 manifest/外部纳入修订。预处理通用问题指纹绑定候选草稿修订与对应证据值，只有相同草稿和证据的重复问题才因无进展停止；变更后的候选可使用本轮剩余预算重新校验。两类 dry-run 只证明结构与来源预检通过，不证明真实影像或统计可执行，不探测本机软件，不创建 Plan、Approval、Run、事件、授权或任务。tail、missing-value policy、校正方式（含显式 `none`）及协变量中心化必须来自明确选择；无法证明的旧草稿默认值按未决项进入 `ASK_USER`，不由反馈环自动补齐。科研决定和来源冲突交给用户，能力缺口明确停止。该 Stage A 垂直切片已完成；统一执行前反馈服务、编译/审批后的再次重核、跨轮稳定 intent 进度聚合等仍未完成，阶段 A 整体仍为部分完成。
+当前状态：结构化反馈合同、预检上下文及 Work 两角色的同轮回路已接入。预处理未批准草稿（包括首轮尚未持久化的候选）可通过只读 `SkillResolver → SkillValidator → SkillCompiler` dry-run；Work 统计候选调用正式 proposal assembler，并复用来源绑定、完整 lineage、源文件哈希、校正/设计矩阵及 Skill 参数 schema 校验。文件核验后会重读项目及 manifest/外部纳入修订。预处理通用问题指纹绑定候选草稿修订与对应证据值，只有相同草稿和证据的重复问题才因无进展停止；变更后的候选可使用本轮剩余预算重新校验。两类 dry-run 只证明结构与来源预检通过，不证明真实影像或统计可执行，不探测本机软件，不创建 Plan、Approval、Run、事件、授权或任务。tail、missing-value policy、校正方式（含显式 `none`）及协变量中心化必须来自明确选择；无法证明的旧草稿默认值按未决项进入 `ASK_USER`，不由反馈环自动补齐。科研决定和来源冲突交给用户，能力缺口明确停止。2026-10-26 补入预处理候选从 dry-run 到 Work review 的项目/manifest 修订重核。完整执行前反馈服务、统一审批入口重核、跨轮稳定 intent 进度聚合等仍未完成，阶段 A 整体仍为部分完成。
 
 目标是先减少一轮对话内不必要的人工技术排错，不启动跨消息后台循环。
 
@@ -120,6 +120,12 @@ flowchart TD
 主要落点：`application/work_dialogue.py`、`application/work_draft.py`、`application/statistics_draft.py`、`skills/models.py`、相应预检服务及角色只读工具。
 
 完成条件：可读取事实不会再作为人工抄录问题；不可修复或涉及科研决策的问题有精确说明；旧确认不能应用到新草稿；达到预算/无进展时能收口。
+
+### 阶段 A Work 预处理 dry-run 到 review 修订重核（2026-10-26）
+
+成功的只读 Skill dry-run 现在携带编译时项目版本、数据集/manifest 身份、候选草稿 hash 与 dry-run plan hash。Work 进入方案 review 前只读重查当前项目版本、数据集当前 manifest ID/hash，以及已冻结 Plan 的项目与输入绑定；草稿已改变、证据修订漂移、dry-run 未通过或缺少可核验修订时，返回稳定 `PlanningIssue` 并停止生成审查确认。输入变化反馈要求用户刷新证据并重新核验，不自动替用户改科学选择。未编译的候选仍走原正式 resolver/validator/compiler；dry-run plan hash 只作预检追溯，不与采用不同环境锁的正式 Plan hash 作等值判断。此重核不再次执行 SkillCompiler、不重读工作区文件、不创建 Plan/Approval/Run，也不调用 Provider、MATLAB 或 DPABI；工作区文件 revision 仍由原有 `_check_work_input_revision` 守卫处理。
+
+验证覆盖稳定 authority 通过，以及项目版本/manifest revision 在 dry-run 后变化时拒绝 review、返回 `CONFLICTING_EVIDENCE` 反馈并不新增 Plan/Approval/Run 或修改工作区。用户科学决定继续使用现有 `ASK_USER` 分类。定向命令与实际通过数记录在 [MVP 验证记录](../development/mvp-verification.md)。
 
 ### 阶段 B：持久任务推进与事件唤醒
 

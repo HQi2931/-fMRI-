@@ -468,6 +468,95 @@ def planning_feedback_for_input_conflict(
     return issue, decide_feedback(issue, prior_fingerprints=prior_fingerprints)
 
 
+def planning_feedback_for_authority_revision_change(
+    *,
+    target: str,
+    expected_revision: str,
+    current_revision: str | None,
+    draft_revision: str,
+    message: str,
+    prior_fingerprints: Iterable[str] = (),
+) -> tuple[PlanningIssue, PreflightFeedback]:
+    """Explain an authority revision that moved after a successful Skill compile.
+
+    The revision values are identifiers or versions already supplied by the
+    authority repositories. This mapper does not hash or reread source files.
+    """
+
+    if target not in {
+        "project_revision",
+        "input_manifest",
+        "preprocessing_draft",
+        "skill_preflight_result",
+    }:
+        raise ValueError("unsupported authority revision target")
+    suffix, source, status = {
+        "project_revision": (
+            "project_revision",
+            EvidenceSourceKind.EXECUTION_RECORD,
+            EvidenceStatus.EXECUTOR_VERIFIED,
+        ),
+        "input_manifest": (
+            "manifest_revision",
+            EvidenceSourceKind.FILE_METADATA,
+            EvidenceStatus.EXECUTOR_VERIFIED,
+        ),
+        "preprocessing_draft": (
+            "candidate_draft",
+            EvidenceSourceKind.MODEL_INFERENCE,
+            EvidenceStatus.CANDIDATE_INFERENCE,
+        ),
+        "skill_preflight_result": (
+            "not_ready",
+            EvidenceSourceKind.EXECUTION_RECORD,
+            EvidenceStatus.UNKNOWN,
+        ),
+    }[target]
+    evidence = [
+        EvidenceRef(
+            "work_draft",
+            EvidenceSourceKind.MODEL_INFERENCE,
+            EvidenceStatus.CANDIDATE_INFERENCE,
+            draft_revision,
+        ),
+        EvidenceRef(
+            f"{target}_at_preflight",
+            source,
+            status,
+            expected_revision,
+        ),
+    ]
+    if current_revision is not None:
+        evidence.append(
+            EvidenceRef(
+                f"{target}_current",
+                source,
+                status,
+                current_revision,
+            )
+        )
+    issue = PlanningIssue(
+        code=(
+            "skill_preflight_not_ready"
+            if target == "skill_preflight_result"
+            else f"skill_preflight_{suffix}_changed_after_compile"
+        ),
+        kind=(
+            PlanningIssueKind.MISSING_EVIDENCE
+            if target == "skill_preflight_result"
+            else PlanningIssueKind.CONFLICTING_EVIDENCE
+        ),
+        target=target,
+        message=message,
+        evidence=tuple(evidence),
+        repairs=(RepairCandidate(RepairAction.ASK_USER, RepairBoundary.USER_DECISION, target),),
+        changes_scientific_semantics=target != "skill_preflight_result",
+        requires_user_decision=True,
+        retryable=False,
+    )
+    return issue, decide_feedback(issue, prior_fingerprints=prior_fingerprints)
+
+
 _SAFE_TARGET = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]{0,180}$")
 
 

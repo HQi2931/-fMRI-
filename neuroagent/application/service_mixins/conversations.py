@@ -8,6 +8,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -77,6 +78,10 @@ from neuroagent.application.errors import (
     NotFoundError,
 )
 from neuroagent.application.hashing import content_hash
+from neuroagent.application.preflight_adapter import (
+    feedback_payload,
+    planning_feedback_for_authority_revision_change,
+)
 from neuroagent.application.repository_ports import ConversationRepositoryPort
 from neuroagent.application.service_mixins._base import BaseServiceMixin
 from neuroagent.application.work_agents import (
@@ -1821,8 +1826,33 @@ class ConversationMixin(BaseServiceMixin):
             if issues and recovery is None:
                 raise ConflictError("work_review_incomplete", "请先处理方案中的待填写或冲突项。")
             plan_data = latest_payload(conversation, "plan_revision")
+            authority_feedback = self._work_review_authority_feedback(
+                conversation,
+                saved,
+                draft,
+                plan_data if saved.get("compiled") else None,
+            )
             if recovery is not None:
                 result = recovery
+            elif authority_feedback:
+                result = WorkActionResult(
+                    "Skill 预检后项目或冻结输入修订已变化；旧候选不能进入方案审查。"
+                    "请刷新项目与数据清单，再重新核验并审查当前参数。",
+                    payload={
+                        "work_draft": saved,
+                        "draft_issues": [
+                            str(item.get("message", "")) for item in authority_feedback
+                        ],
+                        "planning_preflight": list(authority_feedback),
+                        "skill_dry_run": {
+                            **(latest_payload(conversation, "skill_dry_run") or {}),
+                            "ready": False,
+                            "plan_hash": None,
+                        },
+                        "plan_preview": plan_preview(draft),
+                        "planning_decisions": planning_decisions(draft, saved.get("sources", {})),
+                    },
+                )
             elif saved.get("compiled") and plan_data and conversation.project_id:
                 plan = self.get_plan(str(plan_data["plan_revision_id"]))
                 qc = (
@@ -1891,6 +1921,188 @@ class ConversationMixin(BaseServiceMixin):
             response_type=ConversationTurnView,
             action=act,
         )
+
+    def _work_review_authority_feedback(
+        self,
+        conversation: ConversationView,
+        saved: dict[str, Any],
+        draft: WorkDraft,
+        plan_data: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Recheck the compiled candidate against current authority metadata."""
+        current_hash = draft_hash(draft)
+        dry_run = latest_payload(conversation, "skill_dry_run")
+        prior = saved.get("planning_preflight")
+        if (dry_run is None or dry_run.get("ready") is not True) and isinstance(prior, list):
+            for item in prior:
+                if not isinstance(item, dict) or not str(item.get("code", "")).startswith(
+                    "skill_preflight_"
+                ):
+                    continue
+                if any(
+                    ref.get("key") == "work_draft" and ref.get("revision") == current_hash
+                    for ref in item.get("evidence", [])
+                    if isinstance(ref, dict)
+                ):
+                    return (item,)
+
+        if dry_run is not None and dry_run.get("ready") is not True:
+            return (
+                self._authority_issue(
+                    "skill_preflight_result",
+                    "successful_skill_dry_run",
+                    None,
+                    current_hash,
+                    "当前 Skill dry-run 未通过，候选不能进入方案审查；请处理预检问题后重新核验。",
+                ),
+            )
+        if dry_run is not None:
+            project_id, version = dry_run.get("project_id"), dry_run.get("project_version")
+            dataset_id, manifest_id = dry_run.get("dataset_id"), dry_run.get("manifest_id")
+            manifest_hash, candidate_hash = dry_run.get("manifest_hash"), dry_run.get("draft_hash")
+            if candidate_hash != current_hash:
+                return (
+                    self._authority_issue(
+                        "preprocessing_draft",
+                        str(candidate_hash or "unbound"),
+                        current_hash,
+                        current_hash,
+                        "当前参数草稿与 Skill dry-run 不一致，请重新核验后再审查。",
+                    ),
+                )
+            if dry_run.get("authority_revision_version") != 1:
+                return (
+                    self._authority_issue(
+                        "input_manifest",
+                        "unbound",
+                        None,
+                        current_hash,
+                        "dry-run 缺少可核验的项目或 manifest 修订，请重新读取后再审查。",
+                    ),
+                )
+        else:
+            project = latest_payload(conversation, "project") or {}
+            dataset = latest_payload(conversation, "dataset") or {}
+            manifest = latest_payload(conversation, "manifest") or {}
+            project_id, version = project.get("project_id"), project.get("version")
+            dataset_id = dataset.get("dataset_id")
+            manifest_id, manifest_hash = manifest.get("manifest_id"), manifest.get("content_hash")
+
+        if (
+            not isinstance(project_id, str)
+            or not isinstance(version, int)
+            or isinstance(version, bool)
+            or not isinstance(dataset_id, str)
+            or not isinstance(manifest_id, str)
+            or not isinstance(manifest_hash, str)
+        ):
+            return (
+                self._authority_issue(
+                    "input_manifest",
+                    "unbound",
+                    None,
+                    current_hash,
+                    "当前候选缺少项目或冻结清单修订，请重新读取工作区后再审查。",
+                ),
+            )
+        if project_id != conversation.project_id:
+            return (
+                self._authority_issue(
+                    "project_revision",
+                    f"{project_id}:{version}",
+                    conversation.project_id,
+                    current_hash,
+                    "当前对话项目与预检绑定的项目不同，请重新绑定并核验方案。",
+                ),
+            )
+        try:
+            current_project = self.project_repository.get_project(project_id)
+            current_dataset = self.project_repository.get_dataset(dataset_id)
+        except NotFoundError:
+            return (
+                self._authority_issue(
+                    "input_manifest",
+                    f"{dataset_id}:{manifest_id}:{manifest_hash}",
+                    None,
+                    current_hash,
+                    "预检绑定的项目或数据集已无法读取，请重新绑定并读取清单。",
+                ),
+            )
+        if current_project.version != version:
+            return (
+                self._authority_issue(
+                    "project_revision",
+                    f"{project_id}:{version}",
+                    f"{current_project.project_id}:{current_project.version}",
+                    current_hash,
+                    "预检后项目版本已变化，请刷新项目与数据清单，再重新核验当前参数。",
+                ),
+            )
+
+        live_manifest_id = current_dataset.current_manifest_id
+        live_manifest_hash = None
+        if current_dataset.project_id == project_id and live_manifest_id:
+            with suppress(NotFoundError):
+                live_manifest_hash = self.project_repository.get_manifest(
+                    live_manifest_id
+                ).content_hash
+        if (
+            current_dataset.project_id != project_id
+            or live_manifest_id != manifest_id
+            or live_manifest_hash != manifest_hash
+        ):
+            return (
+                self._authority_issue(
+                    "input_manifest",
+                    f"{manifest_id}:{manifest_hash}",
+                    f"{live_manifest_id}:{live_manifest_hash}"
+                    if live_manifest_id and live_manifest_hash
+                    else None,
+                    current_hash,
+                    "预检后冻结数据清单已变化，请重新读取并确认清单，再核验当前参数。",
+                ),
+            )
+        if saved.get("compiled") and plan_data is not None:
+            frozen = plan_data.get("plan", {})
+            skill_plan = frozen.get("skill_plan", {}) if isinstance(frozen, dict) else {}
+            if (
+                plan_data.get("project_id") != project_id
+                or plan_data.get("manifest_hash") != manifest_hash
+                or not isinstance(frozen, dict)
+                or frozen.get("dataset_manifest_id") != manifest_id
+                or not isinstance(skill_plan, dict)
+                or skill_plan.get("dataset_ref") != dataset_id
+            ):
+                return (
+                    self._authority_issue(
+                        "input_manifest",
+                        f"{manifest_id}:{manifest_hash}",
+                        None,
+                        current_hash,
+                        "冻结方案与预检绑定的项目或 manifest 不一致，请重新生成方案后再审查。",
+                    ),
+                )
+        return ()
+
+    @staticmethod
+    def _authority_issue(
+        target: str,
+        expected: str,
+        current: str | None,
+        draft_revision: str,
+        message: str,
+    ) -> dict[str, Any]:
+        return feedback_payload(
+            [
+                planning_feedback_for_authority_revision_change(
+                    target=target,
+                    expected_revision=expected,
+                    current_revision=current,
+                    draft_revision=draft_revision,
+                    message=message,
+                )
+            ]
+        )[0]
 
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
         return self.repository.get_conversation_context(conversation_id)

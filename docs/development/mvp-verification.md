@@ -6,6 +6,12 @@
 - 更新日期：2026-10-26
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-26 Work 预处理 dry-run 到 review 修订重核
+
+只读 Skill dry-run 现在随候选保存编译时项目版本、dataset/manifest 身份、草稿 hash 和预检 plan hash。进入 Work review 前，服务只读重查当前项目、dataset、manifest 及已有冻结 Plan 的输入绑定；工作区文件修订仍由原守卫检查。项目/manifest 变化、候选草稿不匹配、未通过的当前 dry-run 或无法恢复权威修订会以稳定 `PlanningIssue` 阻止 review confirmation，来源冲突进入 `EVIDENCE_CONFLICT`，明确缺少成功预检进入 `ASK_USER`。历史问题仅在仍绑定同一草稿且没有更新成功 dry-run 时保留，更新后的成功 dry-run 会重核新证据。
+
+定向命令：`.venv\\Scripts\\python.exe -m pytest --no-cov tests/backend/test_skill_plan_dry_run.py tests/backend/test_work_dialogue_feedback.py -q`，25 passed，1 条既有 Starlette/httpx deprecation warning。Ruff（5 个相关 Python 文件）、Mypy（3 个应用文件）、PowerShell 7 文档检查（92 份 Markdown）及 `git diff --check` 均通过。定向验证覆盖稳定证据 review、dry-run 后项目版本与 manifest ID 变化、候选 hash mismatch，以及已有科学选择仍进入 `ASK_USER`；变更路径没有新增 Plan/Approval/Run 或写入工作区。预检不再运行 compiler 或读取工作区文件。dry-run plan hash 采用 configuration-only 环境锁，正式 Plan 采用运行时环境锁，不跨两种环境 hash 声称相等。未调用 Provider、MATLAB 或 DPABI。
+
 ## 2026-10-26 Work JSON 格式修复的 DeepSeek 兜底
 
 普通 Work 最终响应未通过 `WorkInterpretation` JSON 校验时，最多追加一次项目 DeepSeek Profile 修复请求。修复提示只含本轮问题和服务端角色，不带历史、固定上下文、首次错误响应、工作区证据或工具结果，并关闭工具/Web。修复产物仍走现有 schema 与服务端动作授权；Provider 失败、截断、预算耗尽有独立安全诊断。AUTO 角色判别继续使用规则优先、DashScope `qwen3.8-flash` 小模型、项目 DeepSeek 回退。
