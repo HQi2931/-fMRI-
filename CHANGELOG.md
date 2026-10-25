@@ -32,6 +32,8 @@
 
 ## Unreleased
 
+- Work 的多分析目标流程卡片现在会标出会话中已持久选择的当前目标，并用 `aria-current` 告知辅助技术；目标切换后，卡片状态和下一条消息使用同一个分析意图 ID。
+
 - Work 终态运行刷新现在按会话版本和任务的语义状态订阅，不再依赖每次会话读取都会重建的 `work_tasks` 数组引用；读取稳定快照后只发起一次详情请求，待处理 outbox 的有界退避刷新保持不变。
 
 - Work AUTO 回合现先按规则路由清晰请求，再调用百炼 `qwen3.8-flash` Profile（默认 `dashscope`）分类；低置信度、无效 JSON 或调用失败时以现有 DeepSeek `deepseek` Profile 兜底，仍不确定则追问。普通 Work 回复继续使用已选模型。设置页可选/输入具体模型 ID；路由仅发送经 `OutboundContextPolicy` 脱敏的当前请求和最少绑定状态，不发送对话历史、工作区文件、参与者表、组别对应或 MRI。显式复合目标首阶段由服务端约束，路由调用计入目标共享预算且切走的旧分析目标预算不被扣除；不记录请求文本、API Key 或 Provider body。

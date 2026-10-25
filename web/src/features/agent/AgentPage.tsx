@@ -359,12 +359,14 @@ function CompositeGoalProgressPanel({
   onRefresh,
   disabled,
   onSelect,
+  selectedIntentTaskId,
 }: {
   view: { conversationId: string; goals: CompositeGoalProgress[]; loading: boolean; error: string };
   refreshingAutomatically: boolean;
   onRefresh: () => void;
   disabled: boolean;
   onSelect: (intentTaskId: string) => void;
+  selectedIntentTaskId: string | null;
 }) {
   return <section className="panel composite-goal-progress" aria-label="自动化流程进度">
     <div className="panel-heading">
@@ -385,6 +387,7 @@ function CompositeGoalProgressPanel({
       {view.goals.map((goal, index) => {
         const status = compositeGoalStatusView(goal.status);
         const reason = compositeGoalReasonView(goal.reason_code);
+        const selected = goal.intent_task_id === selectedIntentTaskId;
         const analysisOnly = goal.goal_kind === "analysis_only_external_import";
         const title = compositeGoalTitle(goal);
         const canSelectAnalysis = (analysisOnly
@@ -395,10 +398,11 @@ function CompositeGoalProgressPanel({
           && !["blocked", "cancelled"].includes(goal.analysis_status ?? ""));
         const continueBlockedByBudget = goal.reason_code === "analysis_proposal_model_budget_exhausted"
           && (!goal.analysis_status || goal.analysis_status === "waiting_user");
-        return <li key={goal.intent_task_id}>
+        return <li key={goal.intent_task_id} aria-current={selected ? "true" : undefined}>
           <article className="composite-goal-card">
             <h3 className="composite-goal-heading" aria-label={`${title}，${status.label}`}>
               <span className="composite-goal-title-text" title={title}>{title}</span>
+              {selected && <span className="status-pill status-info">当前目标</span>}
               <span className={`status-pill status-${status.tone}`}>{status.label}</span>
             </h3>
             <p><strong>流程类型：</strong>{analysisOnly ? "外部指标分析" : "预处理与分析"}</p>
@@ -1268,6 +1272,7 @@ export function AgentPage() {
         onRefresh={() => setCompositeGoalRefreshNonce((value) => value + 1)}
         disabled={busy || draftDirty}
         onSelect={(intentTaskId) => void selectCompositeGoal(intentTaskId)}
+        selectedIntentTaskId={selectedAnalysisIntentId}
       />}
       {mode === "work" && activeConversation && boundProjectId && <StepPlanReviewPanel
         key={`${activeConversation.conversation_id}:${boundProjectId}`}

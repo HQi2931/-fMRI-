@@ -764,8 +764,8 @@ describe("agent workbench page", () => {
 
   it("selects an exact analysis goal and uses its saved source instead of a newer unrelated draft", async () => {
     const goals = [
-      { ...compositeGoal("waiting_user", "goal/selected"), analysis_status: "waiting_user" },
-      { ...compositeGoal("waiting_user", "goal-other"), analysis_status: null, analysis_proposal_status: "waiting_user" },
+      { ...compositeGoal("waiting_user", "goal/selected"), analysis_summary: "比较 ALFF 两组差异", analysis_status: "waiting_user" },
+      { ...compositeGoal("waiting_user", "goal-other"), analysis_summary: "比较 ReHo 两组差异", analysis_status: null, analysis_proposal_status: "waiting_user" },
       compositeGoal("completed", "goal-complete"),
       compositeGoal("waiting_analysis", "goal-running"),
     ];
@@ -782,17 +782,16 @@ describe("agent workbench page", () => {
     ];
     const initial = conversation({ project_id: "project-1", version: 5, foreground_agent_role: "analysis", work_tasks: preprocessingTasks });
     const selectGoal = vi.fn((intentTaskId: string, init?: RequestInit) => {
-      expect(intentTaskId).toBe("goal/selected");
-      expect(JSON.parse(String(init?.body))).toEqual({ expected_version: 5 });
-      return json({ ...initial, version: 6, foreground_agent_role: "analysis", messages, work_tasks: [
+      const body = JSON.parse(String(init?.body)) as { expected_version: number };
+      return json({ ...initial, version: body.expected_version + 1, foreground_agent_role: "analysis", messages, work_tasks: [
         ...preprocessingTasks,
-        { agent_role: "analysis", analysis_intent_task_id: "goal/selected", draft_hash: "b".repeat(64) },
+        { agent_role: "analysis", analysis_intent_task_id: intentTaskId, draft_hash: intentTaskId === "goal/selected" ? "b".repeat(64) : "c".repeat(64) },
       ] });
     });
     const turn = vi.fn((init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body).not.toHaveProperty("agent_role");
-      expect(body.analysis_intent_task_id).toBe("goal/selected");
+      expect(body.analysis_intent_task_id).toBe("goal-other");
       expect(body.external_analysis_import_id).toBeNull();
       expect(body).not.toHaveProperty("preprocessing_task_id");
       return json({ conversation: initial, user_message: message("u", "user", "继续"), assistant_message: message("a", "assistant", "已继续"), tool_call: null });
@@ -806,13 +805,29 @@ describe("agent workbench page", () => {
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[0]);
     await waitFor(() => expect(selectGoal).toHaveBeenCalledOnce());
+    await waitFor(() => expect(within(screen.getByRole("heading", { name: /比较 ALFF 两组差异/ }).closest("li")!).getByText("当前目标")).toBeInTheDocument());
+    expect(screen.getAllByText("当前目标")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /比较 ALFF 两组差异/ }).closest("li")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("heading", { name: /比较 ReHo 两组差异/ }).closest("li")).not.toHaveAttribute("aria-current");
     await screen.findByText("Agent 自动分派 · 当前：数据分析 Agent");
     expect(registration).not.toBeChecked();
     expect(screen.queryByLabelText("Work 负责 Agent")).not.toBeInTheDocument();
     expect(screen.getByText("Agent 自动分派 · 当前：数据分析 Agent")).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("heading", { name: /比较 ReHo 两组差异/ }).closest("li")!).getByRole("button", { name: "继续此分析" }));
+    await waitFor(() => expect(selectGoal).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(screen.getByRole("heading", { name: /比较 ReHo 两组差异/ }).closest("li")!).getByText("当前目标")).toBeInTheDocument());
+    expect(screen.getAllByText("当前目标")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /比较 ReHo 两组差异/ }).closest("li")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("heading", { name: /比较 ALFF 两组差异/ }).closest("li")).not.toHaveAttribute("aria-current");
+
     fireEvent.change(screen.getByPlaceholderText("例如：用当前 DemoData 准备 ALFF 预处理方案"), { target: { value: "继续这个分析目标" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(selectGoal.mock.calls.map(([intentTaskId, init]) => [intentTaskId, JSON.parse(String(init?.body)).expected_version])).toEqual([
+      ["goal/selected", 5],
+      ["goal-other", 6],
+    ]);
   });
 
   it("disables goal selection while a selection is pending and refreshes after a conflict", async () => {

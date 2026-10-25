@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-21
+- 更新日期：2026-10-26
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)、[ADR 0051](../adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 
 ## 目标里程碑
@@ -403,6 +403,10 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 | 用户请求 FC 或其他尚未注册能力 | 在执行前说明精确能力缺口，不生成任意可执行代码 |
 
 ## 验证、风险与完成报告
+
+### 多分析目标的当前选择提示（2026-10-26）
+
+Work 多分析目标流程卡现在根据会话服务端保存的 analysis WorkTask intent ID 标记“当前目标”，并在对应列表项提供 `aria-current` 状态。该提示不使用乐观前端状态；切换目标后只有持久化选择得到服务端响应才改变标记，随后发送请求仍携带同一 intent ID。AgentPage Mock API 回归覆盖两目标切换、唯一标记移动及下一条请求身份。此次只改善选择可见性，不提供通用 dispatcher、READY 后继生产创建或完整跨步骤恢复；没有运行 Provider、MATLAB/DPABI 或真实数据作业。
 
 ### Work JSON 格式错误的 DeepSeek 兜底（2026-10-26）
 
