@@ -404,6 +404,12 @@ metric-only checkpoint 在正式 Skill resolve 与新增 API dry-run 中执行�
 
 ## 验证、风险与完成报告
 
+### 自动路由模型配置与合成连接测试（2026-10-26）
+
+本机 Work 自动路由 Profile 已按默认配置绑定为 `dashscope / qwen3.8-flash` 小模型和项目现有 `deepseek / deepseek-v4-flash` 兜底模型；运行时 `work_router_small_profile_id=dashscope`、`work_router_fallback_profile_id=deepseek`。设置页新增独立“测试模型连接”动作，使用既有 Profile 版本发起合成 JSON 请求；“刷新模型列表”仅用于 `/models` 发现。填写模型 ID 时绑定可跳过模型列表读取，但需通过该合成请求核验真实模型可用性。
+
+真实本机工作台的 DashScope 与 DeepSeek 结构化连接均成功，路由结果分别选中 `dashscope`、`deepseek`。设置页定向回归 20 项、TypeScript typecheck、ESLint、生产构建、92 份 Markdown 规范与 `git diff --check` 通过。连接测试只发送 Provider 测试构造的合成 JSON 请求，不发送数据集元数据、参与者/组别明细、MRI 影像或工作区文件；未验证实际 AUTO 分类质量、错误兜底比例，也未启动 MATLAB/DPABI 或运行真实演示数据。密钥保留在本机配置，未进入聊天、SQLite Profile 或 Git。计划 0014 尚未整体完成。
+
 ### 多分析目标的当前选择提示（2026-10-26）
 
 Work 多分析目标流程卡现在根据会话服务端保存的 analysis WorkTask intent ID 标记“当前目标”，并在对应列表项提供 `aria-current` 状态。该提示不使用乐观前端状态；切换目标后只有持久化选择得到服务端响应才改变标记，随后发送请求仍携带同一 intent ID。AgentPage Mock API 回归覆盖两目标切换、唯一标记移动及下一条请求身份。此次只改善选择可见性，不提供通用 dispatcher、READY 后继生产创建或完整跨步骤恢复；没有运行 Provider、MATLAB/DPABI 或真实数据作业。
