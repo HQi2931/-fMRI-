@@ -58,26 +58,37 @@ describe("Work run and results", () => {
     fireEvent.click(screen.getByText("定位峰值"));
     await waitFor(() => expect(api.localizeStatisticalResult).toHaveBeenCalledWith("result-1", "aal3"));
   });
-  it("shows a deterministic explanation and keeps the original stack collapsed with logs downloadable", async () => {
-    const raw = "{���� assert\nT1 converter failed.\nrun_preprocessing>prepare_t1 (line 331)\nrsfmri:t1:ConverterFailed}";
+  it("shows only the current attempt's sanitized diagnosis while keeping log artifacts downloadable", async () => {
+    const raw = "CreateFile failed: C:\\Users\\researcher\\secret\\sub-023\\bold.nii.gz · stack: rsfmri:t1:ConverterFailed";
     vi.mocked(api.latestDiagnosis).mockResolvedValue(diagnosis);
     vi.mocked(api.artifacts).mockResolvedValue([{ artifact_id: "log", artifact_type: "execution.matlab_log", relative_path: "logs/matlab.stderr.log", size_bytes: 400, provenance: {} } as Artifact]);
     render(<WorkRunPanel run={{ ...run("failed_terminal"), error: raw }} />);
     await screen.findByText(diagnosis.diagnosis.summary);
-    expect(screen.getByRole("alert")).not.toHaveTextContent("assert");
-    const technical = screen.getByText((_content, element) => element?.tagName === "PRE" && element.textContent === raw);
-    expect(technical.closest("details")).not.toHaveAttribute("open");
-    expect(technical).not.toBeVisible();
+    expect(screen.getByText(diagnosis.diagnosis.suggestions[0])).toBeInTheDocument();
+    expect(screen.getByText(diagnosis.diagnosis.evidence[0])).toBeInTheDocument();
+    expect(screen.queryByText(raw)).not.toBeInTheDocument();
+    expect(screen.queryByText(/C:\\Users\\researcher\\secret|sub-023|ConverterFailed/)).not.toBeInTheDocument();
+    expect(screen.queryByText("错误技术详情")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "下载产物" })).toHaveAttribute("href", "/api/v1/artifacts/log/content");
     expect(api.latestDiagnosis).toHaveBeenCalledWith("run-1", expect.any(AbortSignal), 1);
   });
-  it("retains neutral failure guidance when diagnosis is unavailable", async () => {
+  it("shows unavailable guidance without exposing run.error when diagnosis cannot be read", async () => {
     vi.mocked(api.latestDiagnosis).mockRejectedValue(new Error("diagnosis unavailable"));
-    render(<WorkRunPanel run={{ ...run("failed_terminal"), error: "internal stack" }} />);
+    const raw = "MATLAB stderr: D:\\private\\study\\sub-023\\task-rest_bold.nii";
+    render(<WorkRunPanel run={{ ...run("failed_terminal"), error: raw }} />);
     await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledOnce());
     expect(screen.getByRole("alert")).toHaveTextContent("具体原因尚未确定");
-    expect(screen.getByRole("alert")).not.toHaveTextContent("internal stack");
-    expect(screen.getByText("internal stack")).not.toBeVisible();
+    expect(screen.getByText("本机日志诊断暂不可用，正在重试；运行状态仍可查看。")).toBeInTheDocument();
+    expect(screen.queryByText(raw)).not.toBeInTheDocument();
+    expect(screen.queryByText(/D:\\private\\study|sub-023/)).not.toBeInTheDocument();
+  });
+  it("states that an active run has no recognized diagnosis yet", async () => {
+    vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
+    render(<WorkRunPanel run={{ ...run("running"), error: "private raw stderr" }} />);
+
+    await waitFor(() => expect(api.latestDiagnosis).toHaveBeenCalledOnce());
+    expect(screen.getByText("尚未发现可识别的错误线索，系统会继续检查本次运行的本机日志。", { selector: "p" })).toBeInTheDocument();
+    expect(screen.queryByText("private raw stderr")).not.toBeInTheDocument();
   });
   it("tracks a MATLAB startup error from local logs while execution is still running", async () => {
     const startup: RunDiagnosis = { run_id: "run-1", attempt: 1, diagnosis: {
@@ -201,7 +212,7 @@ describe("Work run and results", () => {
     expect(screen.getByText("本机日志诊断暂不可用，自动检查已结束。", { selector: "p" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新检查本机日志" })).toBeInTheDocument();
     expect(screen.queryByText(/private endpoint path/)).not.toBeInTheDocument();
-    expect(screen.getByText("internal MATLAB stack")).not.toBeVisible();
+    expect(screen.queryByText("internal MATLAB stack")).not.toBeInTheDocument();
 
     vi.mocked(api.latestDiagnosis).mockResolvedValue(noDiagnosis);
     await act(async () => {
@@ -315,7 +326,7 @@ describe("Work run and results", () => {
     ]);
     render(<WorkRunPanel run={run("running")} />);
     await screen.findByText("已观察到完成：层时间校正");
-    expect(screen.getByRole("status")).toHaveTextContent("当前阶段：头动校正");
+    expect(screen.getByText("当前阶段：头动校正", { selector: "p" })).toBeInTheDocument();
     expect(screen.queryByText(/T1 组织分割/)).not.toBeInTheDocument();
   });
   it("separates completed calculation from QC approval and uses execution events for elapsed time", async () => {

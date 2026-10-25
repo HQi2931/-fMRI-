@@ -332,6 +332,10 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
     && currentDiagnosisRead.checked
     && currentDiagnosis?.code === "unknown"
     && currentDiagnosis.evidence.length === 0;
+  const activeDiagnosisReadEmpty = activeStates.has(run.state)
+    && currentDiagnosisRead?.status === "available"
+    && currentDiagnosis?.code === "unknown"
+    && currentDiagnosis.evidence.length === 0;
   const activeDiagnosis = activeStates.has(run.state)
     && currentDiagnosis
     && currentDiagnosis.severity === "error"
@@ -378,6 +382,7 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       <p>正在跟踪本次运行日志；诊断在本机完成，不会发送给模型。</p>
     </div>}
     {activeStates.has(run.state) && currentDiagnosisRead?.status === "unavailable" && <p role="status">本机日志诊断暂不可用，系统会继续自动检查；运行状态仍可查看。</p>}
+    {activeDiagnosisReadEmpty && <p role="status">尚未发现可识别的错误线索，系统会继续检查本次运行的本机日志。</p>}
     {completedPhases.length > 0 && <p>已观察到完成：{completedPhases.map((phase) => PHASE_LABELS[phase] ?? "处理步骤").join("、")}</p>}
     {!activeStates.has(run.state) && elapsed && <p>计算耗时：{elapsed}</p>}
     {finished && <p>计算结束：{new Date(finished.created_at).toLocaleString("zh-CN")}</p>}
@@ -392,7 +397,6 @@ export function WorkRunPanel({ run, onRunChange }: { run: Run; onRunChange?: (up
       {terminalDiagnosis && terminalDiagnosis.evidence.length > 0 && <details><summary>查看脱敏日志线索</summary><ul>{terminalDiagnosis.evidence.slice(0, 4).map((line, index) => <li key={index}><pre>{line}</pre></li>)}</ul></details>}
       {terminalDiagnosis && <p>Agent 已自动检查本次 attempt 的本地日志，诊断未发送给模型。</p>}
       <p>如需调整输入或参数，请在对话中准备新方案并重新审查。</p>
-      {run.error && <details><summary>错误技术详情</summary><pre>{run.error}</pre></details>}
     </div>}
     {actionError?.runId === run.run_id && <p role="alert">{actionError.message}</p>}
     {error && <div role="alert">{error}<p>已显示的详情可能不是最新，请重新加载核对。</p><button type="button" onClick={() => setReload((value) => value + 1)}>重新加载详情</button></div>}

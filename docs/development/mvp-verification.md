@@ -6,6 +6,12 @@
 - 更新日期：2026-10-26
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-10-26 Work 运行卡只显示脱敏诊断
+
+普通运行卡不再读取或渲染 `run.error`/原始 stderr，只显示与当前 attempt 绑定的本机脱敏诊断摘要、建议和证据。当前运行诊断未知或读取不可用时，卡片明确说明尚未发现可识别线索或本机诊断暂不可用；已登记的原始日志 Artifact 仍可由用户显式下载。后端 `Run.error` 和 API 公共契约未改变，诊断不发送给模型。
+
+`WorkRunPanel.test.tsx` 定向回归 33 项通过，覆盖包含模拟 Windows 本机路径、受试者标识和 MATLAB 错误码的 `run.error` 不出现在普通卡片，脱敏诊断摘要/建议/证据可见、日志产物下载保留、诊断不可用与活动运行暂无可识别线索均有明确反馈。前端 TypeScript 检查、相关组件 ESLint、92 份 Markdown 文档规范检查及 `git diff --check` 通过。未调用 Provider、MATLAB/DPABI 或真实数据。
+
 ## 2026-10-26 Work 预处理 dry-run 到 review 修订重核
 
 只读 Skill dry-run 现在随候选保存编译时项目版本、dataset/manifest 身份、草稿 hash 和预检 plan hash。进入 Work review 前，服务只读重查当前项目、dataset、manifest 及已有冻结 Plan 的输入绑定；工作区文件修订仍由原守卫检查。项目/manifest 变化、候选草稿不匹配、未通过的当前 dry-run 或无法恢复权威修订会以稳定 `PlanningIssue` 阻止 review confirmation，来源冲突进入 `EVIDENCE_CONFLICT`，明确缺少成功预检进入 `ASK_USER`。历史问题仅在仍绑定同一草稿且没有更新成功 dry-run 时保留，更新后的成功 dry-run 会重核新证据。
