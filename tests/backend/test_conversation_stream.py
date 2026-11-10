@@ -24,12 +24,16 @@ from neuroagent.application.contracts.conversations import (
 from neuroagent.application.errors import InputValidationError
 from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_service
+from tests.backend.work_router_fakes import FakeWorkAgentRouter
 
 
 @pytest.fixture
 def streaming_service(service: ApplicationServices) -> Iterator[ApplicationServices]:
     configured = build_service(
-        service.settings.model_copy(update={"redaction_salt": "synthetic-streaming-redaction-salt"})
+        service.settings.model_copy(
+            update={"redaction_salt": "synthetic-streaming-redaction-salt"}
+        ),
+        work_agent_router=FakeWorkAgentRouter(),
     )
     try:
         yield configured

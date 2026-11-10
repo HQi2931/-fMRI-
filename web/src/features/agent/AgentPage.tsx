@@ -390,14 +390,6 @@ function CompositeGoalProgressPanel({
         const selected = goal.intent_task_id === selectedIntentTaskId;
         const analysisOnly = goal.goal_kind === "analysis_only_external_import";
         const title = compositeGoalTitle(goal);
-        const canSelectAnalysis = (analysisOnly
-          && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
-          || !analysisOnly && ["waiting_user", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(goal.status)
-          && ["waiting_user", "proposal_ready"].includes(goal.analysis_proposal_status ?? "")
-          && (goal.analysis_work_task_id || (!goal.analysis_status && goal.analysis_proposal_status === "waiting_user"))
-          && !["blocked", "cancelled"].includes(goal.analysis_status ?? ""));
-        const continueBlockedByBudget = goal.reason_code === "analysis_proposal_model_budget_exhausted"
-          && (!goal.analysis_status || goal.analysis_status === "waiting_user");
         return <li key={goal.intent_task_id} aria-current={selected ? "true" : undefined}>
           <article className="composite-goal-card">
             <h3 className="composite-goal-heading" aria-label={`${title}，${status.label}`}>
@@ -413,7 +405,7 @@ function CompositeGoalProgressPanel({
               <li><strong>统计分析：</strong>{compositeGoalStageView(goal.analysis_status)}</li>
               <li><strong>结果解释：</strong>{compositeGoalStageView(goal.result_interpretation_status)}</li>
             </ol>
-            {canSelectAnalysis && !continueBlockedByBudget
+            {goal.analysis_selection_available === true
               && <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onSelect(goal.intent_task_id)}>{!goal.analysis_status || goal.analysis_status === "waiting_user" ? "继续此分析" : "查看此分析"}</button>}
           </article>
         </li>;

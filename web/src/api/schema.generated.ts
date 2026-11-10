@@ -2008,6 +2008,11 @@ export interface components {
              * @description Server-verified analysis Run ID while its run state is observable.
              */
             analysis_run_id?: string | null;
+            /**
+             * Analysis Selection Available
+             * @description Selection availability from the server-verified goal projection; selecting still revalidates the exact draft, source, Plan and Run and never authorizes execution.
+             */
+            analysis_selection_available: boolean;
             /** Analysis Status */
             analysis_status?: string | null;
             /**

@@ -280,6 +280,9 @@ def test_page_selected_stage_gets_a_confirmation_without_model_stage_recommendat
             selected_input_stage="FunImg",
         )
         payload = proposed["assistant_message"]["payload"]
+        assert "confirmation_request" in payload, json.dumps(
+            proposed["assistant_message"], ensure_ascii=False
+        )
         command = payload["confirmation_request"]["options"][0]["command"]
         assert payload["confirmation_request"]["title"] == "确认预处理起点"
         assert "dataset" not in payload
@@ -435,9 +438,10 @@ def test_repaired_server_only_action_still_fails_schema_before_dispatch(service,
     with TestClient(create_app(service=service)) as client:
         result = turn(client, create(client), "启动预处理", "json-repair-server-action")
 
-    assert "未执行任务" in result["assistant_message"]["content"] or "未能完成" in result[
-        "assistant_message"
-    ]["content"]
+    assert (
+        "未执行任务" in result["assistant_message"]["content"]
+        or "未能完成" in result["assistant_message"]["content"]
+    )
     model = service.models._generate_rsfmri_chat
     assert model.await_count == 2
     assert model.await_args_list[1].kwargs["preferred_profile_id"] == "deepseek"
@@ -602,6 +606,16 @@ def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work
         run_id=run.run_id,
     )
     assert consumed.consumed_run_id == run.run_id
+    replayed = service.repository.consume_confirmation_challenge(
+        confirmation_id=challenge.confirmation_id,
+        conversation_id=conversation.conversation_id,
+        project_id=project.project_id,
+        plan_revision_id=plan.plan_revision_id,
+        plan_hash=plan.plan_hash,
+        qc_mode=QcExecutionMode.SKIP,
+        run_id=run.run_id,
+    )
+    assert replayed.consumed_run_id == run.run_id
     with pytest.raises(ConflictError, match="启动确认"):
         service.repository.consume_confirmation_challenge(
             confirmation_id=challenge.confirmation_id,
@@ -610,7 +624,7 @@ def test_confirmation_challenge_is_bound_and_one_time(service, source_root, work
             plan_revision_id=plan.plan_revision_id,
             plan_hash=plan.plan_hash,
             qc_mode=QcExecutionMode.SKIP,
-            run_id=run.run_id,
+            run_id="another-run",
         )
 
 
@@ -663,10 +677,10 @@ def test_work_uses_redacted_gateway_json_protocol(service, monkeypatch):
 
     configure(service, monkeypatch, [])
     provider = MockProvider([generated("conversation", answer="可以讨论ALFF的方法。").response])
-    monkeypatch.setattr(service, "providers", {"openai-compatible": provider})
+    monkeypatch.setattr(service.models, "providers", {"openai-compatible": provider})
     monkeypatch.setenv("UNUSED_MOCK_API_KEY", "synthetic-test-key")
     monkeypatch.setattr(
-        service,
+        service.models,
         "settings",
         service.settings.model_copy(
             update={
@@ -675,9 +689,9 @@ def test_work_uses_redacted_gateway_json_protocol(service, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        service,
+        service.models,
         "_generate_rsfmri_chat",
-        lambda **kwargs: ModelAgentMixin._generate_rsfmri_chat(service, **kwargs),
+        lambda **kwargs: ModelAgentMixin._generate_rsfmri_chat(service.models, **kwargs),
     )
     with TestClient(create_app(service=service)) as client:
         response = turn(client, create(client), "帮我了解ALFF", "gateway")
@@ -928,6 +942,7 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
     from neuroagent.bootstrap import build_service
     from tests.backend.test_environment import _fake_stack
     from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
+    from tests.backend.work_router_fakes import FakeWorkAgentRouter
 
     source, work = tmp_path / "source", tmp_path / "work"
     subject = source / "FunRaw" / "sub-01"
@@ -943,7 +958,7 @@ def test_model_alff_draft_compiles_through_real_skill_validator_without_running(
             "rag_db_dir": None,
         }
     )
-    service = build_service(settings)
+    service = build_service(settings, work_agent_router=FakeWorkAgentRouter())
     values = _minimal_preprocessing_payload()
     values.pop("provenance")
     draft = WorkDraft(

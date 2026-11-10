@@ -24,6 +24,7 @@ from neuroagent.agent.providers import MockProvider, ProviderTimeoutError
 from neuroagent.api.app import create_app
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
+from tests.backend.work_router_fakes import FakeWorkAgentRouter
 
 _SALT = "stable-work-tool-loop-redaction-salt"
 #: Tool catalogs are isolated by the selected Work Agent.
@@ -70,7 +71,11 @@ def _service(tmp_path: Path, source_root: Path, provider: MockProvider) -> Any:
         redaction_salt=_SALT,
         secrets_file=tmp_path / ".env",
     )
-    return build_service(settings, providers={"openai-compatible": provider})
+    return build_service(
+        settings,
+        providers={"openai-compatible": provider},
+        work_agent_router=FakeWorkAgentRouter(),
+    )
 
 
 def _turn(client: TestClient, service: Any, key: str) -> dict[str, Any]:
@@ -274,7 +279,7 @@ def test_work_tool_loop_answers_in_the_json_contract(
     )
     service = _service(tmp_path, source_root, provider)
     single_shot = AsyncMock(side_effect=AssertionError("loop answered; single shot must not run"))
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", single_shot)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", single_shot)
     try:
         service.repository.create_model_profile(
             _profile(ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE)
@@ -359,7 +364,7 @@ def test_work_loop_falls_back_when_the_answer_is_not_json(
             redaction_count=0,
         )
     )
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", fallback)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", fallback)
     try:
         service.repository.create_model_profile(
             _profile(ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE)
@@ -383,7 +388,7 @@ def test_work_timeout_preserves_draft_without_repeating_provider_request(
     provider = MockProvider([ProviderTimeoutError("synthetic timeout")])
     service = _service(tmp_path, source_root, provider)
     fallback = AsyncMock(side_effect=AssertionError("timeout must not trigger a second request"))
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", fallback)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", fallback)
     try:
         service.repository.create_model_profile(
             _profile(ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE)
@@ -418,7 +423,7 @@ def test_work_uses_single_shot_when_the_profile_lacks_tool_use(
             redaction_count=0,
         )
     )
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", single_shot)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", single_shot)
     try:
         service.repository.create_model_profile(_profile(ModelCapability.JSON_OBJECT))
         with TestClient(create_app(service=service)) as client:

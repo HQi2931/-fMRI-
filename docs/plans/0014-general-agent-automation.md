@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-10-26
+- 更新日期：2026-11-10
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)、[ADR 0051](../adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 
 ## 目标里程碑
@@ -16,6 +16,73 @@
 本计划不增加第三个模型协调 Agent，不迁移现有模型框架，不允许模型执行任意 MATLAB/Shell，不以自动改变科学方法、排除样本或追求显著结果来提高完成率。
 
 计划 0013 已完成的双 Agent、交接、统计、结果解释和报告功能是本计划的复用基线，不在本计划重复实现。能力扩展应纵向贯穿输入、设计、执行、证据与结果，并分别验收。
+
+## 当前交付状态与优先级（2026-10-26）
+
+本节汇总当前状态；下方按日期保存的切片说明是历史证据，不能单独作为当前能力清单。审查基线为提交 `5f1f439`，测试范围和失败分类见 [MVP 最新审查记录](../development/mvp-verification.md#2026-10-26-计划-0014-进度复核)。本次调整只优化方案与实施顺序，未修复代码，也未将阶段或 ADR 0053 标记为完成或接受。
+
+2026-11-10 补充：R1 冻结目标恢复、R2 续聊边界和 R3 回归门禁已完成代码修复，全量后端与前端门禁通过，证据见 [MVP 验证记录](../development/mvp-verification.md#2026-11-10-计划-0014-r1r3-稳定性修复与全量门禁)。R4–R6 和真实验收仍未完成，因此里程碑一尚未整体收口，ADR 0053 仍为 Proposed。
+
+| 阶段/能力 | 已实现与生产可达范围 | 当前验证或阻断 | 下一项完成证据 |
+| --- | --- | --- | --- |
+| A：结构化预检 | 两角色 dry-run、有限反馈、草稿/输入修订重核 | 部分完成；完整执行前反馈及审批入口重核仍需收敛 | 缺项、证据变化和旧确认拒绝均经正式 Work 入口验证 |
+| B：目标与续接 | 两个 outbox、Run/QC/结果重核、显式多目标、前台隔离、步骤审批/启动接口 | 部分完成；R1 冻结目标恢复回归已修复，后继准备仍无生产调用链 | 支持范围内的完整交互、重启及重复事件恢复通过 |
+| B：累计模型预算 | 显式复合请求 admission、analysis-only 首次生成及前台续聊、两个后台 outbox 已接入 | 普通无根 Work、既有目标 AUTO 路由及未来阶段仍有计费归属边界 | 列出各调用入口的回合/目标预算归属，验证重放、耗尽和停止；不声称所有调用均已累计 |
+| C：输入适配 | 单组外部指标、候选/用户声明/核验证据分级 | 部分完成；统一 session/run、表驱动纳入、批量 checkpoint 尚缺 | 每项身份映射与失败场景单独贯通并验收 |
+| D：执行单元 | 单次 DPARSFA 映射、派发绑定核验、已知能力组合提前阻断 | 部分完成；metric-only 限单主体，未实现多个执行单元或物化 checkpoint 恢复 | 执行前能力判定与实际产物合同一致；新边界有单独真实验证 |
+| E：能力扩展 | 继续复用既有指标与统计能力 | FC、多 session/run 等未作为本阶段新能力交付 | 按能力贯通输入、设计、执行、结果与故障证据 |
+| 真实验收 | Provider 合成连接、本地失败诊断已验证 | 20 人 Demo 在 MATLAB 启动阶段拒绝访问，未进入 DPABI | 记录具体拒绝路径的根因证据，并经单独授权完成受控真实闭环 |
+
+当前优先级为：修复已证实回归和测试合同 → 验收现有可恢复主链路 → 落地受限多目标提案 → 逐项扩展输入与执行能力。两个已有 outbox 继续负责跨 WorkTask 交接；通用 TaskStep 后继准备仅在明确的同任务多步骤场景需要时排期，不作为现有预处理→分析流程的前置依赖。
+
+### 里程碑一进度（2026-11-10）
+
+- 0014-R1 已完成：选择命令、前端和继续/读出口统一使用服务端 `analysis_selection_available`；冻结目标在 `waiting_review`/`waiting_run` 的恢复与读出口回归通过。
+- 0014-R2 已完成规则层：已选分析目标的参数补充留在 Analysis，明确新建预处理和诊断请求仍进入预处理；生产规则测试不调用模型。
+- 0014-R3 已完成：解耦后的服务/仓储能力对象测试合同、真实历史迁移夹具、前端分域 API 模拟和 workspace 隔离均已修正；后端 1820 passed、覆盖率 85.29%，前端 318 passed，全量静态检查通过。相关证据、覆盖率范围和未验证项见 [MVP 验证记录](../development/mvp-verification.md#2026-11-10-计划-0014-r1r3-稳定性修复与全量门禁)。
+- 0014-R4、0014-R5、0014-R6 仍未完成：预算归属核对、本机 MATLAB 启动拒绝根因和主链路恢复矩阵均未取得新证据。里程碑一不因 R1–R3 通过而整体完成。
+
+### 里程碑一：恢复稳定性并收口现有主链路
+
+先完成以下工作；每项分别记录代码、回归证据和未验证范围，不以文档调整代替修复。
+
+| 工作项 | 实施范围与约束 | 完成条件 |
+| --- | --- | --- |
+| 0014-R1 冻结目标恢复 | 修复 `select_composite_goal` 与前端选择条件对 `waiting_review`/`waiting_run` 的遗漏；共用经权威证据核验的选择资格，避免前后端独立维护不一致的状态名单 | 待审 Plan、已批准未启动、queued/running Run、等待结果及完成目标均能按精确身份恢复；错来源、过期输入和不可恢复状态继续拒绝；选择不创建 Plan/Run |
+| 0014-R2 续聊与新目标边界 | 对已选 intent 的参数补充保持身份；明确新预处理意图仍进入新任务。修正路由测试替身遗漏 `has_selected_analysis_goal` 的合同，并用生产路由规则/Mock Provider 分别验证模糊请求 | “补充 ALFF，调整阈值”“继续”和明确新建请求覆盖两类路径；未选目标及其它角色的来源不得进入当前草稿；无真实 Provider 依赖 |
+| 0014-R3 回归门禁 | 前端测试按组件实际依赖模拟 API；隔离 workspace 内存与存储。迁移测试从真实历史 schema 升级，禁止在最新 schema 上仅改 Alembic 版本号伪造旧库；逐项核查 Work 对话断言 | 本轮 11 项后端失败、14 项前端失败均有归因和修复证据；相关回归通过后运行最终树全量门禁，不删除用例或放宽科学/权限校验 |
+| 0014-R4 预算与当前事实 | 核对 admission、前台生成/续聊、路由、修复回退及两类 outbox 的模型调用入口；记录哪些使用回合预算、哪些同时使用持久目标预算 | 归属明确，重放不重复收费，耗尽不派发；既有目标切走前的 AUTO 路由边界有单独说明和测试，不再沿用“仅两个后台 outbox 已接入”的过期描述 |
+| 0014-R5 MATLAB 启动阻断 | 在相同 Worker 身份下定位被拒绝的真实路径或启动资源；保留脱敏诊断证据，依据根因提出最小修复。不得依据通用错误码猜测目录、全局放宽权限或自动重试 | 根因可复现且处理后通过单独授权的轻量启动验证；再按明确授权范围验收科研运行。环境未解决时保持真实验收待完成 |
+| 0014-R6 主链路与恢复 | 复用既有 CompositeGoal、两个 outbox、用户审批/QC 和 Worker，不新增跨目标状态机；分别验收内部来源与已有外部指标 analysis-only 路径 | 以下恢复矩阵通过；真实计算、模型质量和 Mock 交互证据分开记录 |
+
+首个内部来源闭环限定于当前支持的单 session 输入、已审核指标/参数组合及既有统计方法。研究者仍明确决定分组、方法、阈值、纳入、QC 和每次 Run 启动。不得把 ALFF/fALFF/ReHo 的所有组合、批量 metric-only 或多 session 自动推入验收范围。analysis-only 使用一个明确选定、已纳入的外部指标来源。
+
+| 必验场景 | 操作与可观察结果 |
+| --- | --- |
+| 内部来源完整路径 | Work 数据调查与预检 → 用户审查/启动预处理 → 明确 QC → 自动准备统计提案 → 用户冻结/批准/启动统计 → 自动解释真实结果；阶段间无需发送“继续” |
+| 已有外部指标路径 | 明确来源与纳入修订 → 分析草稿/用户科学决定 → 审批/启动 → 真实结果解释；不伪造预处理 Task 或 proposal outbox |
+| 重启与关闭页面 | 在运行等待、QC 等待、outbox READY、模型生成中、结果待登记及解释提交后分别关闭页面或重启相关服务；恢复同一身份和等待原因 |
+| 故障与重放 | 重复/乱序事件、HTTP 响应丢失、租约丢失及旧模型回复不会重复创建 Plan、Approval、Run、目标或 continuation；失效结果不能提交 |
+| 多目标并行准备 | 同来源两个显式分析目标分别准备；切换前台后迟到回复不覆盖当前选择；冻结目标可恢复，续聊只修改所选目标 |
+| 用户决定与证据变化 | 用户修订、manifest/来源变化、QC 未决定、模型预算耗尽分别进入准确等待/阻断；旧确认不可复用，不自动换方法或样本 |
+| 零显著结果 | 作为有效结果完成解释/复现报告，不触发校正、阈值或对比变更 |
+
+里程碑一只有在代码修复、上述范围的确定性/Mock 验收、最终树质量门禁和相应授权真实证据均完成时才可收口。真实 MATLAB 仍受环境阻断时，开发验证可独立记录为通过，但整体仍保持待完成；历史单受试者成功或本轮 Provider 连接成功不能替代该证据。
+
+### 里程碑二：受限的多分析目标提案
+
+先评审 [ADR 0053 草案](../adr/0053-user-confirmed-multi-analysis-goal-proposals.md)，明确接受后再实现。其代码开发排在里程碑一收口之后；当前可并行开展合同评审。范围限定为显式选择同一预处理 Task/Run 的 2–8 项独立分析请求，保留每项目标的身份、预算和前台隔离。
+
+- 门禁顺序固定为精确会话/项目/Task/Run 身份校验 → 仅用本轮文字检测数量 → 单目标沿原登记语义，多目标再核验完成/QC/Artifact 来源。检测失败或歧义只澄清。
+- 提案 revision/hash 与来源 fingerprint 承担审阅身份；全会话 version 只用于并发写入和审计。无关后台消息不让整张提案自动失效，相关来源或内容变化必须失效。
+- 按合同/迁移、可刷新审阅、原子批量注册、已有消费者来源验证四条纵向切片实现；每条有失败与重放测试。确认前不创建子目标，确认时不创建 analysis WorkTask、Plan 或 Run。
+- 完成标准包括单目标旧客户端兼容、逐项审阅、全批回滚、双键并发防重、目标预算独立及后台不抢占前台。不得通过通用 TaskStep 或新增协调模型代替现有 outbox 边界。
+
+### 里程碑三：按具体能力扩展 C、D、E
+
+每项先证明用户场景和能力缺口，再独立排期：表驱动纳入与 subject 身份 → 明确的 session/run 结构 → 批量 verified checkpoint → 有实际物化证据的分段执行 → FC 等新能力。依赖顺序由输入/执行合同决定，不把这些工作合并为一次通用调度框架改造。未实现能力继续在提交计算前精确阻断。
+
+只有同一个 WorkTask 确实需要两个不同执行步骤时，才启用 READY 后继准备工作：必须同时具备生产任务创建入口、prepare consumer、类型化 handler、步骤审批/启动、完成推进和重启恢复测试；单独增加仓储/服务接口不构成可交付能力。跨 WorkTask 的预处理→分析与结果→解释仍使用已有 outbox。
 
 ## 验收标准
 
@@ -37,7 +104,7 @@
 需要补足的边界：
 
 - Agent loop 在一次模型请求内迭代读取；Work 对预处理/分析草稿提案动作提供有限的同轮预检修订。预处理 Skill 编译与 Work 统计设计装配已分别接入只读 dry-run，但执行前校验尚未统一成通用“反馈—补查—重验”应用服务；分析中的科研缺项继续等待用户决定。
-- `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 已开始承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。现有 Worker 已接入带独立租约和 fencing token 的启动/周期扫描，可重核 Run、QC 决策和统计结果等待；目标预算累计、完整步骤恢复和下游自动准备仍未完成。
+- `ConversationWorkTaskView` 继续保存前台角色指针；独立 `WorkTask/TaskStep` 承载用户目标、等待条件、完成条件和权威引用，并纵向接入预处理 Plan 与统计提案/Plan/Run。Worker 已接入带独立租约和 fencing token 的启动/周期扫描；累计预算覆盖显式 admission、已接入前台路径及两个 outbox，有限阶段交接已落地。冻结目标恢复有当前回归；完整步骤恢复、后继准备生产入口和全部模型调用的累计归属仍需收口。
 - 双向 handoff 记录和角色路由已实现；分析缺少上游指标时仍可能让用户手动切换角色继续。已能对已绑定运行、QC 决策、冻结预处理目标产物和统计结果做自动重核；显式复合请求可经持久 outbox 自动准备统计草稿。用户现在可以明确选择一个预处理 WorkTask/Run，为同一来源登记多个独立分析目标；真实统计结果解释也可由独立 outbox 自动续接。把单条自然语言自动拆成多个目标及更广范围的完整目标恢复仍待实现。
 - `SkillResolver` 以有限指标组合选择 Skill。数据扫描能够看到的实体、session/run 和已有中间阶段与执行器实际支持范围仍有差距。例如主预处理单 session，metric-only checkpoint 目前限单主体。
 - 外部指标目录仍以显式组/条件导入为主；单组目录现可登记为一个纳入组并进入单样本候选，但多 session/run、人口学表驱动纳入和复杂重复测量结构仍未覆盖。
@@ -68,7 +135,7 @@
 
 跨循环的模型工作应采用“先验证、后生成、再 fenced 提交”的边界：应用服务先核验任务绑定和冻结输入，再在数据库事务外调用相应 Agent；最终提交前重新检查任务版本、claim/fencing token 和输入 hash。续接结果只产生可审查的 assistant 草稿或报告草稿；Plan 审批、统计运行、QC 决定仍走现有用户授权入口。任何失去租约、版本过期或证据不一致的生成结果都不得落库。此规则是阶段 B 下游续接实现的验收约束，细节与已接受 ADR 以 ADR 为准。
 
-落地顺序按依赖从低到高推进：
+架构依赖按以下顺序理解；具体开发顺序以本计划开头的三个里程碑为准，先修复和验收已经实现的路径：
 
 1. 先统一结构化预检问题、证据来源、可安全修订范围和停止原因，让预处理与分析角色共享一致反馈合同。
 2. 补全 WorkTask 的持久生命周期、事件去重/周期恢复、租约 fencing 和目标 Artifact 完成判定；将模型续接限定为证据核验后的提案生成，不让协调器代替审批或启动运行。
@@ -129,7 +196,7 @@ flowchart TD
 
 ### 阶段 B：持久任务推进与事件唤醒
 
-当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或状态与审查记录不一致时阻断。通用 Artifact 引用按 ID 解析并校验项目归属，可来自上游 Run。预处理成功且 QC 已批准或显式跳过时，会按冻结 SkillPlan/manifest 推导的精确目标集合检查类型、路径、受试者、缩放、校验和及 lineage；全匹配后原子完成步骤与 WorkTask，缺失或矛盾时阻断。统计结果仍按类型专属合同核验。Worker 仅额外恢复绑定同一 Run 的预处理 `downstream` 旧等待；普通 dependency 不进入领取范围。协调器不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。复合请求现可经持久 outbox 自动准备 proposal-only 统计草稿，并在真实 StatisticalResult 登记后自动续接结果解释草稿；二者都不替用户审批设计或启动统计运行。多目标恢复仍未实现，因此本阶段尚未达到完整跨步骤自动化验收。
+当前状态：已完成 WorkTask/TaskStep 模型、SQLite schema/repository 和应用服务组合接线；事件消费有任务 Run 引用核对、去重回执、单调游标及乐观版本控制。`reconcile_waiting_run(task_id)` 已接入 Event、Run、QC 与 Artifact 现有应用端口：事件只提供去重身份和唤醒信号，之后重读权威状态。读取 Run/QC/Artifact 期间以 Run `version` 前后夹读；最多重试三次，持续变化时返回 `indeterminate` 并保留任务生命周期状态。运行中或 Worker 可重试状态保持等待同一 Run；`QC_REVIEW` 中 `pending`/`awaiting_review` 且审查记录尚无或为 `draft` 时，以及 `failed` 且最新审查为 `draft` 时转为 `waiting_user`；`failed` 缺少审查或状态与审查记录不一致时阻断。通用 Artifact 引用按 ID 解析并校验项目归属，可来自上游 Run。预处理成功且 QC 已批准或显式跳过时，会按冻结 SkillPlan/manifest 推导的精确目标集合检查类型、路径、受试者、缩放、校验和及 lineage；全匹配后原子完成步骤与 WorkTask，缺失或矛盾时阻断。统计结果仍按类型专属合同核验。Worker 仅额外恢复绑定同一 Run 的预处理 `downstream` 旧等待；普通 dependency 不进入领取范围。协调器不读事件 payload、不调用模型、不写 Plan/Approval/Run、不创建 Run，也不自动审批 QC。复合请求现可经持久 outbox 自动准备 proposal-only 统计草稿，并在真实 StatisticalResult 登记后自动续接结果解释草稿；二者都不替用户审批设计或启动统计运行。多目标选择及冻结目标恢复已有实现，但存在本轮已复现的选择状态回归；后继准备生产入口与完整跨步骤恢复仍缺，阶段整体尚未通过验收。
 
 阶段 B 提案续接 outbox（2026-10-14）：显式 `preprocess_then_analyze` intent 现在会在其预处理任务绑定冻结 Plan、manifest 与 Run 后创建唯一、幂等的 proposal-only outbox；请求正文仍只存在于会话 intent 消息，outbox 保存 intent ID 和正文 hash。只有冻结目标 Artifact 全部核验通过时，预处理任务完成与 outbox `pending → ready` 才在同一 SQLite Unit of Work 提交，并绑定精确核验过的 Artifact IDs。READY outbox 支持短租约和递增 fencing token。独立消费 Worker 会在模型调用前重新核验会话/项目、intent、Task/Plan/manifest/Run/QC、目标 Artifact 与 lineage；精确 allowlist 只包含这些目标 Artifact 及已核验的 lineage mask 依赖。模型在事务外调用，最终 assistant-only continuation、分析 WorkTask/提案和 outbox 终态在同一 UoW 以 fencing token 原子提交；重复消费幂等，证据在模型调用期间变化或租约失效会丢弃模型结果。模型只收到 QC、指标类型与数量、受试者数量及 mask 数量等有界摘要；逐项 Artifact ID、路径、checksum 与 lineage 不进入模型上下文，统计 assembler 继续使用服务端 allowlist。草稿需用户决策时进入 `WAITING_USER`，短暂错误有界退避并提供人工重试入口；硬证据冲突终态阻断。页面按 retry generation 恢复人工重试后的轮询，并隐藏过期一代的重试按钮。运行终态会立即刷新会话；成功运行仍有待续接 intent 时，页面立即读取并按指数间隔补读（1 秒起步、上限 60 秒），最多 16 次查询，覆盖至少 10 分钟后停止或在收到 continuation 时立即停止。消费者不阻塞现有 workflow job/reconciliation，不伪造 user message，不创建/批准统计 Plan 或 Run，也不运行 MATLAB。预处理-only 请求不会创建续接记录。具体合同见 [ADR 0041](../adr/0041-proposal-only-analysis-continuation-outbox.md)。
 
@@ -261,7 +328,7 @@ SQLite target 表已有每任务单目标和 `(target_kind, run_id)` 索引，�
 
 ### 阶段 B 多步骤准备链路接线审查（2026-10-15）
 
-实现审查发现，当前生产代码创建预处理或统计 WorkTask 时仍各自只创建一个 `sequence=0` 步骤；因此没有生产任务会产生 READY 后继供步骤准备 claim 领取。已提交的持久 claim 与 Plan-for-review 绑定仍是可由持久化测试验证的底座，还没有消费者或实际 Work 页面入口。
+实现审查发现，当前生产代码创建预处理或统计 WorkTask 时仍各自只创建一个 `sequence=0` 步骤；因此没有生产任务会产生 READY 后继供步骤准备 claim 领取。持久 claim 与 Plan-for-review 绑定是可由测试验证的底座，没有后继准备生产消费者。2026-10-21 已补齐精确步骤审查/批准/启动界面及接口，但未补齐 READY 后继创建，不能把审查入口已存在等同于多步骤生产闭环。
 
 显式 `preprocess_then_analyze` 目前由 identity-only `composite_goal_links`、预处理 WorkTask、proposal-only analysis outbox 和独立统计 WorkTask 分段表示。应继续保留这一阶段边界：预处理 WorkTask 只负责其 Run/QC/目标 Artifact 完成合同；分析 WorkTask 只在 outbox 基于已核验证据生成具体 proposal 后建立，并负责该 proposal 的 Plan/Run/结果合同。阶段之间通过精确绑定来源的 outbox 交接，不把统计草稿步骤再复制到预处理 WorkTask 的 TaskStep 中。步骤级 READY successor 仅用于同一个 WorkTask 生命周期内的线性步骤，不充当跨 WorkTask 调度器。
 

@@ -50,10 +50,10 @@
 .work-plan-region .draft-field-meta { font-size: 11px; gap: 2px 8px; }
 .work-plan-region .work-draft-panel > p { overflow-wrap: anywhere; line-height: 1.7; }
 @media (min-width: 1181px) {
-  .agent-shell.is-reviewing .conversation-panel { display: flex; flex-direction: column; height: calc(100dvh - 218px); min-height: 580px; }
+  .agent-shell.is-reviewing .conversation-panel { display: flex; flex-direction: column; min-height: 580px; }
   .is-reviewing .conversation-toolbar, .is-reviewing .work-folder { flex-shrink: 0; }
   .is-reviewing .work-folder { max-height: 30dvh; overflow: auto; }
-  .is-reviewing .work-review-layout.has-plan { flex: 1; min-height: 0; }
+  .is-reviewing .work-review-layout.has-plan { flex: none; height: min(82dvh, 800px); min-height: 0; grid-template-rows: minmax(0, 1fr); }
   .has-plan > .work-dialogue-region, .has-plan > .work-plan-region { height: 100%; max-height: 100%; }
   .has-plan > .work-plan-region { position: relative; top: auto; }
 }

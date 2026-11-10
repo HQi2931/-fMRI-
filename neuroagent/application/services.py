@@ -55,7 +55,7 @@ from neuroagent.application.service_mixins.environment import EnvironmentMixin
 from neuroagent.application.service_mixins.workspaces import WorkspaceMixin
 from neuroagent.application.settings import Settings
 from neuroagent.application.work_dialogue import WorkDialogue
-from neuroagent.application.work_routing import WorkAgentRouter
+from neuroagent.application.work_routing import WorkAgentRouter, WorkAgentRouterFactory
 from neuroagent.application.work_tools import (
     WorkToolRunner,
     build_work_dispatcher,
@@ -73,7 +73,6 @@ from neuroagent.chat.services import (
 from neuroagent.chat.tool_loop import ChatToolRunner
 from neuroagent.context.engine import ContextEngine
 from neuroagent.domain.fmri.skillpacks.builtin import build_builtin_registry
-from neuroagent.infrastructure.model_work_agent_router import ModelWorkAgentRouter
 from neuroagent.literature.chunker import ScientificChunker
 from neuroagent.literature.pdf_parser import PypdfParser
 from neuroagent.literature.ports import LiteratureRepository
@@ -143,6 +142,7 @@ class ApplicationServices:
         workspace_file_factory: Any | None = None,
         skill_registry: SkillRegistry | None = None,
         work_agent_router: WorkAgentRouter | None = None,
+        work_agent_router_factory: WorkAgentRouterFactory | None = None,
     ) -> None:
         self.settings = settings
 
@@ -231,13 +231,8 @@ class ApplicationServices:
         self.workspaces.model_gateway = self.models._model_gateway
         self.conversations.repository = conversation_repository
         self.conversations.automation = self.automation
-        self.conversations.work_agent_router = work_agent_router or ModelWorkAgentRouter(
-            generate=self.models._generate_rsfmri_chat,
-            small_profile_id=settings.work_router_small_profile_id,
-            fallback_profile_id=settings.work_router_fallback_profile_id,
-            timeout_seconds=settings.work_router_timeout_seconds,
-            minimum_confidence=settings.work_router_minimum_confidence,
-            max_request_tokens=settings.work_router_max_request_tokens,
+        self.conversations.work_agent_router = work_agent_router or self._build_work_agent_router(
+            work_agent_router_factory
         )
         self.external_imports.repository = external_import_repository
         self.projects.repository = project_repository
@@ -527,6 +522,17 @@ class ApplicationServices:
 
     def close(self) -> None:
         self.database.dispose()
+
+    def _build_work_agent_router(self, factory: WorkAgentRouterFactory | None) -> WorkAgentRouter:
+        """Build the router through the composition root's factory.
+
+        The application package does not import the infrastructure adapter that
+        calls providers; the composition root supplies it instead.
+        """
+
+        if factory is None:
+            raise ValueError("a work_agent_router or work_agent_router_factory is required")
+        return factory(self.models._generate_rsfmri_chat)
 
     async def _classify_chat_intent(self, request: ChatAgentRequest) -> str:
         routing_context = self.context_engine.build(

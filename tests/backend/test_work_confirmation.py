@@ -16,6 +16,7 @@ from neuroagent.bootstrap import build_service
 from tests.backend.test_environment import _fake_stack
 from tests.backend.test_science_agent_api import _minimal_preprocessing_payload
 from tests.backend.test_work_dialogue import configure, create, generated, turn
+from tests.backend.work_router_fakes import FakeWorkAgentRouter
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ def reviewed_work(tmp_path, monkeypatch):
             "rag_db_dir": None,
         }
     )
-    service = build_service(settings)
+    service = build_service(settings, work_agent_router=FakeWorkAgentRouter())
     values = _minimal_preprocessing_payload()
     values.pop("provenance")
     patch = {

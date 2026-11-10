@@ -3,7 +3,7 @@
 - 状态：Implementing
 - 文档类型：API
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-21
+- 更新日期：2026-10-26
 - 关联：[系统设计](../architecture/system-design.md)
 
 所有业务接口位于 `/api/v1`。当前路由的机器事实来源是 [OpenAPI 文档](../../web/openapi.json)；运行中的同一契约可从 `/api/v1/openapi.json` 读取。
@@ -11,6 +11,8 @@
 ## 通用规则
 
 ### Work 角色任务引用
+
+`GET /conversations/{conversation_id}/composite-goals` 为每个目标返回 `analysis_selection_available`。该布尔值与选择命令共用服务端进度资格判断，覆盖等待审查、等待已绑定 Run、等待用户/分析/解释及完成阶段；来源或关联无法核验、目标阻断以及分析提案预算耗尽时不提供入口。前端按该字段显示选择操作，不独立组合状态、outbox 或预算名单。它只是当前已核验快照的操作提示；提交仍重新核对会话版本、最新草稿、精确来源、Plan/Run 和 active attempt，不构成批准或执行授权。结果解释预算耗尽时仍允许只读查看已有分析。
 
 `POST /conversations/{conversation_id}/composite-goals/{intent_task_id}/select` 接受 `{expected_version}` 与 `Idempotency-Key`，返回 `ConversationView`。可选择当前有效的分析草稿，以及精确绑定冻结 Plan/Run 的目标；版本过期、草稿/来源/当前 attempt 或冻结身份不一致返回 409，跨会话/项目目标返回 404。未冻结目标恢复最新精确草稿；冻结目标按 Plan `work_context.proposal_message_id` 恢复原提案消息和 Task/Plan/Run 引用。该操作不重发提案、不创建方案或运行，也不构成审批或启动授权。幂等重放不再次切换前台；不同目标的后台续接不改该指针。冻结目标的自然语言及显式查询走只读入口；结果、进度和 QC 按精确统计 Run 查询，无 Run 时不允许通过 QC ID 读取其他运行。
 

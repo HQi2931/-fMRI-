@@ -1,12 +1,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { statisticsApi as api } from "../api/statistics";
 import { StatisticalClusterRoiPanel } from "./StatisticalClusterRoiPanel";
 
-vi.mock("../api/client", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../api/client")>(),
-  api: { statisticalClusterRoi: vi.fn() },
+vi.mock("../api/statistics", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/statistics")>(),
+  statisticsApi: { statisticalClusterRoi: vi.fn() },
 }));
 afterEach(() => cleanup());
 

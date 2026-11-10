@@ -13,6 +13,7 @@ BASELINE_COMMIT = "a1ef4ae"
 CONCRETE = {
     "neuroagent/infrastructure/persistence/repository.py": "SqliteRepository",
     "neuroagent/infrastructure/persistence/sqlite_adapter.py": "SqliteAdapterMixin",
+    "neuroagent/infrastructure/persistence/repository_mappers.py": "RepositoryMapperMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/idempotency.py": "IdempotencyMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/projects.py": "ProjectDatasetMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/plans.py": "PlanApprovalMixin",
@@ -22,6 +23,7 @@ CONCRETE = {
     "neuroagent/infrastructure/persistence/repository_mixins/artifacts.py": "ArtifactCatalogMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/events.py": "RuntimeEventMixin",
     "neuroagent/infrastructure/persistence/repository_mixins/models.py": "ModelAgentMixin",
+    "neuroagent/infrastructure/persistence/repository_mixins/literature.py": "LiteratureMixin",
 }
 
 # The split was meant to be behaviour-preserving, so any baseline method whose
@@ -59,6 +61,26 @@ INTENTIONAL_BOUNDARY_CHANGES = {
     # Frozen manifests now expose the explicitly confirmed DPABI stage and
     # candidate rule metadata in addition to the historical subject fields.
     "_manifest",
+    # The transaction context manager now delegates writer locking to the shared
+    # SqliteUnitOfWork instead of opening a session on the repository itself.
+    "atomic",
+    # Only the owning mixin's class name changed in the ``_statistical_result_view``
+    # reference; the returned fields are identical.
+    "_statistical_result_detail",
+    # The session helper now delegates to the shared unit of work so capability
+    # repositories can join the caller's transaction.
+    "_write_session",
+    # Event pagination gained a bounded read-only ``limit``; ordering and the
+    # returned fields are unchanged.
+    "list_events",
+}
+
+
+# Methods that moved to the shared :class:`SqliteUnitOfWork` instead of a
+# repository mixin.  The behavior (BEGIN IMMEDIATE writer locking) is preserved
+# but it is now a transaction-boundary concern, so it is not in ``CONCRETE``.
+MOVED_TO_UNIT_OF_WORK = {
+    "_immediate_write_transaction",
 }
 
 
@@ -89,6 +111,15 @@ def _class_methods(source: str, class_name: str) -> dict[str, str]:
         node.name: ast.dump(node, include_attributes=False)
         for node in cls.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        # An abstract ``...`` declaration is a cross-mixin protocol stub, not a
+        # second implementation of the same persisted behavior.
+        and not (
+            node.body
+            and all(
+                isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+                for statement in node.body
+            )
+        )
     }
 
 
@@ -145,6 +176,6 @@ def test_repository_split_preserves_baseline_methods_exactly() -> None:
         assert not overlap, f"duplicate repository methods: {sorted(overlap)}"
         found.update(methods)
 
-    assert set(baseline).issubset(found)
-    unchanged = set(baseline) - INTENTIONAL_BOUNDARY_CHANGES
+    assert set(baseline) - MOVED_TO_UNIT_OF_WORK <= set(found)
+    unchanged = set(baseline) - INTENTIONAL_BOUNDARY_CHANGES - MOVED_TO_UNIT_OF_WORK
     assert {name: found[name] for name in unchanged} == {name: baseline[name] for name in unchanged}

@@ -1,5 +1,5 @@
-import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   resetWorkspace,
@@ -12,6 +12,8 @@ import {
 const STORAGE_KEY = "rsfmri-workspace-v1";
 
 describe("workspace pointer", () => {
+  afterEach(cleanup);
+
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();

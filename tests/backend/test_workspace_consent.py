@@ -81,13 +81,31 @@ def install_gateway(
     service: ApplicationServices,
     gateway: ProbeGateway,
 ) -> None:
-    monkeypatch.setattr(service.models, "_model_gateway", lambda: gateway)
+    # The workspace capability binds its gateway callable at construction, so the
+    # probe must be replaced on that capability rather than on the model mixin.
+    monkeypatch.setattr(service.workspaces, "model_gateway", lambda: gateway)
 
 
 def enable_workspace_assistant(service: ApplicationServices) -> None:
-    service.settings = service.settings.model_copy(
+    # Capabilities bind settings at construction, so a test that changes the
+    # salt must update every capability the consent path reads through.
+    settings = service.settings.model_copy(
         update={"redaction_salt": "synthetic-test-redaction-salt"}
     )
+    service.settings = settings
+    for name in (
+        "environment",
+        "workspaces",
+        "conversations",
+        "external_imports",
+        "projects",
+        "plans",
+        "skills",
+        "statistics",
+        "runs",
+        "models",
+    ):
+        getattr(service, name).settings = settings
 
 
 @pytest.mark.asyncio

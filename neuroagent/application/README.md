@@ -3,14 +3,14 @@
 - 状态：Implementing
 - 文档类型：Architecture
 - 维护者：backend_service_engineer
-- 更新日期：2026-10-22
+- 更新日期：2026-10-26
 - 关联：[系统设计](../../docs/architecture/system-design.md)、[目标架构](../../docs/architecture/target-architecture.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 `neuroagent.application` 编排完整用例：数据检查、方案构建与审批、运行提交、QC 审核、统计设计与结果登记。它持有事务边界和权限检查，不实现影像算法。
 
 当前能力：
 
-- 分析角色槽通过 `analysis_intent_task_id` 保存当前复合目标。选择服务只恢复目标最新的未冻结草稿/提案，保留原始消息 ID；较新不完整草稿清除旧提案资格。后台不同目标的续接仍登记独立消息/任务/outbox，但不覆盖当前角色槽；草稿、历史、交接、来源上下文按目标过滤。已有 Plan/Run 的目标恢复尚不在该入口范围，见 [ADR 0046](../../docs/adr/0046-composite-goal-foreground-selection.md)。
+- 分析角色槽通过 `analysis_intent_task_id` 保存当前复合目标。选择服务恢复最新未冻结草稿/提案，或按冻结 Plan 的原提案消息与精确 Task/Run 恢复只读目标；较新不完整草稿清除旧提案资格。进度的 `analysis_selection_available` 与选择命令共用资格判断，包含等待审查和等待已绑定 Run，前端不独立推断状态资格；命令继续重核最新身份和会话版本。后台不同目标的续接不覆盖当前角色槽；草稿、历史、交接及来源上下文按目标过滤。见 [ADR 0046](../../docs/adr/0046-composite-goal-foreground-selection.md) 与 [ADR 0047](../../docs/adr/0047-frozen-analysis-goal-restoration.md)。
 
 - Work 草稿绑定快速输入修订；发现变化后撤回事实状态并阻止旧确认，保留用户参数。新编译须重新读取受影响事实并冻结输入，旧请求的持久化响应仍可重放。历史未绑定修订草稿及完整恢复交互继续按计划验收。
 - 输入失效反馈提供明确的阶段重确认选项，确认接口允许该恢复操作并复查实时阶段与路径；重新冻结不能自动恢复采集事实，必须附本轮成功读取证据。历史带事实却未绑定修订的草稿同样撤回核实状态。
@@ -22,7 +22,7 @@
 - T1 重定向、裁剪与后续分割/DARTEL 合并为一次预处理运行；不再提供独立准备或中途审查 API；
 - Work 参数面板通过幂等 PATCH 编辑草稿，保存不调用模型；版本冲突拒绝，草稿修改使旧确认失效；
 
-- `services.py` 作为应用组合根显式装配环境、工作区、对话、项目、计划、运行、统计、技能、模型与外部导入等能力对象，不再通过多重继承组合用例，也不提供动态兼容转发。公共用例端口通过 `BaseServiceMixin.bind_shared_dependencies()` 显式绑定；跨能力服务及查询协作者单独注入。应用服务管理 `PlanRevision` 生命周期与追加式审批记录；
+- `services.py` 作为应用组合根显式装配环境、工作区、对话、项目、计划、运行、统计、技能、模型与外部导入等能力对象，不再通过多重继承组合用例，也不提供动态兼容转发。公共用例端口通过 `BaseServiceMixin.bind_shared_dependencies()` 显式绑定；跨能力服务及查询协作者单独注入。Work 角色路由适配器通过 `WorkAgentRouterFactory` 由组合根提供，`application` 不导入 `infrastructure` 的 Provider 路由器。应用服务管理 `PlanRevision` 生命周期与追加式审批记录；
 - `contracts/` 按项目、计划、运行、统计、Agent、对话等能力拆分应用 DTO；所有生产、测试和脚本导入均指向 DTO 所属模块，`contracts/__init__.py` 不再聚合重导出。HTTP 请求 schemas 位于 `api/schemas/` 并通过显式 mapper 转成应用命令；响应模型独立位于 `api/responses/`，由 HTTP 边界 mapper 转换。`ports.py` 声明执行器和环境端口，`repository_ports.py` 按能力拆分数据仓储协议，并把 `IdempotencyStorePort` 与 `EventRepositoryPort` 独立注入。Projects、Plans、External Imports、Models、Literature、Conversations、Workspace、Runs、QC 与 Artifact Catalog 使用共享 Unit of Work 的 SQLite adapter；Skills 只使用 Plan 写端口，Statistics 通过 Project、Plan、Run、Conversation、External Import、QC 与 Artifact 端口组合。Worker host 使用窄 `WorkerHostRepositoryPort` 和独立 `SqliteWorkerRepository`，在共享 Unit of Work 内原子完成 Artifact/QC 登记；旧 `RepositoryPort` 只留给迁移兼容调用；
 - `conversation_work.py`、`work_dialogue.py`、`work_draft.py` 把 Work 自然语言收敛为受限动作与未批准草稿；
 - `statistics_draft.py` 只负责统计设计的取值来源与顺序，科学校验仍由领域层负责；

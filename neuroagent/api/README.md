@@ -11,7 +11,7 @@
 当前能力：
 
 - `POST /skill-plans/dry-run` 使用与 resolve 相同的请求 DTO，只读运行 Skill Resolver、Validator 和 Compiler；支持预处理及调用方显式指定已登记输入 Artifact 的 metric-only 请求。metric-only 沿用冻结 manifest、来源 Plan、Artifact lineage 和单主体检查，不自动选择来源；响应不探测执行环境，不创建 Plan/Approval/Run 或事件。Work 页面仍没有 metric-only Artifact picker。
-- `POST /conversations/{conversation_id}/composite-goals/{intent_task_id}/select` 按会话版本和幂等键恢复未冻结分析草稿及原始提案消息引用。目标指针持久保存在现有角色 JSON；其他目标的后台续接不抢占前台。复合统计冻结请求必须传入精确 `proposal_message_id`，见 [ADR 0046](../../docs/adr/0046-composite-goal-foreground-selection.md)。
+- `GET /conversations/{conversation_id}/composite-goals` 返回服务端统一判断的 `analysis_selection_available`；选择入口覆盖等待审查、等待运行及已有恢复状态。`POST /conversations/{conversation_id}/composite-goals/{intent_task_id}/select` 按会话版本、幂等键和精确来源恢复未冻结草稿或冻结 Plan/Run，不批准或启动计算。目标指针保存在现有角色 JSON，其他目标的后台续接不抢占前台；冻结请求仍核验精确 `proposal_message_id`。见 [ADR 0046](../../docs/adr/0046-composite-goal-foreground-selection.md) 与 [ADR 0047](../../docs/adr/0047-frozen-analysis-goal-restoration.md)。
 
 - Work 提供独立的方案审查与确认接口；多步骤任务另有只读 `GET /conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review`，仅返回经持久任务、当前 READY 步骤和冻结 Plan 身份核验的审查 DTO，不批准 Plan、不签发执行授权或创建 Run。产物提供按编号校验的下载和有限图像预览；契约与阶段验证边界见 [API v1](../../docs/api/api-v1.md)。
 - 会话提供针对精确 intent ID 的分析 outbox 人工重试入口；它只重新排队可恢复的 proposal-only 草稿准备，依赖 `Idempotency-Key`，不确认统计方法或启动统计运行。

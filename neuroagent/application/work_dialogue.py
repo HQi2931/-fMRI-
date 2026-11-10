@@ -1652,7 +1652,10 @@ class WorkDialogue:
                 content: str, metadata: Mapping[str, Any]
             ) -> PlanningIssue | None:
                 nonlocal failure_stage
-                if metadata.get("stop_reason") is not None or metadata.get("finish_reason") == "length":
+                if (
+                    metadata.get("stop_reason") is not None
+                    or metadata.get("finish_reason") == "length"
+                ):
                     return None
                 failure_stage = "response_validation"
                 parsed = WorkInterpretation.model_validate_json(content)
@@ -1912,7 +1915,14 @@ class WorkDialogue:
                     lead + "\n".join(messages),
                     blocked_payload,
                 )
-            if interpreted.action == "prepare_preprocessing_plan":
+            if (
+                interpreted.action == "prepare_preprocessing_plan"
+                and feedback_state["validated_draft_hash"] is not None
+            ):
+                # Only replace the model patch after the feedback validator has
+                # actually assembled a candidate. Stage-selection and evidence
+                # waits skip that assembly; their patch still needs the normal
+                # constrained merge below rather than being silently discarded.
                 interpreted = interpreted.model_copy(
                     update={
                         "draft_patch": _changed_fields(
@@ -2217,6 +2227,7 @@ class WorkDialogue:
                 if (
                     reason
                     and not blocked
+                    and not feedback_state["blocked_patch"]
                     and not re.search(
                         r"(?:preprocessing|alff_falff|reho)\.[A-Za-z_]|\b[a-f0-9]{32,64}\b|workspace:[\w-]+|\bt1_segment\b",
                         reason,

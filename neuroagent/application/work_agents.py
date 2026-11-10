@@ -222,6 +222,17 @@ def starts_new_preprocessing_task(content: str) -> bool:
     )
 
 
+def is_analysis_goal_supplement(content: str) -> bool:
+    """Recognize parameter edits without converting a new preprocessing goal."""
+    return bool(
+        _DRAFT_EDIT_LANGUAGE.search(content)
+        and not _PREPROCESSING_PLAN_REQUEST.search(content)
+        and not _PREPROCESS_THEN_ANALYZE.search(content)
+        and not _PREPROCESSING_DIAGNOSTIC.search(content)
+        and not starts_new_preprocessing_task(content)
+    )
+
+
 def clear_analysis_intent_envelope(
     payload: dict[str, Any], *, conversation_id: str, project_id: str | None
 ) -> None:

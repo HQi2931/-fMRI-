@@ -142,7 +142,9 @@ class LocalEnvironmentConfigStore:
     def view(self, configuration: EnvironmentConfiguration | None = None) -> EnvironmentConfigView:
         value = configuration or self.configuration()
         return EnvironmentConfigView(
-            allowed_work_root=str(self._settings.allowed_work_root.expanduser().resolve(strict=False)),
+            allowed_work_root=str(
+                self._settings.allowed_work_root.expanduser().resolve(strict=False)
+            ),
             matlab_executable=str(value.matlab_executable) if value.matlab_executable else None,
             spm_dir=str(value.spm_dir) if value.spm_dir else None,
             dpabi_dir=str(value.dpabi_dir) if value.dpabi_dir else None,

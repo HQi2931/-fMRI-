@@ -702,13 +702,17 @@ class SqliteWorkTaskRepository(SqliteAdapterMixin):
     def _ensure_composite_goal_model_budget(
         session: Session, intent_task_id: str, source_budget: TaskBudget
     ) -> None:
-        row = session.execute(
-            text(
-                "SELECT max_steps, max_model_calls, max_tokens, max_elapsed_seconds "
-                "FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
-            ),
-            {"intent_id": intent_task_id},
-        ).mappings().first()
+        row = (
+            session.execute(
+                text(
+                    "SELECT max_steps, max_model_calls, max_tokens, max_elapsed_seconds "
+                    "FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
+                ),
+                {"intent_id": intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
         if row is not None:
             actual = (
                 row["max_steps"],

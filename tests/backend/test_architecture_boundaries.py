@@ -119,6 +119,9 @@ def test_production_web_features_do_not_import_the_aggregate_api_client() -> Non
         if path == ROOT / "web/src/api/client.ts":
             continue
         source = path.read_text(encoding="utf-8")
-        if re.search(r'from ["\'][^"\']*(?:/api/client|/client)["\']', source):
+        if re.search(
+            r'from ["\'](?:\.|/)[^"\']*(?:/api/client|/client)["\']',
+            source,
+        ):
             offenders.append(str(path.relative_to(ROOT)))
     assert offenders == []

@@ -255,8 +255,9 @@ def test_new_incomplete_revision_cannot_restore_older_proposal(
 
 
 @pytest.mark.parametrize("phase", ["plan", "run"])
+@pytest.mark.parametrize("transport", ["service", "api"])
 def test_goal_selection_restores_formal_plan_or_run_context(
-    service, source_root, work_root, monkeypatch, phase
+    service, source_root, work_root, monkeypatch, phase, transport
 ):
     conversation_id, source, _ = _seed(service, source_root, work_root, monkeypatch, complete=True)
     conversation = _select(service, conversation_id, source.intent_task_id, "select-before-plan")
@@ -280,7 +281,27 @@ def test_goal_selection_restores_formal_plan_or_run_context(
             "select-mock-run",
         )
     before = service.conversations.get_conversation(conversation_id)
-    selected = _select(service, conversation_id, source.intent_task_id, "select-formal-context")
+    with TestClient(create_app(service=service)) as client:
+        progress = client.get(f"/api/v1/conversations/{conversation_id}/composite-goals")
+        assert progress.status_code == 200, progress.text
+        goal = next(
+            item for item in progress.json() if item["intent_task_id"] == source.intent_task_id
+        )
+        assert goal["status"] == ("waiting_review" if phase == "plan" else "waiting_run")
+        assert goal["analysis_selection_available"] is True
+        if transport == "api":
+            response = client.post(
+                f"/api/v1/conversations/{conversation_id}/composite-goals/"
+                f"{source.intent_task_id}/select",
+                headers={"Idempotency-Key": "select-formal-context"},
+                json={"expected_version": before.version},
+            )
+            assert response.status_code == 200, response.text
+    selected = (
+        service.conversations.get_conversation(conversation_id)
+        if transport == "api"
+        else _select(service, conversation_id, source.intent_task_id, "select-formal-context")
+    )
     assert work_task(selected, WorkAgentRole.ANALYSIS) == work_task(before, WorkAgentRole.ANALYSIS)
     assert selected.active_run_id == work_task(before, WorkAgentRole.ANALYSIS).run_id
     assert selected.messages == before.messages

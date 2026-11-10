@@ -258,18 +258,12 @@ class WorkModelRuntime:
         call_started = self._clock()
         generated: ChatGatewayResult | None = None
 
-        def generated_tokens(
-            result: ChatGatewayResult, estimated_call_tokens: int
-        ) -> int:
+        def generated_tokens(result: ChatGatewayResult, estimated_call_tokens: int) -> int:
             usage = result.response.usage
             total = usage.get("total_tokens", 0)
             components = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
             actual_tokens = (
-                total
-                if total > 0
-                else components
-                if components > 0
-                else estimated_call_tokens
+                total if total > 0 else components if components > 0 else estimated_call_tokens
             )
             retry_count = max(len(result.attempted_profile_ids) - 1, 0)
             if retry_count:

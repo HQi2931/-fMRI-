@@ -841,6 +841,11 @@
             "description": "Server-verified analysis Run ID while its run state is observable.",
             "title": "Analysis Run Id"
           },
+          "analysis_selection_available": {
+            "description": "Selection availability from the server-verified goal projection; selecting still revalidates the exact draft, source, Plan and Run and never authorizes execution.",
+            "title": "Analysis Selection Available",
+            "type": "boolean"
+          },
           "analysis_status": {
             "anyOf": [
               {
@@ -1050,7 +1055,8 @@
           "conversation_id",
           "project_id",
           "analysis_request_hash",
-          "status"
+          "status",
+          "analysis_selection_available"
         ],
         "title": "CompositeGoalProgressView",
         "type": "object"

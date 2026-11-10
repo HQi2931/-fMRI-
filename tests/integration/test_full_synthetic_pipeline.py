@@ -43,7 +43,10 @@ def test_full_synthetic_pipeline_is_auditable_and_non_scientific(tmp_path: Path)
 
     assert summary["plans"]["input"]["state"] == "approved"
     assert summary["plans"]["alff"]["state"] == "approved"
-    assert summary["plans"]["alff"]["skill_ids"] == ["rsfmri.metric.alff_falff"]
+    assert summary["plans"]["alff"]["skill_ids"] == [
+        "rsfmri.metric.alff_falff",
+        "rsfmri.preprocess.common",
+    ]
     assert summary["plans"]["statistics"] == {
         "plan_revision_id": summary["plans"]["statistics"]["plan_revision_id"],
         "state": "approved",

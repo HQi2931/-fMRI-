@@ -124,9 +124,12 @@ async def test_preprocessing_goal_and_budget_are_durable_before_gateway(
         goal.intent_task_id
     )
     assert service.automation.find_composite_goal(goal.intent_task_id).preprocessing_task_id is None
-    assert service.automation.get_composite_goal_progress(
-        conversation.conversation_id, goal.intent_task_id
-    ).status is CompositeGoalStatus.WAITING_PREPROCESSING
+    assert (
+        service.automation.get_composite_goal_progress(
+            conversation.conversation_id, goal.intent_task_id
+        ).status
+        is CompositeGoalStatus.WAITING_PREPROCESSING
+    )
 
 
 @pytest.mark.asyncio
@@ -153,8 +156,7 @@ async def test_admission_failure_replay_reuses_message_root_and_budget(
         current = service.automation.find_composite_goal(goal.intent_task_id)
         assert current == goal
         assert (
-            service.automation.get_composite_goal_model_budget(goal.intent_task_id).used_steps
-            == 0
+            service.automation.get_composite_goal_model_budget(goal.intent_task_id).used_steps == 0
         )
         stored = service.conversations.get_conversation(conversation.conversation_id)
         admitted = [
@@ -194,10 +196,13 @@ async def test_admission_failure_replay_reuses_message_root_and_budget(
     assert attempts == 2
     assert admitted_message_ids[0] == admitted_message_ids[1] == recovered.user_message.message_id
     stored = service.conversations.get_conversation(conversation.conversation_id)
-    assert sum(
-        message.role is ConversationRole.USER and message.content == _REQUEST
-        for message in stored.messages
-    ) == 1
+    assert (
+        sum(
+            message.role is ConversationRole.USER and message.content == _REQUEST
+            for message in stored.messages
+        )
+        == 1
+    )
     assert service.automation.find_composite_goal(goal.intent_task_id) == goal
 
 
@@ -305,9 +310,12 @@ async def test_admission_binds_exact_root_to_preprocessing_plan_and_task(
     assert task.authority_refs.analysis_intent_task_id == goal.intent_task_id
     assert task.authority_refs.analysis_request_hash == goal.analysis_request_hash
     assert task.authority_refs.plan_revision_id == plan_id
-    assert service.automation.get_composite_goal(
-        conversation.conversation_id, goal.intent_task_id
-    ).preprocessing_task_id == task_id
+    assert (
+        service.automation.get_composite_goal(
+            conversation.conversation_id, goal.intent_task_id
+        ).preprocessing_task_id
+        == task_id
+    )
     assert (
         service.conversations.get_conversation(conversation.conversation_id).messages[1].message_id
         == admitted_message.message_id
@@ -422,14 +430,20 @@ def test_admission_rejects_project_hash_and_second_task_mismatches(
         )
 
     first = service.automation.create_task(task("composite-binding-task", plan_ids[0]))
-    assert service.automation.get_composite_goal(
-        conversation.conversation_id, goal.intent_task_id
-    ).preprocessing_task_id == first.task_id
+    assert (
+        service.automation.get_composite_goal(
+            conversation.conversation_id, goal.intent_task_id
+        ).preprocessing_task_id
+        == first.task_id
+    )
     with pytest.raises(ConflictError):
         service.automation.create_task(task("composite-binding-task-wrong", plan_ids[1]))
-    assert service.automation.get_composite_goal(
-        conversation.conversation_id, goal.intent_task_id
-    ).preprocessing_task_id == first.task_id
+    assert (
+        service.automation.get_composite_goal(
+            conversation.conversation_id, goal.intent_task_id
+        ).preprocessing_task_id
+        == first.task_id
+    )
     with pytest.raises(NotFoundError):
         service.automation.get_task("composite-binding-task-wrong")
 

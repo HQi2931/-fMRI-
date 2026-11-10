@@ -144,6 +144,11 @@ class ConversationTurnCreate(StrictHttpModel):
             )
         if self.external_analysis_import_id is not None and self.target_run_id is not None:
             raise ValueError("external analysis input cannot select a run")
+        if (
+            self.external_analysis_import_id is not None
+            and self.agent_role is WorkAgentRole.PREPROCESSING
+        ):
+            raise ValueError("external analysis input cannot select the preprocessing role")
         if self.preprocessing_task_id is not None and (
             self.target_run_id is None
             or self.action is not ConversationAction.AUTO

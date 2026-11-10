@@ -3,8 +3,64 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-10-26
+- 更新日期：2026-11-10
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-11-10 计划 0014 R1–R3 稳定性修复与全量门禁
+
+本轮在 `5f1f439` 及工作树已有的 R1 改动上继续修复，未调用真实 Provider、MATLAB 或 DPABI，未处理真实数据，也未接受 ADR 0053 或运行真实计算。
+
+修复内容：
+
+- R1：`resolve_selected_frozen_analysis`（继续/读出口）仍保留一份旧的等待状态名单，导致已冻结的 `waiting_review`/`waiting_run` 分析在读出口被拒绝。该门禁改用与选择命令相同的 `CompositeGoalProgress.analysis_selection_available`，两处不再各自维护状态名单；`test_frozen_analysis_readout.py` 恢复通过。
+- R2：生产路由规则新增 `selected_analysis_supplement`，已选分析目标下的参数补充留在 Analysis；明确新建预处理、预处理诊断和 `preprocess_then_analyze` 仍进入预处理。测试替身补齐 `has_selected_analysis_goal` 合同。
+- R3：按解耦后的能力对象修正测试合约，而不是删除断言：已移除的聚合服务方法改用 `service.projects`、`service.skills`、`service.runs`、`service.models`；幂等/统计仓储的故障注入改到能力实际使用的 `idempotency_store` 与 `artifact_repository`；Work 对话测试统一注入确定性路由替身；迁移用例从真实历史 revision 降级建库；仓储拆分合同忽略跨 mixin 的抽象声明，并登记移动到 `SqliteUnitOfWork` 的方法。
+- 解耦收口：`SqliteRepository` 重新接入 `LiteratureMixin`；应用层不再导入基础设施的 `ModelWorkAgentRouter`，默认路由器由组合根通过工厂注入；API DTO 映射保留字段别名（修复 `/corrections` 的 `schema_`/`schema` 校验失败）；外部指标来源与 `preprocessing` 角色互斥校验在应用与 HTTP 合同同时生效。
+- 合成演示：`scripts/synthetic-demo.py` 的 ALFF 阶段改用 preprocessing Skill 路径，以符合 metric-only checkpoint 的单主体执行边界，并保持 Mock、测试夹具注入和 non-scientific 标记不变。
+
+验证结果（本机、合成数据）：
+
+| 检查 | 实际结果 | 范围与限制 |
+| --- | --- | --- |
+| 后端全量 | `uv run pytest`：1820 passed、9 skipped，覆盖率 85.29%，达到 85% 门禁 | 默认安装与 Mock/Mock Provider；不是真实 Provider 或 MATLAB 验证 |
+| 前端全量 | `npm test`：28 个文件、318 项通过；`npm run test:coverage` 通过，语句 87.11%、分支 82.81%、函数 84.16%、行 91.04% | 组件测试使用 Mock API；不是真实浏览器人工验收 |
+| 前端静态与 E2E | `npm run lint`、`npm run typecheck`、`npm run build`、`npm run test:e2e`（7 项）通过；`npm audit --audit-level=high` 无 high/critical | 生产构建 423.19 kB（gzip 130.45 kB）；依赖审计仍报告 7 项 moderate，来自 eslint/typescript-eslint dev 依赖链 |
+| Python 静态 | `ruff format --check`、`ruff check`、`mypy neuroagent` 通过 | 313 个源码文件 |
+| 合成演示 | `tests/integration/test_full_synthetic_pipeline.py` 通过，ALFF 计划同时包含 `rsfmri.metric.alff_falff` 与 `rsfmri.preprocess.common` | 仍为 Mock 执行 + 测试夹具注入，不产生科学结果 |
+
+覆盖率门禁的范围变更记录在 `pyproject.toml`：排除 vendored 且仅由可选 `rag` extra 启用的 Chroma retriever、两个进程入口和原生目录选择适配器；这些模块在默认测试环境中不可有意义地执行。该调整不改变任何业务断言或科学/权限校验。
+
+仍未完成：R4 模型调用预算归属核对、R5 本机 MATLAB 启动拒绝的根因与授权复测、R6 主链路恢复矩阵与真实结果续接；ADR 0053 仍为 Proposed，本次未创建多目标提案代码。因此计划 0014 的里程碑一只是稳定性与门禁部分收口，不能被表述为整体完成。
+
+## 2026-10-26 计划 0014 进度复核
+
+审查基线提交为 `5f1f439`（`codex/optional-qc-workflow`）。当时存在文档索引改动及未跟踪的 Proposed ADR 0053；审查未改生产代码，未调用真实 Provider、MATLAB/DPABI 或重新处理演示数据。本节记录该代码基线的实测结果；之后的方案编辑不构成缺陷修复或完整质量门禁通过证据。
+
+| 检查 | 实际结果 | 范围与限制 |
+| --- | --- | --- |
+| 后端定向回归 | 323 passed、11 failed，共 334 项 | 下列 17 个模块；使用 `--no-cov`，不是全量后端或覆盖率验证 |
+| 前端全量 Vitest | 299 passed、14 failed，共 313 项；25 个文件通过、3 个失败 | `npm test -- --reporter=dot`；未运行 coverage、浏览器 E2E、构建或依赖审计 |
+| 失败独立复现 | 17 passed、6 failed，共 23 项 | selection 整模块及预算迁移单项；与上一行后端范围重叠，不相加 |
+| 文档与空白 | 93 份 Markdown 规范检查及 `git diff --check` 通过 | 这是审查时文档基线；后续方案修改需重新检查 |
+
+后端命令（仓库根目录）：
+
+```powershell
+.venv\Scripts\python.exe -m pytest --no-cov tests/backend/test_automation_core.py tests/backend/test_automation_service.py tests/backend/test_automation_persistence.py tests/backend/test_automation_worker_main.py tests/backend/test_step_readiness.py tests/backend/test_step_plan_review_api.py tests/backend/test_analysis_outbox_consumer.py tests/backend/test_result_interpretation_outbox.py tests/backend/test_composite_goal.py tests/backend/test_composite_goal_selection.py tests/backend/test_composite_goal_model_budget.py tests/backend/test_composite_goal_model_budget_runtime.py tests/backend/test_planning_feedback.py tests/backend/test_planning_feedback_loop.py tests/backend/test_work_preflight_feedback.py tests/backend/test_work_dialogue_feedback.py tests/backend/test_work_dialogue.py -q
+.venv\Scripts\python.exe -m pytest --no-cov tests/backend/test_composite_goal_selection.py tests/backend/test_composite_goal_model_budget.py::test_migration_backfills_budget_caps_from_existing_preprocessing_task -q --tb=short --show-capture=no
+```
+
+失败分类与交接：
+
+- 已确认功能回归：`test_goal_selection_restores_formal_plan_or_run_context[plan/run]` 两项失败。`select_composite_goal` 和前端选择条件遗漏已有进度判定新增的 `waiting_review`/`waiting_run`，合法冻结目标被拒绝或隐藏选择入口。应修复两端选择资格并保留深层来源校验。
+- `test_selected_goal_source_overrides_other_preprocessing_slot_and_packet[None/analysis]` 两项和 `test_continue_ignores_other_goal_pending_preprocessing_handoff` 一项失败。路由替身未传递已选分析目标上下文；同时需用生产路由验证一般参数补充与明确新目标的边界。当前证据不能据此断言正式统计已消费错误来源。
+- 预算回填迁移用例失败于 `duplicate column name: task_id`。该夹具先建立最新 schema、仅删除预算表并把 Alembic 版本标为 0030，导致 0036 重复加列；应从真实历史 revision 建库。此结果不证明真实历史数据库升级失败。
+- Work 对话 5 项失败：`test_planning_asks_only_unresolved_questions_and_labels_recommendation_reason[3]`、`test_page_selected_stage_gets_a_confirmation_without_model_stage_recommendation`、`test_confirmation_challenge_is_bound_and_one_time`、`test_work_uses_redacted_gateway_json_protocol`、`test_model_alff_draft_compiles_through_real_skill_validator_without_running`。逐项区分行为回归与路由/Gateway mock 合同，不以删除断言收口；无本机 Provider 配置时测试也应保持确定性。
+- 前端失败位于 `workspace.test.ts`、`StatisticalClusterRoiPanel.test.tsx`、`WorkStatisticalResults.test.tsx`。后两类仍模拟聚合 `api/client`，组件实际依赖已转为分域 API，出现 Node fetch 无法解析相对 `/api/...` 的错误；需修正模拟边界。workspace 旧存储迁移用例需核查内存/存储与订阅隔离，不能将所有失败都算作生产功能缺陷。
+
+代码与调用链复核还确认：正式预处理和统计 WorkTask 仍各只有一个 `sequence=0` 步骤；后继准备领取及 Plan 绑定没有生产消费者。累计预算已覆盖显式复合请求 admission、analysis-only 首次生成及已接入前台续聊、两个后台 outbox；普通无根 Work、既有目标的 AUTO 路由调用及未来阶段仍有归属边界。下文较早切片中的“仅后台 outbox 覆盖”“步骤审查尚未接线”等说明保留其历史时间范围，当前能力以[计划 0014 的汇总与里程碑](../plans/0014-general-agent-automation.md#当前交付状态与优先级2026-10-26)为准。
+
+方案更新后再次运行 `scripts/check-docs.ps1` 与 `git diff --check`，93 份文档规范及空白检查通过。该次只编辑计划、Proposed ADR、验证记录、索引日期与 CHANGELOG，未重新运行上述后端/前端测试；其失败状态保持不变，未接受 ADR、修改运行授权或执行真实作业。
 
 ## 2026-10-26 Work AUTO 分派来源提示
 

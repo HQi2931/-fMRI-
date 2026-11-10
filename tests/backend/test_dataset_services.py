@@ -631,7 +631,7 @@ def test_idempotent_mutation_rolls_back_if_response_persistence_crashes(
         source_roots=[str(source_root)],
         work_root=str(work_root / "atomic-idempotency"),
     )
-    original = service.repository.complete_idempotent_request
+    original = service.projects.idempotency_store.complete_idempotent_request
     calls = 0
 
     def crash_once(
@@ -647,7 +647,9 @@ def test_idempotent_mutation_rolls_back_if_response_persistence_crashes(
             raise RuntimeError("simulated response persistence crash")
         original(scope, key, request_hash, owner_token, response)
 
-    monkeypatch.setattr(service.repository, "complete_idempotent_request", crash_once)
+    monkeypatch.setattr(
+        service.projects.idempotency_store, "complete_idempotent_request", crash_once
+    )
     with pytest.raises(RuntimeError, match="response persistence crash"):
         service.projects.create_project(request, "atomic-idempotency-key")
     assert service.projects.list_projects() == []
@@ -697,7 +699,7 @@ def test_expired_orphaned_idempotency_reservation_is_reclaimed(
     created = service.projects.create_project(request, "orphaned-key")
     repeated = service.projects.create_project(request, "orphaned-key")
     with pytest.raises(ConflictError) as stale_owner:
-        service.repository.complete_idempotent_request(
+        service.projects.idempotency_store.complete_idempotent_request(
             "projects:create",
             "orphaned-key",
             request_hash,

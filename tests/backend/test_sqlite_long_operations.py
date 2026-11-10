@@ -158,7 +158,7 @@ def test_prepared_finalize_and_idempotency_response_commit_atomically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset_id, dataset_version = _registered_dataset(service, source_root, work_root)
-    original_complete = service.repository.complete_idempotent_request
+    original_complete = service.projects.idempotency_store.complete_idempotent_request
     calls = 0
 
     def crash_once(
@@ -174,7 +174,9 @@ def test_prepared_finalize_and_idempotency_response_commit_atomically(
             raise RuntimeError("simulated response persistence crash")
         original_complete(scope, key, request_hash, owner_token, response)
 
-    monkeypatch.setattr(service.repository, "complete_idempotent_request", crash_once)
+    monkeypatch.setattr(
+        service.projects.idempotency_store, "complete_idempotent_request", crash_once
+    )
     request = ManifestScanRequest(expected_dataset_version=dataset_version)
     with pytest.raises(RuntimeError, match="response persistence crash"):
         service.projects.inspect_dataset(dataset_id, request, "atomic-scan-finalize")

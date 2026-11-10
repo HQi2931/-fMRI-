@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat
 from neuroagent.agent.gateway import WORK_AGENT_ROUTING_SYSTEM_PROMPT
 from neuroagent.agent.redaction import OutboundPolicyError, reject_sensitive_work_context
 from neuroagent.application.errors import ApplicationError
+from neuroagent.application.work_agents import is_analysis_goal_supplement
 from neuroagent.application.work_routing import (
     WorkAgentRouteChoice,
     WorkAgentRoutingContext,
@@ -116,6 +117,12 @@ def route_work_agent_by_rules(
             else context.current_agent_role
         )
         return _rule_decision(role, "conversation_continuation")
+    if (
+        context.current_agent_role is WorkAgentRole.ANALYSIS
+        and context.has_selected_analysis_goal
+        and is_analysis_goal_supplement(normalized)
+    ):
+        return _rule_decision(WorkAgentRole.ANALYSIS, "selected_analysis_supplement")
     preprocessing = bool(_CLEAR_PREPROCESSING.search(normalized))
     analysis = bool(_CLEAR_ANALYSIS.search(normalized))
     if preprocessing == analysis:

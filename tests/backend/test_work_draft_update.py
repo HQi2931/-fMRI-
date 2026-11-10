@@ -96,7 +96,7 @@ def test_saved_edit_response_remains_replayable_after_input_change(service, sour
 
 def test_save_preserves_draft_and_is_idempotent(service, source_root, monkeypatch):
     provider = AsyncMock(side_effect=AssertionError("no provider"))
-    monkeypatch.setattr(service, "_generate_rsfmri_chat", provider)
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", provider)
     session, original = seed(service, source_root)
     body = {"base_hash": original, "patch": {"preprocessing": {"dummy_scans": 2}}}
     with TestClient(create_app(service=service)) as client:

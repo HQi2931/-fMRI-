@@ -393,16 +393,11 @@ def test_migration_backfills_budget_caps_from_existing_preprocessing_task(tmp_pa
     )
     database.dispose()
 
-    engine = create_engine(f"sqlite:///{path.as_posix()}")
-    try:
-        with engine.begin() as connection:
-            connection.execute(text("DROP TABLE composite_goal_model_call_reservations"))
-            connection.execute(text("DROP TABLE composite_goal_model_budgets"))
-            connection.execute(
-                text("UPDATE alembic_version SET version_num='0030_composite_goal_source_fanout'")
-            )
-    finally:
-        engine.dispose()
+    # Reconstruct a real historical schema, including later confirmation columns,
+    # rather than stamping a current database as though those migrations never ran.
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{path.as_posix()}")
+    command.downgrade(config, "0030_composite_goal_source_fanout")
 
     migrated_database = Database(f"sqlite:///{path.as_posix()}")
     migrated_database.initialize()

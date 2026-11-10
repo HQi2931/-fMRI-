@@ -21,6 +21,7 @@ from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
 from neuroagent.infrastructure.filesystem.workspace_files import WorkspaceFilePolicy
 from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.infrastructure.mock_executor import MockJobExecutor
+from neuroagent.infrastructure.model_work_agent_router import ModelWorkAgentRouter
 from neuroagent.infrastructure.persistence.artifact_catalog_repository import (
     SqliteArtifactCatalogRepository,
 )
@@ -167,6 +168,14 @@ def build_service(
         skill_registry=skill_registry,
         literature_repository=SqliteLiteratureRepository(resolved_database),
         work_agent_router=work_agent_router,
+        work_agent_router_factory=lambda generate: ModelWorkAgentRouter(
+            generate=generate,
+            small_profile_id=resolved_settings.work_router_small_profile_id,
+            fallback_profile_id=resolved_settings.work_router_fallback_profile_id,
+            timeout_seconds=resolved_settings.work_router_timeout_seconds,
+            minimum_confidence=resolved_settings.work_router_minimum_confidence,
+            max_request_tokens=resolved_settings.work_router_max_request_tokens,
+        ),
     )
 
 

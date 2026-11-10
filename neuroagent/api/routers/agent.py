@@ -167,6 +167,7 @@ def list_composite_goal_progress(
                 {
                     **item.goal.model_dump(mode="python"),
                     **item.model_dump(mode="python", exclude={"goal"}),
+                    "analysis_selection_available": item.analysis_selection_available,
                 }
                 for item in progress
             ],

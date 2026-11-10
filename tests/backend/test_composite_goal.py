@@ -279,6 +279,7 @@ def test_proposal_budget_exhaustion_has_a_specific_waiting_user_reason() -> None
     assert progress.status is CompositeGoalStatus.WAITING_USER
     assert progress.analysis_proposal_status == AnalysisOutboxStatus.WAITING_USER.value
     assert progress.reason_code == "analysis_proposal_model_budget_exhausted"
+    assert progress.analysis_selection_available is False
 
 
 def test_result_interpretation_budget_exhaustion_has_a_specific_waiting_user_reason() -> None:
@@ -303,6 +304,7 @@ def test_result_interpretation_budget_exhaustion_has_a_specific_waiting_user_rea
     assert progress.status is CompositeGoalStatus.WAITING_USER
     assert progress.result_interpretation_status == ResultInterpretationStatus.WAITING_USER.value
     assert progress.reason_code == "result_interpretation_model_budget_exhausted"
+    assert progress.analysis_selection_available is True
 
 
 def test_late_initial_attempt_cannot_project_goal_completion() -> None:
@@ -315,6 +317,7 @@ def test_late_initial_attempt_cannot_project_goal_completion() -> None:
 
     assert progress.status is CompositeGoalStatus.INDETERMINATE
     assert progress.reason_code == "analysis_task_reference_mismatch"
+    assert progress.analysis_selection_available is False
 
 
 @pytest.mark.parametrize(

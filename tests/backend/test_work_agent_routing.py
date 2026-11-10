@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from neuroagent.api.schemas.conversations import ConversationTurnCreate as ApiConversationTurnCreate
@@ -29,9 +31,45 @@ from neuroagent.application.work_routing import (
     WorkAgentRoutingDecision,
     WorkAgentRoutingStatus,
 )
+from neuroagent.infrastructure.model_work_agent_router import ModelWorkAgentRouter
 from neuroagent.multi_agent.registry import WorkAgentRole
 
 from .test_work_dialogue import configure, generated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("补充 ALFF，调整阈值。", WorkAgentRole.ANALYSIS),
+        ("把 FDR 阈值改为 0.03", WorkAgentRole.ANALYSIS),
+        ("修改当前方案的协变量", WorkAgentRole.ANALYSIS),
+        ("继续", WorkAgentRole.ANALYSIS),
+        ("创建新的 DPABI 预处理方案，参数沿用项目协议", WorkAgentRole.PREPROCESSING),
+        ("准备新的预处理方案", WorkAgentRole.PREPROCESSING),
+        ("检查当前预处理失败日志", WorkAgentRole.PREPROCESSING),
+    ],
+)
+async def test_production_router_keeps_selected_analysis_edits_but_allows_new_preprocessing(
+    content, expected
+):
+    generate = AsyncMock(side_effect=AssertionError("deterministic boundary must not call a model"))
+    router = ModelWorkAgentRouter(
+        generate=generate, small_profile_id="small", fallback_profile_id="fallback"
+    )
+    decision = await router.choose(
+        request_text=content,
+        context=WorkAgentRoutingContext(
+            current_agent_role=WorkAgentRole.ANALYSIS,
+            has_project=True,
+            has_bound_preprocessing_run=True,
+            has_selected_analysis_goal=True,
+        ),
+        persistent_model_budget=None,
+    )
+    assert decision.role is expected
+    assert decision.source == "rule"
+    generate.assert_not_called()
 
 
 @pytest.mark.parametrize("prior", ["preprocessing", "analysis"])

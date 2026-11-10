@@ -24,10 +24,14 @@ def localization_fixture(service, monkeypatch, tmp_path):
     nib.save(nib.Nifti1Image(values, np.eye(4)), path)
     detail = _detail(None)
     detail.run_id, detail.project_id = "atlas-run", "atlas-project"
-    monkeypatch.setattr(service.repository, "get_statistical_result", lambda _: detail)
-    monkeypatch.setattr(service.repository, "get_run", lambda _: SimpleNamespace())
-    monkeypatch.setattr(service.repository, "get_project", lambda _: SimpleNamespace())
-    monkeypatch.setattr(service.repository, "get_artifact", lambda _: SimpleNamespace())
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_statistical_result", lambda _: detail
+    )
+    monkeypatch.setattr(service.runs.repository, "get_run", lambda _: SimpleNamespace())
+    monkeypatch.setattr(service.runs.project_repository, "get_project", lambda _: SimpleNamespace())
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_artifact", lambda _: SimpleNamespace()
+    )
     monkeypatch.setattr(runs, "artifact_content_path", lambda *_: path)
     return detail, path
 

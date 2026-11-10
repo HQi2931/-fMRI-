@@ -503,7 +503,9 @@ def test_empty_corrected_result_skips_atlas_space_checks_and_reports_no_localiza
         manifest=manifest.model_dump(mode="json"),
         bundle_hash="c" * 64,
     )
-    monkeypatch.setattr(service.repository, "get_statistical_result", lambda _result_id: detail)
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_statistical_result", lambda _result_id: detail
+    )
 
     localized = service.runs.localize_statistical_result("empty-corrected-result", "missing-atlas")
 

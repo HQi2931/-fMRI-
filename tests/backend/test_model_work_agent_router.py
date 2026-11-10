@@ -48,9 +48,11 @@ def _result(
     model: str = "qwen3.8-flash",
     profile_id: str = "qwen-router-small",
 ) -> Any:
-    content = content or ("not json" if malformed else (
-        '{"agent_role":' + f'"{role}","confidence":{confidence}' + "}"
-    ))
+    content = content or (
+        "not json"
+        if malformed
+        else ('{"agent_role":' + f'"{role}","confidence":{confidence}' + "}")
+    )
     return SimpleNamespace(
         response=SimpleNamespace(
             content=content,

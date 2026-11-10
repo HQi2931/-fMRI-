@@ -84,7 +84,7 @@ async def test_final_owner_fence_precedes_business_finalization(
         return _Response(value=value)
 
     monkeypatch.setattr(
-        service.repository,
+        service.projects.idempotency_store,
         "renew_idempotent_request",
         lambda *_args, **_kwargs: False,
     )

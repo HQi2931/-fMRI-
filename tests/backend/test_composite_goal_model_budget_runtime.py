@@ -388,8 +388,9 @@ def test_fallback_provider_timeout_is_capped_by_reserved_goal_elapsed() -> None:
     assert budget.settlements[0][1] >= 1
 
 
-def test_invalid_final_json_uses_one_explicit_no_tool_deepseek_repair_and_aggregates_budget(
-) -> None:
+def test_invalid_final_json_uses_one_explicit_no_tool_deepseek_repair_and_aggregates_budget() -> (
+    None
+):
     budget = _PersistentBudget()
     first = _generated(
         tokens=12,

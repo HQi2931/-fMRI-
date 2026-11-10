@@ -196,6 +196,30 @@ class CompositeGoalProgress(BaseModel):
     continuation_message_id: str | None = None
     reason_code: str | None = None
 
+    @property
+    def analysis_selection_available(self) -> bool:
+        """Offer selection from verified progress; the command rechecks full authority."""
+
+        if (
+            self.status
+            not in {
+                CompositeGoalStatus.WAITING_REVIEW,
+                CompositeGoalStatus.WAITING_RUN,
+                CompositeGoalStatus.WAITING_USER,
+                CompositeGoalStatus.WAITING_ANALYSIS,
+                CompositeGoalStatus.WAITING_RESULT_INTERPRETATION,
+                CompositeGoalStatus.COMPLETED,
+            }
+            or self.reason_code == "analysis_proposal_model_budget_exhausted"
+        ):
+            return False
+        if self.goal.goal_kind == "analysis_only_external_import":
+            return True
+        return self.analysis_proposal_status in {"waiting_user", "proposal_ready"} and (
+            self.goal.analysis_work_task_id is not None
+            or (self.analysis_status is None and self.analysis_proposal_status == "waiting_user")
+        )
+
 
 class CompositeGoalHandoffAction(StrEnum):
     NONE = "none"

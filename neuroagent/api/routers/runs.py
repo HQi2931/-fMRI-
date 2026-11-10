@@ -141,11 +141,10 @@ def diagnose_latest_run(
     result = capability_from(request, "runs").diagnose_latest_run(
         run_id, expected_attempt=expected_attempt, include_attempt=True
     )
-    attempt = int(result["attempt"])
     return cast(
         RunDiagnosisView,
         to_http_response(
-            {"run_id": run_id, "attempt": attempt, "diagnosis": result["diagnosis"]},
+            {"run_id": run_id, "attempt": result["attempt"], "diagnosis": result["diagnosis"]},
             RunDiagnosisView,
         ),
     )

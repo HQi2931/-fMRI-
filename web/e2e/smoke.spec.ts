@@ -37,6 +37,8 @@ async function installConversationApi(page: Page, options: { dropStartResponse?:
     if (path.endsWith("/health")) return json(route, { status: "ok", database: "ok" });
     if (path.endsWith("/conversations") && request.method() === "GET") return json(route, [conversation()]);
     if (path.endsWith("/model-profiles")) return json(route, []);
+    if (path.endsWith("/composite-goals")) return json(route, []);
+    if (path.endsWith("/step-plan-reviews")) return json(route, { items: [], truncated: false });
     if (path.endsWith("/conversations/work-e2e") && request.method() === "GET") return json(route, conversation());
     if (path.endsWith("/conversations/work-e2e/turns") || path.endsWith("/conversations/work-e2e/work-confirmation")) {
       const isConfirmation = path.endsWith("/work-confirmation");

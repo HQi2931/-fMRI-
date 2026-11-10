@@ -60,6 +60,8 @@ function compositeGoal(status: string, intentTaskId: string, reasonCode: string 
     result_interpretation_status: null,
     continuation_message_id: null,
     reason_code: reasonCode,
+    analysis_selection_available: ["waiting_user", "waiting_review", "waiting_run", "waiting_analysis", "waiting_result_interpretation", "completed"].includes(status)
+      && reasonCode !== "analysis_proposal_model_budget_exhausted",
   };
 }
 
@@ -1020,7 +1022,7 @@ describe("agent workbench page", () => {
       { ...compositeGoal("waiting_analysis", "goal-running"), analysis_status: "waiting_run" },
       { ...compositeGoal("waiting_result_interpretation", "goal-result"), analysis_status: "completed" },
       { ...compositeGoal("completed", "goal-complete"), analysis_status: "completed" },
-      { ...compositeGoal("waiting_user", "prep-only"), analysis_work_task_id: null, analysis_proposal_status: "pending", analysis_status: null },
+      { ...compositeGoal("waiting_user", "prep-only"), analysis_work_task_id: null, analysis_proposal_status: "pending", analysis_status: null, analysis_selection_available: false },
     ];
     const select = vi.fn(() => json(conversation({ foreground_agent_role: "analysis" })));
     installFetch({ compositeGoals: () => json(goals), selectCompositeGoal: select });
@@ -1030,6 +1032,48 @@ describe("agent workbench page", () => {
     expect(within(screen.getAllByRole("article")[4]).queryByRole("button")).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "查看此分析" })[2]);
     await waitFor(() => expect(select).toHaveBeenCalledWith("goal-complete", expect.anything()));
+  });
+
+  it.each([
+    ["waiting_review", "waiting_user", false],
+    ["waiting_run", "waiting_run", false],
+    ["waiting_review", "waiting_user", true],
+    ["waiting_run", "waiting_run", true],
+  ] as const)("restores a frozen analysis in %s (%s, external=%s)", async (status, analysisStatus, external) => {
+    const goal = external
+      ? externalAnalysisGoal(status, "frozen-target", "analysis_plan_review")
+      : compositeGoal(status, "frozen-target", "analysis_plan_review");
+    const select = vi.fn((intentTaskId: string, init?: RequestInit) => {
+      expect(intentTaskId).toBe("frozen-target");
+      expect(JSON.parse(String(init?.body))).toEqual({ expected_version: 1 });
+      return json(conversation({ foreground_agent_role: "analysis", version: 2 }));
+    });
+    installFetch({
+      compositeGoals: () => json([
+        { ...goal, analysis_status: analysisStatus },
+        { ...compositeGoal("waiting_review", "preprocessing-review"), analysis_work_task_id: null, analysis_proposal_status: null, analysis_status: null, analysis_selection_available: false },
+      ]),
+      selectCompositeGoal: select,
+    });
+    render(<AgentPage />);
+    const button = await screen.findByRole("button", { name: analysisStatus === "waiting_user" ? "继续此分析" : "查看此分析" });
+    const cards = within(screen.getByRole("region", { name: "自动化流程进度" })).getAllByRole("article");
+    expect(within(cards[1]).queryByRole("button")).not.toBeInTheDocument();
+    fireEvent.click(button);
+    await waitFor(() => expect(select).toHaveBeenCalledWith("frozen-target", expect.anything()));
+  });
+
+  it("does not offer restoration when the server cannot verify an apparently selectable target", async () => {
+    const select = vi.fn();
+    installFetch({
+      compositeGoals: () => json([{ ...compositeGoal("waiting_user", "unverified-target"), analysis_summary: "来源待核验的分析", analysis_status: "waiting_user", analysis_selection_available: false }]),
+      selectCompositeGoal: select,
+    });
+    render(<AgentPage />);
+    await screen.findByRole("heading", { name: "来源待核验的分析，需要你处理" });
+    expect(screen.queryByRole("button", { name: "继续此分析" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看此分析" })).not.toBeInTheDocument();
+    expect(select).not.toHaveBeenCalled();
   });
 
   it("keeps progress API errors separate from the conversation error and lets the user retry", async () => {
@@ -1945,8 +1989,8 @@ describe("agent workbench page", () => {
     render(<AgentPage />);
 
     const selector = await screen.findByLabelText("模型");
-    expect(screen.getByRole("option", { name: "api.deepseek.com · deepseek-v4-flash" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "api.deepseek.com · deepseek-flash" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "api.deepseek.com · deepseek-v4-flash" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "api.deepseek.com · deepseek-flash" })).toBeInTheDocument();
     expect(screen.getAllByRole("option", { name: "api.deepseek.com · deepseek-v4-pro" })).toHaveLength(1);
 
     await userEvent.selectOptions(selector, "deepseek:deepseek-v4-flash");

@@ -4,7 +4,7 @@
 - 文档类型：Development
 - 维护者：documentation_maintainer
 - 创建日期：2026-09-23
-- 更新日期：2026-10-18
+- 更新日期：2026-10-26
 - 适用范围：`docs/` 全部文档的导航、权威来源与归档登记
 - 关联：[文档规范](development/documentation-standard.md)
 
@@ -155,6 +155,7 @@
 - [ADR 0050：analysis-only 外部来源目标的结果续接](adr/0050-analysis-only-result-continuation.md)
 - [ADR 0051：analysis-only 外部来源目标的前台续聊与新建](adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 - [ADR 0052：CompositeGoal 阶段交接判定](adr/0052-composite-goal-handoff-decision.md)
+- [ADR 0053：用户确认的多分析目标拆分提案（Proposed）](adr/0053-user-confirmed-multi-analysis-goal-proposals.md)
 - [DPARSF 面板与 T1 实施计划](plans/0011-dparsf-panel-t1.md)
 
 ### 审查记录

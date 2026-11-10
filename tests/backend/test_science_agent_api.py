@@ -45,6 +45,7 @@ from neuroagent.application.contracts.statistics import (
     StatisticalDesignCreate,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError
+from neuroagent.application.service_mixins.skills import SkillPlanMixin
 from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service, build_worker
@@ -1142,7 +1143,7 @@ def test_dpabi_manifest_plan_validation_rejects_checkpoint_mixing() -> None:
         }
     )
     with pytest.raises(InputValidationError) as functional_error:
-        ApplicationServices._validate_manifest_for_skill_intent(intent, mixed_functional)
+        SkillPlanMixin._validate_manifest_for_skill_intent(intent, mixed_functional)
     assert functional_error.value.code == "manifest_dpabi_input_stage_invalid"
 
     mixed_anatomical = ManifestRevisionView.model_validate(
@@ -1163,7 +1164,7 @@ def test_dpabi_manifest_plan_validation_rejects_checkpoint_mixing() -> None:
         }
     )
     with pytest.raises(InputValidationError) as anatomical_error:
-        ApplicationServices._validate_manifest_for_skill_intent(intent, mixed_anatomical)
+        SkillPlanMixin._validate_manifest_for_skill_intent(intent, mixed_anatomical)
     assert anatomical_error.value.code == "manifest_dpabi_anatomical_stage_mixed"
 
 
@@ -1814,12 +1815,12 @@ async def test_agent_task_rechecks_project_revision_after_provider_wait(
         capabilities=frozenset({ModelCapability.JSON_OBJECT}),
         timeout_seconds=10,
     )
-    agent_service.create_model_profile(
+    agent_service.models.create_model_profile(
         ModelProfileCreate(profile=profile), "agent-revision-profile"
     )
     monkeypatch.setenv("BLOCKING_PROVIDER_API_KEY", "test-secret-value")
     pending = asyncio.create_task(
-        agent_service.create_agent_task(
+        agent_service.models.create_agent_task(
             AgentTaskCreate(
                 expected_project_version=project.version,
                 request=AgentTaskRequest(
@@ -1833,7 +1834,7 @@ async def test_agent_task_rechecks_project_revision_after_provider_wait(
         )
     )
     await asyncio.wait_for(provider.started.wait(), timeout=2)
-    agent_service.create_dataset(
+    agent_service.projects.create_dataset(
         project.project_id,
         DatasetCreate(
             name="revision change",
@@ -1892,21 +1893,23 @@ async def test_slow_provider_request_renews_idempotency_lease(
         capabilities=frozenset({ModelCapability.JSON_OBJECT}),
         timeout_seconds=10,
     )
-    agent_service.create_model_profile(ModelProfileCreate(profile=profile), "slow-provider-profile")
+    agent_service.models.create_model_profile(
+        ModelProfileCreate(profile=profile), "slow-provider-profile"
+    )
     monkeypatch.setenv("SLOW_PROVIDER_API_KEY", "test-secret-value")
     request = ProviderTestRequest(profile_id=profile.id, expected_profile_version=1)
-    pending = asyncio.create_task(agent_service.test_provider(request, "slow-provider-test"))
+    pending = asyncio.create_task(agent_service.models.test_provider(request, "slow-provider-test"))
     await asyncio.wait_for(provider.started.wait(), timeout=2)
     await asyncio.sleep(1.2)
 
     with pytest.raises(ConflictError) as duplicate:
-        await agent_service.test_provider(request, "slow-provider-test")
+        await agent_service.models.test_provider(request, "slow-provider-test")
     assert duplicate.value.code == "idempotency_request_in_progress"
     assert provider.calls == 1
 
     provider.release.set()
     first = await asyncio.wait_for(pending, timeout=2)
-    repeated = await agent_service.test_provider(request, "slow-provider-test")
+    repeated = await agent_service.models.test_provider(request, "slow-provider-test")
     assert repeated == first
     assert provider.calls == 1
 

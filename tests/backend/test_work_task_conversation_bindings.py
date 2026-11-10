@@ -146,6 +146,7 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assistant_content="预处理参数草稿已准备好。",
             assistant_payload={
                 "agent_role": "preprocessing",
+                "project": service.projects.get_project(project.project_id).model_dump(mode="json"),
                 "dataset": dataset.model_dump(mode="json"),
                 "manifest": manifest.model_dump(mode="json"),
                 "work_draft": {
@@ -295,6 +296,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             task = service.automation.get_task(task_id)
 
+            project_version_before_approval = service.projects.get_project(
+                project.project_id
+            ).version
             service.plans.approve_plan(
                 plan_id,
                 ApprovalCreate(
@@ -306,6 +310,10 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 ),
                 "work-task-binding-approval",
             )
+            assert (
+                service.projects.get_project(project.project_id).version
+                == project_version_before_approval
+            )
             reviewed = client.post(
                 f"/api/v1/conversations/{conversation.conversation_id}/work-review",
                 json={
@@ -315,6 +323,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             )
             assert reviewed.status_code == 200, reviewed.text
             reviewed_body = reviewed.json()
+            assert "confirmation_request" in reviewed_body["assistant_message"]["payload"], (
+                reviewed_body["assistant_message"]["content"]
+            )
             assert (
                 next(
                     item
@@ -800,6 +811,9 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
                 assistant_content="预处理参数草稿已准备好。",
                 assistant_payload={
                     "agent_role": "preprocessing",
+                    "project": service.projects.get_project(project.project_id).model_dump(
+                        mode="json"
+                    ),
                     "dataset": dataset.model_dump(mode="json"),
                     "manifest": manifest.model_dump(mode="json"),
                     "work_draft": {
@@ -1437,3 +1451,39 @@ def test_preprocessing_work_task_binds_plan_and_run_atomically(
             assert "0 matches" in blocked.reason
     finally:
         service.close()
+
+
+def test_compiled_review_without_recorded_project_authority_still_fails_closed(
+    service, source_root, work_root
+) -> None:
+    from tests.backend.test_work_dialogue_feedback import _bound_compiled_review_candidate
+
+    conversation, _, _, _, draft, plan = _bound_compiled_review_candidate(
+        service, source_root, work_root
+    )
+    unbound = conversation.model_copy(
+        update={
+            "messages": [
+                message.model_copy(
+                    update={
+                        "payload": {
+                            key: value
+                            for key, value in message.payload.items()
+                            if key not in {"project", "skill_dry_run"}
+                        }
+                    }
+                )
+                for message in conversation.messages
+            ]
+        }
+    )
+    payload = unbound.messages[-1].payload
+    issues = service.conversations._work_review_authority_feedback(
+        unbound, payload["work_draft"], draft, payload["plan_revision"]
+    )
+
+    assert len(issues) == 1
+    assert issues[0]["target"] == "input_manifest"
+    assert issues[0]["disposition"] == "evidence_conflict"
+    assert service.plans.get_plan(plan.plan_revision_id) == plan
+    assert service.runs.list_runs(project_id=plan.project_id) == []

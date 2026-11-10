@@ -78,6 +78,12 @@ class CompositeGoalProgressView(StrictModel):
     analysis_work_task_id: str | None = None
     result_interpretation_outbox_task_id: str | None = None
     status: CompositeGoalProgressStatus
+    analysis_selection_available: bool = Field(
+        description=(
+            "Selection availability from the server-verified goal projection; selecting still "
+            "revalidates the exact draft, source, Plan and Run and never authorizes execution."
+        ),
+    )
     preprocessing_run_id: str | None = Field(
         default=None,
         description="Server-verified preprocessing Run ID while its run state is observable.",

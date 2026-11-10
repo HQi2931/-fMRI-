@@ -50,6 +50,7 @@ from neuroagent.domain.fmri import (
     FdrCorrection,
     FrequencyBand,
     MetricKind,
+    MetricMaskSource,
     MetricScaling,
     MissingValuePolicy,
     ParameterProvenance,
@@ -388,13 +389,82 @@ def _approve_plan(
     )
 
 
+def _minimal_preprocessing_payload() -> dict[str, object]:
+    """Synthetic preprocessing parameters used only to exercise plan compilation."""
+
+    provenance_names = (
+        "tr_seconds",
+        "expected_time_points",
+        "dummy_scans",
+        "slice_timing",
+        "realignment",
+        "nuisance",
+        "normalization",
+        "detrend",
+        "temporal_filter",
+        "scrubbing",
+        "smoothing",
+    )
+    return {
+        "tr_seconds": 2.0,
+        "expected_time_points": 120,
+        "dummy_scans": 0,
+        "slice_timing": {
+            "enabled": False,
+            "slice_count": None,
+            "slice_order": None,
+            "reference_slice": None,
+        },
+        "realignment": {"enabled": False, "options_source": None},
+        "nuisance": {
+            "enabled": False,
+            "timing": None,
+            "polynomial_trend": None,
+            "head_motion_model": None,
+            "head_motion_scrubbing": None,
+            "white_matter": None,
+            "csf": None,
+            "global_signal": None,
+            "warp_masks_to_individual_space": None,
+            "add_mean_back": None,
+        },
+        "normalization": {
+            "mode": 0,
+            "timing": None,
+            "bounding_box_mm": None,
+            "voxel_size_mm": None,
+            "structural_artifact_id": None,
+            "affine_regularization": None,
+        },
+        "detrend": False,
+        "temporal_filter": {
+            "timing": "after_normalize",
+            "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+            "add_mean_back": False,
+        },
+        "scrubbing": {
+            "enabled": False,
+            "timing": None,
+            "censoring": None,
+            "method": None,
+        },
+        "smoothing": {"timing": "disabled", "method": None, "fwhm_mm": None},
+        "provenance": [
+            {
+                "name": name,
+                "source": "study_protocol",
+                "evidence_ref": f"synthetic-non-scientific://demo/{name}",
+            }
+            for name in provenance_names
+        ],
+    }
+
+
 def _alff_intent(
     *,
     project_id: str,
     dataset_id: str,
     manifest_hash: str,
-    functional_artifact_id: str,
-    mask_artifact_id: str,
 ) -> SkillPlanIntent:
     return SkillPlanIntent(
         project_id=project_id,
@@ -402,13 +472,15 @@ def _alff_intent(
         input_manifest_hash=manifest_hash,
         requested_metrics=(MetricKind.ALFF,),
         primary_outputs=("synthetic-zALFF-placeholder",),
-        input_artifact_id=functional_artifact_id,
+        request_preprocessing=True,
+        preprocessing=_minimal_preprocessing_payload(),
         alff_falff=AlffFalffParameters(
             tr_seconds=2.0,
             frequency_band=FrequencyBand(low_hz=0.01, high_hz=0.08),
             requested_metrics=(MetricKind.ALFF,),
             requested_scalings=(MetricScaling.Z_SCORE,),
-            mask_artifact_id=mask_artifact_id,
+            mask_source=MetricMaskSource.DPABI_AUTO,
+            mask_artifact_id=None,
             filter_timing=TemporalFilterTiming.AFTER_NORMALIZE,
             result_smoothing=False,
             result_smoothing_fwhm_mm=None,
@@ -527,8 +599,6 @@ def run_demo(root: Path) -> dict[str, Any]:
                     project_id=project.project_id,
                     dataset_id=dataset.dataset_id,
                     manifest_hash=manifest.content_hash,
-                    functional_artifact_id=functional_artifact_id,
-                    mask_artifact_id=input_mask_artifact_id,
                 ),
                 expected_project_version=project.version,
             ),

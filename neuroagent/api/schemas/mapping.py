@@ -49,6 +49,12 @@ def to_http_response(message: object, target: Any) -> Any:
                     continue
         return message
     if isinstance(target, type) and issubclass(target, BaseModel):
-        data = message.model_dump(mode="python") if isinstance(message, BaseModel) else message
+        # Use aliases so fields such as ``schema_``/``schema`` keep the public
+        # wire name when the application and HTTP DTOs are separate models.
+        data = (
+            message.model_dump(mode="python", by_alias=True)
+            if isinstance(message, BaseModel)
+            else message
+        )
         return target.model_validate(data)
     return message

@@ -42,10 +42,14 @@ def evidence_fixture(service, tmp_path, monkeypatch):
         )
         for meta in manifest.artifacts
     }
-    monkeypatch.setattr(service.repository, "get_statistical_result", lambda _: detail)
-    monkeypatch.setattr(service.repository, "get_artifact", lambda key: artifacts[key])
-    monkeypatch.setattr(service.repository, "get_run", lambda _: SimpleNamespace())
-    monkeypatch.setattr(service.repository, "get_project", lambda _: SimpleNamespace())
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_statistical_result", lambda _: detail
+    )
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_artifact", lambda key: artifacts[key]
+    )
+    monkeypatch.setattr(service.runs.repository, "get_run", lambda _: SimpleNamespace())
+    monkeypatch.setattr(service.runs.project_repository, "get_project", lambda _: SimpleNamespace())
     monkeypatch.setattr(
         runs,
         "artifact_content_path",
@@ -98,7 +102,7 @@ def test_semantically_conflicting_evidence_withholds_model_method_facts(
     detail, correction, _, _ = evidence_fixture
     if tamper == "bundle":
         monkeypatch.setattr(
-            service.repository,
+            service.runs.artifact_repository,
             "get_statistical_result",
             lambda _: detail.model_copy(update={"bundle_hash": "f" * 64}),
         )
@@ -118,9 +122,11 @@ def test_legacy_result_reports_unregistered_correction_without_hiding_other_meth
     service, monkeypatch
 ):
     detail = _detail()
-    monkeypatch.setattr(service.repository, "get_statistical_result", lambda _: detail)
     monkeypatch.setattr(
-        service.repository,
+        service.runs.artifact_repository, "get_statistical_result", lambda _: detail
+    )
+    monkeypatch.setattr(
+        service.runs.artifact_repository,
         "get_artifact",
         lambda _: (_ for _ in ()).throw(ValueError("legacy software absent")),
     )

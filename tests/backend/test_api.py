@@ -65,6 +65,7 @@ def test_health_openapi_and_error_envelope(service: ApplicationServices) -> None
             "source_manifest_hash",
             "source_revision_hash",
             "status",
+            "analysis_selection_available",
             "preprocessing_run_id",
             "analysis_run_id",
             "preprocessing_status",

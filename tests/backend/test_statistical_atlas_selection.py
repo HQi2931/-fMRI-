@@ -176,7 +176,9 @@ def test_localization_cannot_replace_frozen_atlas_but_empty_result_skips_atlas_c
 ):
     _atlases(service)
     selection = service.statistics._freeze_statistical_atlas("aal").model_dump(mode="json")
-    monkeypatch.setattr(service.repository, "get_statistical_result", lambda _: _detail(selection))
+    monkeypatch.setattr(
+        service.runs.artifact_repository, "get_statistical_result", lambda _: _detail(selection)
+    )
     with pytest.raises(ConflictError) as failure:
         service.runs.localize_statistical_result("atlas-result", "aal3")
     assert failure.value.code == "statistics_atlas_selection_mismatch"
@@ -185,7 +187,9 @@ def test_localization_cannot_replace_frozen_atlas_but_empty_result_skips_atlas_c
         service.runs.localize_statistical_result("atlas-result", "aal")
     assert failure.value.code == "statistics_atlas_changed"
     monkeypatch.setattr(
-        service.repository, "get_statistical_result", lambda _: _detail(selection, empty=True)
+        service.runs.artifact_repository,
+        "get_statistical_result",
+        lambda _: _detail(selection, empty=True),
     )
     assert (
         service.runs.localize_statistical_result("atlas-result", "missing-atlas").status

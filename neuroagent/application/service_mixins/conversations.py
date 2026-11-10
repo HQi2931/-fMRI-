@@ -311,12 +311,7 @@ class ConversationMixin(BaseServiceMixin):
                     ) from exc
                 _verify_analysis_only_external_source(goal, imported)
             progress = self.automation.get_composite_goal_progress(conversation_id, intent_task_id)
-            if progress.status.value not in {
-                "waiting_user",
-                "waiting_analysis",
-                "waiting_result_interpretation",
-                "completed",
-            }:
+            if not progress.analysis_selection_available:
                 raise ConflictError(
                     "analysis_goal_not_selectable", "当前目标状态或权威证据尚不可恢复。"
                 )
@@ -407,12 +402,7 @@ class ConversationMixin(BaseServiceMixin):
             progress = self.automation.get_composite_goal_progress(
                 current.conversation_id, intent_id
             )
-            if progress.status.value not in {
-                "waiting_user",
-                "waiting_analysis",
-                "waiting_result_interpretation",
-                "completed",
-            }:
+            if not progress.analysis_selection_available:
                 raise ConflictError(
                     "analysis_goal_selection_conflict", "当前目标的权威证据尚不可读取。"
                 )
@@ -2549,9 +2539,7 @@ class ConversationMixin(BaseServiceMixin):
             routing_failure_code: str | None = None
             routing_source = "model"
             routing_metadata: dict[str, Any] | None = None
-            route_required_role = (
-                WorkAgentRole.PREPROCESSING if admitted_goal is not None else None
-            )
+            route_required_role = WorkAgentRole.PREPROCESSING if admitted_goal is not None else None
             if (
                 conversation.mode is ConversationMode.WORK
                 and request.action is ConversationAction.AUTO
@@ -2679,9 +2667,7 @@ class ConversationMixin(BaseServiceMixin):
                             analysis_original_request = None
                         persistent_model_budget = None
 
-            turn_selected_goal = (
-                selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
-            )
+            turn_selected_goal = selected_goal if selected_role is WorkAgentRole.ANALYSIS else None
             turn_goal = analysis_goal or turn_selected_goal
             dialogue_request = (
                 request.model_copy(update={"agent_role": selected_role})

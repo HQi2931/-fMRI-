@@ -390,9 +390,9 @@ def test_database_restart_preserves_queued_run(
     service.close()
     restarted = build_service(settings)
     try:
-        assert restarted.get_run(run.run_id).state is WorkflowState.QUEUED
+        assert restarted.runs.get_run(run.run_id).state is WorkflowState.QUEUED
         assert build_worker(restarted, worker_id="restarted-worker").run_once() is True
-        assert restarted.get_run(run.run_id).state is WorkflowState.QC_REVIEW
+        assert restarted.runs.get_run(run.run_id).state is WorkflowState.QC_REVIEW
     finally:
         restarted.close()
 

@@ -1,15 +1,27 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type Artifact, type PlanRevision, type Run, type StatisticalAtlas, type StatisticalResultDetail, type StatisticalResultLocalization } from "../api/client";
+import { plansApi } from "../api/plans";
+import { runsApi } from "../api/runs";
+import { statisticsApi } from "../api/statistics";
+import type { Artifact, PlanRevision, Run, StatisticalAtlas, StatisticalResultDetail, StatisticalResultLocalization } from "../api/types";
 import { WorkRunPanel } from "./WorkRunPanel";
 
-vi.mock("../api/client", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../api/client")>();
-  return { ...original, api: { ...original.api, artifacts: vi.fn(), runEvents: vi.fn(), plan: vi.fn(), runQcReview: vi.fn(),
-    statisticalResults: vi.fn(), statisticalResult: vi.fn(), statisticalResultSliceInfo: vi.fn(),
-    statisticalAtlases: vi.fn(), localizeStatisticalResult: vi.fn(), statisticalClusterRoi: vi.fn() } };
+vi.mock("../api/plans", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../api/plans")>();
+  return { ...original, plansApi: { ...original.plansApi, plan: vi.fn() } };
 });
+vi.mock("../api/runs", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../api/runs")>();
+  return { ...original, runsApi: { ...original.runsApi, artifacts: vi.fn(), runEvents: vi.fn(), runQcReview: vi.fn() } };
+});
+vi.mock("../api/statistics", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../api/statistics")>();
+  return { ...original, statisticsApi: { ...original.statisticsApi, statisticalResults: vi.fn(), statisticalResult: vi.fn(),
+    statisticalResultSliceInfo: vi.fn(), statisticalAtlases: vi.fn(), localizeStatisticalResult: vi.fn(), statisticalClusterRoi: vi.fn() } };
+});
+
+const api = { ...plansApi, ...runsApi, ...statisticsApi };
 
 const run: Run = { run_id: "run-current", project_id: "project", plan_revision_id: "plan", version: 3, attempt: 1,
   state: "succeeded", stage: "running", cancel_requested: false, qc_status: "skipped", qc_mode: "skip",

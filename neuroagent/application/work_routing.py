@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from neuroagent.application.work_tools import PersistentModelCallBudget
 from neuroagent.multi_agent.registry import WorkAgentRole
@@ -52,3 +53,17 @@ class WorkAgentRouter(Protocol):
         context: WorkAgentRoutingContext,
         persistent_model_budget: PersistentModelCallBudget | None,
     ) -> WorkAgentRoutingDecision: ...
+
+
+WorkAgentGenerate = Callable[..., Awaitable[Any]]
+
+
+class WorkAgentRouterFactory(Protocol):
+    """Construct the model-backed router outside the application layer.
+
+    The application package must not import infrastructure adapters. The
+    composition root supplies a factory that binds its provider-calling router
+    to the application's own generate callable.
+    """
+
+    def __call__(self, generate: WorkAgentGenerate) -> WorkAgentRouter: ...

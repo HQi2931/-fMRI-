@@ -45,11 +45,14 @@ npm-debug.log*
 /.tmp/
 /work/
 /runs/
+/output/
 /outputs/
 /artifacts/
 /qc/
 /reports/generated/
 /backups/
+# pytest keeps its per-run basetemp under the root when TMPDIR is local.
+/pytest-of-*/
 
 # Data roots
 /data/
