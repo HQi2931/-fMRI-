@@ -56,6 +56,8 @@ def test_matlab_startup_permission_diagnosis_is_actionable_and_redacted() -> Non
 
     assert diagnosis.code is FailureCode.PATH_POLICY
     assert "MATLAB 启动" in diagnosis.summary
+    assert any("mathworks-<uuid>" in item for item in diagnosis.suggestions)
+    assert any("mwEndpointRegistry" in item for item in diagnosis.suggestions)
     assert any("MATLAB_PREFDIR" in item for item in diagnosis.suggestions)
     assert private_path not in "\n".join(diagnosis.evidence)
 

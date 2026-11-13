@@ -6,13 +6,33 @@
 - 更新日期：2026-11-13
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
 
+## 2026-11-13 计划 0014 R6 恢复矩阵
+
+按当前支持范围复跑既有确定性测试和 Mock 测试，不调用真实 Provider、MATLAB 或 DPABI，也不把合成占位写成科研结果。命令是 `uv run pytest --no-cov -q` 加上下表文件，结果为 41 passed。这不是浏览器手工走查，也不是 20 人真实运行。
+
+| 矩阵场景 | 本次证据 | 未覆盖的部分 |
+| --- | --- | --- |
+| 内部来源 | `tests/integration/test_full_synthetic_pipeline.py` 走完合成输入、ALFF/fALFF、QC 批准和统计，产物标记 `synthetic_non_scientific`。`test_consumer_records_assistant_only_question_and_deduplicates` 与 `test_verified_result_consumer_commits_assistant_only_and_deduplicates` 在 outbox READY 后由服务端准备提案和解释，不要求用户再发“继续” | 不是浏览器里从调查到解释的同一次手工会话 |
+| 外部指标 | `tests/backend/test_external_analysis_imports.py` 与 `tests/backend/test_analysis_only_result_continuation.py`。来源变化、未审阅和权限漂移会拒绝，不伪造预处理 Task | 未用真实外部影像 |
+| 重启 | `test_work_task_survives_database_restart_with_steps_and_authority_references` 保留任务与权威引用；`test_inflight_elapsed_reservation_survives_repository_restart` 保留未结算的模型预留 | 未实际重启正在跑的 API 或 Worker 进程 |
+| 重放 | `test_call_id_replay_never_reserves_or_dispatches_a_second_call`、`test_admission_failure_replay_reuses_message_root_and_budget`，以及上述两个 outbox 的重复消费断言。同一调用不第二次派发，也不另建目标 | 未模拟浏览器丢失 HTTP 响应后的人工重放 |
+| 多目标 | `test_selection_replay_does_not_switch_back_after_selecting_another_goal`：两个已完成目标先后选择，重放旧选择不把前台切回去 | 不包含 ADR 0053 的多目标提案 |
+| 证据变化 | `test_source_evidence_change_during_model_call_discards_generated_proposal` 丢弃生成中的提案；`test_external_result_binding_rejects_changed_authority_atomically` 拒绝变化后的结果绑定；预算耗尽用例关闭 outbox 自动重试 | 未在同一次会话里手工改 manifest |
+| 零显著结果 | `test_corrected_empty_map_is_registered_as_no_significant_voxels` 登记空校正图；`test_result_interpretation_facts_keep_zero_significance_and_unknown_space_explicit` 把 0 簇解释为 `no_significant_voxels`；报告测试不把空结果写成空间告警 | 解释文本来自确定性事实，不是真实模型作文 |
+
+## 2026-11-13 计划 0014 R5 MATLAB 启动路径
+
+在当前 Worker 使用的 Python 进程树内复现了 2026-10-26 的启动失败。内核文件跟踪把 `CreateFile failed: 拒绝访问 [system:5]` 对应到 `STATUS_ACCESS_DENIED`（`0xC0000022`），被拒绝的创建是进程 `TEMP` 目录中的 `mathworks-<uuid>` 文件。该 Python 进程可以读取用户临时目录和 MathWorks 的 AppData 目录，但不能在其中创建文件；同一用户的 `cmd` 可以创建。把子进程 `TEMP`/`TMP` 指到 Python 可写的目录后，这一处不再出现，下一处被拒绝的创建是本机 `LocalAppData\MathWorks\mwEndpointRegistry\mwER*`。MATLAB 不跟随子进程的 `LOCALAPPDATA` 覆盖。由 Python 再经 `cmd` 启动 MATLAB 仍然落在同一拒绝上。
+
+单独授权的轻量启动：不加载数据、不调用 DPABI，只执行 `matlab -batch` 显示一行启动文本，并使用 attempt 范围之外、仅传给该进程的 `MATLAB_PREFDIR`。从当前 Python 进程树之外启动时，标准输出为 `startup-ok`，退出码 0，耗时约 52 秒。这证明本机 MATLAB 安装可以完成无数据批处理启动。Worker 仍是 Python 进程，它启动的 MATLAB 仍会遇到上述创建拒绝，因此 20 人演示和任何科研运行都尚未复测。诊断文案已改为点名这两个文件，不把 `MATLAB_PREFDIR` 写成该错误的修复。
+
 ## 2026-11-13 计划 0014 R4 模型预算归属
 
 核对生产调用入口后，归属固定在 `neuroagent/application/automation/model_budget_attribution.py`。无复合根的普通 Work 只有本回合预算，不创建目标账本。已有分析目标时，自动分派在选出角色前不接收该目标账本；分派到预处理后，本回合生成也不扣除原目标。本请求刚接纳的“先预处理再分析”根在路由前绑定共享账本。路由结果仍是该分析目标时，前台生成同时计入回合预算和目标账本。有复合根的分析提案 outbox 与结果解释 outbox 共用该账本；没有根的历史 outbox 只有回合预算。目标回合上的 JSON 修复会再预留一次同一账本。
 
 重放与耗尽：同一 Work 幂等键第二次提交返回已保存回合，不第二次调用模型，目标账本的 `used_model_calls` 与 `used_tokens` 不变。目标 token 额度已满时，前台生成、分析提案 outbox 和结果解释 outbox 都不再调用模型；两条 outbox 进入等待用户且 `retry_available` 为 false。规则能判断的分派不调用路由模型。本次未调用真实 Provider、MATLAB 或 DPABI。
 
-定向命令：`uv run pytest --no-cov tests/backend/test_model_budget_attribution.py tests/backend/test_work_agent_routing.py::test_automatic_role_switch_uses_only_the_destination_goal_budget tests/backend/test_analysis_outbox_consumer.py::test_exhausted_proposal_budget_does_not_dispatch_and_closes_retry tests/backend/test_result_interpretation_outbox.py::test_exhausted_result_budget_does_not_dispatch_and_closes_retry`。上述测试通过。这不替代 R5 的 MATLAB 启动根因或 R6 的主链路恢复矩阵。
+定向命令：`uv run pytest --no-cov tests/backend/test_model_budget_attribution.py tests/backend/test_work_agent_routing.py::test_automatic_role_switch_uses_only_the_destination_goal_budget tests/backend/test_analysis_outbox_consumer.py::test_exhausted_proposal_budget_does_not_dispatch_and_closes_retry tests/backend/test_result_interpretation_outbox.py::test_exhausted_result_budget_does_not_dispatch_and_closes_retry`。上述测试通过。这不替代 R5 的 MATLAB 证据或 R6 的主链路恢复矩阵。
 
 ## 2026-11-10 计划 0014 R1–R3 稳定性修复与全量门禁
 
