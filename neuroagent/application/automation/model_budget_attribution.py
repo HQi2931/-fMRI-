@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """Which model-call entries spend the turn allowance, the goal ledger, or both.
 
 The in-memory turn allowance (:class:`SharedWorkTurnBudget`) always bounds one

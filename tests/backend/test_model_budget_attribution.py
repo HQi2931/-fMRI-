@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """Ledger attribution for ordinary Work, routing, replay and exhaustion."""
 
 from __future__ import annotations
