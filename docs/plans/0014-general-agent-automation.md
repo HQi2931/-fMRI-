@@ -4,7 +4,7 @@
 - 文档类型：Plan
 - 维护者：system_architect
 - 创建日期：2026-10-11
-- 更新日期：2026-11-10
+- 更新日期：2026-11-13
 - 关联：[MVP 验证与已知限制](../development/mvp-verification.md)、[Skill 层架构](../architecture/fmri-skill-layer.md)、[Work 双 Agent ADR](../adr/0024-work-dual-agents.md)、[Agent 控制面 ADR](../adr/0015-agent-control-plane-hardening.md)、[DPABI 单次预处理 ADR](../adr/0021-single-pass-dpabi-preprocessing.md)、[ADR 0036](../adr/0036-persistent-work-task-boundary.md)、[ADR 0037](../adr/0037-fmri-input-identity-and-evidence.md)、[ADR 0038](../adr/0038-logical-plan-to-execution-units.md)、[ADR 0039](../adr/0039-work-task-reconciliation-worker.md)、[ADR 0040](../adr/0040-preprocessing-task-output-completion.md)、[ADR 0043](../adr/0043-shared-worktask-step-lifecycle.md)、[ADR 0044](../adr/0044-worktask-step-readiness-handlers.md)、[ADR 0045](../adr/0045-bounded-linear-worktask-step-scheduling.md)、[ADR 0046](../adr/0046-composite-goal-foreground-selection.md)、[ADR 0047](../adr/0047-frozen-analysis-goal-restoration.md)、[ADR 0048](../adr/0048-composite-goal-model-call-budget.md)、[ADR 0049](../adr/0049-analysis-only-external-import-goals.md)、[ADR 0050](../adr/0050-analysis-only-result-continuation.md)、[ADR 0051](../adr/0051-analysis-only-foreground-resume-and-new-goals.md)
 
 ## 目标里程碑
@@ -21,13 +21,13 @@
 
 本节汇总当前状态；下方按日期保存的切片说明是历史证据，不能单独作为当前能力清单。审查基线为提交 `5f1f439`，测试范围和失败分类见 [MVP 最新审查记录](../development/mvp-verification.md#2026-10-26-计划-0014-进度复核)。本次调整只优化方案与实施顺序，未修复代码，也未将阶段或 ADR 0053 标记为完成或接受。
 
-2026-11-10 补充：R1 冻结目标恢复、R2 续聊边界和 R3 回归门禁已完成代码修复，全量后端与前端门禁通过，证据见 [MVP 验证记录](../development/mvp-verification.md#2026-11-10-计划-0014-r1r3-稳定性修复与全量门禁)。R4–R6 和真实验收仍未完成，因此里程碑一尚未整体收口，ADR 0053 仍为 Proposed。
+2026-11-13 补充：R1–R3 的全量门禁见 [MVP 验证记录](../development/mvp-verification.md#2026-11-10-计划-0014-r1r3-稳定性修复与全量门禁)。R4 预算归属已核对，证据见同记录的 2026-11-13 条目。R5、R6 和真实验收仍未完成，因此里程碑一尚未整体收口，ADR 0053 仍为 Proposed。
 
 | 阶段/能力 | 已实现与生产可达范围 | 当前验证或阻断 | 下一项完成证据 |
 | --- | --- | --- | --- |
 | A：结构化预检 | 两角色 dry-run、有限反馈、草稿/输入修订重核 | 部分完成；完整执行前反馈及审批入口重核仍需收敛 | 缺项、证据变化和旧确认拒绝均经正式 Work 入口验证 |
 | B：目标与续接 | 两个 outbox、Run/QC/结果重核、显式多目标、前台隔离、步骤审批/启动接口 | 部分完成；R1 冻结目标恢复回归已修复，后继准备仍无生产调用链 | 支持范围内的完整交互、重启及重复事件恢复通过 |
-| B：累计模型预算 | 显式复合请求 admission、analysis-only 首次生成及前台续聊、两个后台 outbox 已接入 | 普通无根 Work、既有目标 AUTO 路由及未来阶段仍有计费归属边界 | 列出各调用入口的回合/目标预算归属，验证重放、耗尽和停止；不声称所有调用均已累计 |
+| B：累计模型预算 | 归属已按入口记在 `model_budget_attribution.py`：无根普通 Work 只有回合预算；已有目标在选出角色前不扣该目标；本请求接纳的复合根、留在分析目标上的前台生成、两条有根 outbox 和 JSON 修复同时使用回合预算与目标账本 | 重放同一 Work 幂等键不第二次派发，耗尽不调用模型；未来统一 dispatcher 仍未单独建账 | 保持入口表与测试一致，不把规则路由或切走的旧目标算进目标账本 |
 | C：输入适配 | 单组外部指标、候选/用户声明/核验证据分级 | 部分完成；统一 session/run、表驱动纳入、批量 checkpoint 尚缺 | 每项身份映射与失败场景单独贯通并验收 |
 | D：执行单元 | 单次 DPARSFA 映射、派发绑定核验、已知能力组合提前阻断 | 部分完成；metric-only 限单主体，未实现多个执行单元或物化 checkpoint 恢复 | 执行前能力判定与实际产物合同一致；新边界有单独真实验证 |
 | E：能力扩展 | 继续复用既有指标与统计能力 | FC、多 session/run 等未作为本阶段新能力交付 | 按能力贯通输入、设计、执行、结果与故障证据 |
@@ -40,7 +40,7 @@
 - 0014-R1 已完成：选择命令、前端和继续/读出口统一使用服务端 `analysis_selection_available`；冻结目标在 `waiting_review`/`waiting_run` 的恢复与读出口回归通过。
 - 0014-R2 已完成规则层：已选分析目标的参数补充留在 Analysis，明确新建预处理和诊断请求仍进入预处理；生产规则测试不调用模型。
 - 0014-R3 已完成：解耦后的服务/仓储能力对象测试合同、真实历史迁移夹具、前端分域 API 模拟和 workspace 隔离均已修正；后端 1820 passed、覆盖率 85.29%，前端 318 passed，全量静态检查通过。相关证据、覆盖率范围和未验证项见 [MVP 验证记录](../development/mvp-verification.md#2026-11-10-计划-0014-r1r3-稳定性修复与全量门禁)。
-- 0014-R4、0014-R5、0014-R6 仍未完成：预算归属核对、本机 MATLAB 启动拒绝根因和主链路恢复矩阵均未取得新证据。里程碑一不因 R1–R3 通过而整体完成。
+- 0014-R4 已完成归属核对：见 [MVP 验证记录](../development/mvp-verification.md#2026-11-13-计划-0014-r4-模型预算归属)。0014-R5、0014-R6 仍未完成。里程碑一不因 R1–R4 通过而整体完成。
 
 ### 里程碑一：恢复稳定性并收口现有主链路
 

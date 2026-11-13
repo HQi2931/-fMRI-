@@ -22,6 +22,13 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalHandoffAction,
     CompositeGoalIdentity,
 )
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallDecisionStatus,
+    CompositeGoalModelCallReservation,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallState,
+)
 from neuroagent.application.contracts.conversations import (
     ConversationCreate,
     ConversationMode,
@@ -780,3 +787,76 @@ async def test_proposal_consumer_bounds_retries_when_shared_handoff_is_not_ready
         "error_code": "analysis_outbox_handoff_retry_exhausted",
         "retry_available": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_exhausted_proposal_budget_does_not_dispatch_and_closes_retry(
+    service, source_root, work_root, monkeypatch
+):
+    _project, _conversation, outbox, _source, _proof = seed_ready_outbox(
+        service, source_root, work_root
+    )
+    goal = CompositeGoalIdentity(
+        intent_task_id=outbox.intent_task_id,
+        conversation_id=outbox.conversation_id,
+        project_id=outbox.project_id,
+        analysis_request_hash=outbox.analysis_request_hash,
+        preprocessing_task_id=outbox.preprocessing_task_id,
+    )
+    exhausted_budget = CompositeGoalModelBudget(
+        intent_task_id=outbox.intent_task_id,
+        max_steps=100,
+        max_model_calls=40,
+        max_tokens=200_000,
+        max_elapsed_seconds=86_400,
+        used_steps=1,
+        used_model_calls=1,
+        used_tokens=200_000,
+        elapsed_seconds=1,
+    )
+    add_model_profile(service)
+    monkeypatch.setattr(service.automation, "find_composite_goal", lambda _intent: goal)
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_model_budget",
+        lambda _intent: exhausted_budget,
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_handoff",
+        lambda *_args: SimpleNamespace(
+            action=CompositeGoalHandoffAction.PREPARE_ANALYSIS_PROPOSAL,
+            target_id=outbox.intent_task_id,
+        ),
+    )
+
+    def reserve(_intent, **kwargs):
+        return CompositeGoalModelCallReserveResult(
+            status=CompositeGoalModelCallDecisionStatus.EXHAUSTED,
+            reservation=CompositeGoalModelCallReservation(
+                intent_task_id=outbox.intent_task_id,
+                reservation_id=kwargs["reservation_id"],
+                call_id=kwargs["call_id"],
+                state=CompositeGoalModelCallState.EXHAUSTED,
+                estimated_tokens=kwargs["estimated_tokens"],
+                reserved_tokens=0,
+            ),
+            budget=exhausted_budget,
+        )
+
+    monkeypatch.setattr(service.automation, "reserve_composite_goal_model_call", reserve)
+    generate = AsyncMock(side_effect=AssertionError("exhausted goal budget must not call a model"))
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", generate)
+
+    outcome = await service.conversations.consume_next_analysis_outbox(
+        "outbox-worker", lease_seconds=30
+    )
+
+    generate.assert_not_called()
+    assert outcome == AnalysisOutboxStatus.WAITING_USER.value
+    latest = service.automation.get_analysis_outbox(outbox.intent_task_id)
+    assert latest.last_error_code == "composite_goal_model_budget_exhausted"
+    conversation = service.repository.get_conversation(outbox.conversation_id)
+    assert conversation.messages[-1].payload["analysis_outbox_result"]["retry_available"] is False
+    assert exhausted_budget.used_model_calls == 1
+    assert exhausted_budget.used_tokens == 200_000

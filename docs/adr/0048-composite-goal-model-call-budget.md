@@ -4,7 +4,7 @@
 - 文档类型：ADR
 - 维护者：system_architect
 - 创建日期：2026-10-17
-- 更新日期：2026-10-18
+- 更新日期：2026-11-13
 - 决策日期：2026-10-17
 - 决策者：system_architect
 - 关联：[计划 0014](../plans/0014-general-agent-automation.md)、[Agent 通用自动化运行架构](../architecture/agent-automation-runtime.md)、[MVP 验证记录](../development/mvp-verification.md)、[ADR 0041](0041-proposal-only-analysis-continuation-outbox.md)、[ADR 0042](0042-statistical-result-interpretation-outbox.md)
@@ -37,3 +37,4 @@
 - 每次本地 Gateway await 有预留 elapsed deadline；超时取消的清理阶段可能继续运行，结算记录实际观测时长并阻止后续分发。进程退出时保留时间预扣。远端服务取消后的行为不可由本地保证，失败且无 usage 的隐藏 profile attempts 也不能精确计数。
 - claim fence 丢失会取消本地续接协程并阻止其提交；已被远端接收的请求仍可能继续处理或计费。
 - 历史根的迁移后额度不能重建为完整的全生命周期预算；未来统一 dispatcher 需复用本账本，并明确纳入前台建根前生成的预算策略。
+- 2026-11-13 核对后的调用归属以 `neuroagent/application/automation/model_budget_attribution.py` 为准。无持久目标的普通 Work 只有回合预算。已有分析目标在路由选出角色前不接收该目标账本，切到预处理后也不扣除它。本请求刚接纳的复合根、仍留在该分析目标上的前台生成、有根的两条 outbox，以及该回合上的 JSON 修复，同时占用回合预算和目标账本。同一 Work 幂等键的重放直接返回已保存回合；目标账本上的重复 `call_id` 或耗尽结果都不再调用模型。

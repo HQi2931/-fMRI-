@@ -3,8 +3,16 @@
 - 状态：Implementing
 - 文档类型：Development
 - 维护者：qa_reviewer
-- 更新日期：2026-11-10
+- 更新日期：2026-11-13
 - 关联：[MVP 产品范围](../product/mvp-scope.md)
+
+## 2026-11-13 计划 0014 R4 模型预算归属
+
+核对生产调用入口后，归属固定在 `neuroagent/application/automation/model_budget_attribution.py`。无复合根的普通 Work 只有本回合预算，不创建目标账本。已有分析目标时，自动分派在选出角色前不接收该目标账本；分派到预处理后，本回合生成也不扣除原目标。本请求刚接纳的“先预处理再分析”根在路由前绑定共享账本。路由结果仍是该分析目标时，前台生成同时计入回合预算和目标账本。有复合根的分析提案 outbox 与结果解释 outbox 共用该账本；没有根的历史 outbox 只有回合预算。目标回合上的 JSON 修复会再预留一次同一账本。
+
+重放与耗尽：同一 Work 幂等键第二次提交返回已保存回合，不第二次调用模型，目标账本的 `used_model_calls` 与 `used_tokens` 不变。目标 token 额度已满时，前台生成、分析提案 outbox 和结果解释 outbox 都不再调用模型；两条 outbox 进入等待用户且 `retry_available` 为 false。规则能判断的分派不调用路由模型。本次未调用真实 Provider、MATLAB 或 DPABI。
+
+定向命令：`uv run pytest --no-cov tests/backend/test_model_budget_attribution.py tests/backend/test_work_agent_routing.py::test_automatic_role_switch_uses_only_the_destination_goal_budget tests/backend/test_analysis_outbox_consumer.py::test_exhausted_proposal_budget_does_not_dispatch_and_closes_retry tests/backend/test_result_interpretation_outbox.py::test_exhausted_result_budget_does_not_dispatch_and_closes_retry`。上述测试通过。这不替代 R5 的 MATLAB 启动根因或 R6 的主链路恢复矩阵。
 
 ## 2026-11-10 计划 0014 R1–R3 稳定性修复与全量门禁
 

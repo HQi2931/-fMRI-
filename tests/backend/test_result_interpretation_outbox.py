@@ -14,6 +14,7 @@ from neuroagent.application.automation.composite_goal import (
     CompositeGoalHandoffAction,
     CompositeGoalIdentity,
 )
+from neuroagent.application.automation.model_budget import CompositeGoalModelCallDecisionStatus
 from neuroagent.application.automation.models import (
     AuthoritativeRunSnapshot,
     AuthorityReferences,
@@ -523,3 +524,73 @@ async def test_result_consumer_defers_when_shared_handoff_is_not_ready(
     latest = service.automation.get_result_interpretation_outbox(outbox.task_id)
     assert latest.status is ResultInterpretationStatus.READY
     assert latest.last_error_code == "composite_goal_handoff_not_ready"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_result_budget_does_not_dispatch_and_closes_retry(
+    service, source_root, work_root, monkeypatch
+):
+    project, conversation, outbox = _ready_result_outbox(service, source_root, work_root)
+    service.repository.create_model_profile(
+        ModelProfile(
+            id="result-interpretation-exhausted-model",
+            provider="openai-compatible",
+            base_url="https://example.org/v1",
+            model="test-model",
+            api_key_env="UNUSED_RESULT_INTERPRETATION_EXHAUSTED_API_KEY",
+            context_window_tokens=32768,
+        )
+    )
+    root = service.automation.ensure_preprocessing_composite_goal_intent(
+        CompositeGoalIdentity(
+            intent_task_id="result-budget-root",
+            conversation_id=conversation.conversation_id,
+            project_id=project.project_id,
+            analysis_request_hash="e" * 64,
+        )
+    )
+    bound = root.model_copy(
+        update={
+            "analysis_work_task_id": outbox.task_id,
+            "result_interpretation_outbox_task_id": outbox.task_id,
+        }
+    )
+    filled = service.automation.reserve_composite_goal_model_call(
+        root.intent_task_id,
+        reservation_id="f" * 64,
+        call_id="a" * 64,
+        estimated_tokens=200_000,
+    )
+    assert filled.status is CompositeGoalModelCallDecisionStatus.RESERVED
+    monkeypatch.setattr(
+        service.automation,
+        "verify_result_interpretation_source",
+        lambda _outbox: _verified_source(project, conversation, outbox),
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "find_composite_goal_for_analysis_task",
+        lambda _task_id: bound,
+    )
+    monkeypatch.setattr(
+        service.automation,
+        "get_composite_goal_handoff",
+        lambda *_args: SimpleNamespace(
+            action=CompositeGoalHandoffAction.PREPARE_RESULT_INTERPRETATION,
+            target_id=outbox.task_id,
+        ),
+    )
+    generate = AsyncMock(side_effect=AssertionError("exhausted goal budget must not call a model"))
+    monkeypatch.setattr(service.models, "_generate_rsfmri_chat", generate)
+
+    outcome = await service.conversations.consume_next_result_interpretation_outbox(
+        "result-interpreter", lease_seconds=30
+    )
+
+    generate.assert_not_called()
+    assert outcome == ResultInterpretationStatus.WAITING_USER.value
+    latest = service.automation.get_result_interpretation_outbox(outbox.task_id)
+    assert latest.last_error_code == "composite_goal_model_budget_exhausted"
+    budget = service.automation.get_composite_goal_model_budget(root.intent_task_id)
+    assert budget.used_model_calls == 1
+    assert budget.used_tokens == 200_000

@@ -349,6 +349,13 @@ def _work_failure_details(
         if exc.code == "work_model_timeout":
             diagnostic["provider_timeout"] = True
             reason = "原因：模型请求超时，请稍后重试或调整模型超时设置。"
+        elif exc.code == "composite_goal_model_budget_exhausted":
+            reason = "原因：该分析目标的累计模型预算已用完，重试不会重置额度。"
+        elif exc.code in {
+            "composite_goal_model_call_duplicate",
+            "composite_goal_model_reservation_invalid",
+        }:
+            reason = "原因：本次模型调用与已记录的预算预留冲突，系统没有再次派发。"
     else:
         diagnostic["code"] = "work_draft_invalid"
         reason = "原因：模型提出的动作或参数草稿未通过校验，请重新说明需求。"
@@ -1861,11 +1868,13 @@ class WorkDialogue:
                 raise ApplicationError(
                     "work_model_unavailable", "模型工具阶段失败；未重复请求。", status_code=503
                 )
-            if metadata.get("stop_reason") in {
-                "budget_steps",
-                "budget_tokens",
-                "composite_goal_model_budget_exhausted",
-            }:
+            stop_reason = metadata.get("stop_reason")
+            if isinstance(stop_reason, str) and stop_reason.startswith("composite_goal_model_"):
+                raise ApplicationError(
+                    stop_reason,
+                    "复合目标的模型预算未允许本次调用，未向模型派发请求。",
+                )
+            if stop_reason in {"budget_steps", "budget_tokens"}:
                 raise ApplicationError(
                     "work_model_budget_exhausted", "本轮模型预算已用完，草稿和证据已保留。"
                 )
@@ -3212,11 +3221,13 @@ class WorkDialogue:
                 raise ApplicationError(
                     "work_model_unavailable", "数据分析 Agent 暂时不可用。", status_code=503
                 )
-            if metadata.get("stop_reason") in {
-                "budget_steps",
-                "budget_tokens",
-                "composite_goal_model_budget_exhausted",
-            }:
+            stop_reason = metadata.get("stop_reason")
+            if isinstance(stop_reason, str) and stop_reason.startswith("composite_goal_model_"):
+                raise ApplicationError(
+                    stop_reason,
+                    "复合目标的模型预算未允许本次调用，未向模型派发请求。",
+                )
+            if stop_reason in {"budget_steps", "budget_tokens"}:
                 raise ApplicationError(
                     "work_model_budget_exhausted", "本轮模型预算已用完，统计草稿和证据已保留。"
                 )

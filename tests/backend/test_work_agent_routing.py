@@ -499,6 +499,9 @@ async def test_automatic_role_switch_uses_only_the_destination_goal_budget(
     else:
         assert isinstance(captured["budget"], conversation_module._CompositeGoalModelBudgetSession)
         assert captured["budget"]._intent_task_id == goal.intent_task_id
+    budget = service.automation.get_composite_goal_model_budget(goal.intent_task_id)
+    assert budget.used_model_calls == 0
+    assert budget.used_tokens == 0
     assert result.assistant_message.payload["agent_role"] == routed_role.value
 
 
