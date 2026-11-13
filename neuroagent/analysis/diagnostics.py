@@ -70,9 +70,9 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
         ("MATLAB 启动时创建文件被 Windows 拒绝访问",),
         (
             "确认启动 MATLAB 的进程能在其 TEMP 目录创建 mathworks-<uuid> 文件",
-            "若临时文件已能创建，再确认本机 LocalAppData 下 "
-            "MathWorks/mwEndpointRegistry 可创建；只改 LOCALAPPDATA 不会移动该文件",
-            "独立 MATLAB_PREFDIR 只隔离偏好目录，不能代替上述创建",
+            "若临时文件已能创建, 再确认本机 LocalAppData 下 "
+            "MathWorks/mwEndpointRegistry 可创建; 只改 LOCALAPPDATA 不会移动该文件",
+            "独立 MATLAB_PREFDIR 只隔离偏好目录, 不能代替上述创建",
             "重试前先检查本次 attempt 的 stderr 日志",
         ),
     ),
