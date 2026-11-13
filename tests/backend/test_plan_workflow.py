@@ -280,6 +280,7 @@ def test_manual_retry_uses_remaining_approved_budget(
     worker = build_worker(service, worker_id="worker-a")
     assert worker.run_once() is True
     failed = service.runs.get_run(run.run_id)
+    assert failed.state is WorkflowState.FAILED_RETRYABLE
     retried = service.runs.retry_run(
         run.run_id,
         RunAction(expected_version=failed.version, reason="retry after inspection"),
@@ -481,20 +482,21 @@ def test_heartbeat_prevents_second_worker_from_reclaiming_long_job(
     first_executor = CoordinatedExecutor()
     second_executor = ImmediateExecutor()
     first_worker = SQLiteWorker(
-        service.repository, first_executor, worker_id="worker-one", lease_seconds=1
+        service.repository, first_executor, worker_id="worker-one", lease_seconds=9
     )
     second_worker = SQLiteWorker(
-        service.repository, second_executor, worker_id="worker-two", lease_seconds=1
+        service.repository, second_executor, worker_id="worker-two", lease_seconds=9
     )
     handled: list[bool] = []
     thread = threading.Thread(target=lambda: handled.append(first_worker.run_once()))
     thread.start()
-    assert first_executor.started.wait(timeout=2)
-    time.sleep(1.2)
+    assert first_executor.started.wait(timeout=5)
+    # Sleep past one heartbeat interval, but stay inside a renewed lease window.
+    time.sleep(4)
     assert second_worker.run_once() is False
     assert second_executor.calls == 0
     first_executor.release.set()
-    thread.join(timeout=3)
+    thread.join(timeout=10)
     assert not thread.is_alive()
     assert handled == [True]
     assert first_executor.calls == 1

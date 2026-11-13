@@ -55,7 +55,9 @@ def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[Appl
         spm_dir=tmp_path / "missing" / "spm12",
         dpabi_dir=tmp_path / "missing" / "dpabi",
         secrets_file=tmp_path / ".env",  # Never read the developer's real API keys.
-        worker_lease_seconds=1,
+        # Keep leases long enough that mock jobs finish under CI load; lease
+        # expiry tests construct SQLiteWorker with an explicit short lease.
+        worker_lease_seconds=30,
     )
     app_service = build_service(settings, work_agent_router=FakeWorkAgentRouter())
     yield app_service
