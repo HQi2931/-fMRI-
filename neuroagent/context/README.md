@@ -10,7 +10,7 @@
 
 ## 依赖关系
 
-`context` 由 `core` 的 AgentRuntime 调用；它从 `memory`、`retrieval`、`workflow`、`execution` 和历史消息中收集材料，并通过 `observability` 记录 ContextBuilt。
+Chat 与 Work 的应用服务调用 `ContextEngine`。它从记忆、检索证据、工作状态和历史消息中收集材料，并保存不含完整正文的结构化快照。
 
 ## 当前阶段
 

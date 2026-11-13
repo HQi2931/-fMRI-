@@ -20,9 +20,9 @@
 - 纯合成后端 E2E 与确定性统计复现报告合同已实现；其中 typed 指标和统计结果角色是醒目标记的测试占位，不得冒充真实科研产物。
 - 真实 Provider 轻量调用取决于本机 API Key；CI 只使用 Mock Provider。真实 MATLAB smoke、真实 Provider smoke 和任何真实数据处理都必须单独授权并记录验证结果。
 - 2026-09-04 已完成授权的小型合成统计、第一项预处理和 Provider smoke；组合指标及最终发布门禁状态见 `docs/development/mvp-verification.md`，不把局部验证等同于已发布。
-- `docs/architecture/neuroagent-framework-architecture.md` 是已标记为部分被替代的早期通用框架草案，其中的非目标和路线图不再作为当前实现依据；当前以本文件、fMRI Skill 架构和 ADR 为准。
+- 当前实现以本文件、fMRI Skill 架构和 ADR 为准。早期“先做通用 Agent 框架、再把 fMRI 做成插件”的草案已移出仓库；多 Agent 运行时和通用插件系统不在当前代码中，也不是近期 MVP 的前置依赖。
 - `skills` 已由用户明确纳入近期范围，用于表达 ALFF/fALFF、ReHo、统计分析等科研能力的适用条件、步骤顺序、参数、产物和 QC，并编译为受控 Workflow。
-- `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。`multi_agent` 和通用插件系统仍不是近期 MVP 的前置依赖。
+- `context` 已为 Chat/Work 提供预算、摘要、持久化记忆和快照；`retrieval` 已接入 Chat。
 - 优先建立最小垂直闭环：数据检查 → Skill 解析与方案校验 → 人工确认 → Workflow/MATLAB/DPABI 执行 → QC → 统计分析 → 报告。
 
 ## 3. 已确认的本机科研软件环境
