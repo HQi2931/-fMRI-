@@ -1,5 +1,11 @@
 # memory
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `memory` 定义 Working Memory、Episodic Memory、Semantic Memory 和 Procedural Knowledge 的模型、仓储、策略和服务边界。

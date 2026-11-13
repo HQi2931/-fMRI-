@@ -25,9 +25,9 @@ steps:
     qc_gate: true
 qc_requirements: ["manual_approval", "frozen_inclusion_order"]
 compatibility:
-  matlab: "R2023b"
-  spm: "SPM12"
-  dpabi: "V8.2_240510"
+  matlab: "R2024b"
+  spm: "SPM25"
+  dpabi: "V9.0_250415"
   adapter: "1.0.0"
 evidence_refs:
   - "docs/architecture/fmri-skill-layer.md#74-qc-gate"

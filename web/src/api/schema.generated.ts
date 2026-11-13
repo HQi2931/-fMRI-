@@ -72,6 +72,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/artifacts/{artifact_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Artifact */
+        get: operations["download_artifact_api_v1_artifacts__artifact_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifact_id}/preview.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview Artifact */
+        get: operations["preview_artifact_api_v1_artifacts__artifact_id__preview_png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster-localizations": {
         parameters: {
             query?: never;
@@ -124,7 +158,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/conversations/{conversation_id}/cards/{card_id}/actions": {
+    "/api/v1/conversations/{conversation_id}/analysis-outbox/{intent_task_id}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -133,8 +167,42 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Work Card Action */
-        post: operations["work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post"];
+        /** Retry Analysis Outbox */
+        post: operations["retry_analysis_outbox_api_v1_conversations__conversation_id__analysis_outbox__intent_task_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/composite-goals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Composite Goal Progress */
+        get: operations["list_composite_goal_progress_api_v1_conversations__conversation_id__composite_goals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/composite-goals/{intent_task_id}/select": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Select Composite Goal */
+        post: operations["select_composite_goal_api_v1_conversations__conversation_id__composite_goals__intent_task_id__select_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -209,6 +277,40 @@ export interface paths {
         patch: operations["update_conversation_memory_api_v1_conversations__conversation_id__context_memories__memory_id__patch"];
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/statistical-result-interpretations/{task_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Statistical Result Interpretation */
+        post: operations["retry_statistical_result_interpretation_api_v1_conversations__conversation_id__statistical_result_interpretations__task_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/step-plan-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Step Plan Reviews */
+        get: operations["list_step_plan_reviews_api_v1_conversations__conversation_id__step_plan_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -220,6 +322,245 @@ export interface paths {
         put?: never;
         /** Send Conversation Turn */
         post: operations["send_conversation_turn_api_v1_conversations__conversation_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Select Work Agent */
+        patch: operations["select_work_agent_api_v1_conversations__conversation_id__work_agent_patch"];
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-confirmation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Work Action */
+        post: operations["confirm_work_action_api_v1_conversations__conversation_id__work_confirmation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Work Draft */
+        patch: operations["update_work_draft_api_v1_conversations__conversation_id__work_draft_patch"];
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Work Review */
+        post: operations["prepare_work_review_api_v1_conversations__conversation_id__work_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Step Plan */
+        post: operations["approve_step_plan_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Step Plan Review */
+        get: operations["get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Step Run */
+        post: operations["start_step_run_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/work-tasks/{task_id}/steps/{step_id}/run-authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Step Run Authorization */
+        post: operations["create_step_run_authorization_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_authorizations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workspace Consents */
+        get: operations["list_workspace_consents_api_v1_conversations__conversation_id__workspace_consents_get"];
+        put?: never;
+        /** Create Workspace Consent */
+        post: operations["create_workspace_consent_api_v1_conversations__conversation_id__workspace_consents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/consents/{consent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Workspace Consent */
+        delete: operations["revoke_workspace_consent_api_v1_conversations__conversation_id__workspace_consents__consent_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workspace Files */
+        get: operations["list_workspace_files_api_v1_conversations__conversation_id__workspace_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workspace Proposal */
+        get: operations["get_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Workspace Proposal */
+        post: operations["apply_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/workspace/proposals/{proposal_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo Workspace Proposal */
+        post: operations["undo_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__undo_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -834,7 +1175,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Diagnose Latest Run
+         * @description Read a local diagnosis of the current attempt without uploading its logs.
+         */
+        get: operations["diagnose_latest_run_api_v1_runs__run_id__diagnosis_get"];
         put?: never;
         /** Diagnose Run */
         post: operations["diagnose_run_api_v1_runs__run_id__diagnosis_post"];
@@ -861,6 +1206,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/head-motion-qc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Head Motion Qc Review */
+        post: operations["create_head_motion_qc_review_api_v1_runs__run_id__head_motion_qc_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/qc-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Run Qc Review */
+        get: operations["get_run_qc_review_api_v1_runs__run_id__qc_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/qc-skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Skip Qc */
+        post: operations["skip_qc_api_v1_runs__run_id__qc_skip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/retry": {
         parameters: {
             query?: never;
@@ -872,6 +1268,23 @@ export interface paths {
         put?: never;
         /** Retry Run */
         post: operations["retry_run_api_v1_runs__run_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/skill-plans/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dry Run Skill Plan */
+        post: operations["dry_run_skill_plan_api_v1_skill_plans_dry_run_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -997,6 +1410,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/statistics/atlases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Statistical Atlases */
+        get: operations["list_statistical_atlases_api_v1_statistics_atlases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/external-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List External Analysis Imports */
+        get: operations["list_external_analysis_imports_api_v1_statistics_external_imports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/external-imports/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Inspect External Analysis Import */
+        post: operations["inspect_external_analysis_import_api_v1_statistics_external_imports_inspect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/external-imports/{import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get External Analysis Import */
+        get: operations["get_external_analysis_import_api_v1_statistics_external_imports__import_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/external-imports/{import_id}/demographics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get External Demographics */
+        get: operations["get_external_demographics_api_v1_statistics_external_imports__import_id__demographics_get"];
+        put?: never;
+        /** Import External Demographics */
+        post: operations["import_external_demographics_api_v1_statistics_external_imports__import_id__demographics_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/external-imports/{import_id}/include": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Include External Analysis Import */
+        post: operations["include_external_analysis_import_api_v1_statistics_external_imports__import_id__include_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statistics/results": {
         parameters: {
             query?: never;
@@ -1031,6 +1547,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/statistics/results/{result_id}/localization": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Localize Statistical Result */
+        get: operations["localize_statistical_result_api_v1_statistics_results__result_id__localization_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/results/{result_id}/roi": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Statistical Cluster Roi */
+        get: operations["statistical_cluster_roi_api_v1_statistics_results__result_id__roi_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/results/{result_id}/slice-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Statistical Result Slice Info */
+        get: operations["statistical_result_slice_info_api_v1_statistics_results__result_id__slice_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/results/{result_id}/slice.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Statistical Result Slice Preview */
+        get: operations["statistical_result_slice_preview_api_v1_statistics_results__result_id__slice_png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statistics/runs": {
         parameters: {
             query?: never;
@@ -1042,23 +1626,6 @@ export interface paths {
         put?: never;
         /** Create Statistics Run */
         post: operations["create_statistics_run_api_v1_statistics_runs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/work/capabilities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Work Capabilities */
-        get: operations["work_capabilities_api_v1_work_capabilities_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1161,7 +1728,9 @@ export interface components {
             filter_timing: components["schemas"]["TemporalFilterTiming"];
             frequency_band: components["schemas"]["FrequencyBand"];
             /** Mask Artifact Id */
-            mask_artifact_id: string;
+            mask_artifact_id?: string | null;
+            /** @default registered_artifact */
+            mask_source: components["schemas"]["MetricMaskSource"];
             /** Provenance */
             provenance: components["schemas"]["ParameterProvenance"][];
             /** Requested Metrics */
@@ -1400,6 +1969,13 @@ export interface components {
              * @default MNI
              */
             coordinate_space: string;
+            /** Direction */
+            direction?: number | null;
+            /**
+             * Inference
+             * @default unknown
+             */
+            inference: string;
             /** Peak X */
             peak_x: number;
             /** Peak Y */
@@ -1410,6 +1986,89 @@ export interface components {
             statistic?: number | null;
             /** Voxel Count */
             voxel_count?: number | null;
+        };
+        /**
+         * CompositeGoalProgressStatus
+         * @enum {string}
+         */
+        CompositeGoalProgressStatus: "waiting_preprocessing" | "waiting_review" | "waiting_run" | "waiting_analysis" | "waiting_result_interpretation" | "waiting_user" | "blocked" | "completed" | "indeterminate";
+        /**
+         * CompositeGoalProgressView
+         * @description Conversation-scoped stable identity and current composite-goal projection.
+         */
+        CompositeGoalProgressView: {
+            /** Analysis Proposal Outbox Intent Task Id */
+            analysis_proposal_outbox_intent_task_id?: string | null;
+            /** Analysis Proposal Status */
+            analysis_proposal_status?: string | null;
+            /** Analysis Request Hash */
+            analysis_request_hash: string;
+            /**
+             * Analysis Run Id
+             * @description Server-verified analysis Run ID while its run state is observable.
+             */
+            analysis_run_id?: string | null;
+            /**
+             * Analysis Selection Available
+             * @description Selection availability from the server-verified goal projection; selecting still revalidates the exact draft, source, Plan and Run and never authorizes execution.
+             */
+            analysis_selection_available: boolean;
+            /** Analysis Status */
+            analysis_status?: string | null;
+            /**
+             * Analysis Summary
+             * @description Bounded summary from the exact persisted analysis intent message; null when its conversation, project, intent ID, or request hash cannot be verified.
+             */
+            analysis_summary?: string | null;
+            /** Analysis Work Task Id */
+            analysis_work_task_id?: string | null;
+            /** Continuation Message Id */
+            continuation_message_id?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Goal Kind
+             * @default preprocess_then_analyze
+             * @enum {string}
+             */
+            goal_kind: "preprocess_then_analyze" | "analysis_only_external_import";
+            /** Intent Task Id */
+            intent_task_id: string;
+            /**
+             * Preprocessing Run Id
+             * @description Server-verified preprocessing Run ID while its run state is observable.
+             */
+            preprocessing_run_id?: string | null;
+            /** Preprocessing Status */
+            preprocessing_status?: string | null;
+            /** Preprocessing Task Id */
+            preprocessing_task_id?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Result Interpretation Outbox Task Id */
+            result_interpretation_outbox_task_id?: string | null;
+            /** Result Interpretation Status */
+            result_interpretation_status?: string | null;
+            /** Source External Import Id */
+            source_external_import_id?: string | null;
+            /** Source Import Version */
+            source_import_version?: number | null;
+            /** Source Inclusion Hash */
+            source_inclusion_hash?: string | null;
+            /** Source Manifest Hash */
+            source_manifest_hash?: string | null;
+            /** Source Revision Hash */
+            source_revision_hash?: string | null;
+            /** Source Tree Hash */
+            source_tree_hash?: string | null;
+            status: components["schemas"]["CompositeGoalProgressStatus"];
+        };
+        /** CompositeGoalSelection */
+        CompositeGoalSelection: {
+            /** Expected Version */
+            expected_version: number;
         };
         /** ContextSummaryView */
         ContextSummaryView: {
@@ -1435,7 +2094,7 @@ export interface components {
          * ConversationAction
          * @enum {string}
          */
-        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "get_progress" | "get_qc_status" | "get_statistical_results";
+        ConversationAction: "auto" | "setup_workspace" | "prepare_preprocessing_plan" | "preview_preprocessing_run" | "start_preprocessing" | "create_head_motion_qc" | "get_progress" | "get_qc_status" | "approve_qc_review" | "skip_qc" | "get_statistical_results" | "propose_workspace_changes";
         /** ConversationContextView */
         ConversationContextView: {
             /** Memories */
@@ -1487,6 +2146,7 @@ export interface components {
         ConversationRole: "user" | "assistant" | "tool";
         /** ConversationToolCallView */
         ConversationToolCallView: {
+            agent_role?: components["schemas"]["WorkAgentRole"] | null;
             /** Conversation Id */
             conversation_id: string;
             /**
@@ -1494,6 +2154,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Duration Ms */
+            duration_ms?: number | null;
             /** Error */
             error?: string | null;
             /** Input */
@@ -1504,7 +2166,11 @@ export interface components {
             output?: {
                 [key: string]: unknown;
             };
+            /** Risk Tier */
+            risk_tier?: string | null;
             status: components["schemas"]["ConversationToolStatus"];
+            /** Step Index */
+            step_index?: number | null;
             /** Tool Call Id */
             tool_call_id: string;
             /** Tool Name */
@@ -1521,24 +2187,29 @@ export interface components {
          * ConversationToolStatus
          * @enum {string}
          */
-        ConversationToolStatus: "succeeded" | "failed" | "awaiting_confirmation";
+        ConversationToolStatus: "succeeded" | "failed" | "rejected" | "awaiting_confirmation";
         /** ConversationTurnCreate */
         ConversationTurnCreate: {
             /** @default auto */
             action: components["schemas"]["ConversationAction"];
+            agent_role?: components["schemas"]["WorkAgentRole"] | null;
             /**
              * Allow Remote Search
              * @default false
              */
             allow_remote_search: boolean;
-            /** Card Kind */
-            card_kind?: ("project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings") | null;
+            /** Analysis Intent Task Id */
+            analysis_intent_task_id?: string | null;
+            /** Confirmation Id */
+            confirmation_id?: string | null;
             /** Content */
             content: string;
             /** Expected Plan Hash */
             expected_plan_hash?: string | null;
             /** Expected Project Version */
             expected_project_version?: number | null;
+            /** External Analysis Import Id */
+            external_analysis_import_id?: string | null;
             /** Model */
             model?: string | null;
             /**
@@ -1550,8 +2221,11 @@ export interface components {
             plan_revision_id?: string | null;
             /** Preferred Profile Id */
             preferred_profile_id?: string | null;
+            /** Preprocessing Task Id */
+            preprocessing_task_id?: string | null;
             /** Project Id */
             project_id?: string | null;
+            qc_mode?: components["schemas"]["QcExecutionMode"] | null;
             /** Qc Review Id */
             qc_review_id?: string | null;
             /**
@@ -1559,7 +2233,14 @@ export interface components {
              * @default false
              */
             real_execution_confirmed: boolean;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
             skill_plan_intent?: components["schemas"]["SkillPlanIntent"] | null;
+            /**
+             * Start New Analysis Goal
+             * @default false
+             */
+            start_new_analysis_goal: boolean;
             /**
              * Stream
              * @default false
@@ -1567,6 +2248,7 @@ export interface components {
             stream: boolean;
             /** Target Run Id */
             target_run_id?: string | null;
+            workspace_file_scope?: components["schemas"]["WorkspaceFileScope"] | null;
             /** Workspace Path */
             workspace_path?: string | null;
             workspace_setup?: components["schemas"]["WorkspaceSetupIntent"] | null;
@@ -1576,6 +2258,8 @@ export interface components {
             assistant_message: components["schemas"]["ConversationMessageView"];
             conversation: components["schemas"]["ConversationView"];
             tool_call?: components["schemas"]["ConversationToolCallView"] | null;
+            /** Tool Calls */
+            tool_calls?: components["schemas"]["ConversationToolCallView"][];
             user_message: components["schemas"]["ConversationMessageView"];
         };
         /** ConversationView */
@@ -1589,6 +2273,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** @default preprocessing */
+            foreground_agent_role: components["schemas"]["WorkAgentRole"];
             /** Messages */
             messages?: components["schemas"]["ConversationMessageView"][];
             mode: components["schemas"]["ConversationMode"];
@@ -1607,8 +2293,31 @@ export interface components {
             updated_at: string;
             /** Version */
             version: number;
+            /**
+             * Work Tasks
+             * @default []
+             */
+            work_tasks: components["schemas"]["ConversationWorkTaskView"][];
             /** Workspace Path */
             workspace_path?: string | null;
+        };
+        /** ConversationWorkTaskView */
+        ConversationWorkTaskView: {
+            agent_role: components["schemas"]["WorkAgentRole"];
+            /** Analysis Intent Task Id */
+            analysis_intent_task_id?: string | null;
+            /** Draft Hash */
+            draft_hash?: string | null;
+            /** Plan Revision Id */
+            plan_revision_id?: string | null;
+            /** Proposal Hash */
+            proposal_hash?: string | null;
+            /** Proposal Message Id */
+            proposal_message_id?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Work Task Id */
+            work_task_id?: string | null;
         };
         /** CorrectionCapabilityView */
         CorrectionCapabilityView: {
@@ -1816,6 +2525,8 @@ export interface components {
         };
         /** EnvironmentConfigView */
         EnvironmentConfigView: {
+            /** Allowed Work Root */
+            allowed_work_root: string;
             /** Configured */
             configured: boolean;
             /** Dpabi Dir */
@@ -1893,6 +2604,408 @@ export interface components {
          * @enum {string}
          */
         ExecutionWorkspaceMode: "isolated" | "in_place";
+        /**
+         * ExternalAnalysisImportIncludeRequest
+         * @description Explicit human decision to make an inspected import selectable for analysis.
+         */
+        ExternalAnalysisImportIncludeRequest: {
+            /**
+             * Acknowledge Candidate Mapping
+             * @constant
+             */
+            acknowledge_candidate_mapping: true;
+            /**
+             * Acknowledge Unknown Processing
+             * @constant
+             */
+            acknowledge_unknown_processing: true;
+            /** Actor */
+            actor: string;
+            /**
+             * Coordinate Space
+             * @enum {string}
+             */
+            coordinate_space: "MNI" | "Talairach" | "unknown";
+            /** Expected Version */
+            expected_version: number;
+            /** Group Order */
+            group_order: string[];
+            /** Included Subject Ids */
+            included_subject_ids: string[];
+            /** Mask Relative Path */
+            mask_relative_path?: string | null;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ExternalAnalysisImportInspectRequest
+         * @description Inspect a user-selected external DPABI metric directory without inclusion.
+         */
+        ExternalAnalysisImportInspectRequest: {
+            /**
+             * Layout
+             * @default grouped
+             * @enum {string}
+             */
+            layout: "grouped" | "paired_conditions";
+            /** Project Id */
+            project_id: string;
+            /** Source Path */
+            source_path: string;
+        };
+        /**
+         * ExternalAnalysisImportSummaryView
+         * @description Bounded list projection that omits per-subject paths and file hashes.
+         */
+        ExternalAnalysisImportSummaryView: {
+            /**
+             * Blocking Issues
+             * @default []
+             */
+            blocking_issues: string[];
+            /**
+             * Coordinate Space
+             * @enum {string}
+             */
+            coordinate_space: "MNI" | "Talairach" | "unknown";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Grid Signature */
+            grid_signature?: string | null;
+            /** Group Counts */
+            group_counts: {
+                [key: string]: number;
+            };
+            /** Import Id */
+            import_id: string;
+            /** Inclusion Hash */
+            inclusion_hash?: string | null;
+            /**
+             * Layout
+             * @default grouped
+             * @enum {string}
+             */
+            layout: "grouped" | "paired_conditions";
+            metric_kind?: components["schemas"]["MetricKind"] | null;
+            /** Project Id */
+            project_id: string;
+            scaling?: components["schemas"]["MetricScaling"] | null;
+            /** Source Tree Hash */
+            source_tree_hash: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "included";
+            /** Subject Count */
+            subject_count: number;
+            /**
+             * Unknown Processing Fields
+             * @default []
+             */
+            unknown_processing_fields: string[];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /** ExternalAnalysisImportView */
+        ExternalAnalysisImportView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Import Id */
+            import_id: string;
+            inclusion?: components["schemas"]["ExternalMetricInclusion"] | null;
+            /** Inclusion Hash */
+            inclusion_hash?: string | null;
+            inspection: components["schemas"]["ExternalMetricInspection"];
+            /** Project Id */
+            project_id: string;
+            selection?: components["schemas"]["ExternalAnalysisSelectionView"] | null;
+            /** Source Path */
+            source_path: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_review" | "included";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /** ExternalAnalysisSelectionImageView */
+        ExternalAnalysisSelectionImageView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Condition */
+            condition?: string | null;
+            /** Group */
+            group: string;
+            /** Subject Id */
+            subject_id: string;
+        };
+        /**
+         * ExternalAnalysisSelectionView
+         * @description Opaque IDs and manifest needed to freeze a reviewed external design.
+         */
+        ExternalAnalysisSelectionView: {
+            /** Group Order */
+            group_order: string[];
+            /** Images */
+            images: components["schemas"]["ExternalAnalysisSelectionImageView"][];
+            /** Input Manifest Hash */
+            input_manifest_hash: string;
+            /** Mask Artifact Id */
+            mask_artifact_id: string;
+        };
+        /** ExternalDemographicsImportRequest */
+        ExternalDemographicsImportRequest: {
+            /** Column Mapping */
+            column_mapping?: {
+                [key: string]: string;
+            };
+            /**
+             * Encoding
+             * @default utf-8-sig
+             */
+            encoding: string;
+            /** Expected Import Version */
+            expected_import_version: number;
+            /** Source Path */
+            source_path: string;
+            /** Subject Id Column */
+            subject_id_column: string;
+        };
+        /** ExternalDemographicsRevisionView */
+        ExternalDemographicsRevisionView: {
+            /** Columns */
+            columns: string[];
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Demographics Id */
+            demographics_id: string;
+            /** External Import Id */
+            external_import_id: string;
+            /** Inclusion Hash */
+            inclusion_hash: string;
+            /** Revision */
+            revision: number;
+            /** Row Count */
+            row_count: number;
+            /** Source Sha256 */
+            source_sha256: string;
+        };
+        /**
+         * ExternalMetricImage
+         * @description One hashed, spatially inspected input image within an external import.
+         */
+        ExternalMetricImage: {
+            /** Affine */
+            affine: [
+                number,
+                number,
+                number,
+                number
+            ][];
+            /** Condition */
+            condition?: string | null;
+            /**
+             * Condition Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            condition_evidence: "unknown" | "candidate";
+            /**
+             * Condition Source
+             * @default unknown
+             * @enum {string}
+             */
+            condition_source: "unknown" | "first_level_directory";
+            /** Grid Signature */
+            grid_signature: string;
+            /** Group */
+            group: string;
+            /**
+             * Group Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            group_evidence: "unknown" | "candidate";
+            /**
+             * Group Source
+             * @default unknown
+             * @enum {string}
+             */
+            group_source: "unknown" | "first_level_directory";
+            metric_kind: components["schemas"]["MetricKind"];
+            /** Relative Path */
+            relative_path: string;
+            /**
+             * Run Evidence
+             * @default unknown
+             * @constant
+             */
+            run_evidence: "unknown";
+            /** Run Id */
+            run_id?: null;
+            scaling: components["schemas"]["MetricScaling"];
+            /**
+             * Session Evidence
+             * @default unknown
+             * @constant
+             */
+            session_evidence: "unknown";
+            /** Session Id */
+            session_id?: null;
+            /** Sha256 */
+            sha256: string;
+            /** Shape Ijk */
+            shape_ijk: [
+                number,
+                number,
+                number
+            ];
+            /** Size Bytes */
+            size_bytes: number;
+            /** Subject Id */
+            subject_id: string;
+            /**
+             * Subject Id Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            subject_id_evidence: "unknown" | "candidate";
+            /**
+             * Subject Id Source
+             * @default unknown
+             * @enum {string}
+             */
+            subject_id_source: "unknown" | "filename";
+        };
+        /**
+         * ExternalMetricInclusion
+         * @description Researcher decision that permits an inspected import to be selected.
+         */
+        ExternalMetricInclusion: {
+            /** Actor */
+            actor: string;
+            /**
+             * Coordinate Space
+             * @enum {string}
+             */
+            coordinate_space: "MNI" | "Talairach" | "unknown";
+            /**
+             * Coordinate Space Source
+             * @enum {string}
+             */
+            coordinate_space_source: "user_confirmed" | "unknown";
+            /** Excluded Subject Ids */
+            excluded_subject_ids: string[];
+            /** Group Order */
+            group_order: string[];
+            /**
+             * Identity Mapping Evidence
+             * @default unknown
+             * @enum {string}
+             */
+            identity_mapping_evidence: "unknown" | "declared";
+            /** Identity Mapping Hash */
+            identity_mapping_hash?: string | null;
+            /** Included Subject Ids */
+            included_subject_ids: string[];
+            /** Mask Grid Signature */
+            mask_grid_signature?: string | null;
+            /** Mask Relative Path */
+            mask_relative_path?: string | null;
+            /** Mask Sha256 */
+            mask_sha256?: string | null;
+            /** Mask Size Bytes */
+            mask_size_bytes?: number | null;
+            /** Reason */
+            reason: string;
+            /** Unknown Processing Acknowledged */
+            unknown_processing_acknowledged: boolean;
+        };
+        /**
+         * ExternalMetricInspection
+         * @description Immutable scan result. It is not analysis approval or QC.
+         */
+        ExternalMetricInspection: {
+            /**
+             * Blocking Issues
+             * @default []
+             */
+            blocking_issues: string[];
+            /**
+             * Coordinate Space
+             * @default unknown
+             * @enum {string}
+             */
+            coordinate_space: "MNI" | "Talairach" | "unknown";
+            /** Grid Signature */
+            grid_signature?: string | null;
+            /** Group Order */
+            group_order: string[];
+            /** Identity Mapping Hash */
+            identity_mapping_hash?: string | null;
+            /** Images */
+            images: components["schemas"]["ExternalMetricImage"][];
+            /**
+             * Layout
+             * @default grouped
+             * @enum {string}
+             */
+            layout: "grouped" | "paired_conditions";
+            metric_kind?: components["schemas"]["MetricKind"] | null;
+            scaling?: components["schemas"]["MetricScaling"] | null;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /** Source Tree Hash */
+            source_tree_hash: string;
+            /**
+             * Unknown Processing Fields
+             * @default [
+             *       "TR and frequency band",
+             *       "temporal filtering and nuisance regression",
+             *       "smoothing and scrubbing",
+             *       "mask source and version",
+             *       "preprocessing software and version"
+             *     ]
+             */
+            unknown_processing_fields: string[];
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
         /**
          * FailureCode
          * @enum {string}
@@ -2007,7 +3120,7 @@ export interface components {
         };
         /**
          * GrfSmoothnessMode
-         * @description Explicit DPABI V8.2 smoothness source used by GRF inference.
+         * @description Explicit DPABI smoothness source used by GRF inference.
          * @enum {string}
          */
         GrfSmoothnessMode: "dpabi_header_or_estimate" | "provided_dlh";
@@ -2016,6 +3129,35 @@ export interface components {
          * @enum {integer}
          */
         HeadMotionModel: 0 | 1 | 2 | 3 | 4;
+        /** HeadMotionQcCreate */
+        HeadMotionQcCreate: {
+            criteria?: components["schemas"]["HeadMotionQcCriteria"];
+            /** Expected Run Version */
+            expected_run_version: number;
+        };
+        /** HeadMotionQcCriteria */
+        HeadMotionQcCriteria: {
+            /**
+             * Fd Power Gt 0 5 Fraction
+             * @default 0.2
+             */
+            fd_power_gt_0_5_fraction: number;
+            /**
+             * Max Rotation Deg
+             * @default 2
+             */
+            max_rotation_deg: number;
+            /**
+             * Max Translation Mm
+             * @default 2
+             */
+            max_translation_mm: number;
+            /**
+             * Mean Fd Power
+             * @default 0.2
+             */
+            mean_fd_power: number;
+        };
         /** HealthView */
         HealthView: {
             /**
@@ -2050,6 +3192,10 @@ export interface components {
             profile: components["schemas"]["DatasetProfile"];
             /** Revision */
             revision: number;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
+            /** Stage Candidates */
+            stage_candidates?: components["schemas"]["WorkspaceStageCandidate"][];
             /** Subjects */
             subjects: components["schemas"]["SubjectManifestEntry"][];
         };
@@ -2062,6 +3208,8 @@ export interface components {
              * @default false
              */
             report_only: boolean;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
         };
         /**
          * MemoryAction
@@ -2175,6 +3323,12 @@ export interface components {
          */
         MetricKind: "alff" | "falff" | "reho";
         /**
+         * MetricMaskSource
+         * @description Reviewed source for the metric brain mask.
+         * @enum {string}
+         */
+        MetricMaskSource: "registered_artifact" | "dpabi_auto";
+        /**
          * MetricScaling
          * @enum {string}
          */
@@ -2282,7 +3436,7 @@ export interface components {
          * ModelCapability
          * @enum {string}
          */
-        ModelCapability: "json_object" | "streaming" | "reasoning" | "web_search";
+        ModelCapability: "json_object" | "streaming" | "reasoning" | "web_search" | "tool_use";
         /** ModelListRequest */
         ModelListRequest: {
             /** Api Key */
@@ -2301,10 +3455,13 @@ export interface components {
         ModelProfileCreate: {
             /** Api Key */
             api_key?: string | null;
-            profile: components["schemas"]["ModelProfileInput"];
+            profile: components["schemas"]["ModelProfileInput-Input"];
         };
-        /** ModelProfileInput */
-        ModelProfileInput: {
+        /**
+         * ModelProfileInput
+         * @description Validated public profile shape (secrets are provided separately).
+         */
+        "ModelProfileInput-Input": {
             /** Api Key Env */
             api_key_env: string;
             /** Base Url */
@@ -2336,6 +3493,56 @@ export interface components {
             /** Provider */
             provider: string;
             /**
+             * Thinking Mode
+             * @default provider_default
+             * @enum {string}
+             */
+            thinking_mode: "provider_default" | "disabled";
+            /**
+             * Timeout Seconds
+             * @default 45
+             */
+            timeout_seconds: number;
+        };
+        /** ModelProfileInput */
+        "ModelProfileInput-Output": {
+            /** Api Key Env */
+            api_key_env: string;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Capabilities
+             * @default []
+             */
+            capabilities: components["schemas"]["ModelCapability"][];
+            /**
+             * Context Window Tokens
+             * @default 16384
+             */
+            context_window_tokens: number;
+            /** Id */
+            id: string;
+            /**
+             * Max Output Tokens
+             * @default 2048
+             */
+            max_output_tokens: number;
+            /** Model */
+            model: string;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            /** Provider */
+            provider: string;
+            /**
+             * Thinking Mode
+             * @default provider_default
+             * @enum {string}
+             */
+            thinking_mode: "provider_default" | "disabled";
+            /**
              * Timeout Seconds
              * @default 45
              */
@@ -2348,7 +3555,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-            profile: components["schemas"]["ModelProfileInput"];
+            profile: components["schemas"]["ModelProfileInput-Output"];
             /** Version */
             version: number;
         };
@@ -2621,7 +3828,7 @@ export interface components {
          * ParameterSource
          * @enum {string}
          */
-        ParameterSource: "user" | "study_protocol" | "dataset_metadata" | "reviewed_preset";
+        ParameterSource: "proposal" | "user" | "study_protocol" | "dataset_metadata" | "reviewed_preset";
         /** PlanRevisionView */
         PlanRevisionView: {
             /**
@@ -2682,9 +3889,48 @@ export interface components {
             scrubbing: components["schemas"]["ScrubbingParameters"];
             slice_timing: components["schemas"]["SliceTimingParameters"];
             smoothing: components["schemas"]["SmoothingParameters"];
+            t1?: components["schemas"]["T1Parameters"] | null;
             temporal_filter: components["schemas"]["TemporalFilteringParameters"];
             /** Tr Seconds */
             tr_seconds: number;
+        };
+        /** PreprocessingPlanSummaryView */
+        PreprocessingPlanSummaryView: {
+            /** Csf Regression Enabled */
+            csf_regression_enabled: boolean;
+            /** Detrend */
+            detrend: boolean;
+            /** Dummy Scans */
+            dummy_scans: number;
+            /** Expected Time Points */
+            expected_time_points: number | null;
+            /** Frequency High Hz */
+            frequency_high_hz: number | null;
+            /** Frequency Low Hz */
+            frequency_low_hz: number | null;
+            /** Global Signal Regression Enabled */
+            global_signal_regression_enabled: boolean;
+            head_motion_model: components["schemas"]["HeadMotionModel"] | null;
+            mask_source: components["schemas"]["MetricMaskSource"] | null;
+            /** Metric Smoothing */
+            metric_smoothing: boolean;
+            normalization_mode: components["schemas"]["NormalizationMode"];
+            /** Realignment Enabled */
+            realignment_enabled: boolean;
+            /** Reference Slice */
+            reference_slice: number | null;
+            /** Requested Metrics */
+            requested_metrics: components["schemas"]["MetricKind"][];
+            /** Requested Scalings */
+            requested_scalings: components["schemas"]["MetricScaling"][];
+            /** Slice Count */
+            slice_count: number | null;
+            /** Slice Timing Enabled */
+            slice_timing_enabled: boolean;
+            /** Tr Seconds */
+            tr_seconds: number;
+            /** White Matter Regression Enabled */
+            white_matter_regression_enabled: boolean;
         };
         /** ProjectCreate */
         ProjectCreate: {
@@ -2742,6 +3988,12 @@ export interface components {
             passed: boolean;
             severity: components["schemas"]["QcSeverity"];
         };
+        /**
+         * QcExecutionMode
+         * @description User's explicit choice for the post-processing QC gate.
+         * @enum {string}
+         */
+        QcExecutionMode: "require" | "skip";
         /** QcReviewApprove */
         QcReviewApprove: {
             /** Actor */
@@ -2772,8 +4024,13 @@ export interface components {
             expected_run_version: number;
             /** Included Subject Ids */
             included_subject_ids: string[];
-            /** Metric Artifact Ids */
+            /**
+             * Metric Artifact Ids
+             * @default []
+             */
             metric_artifact_ids: string[];
+            /** @default pre_statistics */
+            review_scope: components["schemas"]["QcReviewScope"];
             /** Run Id */
             run_id: string;
         };
@@ -2804,7 +4061,14 @@ export interface components {
             metric_artifact_ids: string[];
             /** Review Revision Id */
             review_revision_id: string;
+            /** @default pre_statistics */
+            review_scope: components["schemas"]["QcReviewScope"];
         };
+        /**
+         * QcReviewScope
+         * @enum {string}
+         */
+        QcReviewScope: "head_motion" | "pre_statistics";
         /**
          * QcReviewState
          * @enum {string}
@@ -2838,6 +4102,39 @@ export interface components {
          * @enum {string}
          */
         QcSeverity: "info" | "warning" | "blocking";
+        /** QcSkipCreate */
+        QcSkipCreate: {
+            /** Actor */
+            actor: string;
+            /** Expected Run Version */
+            expected_run_version: number;
+            /** Reason */
+            reason: string;
+        };
+        /** QcSkipView */
+        QcSkipView: {
+            /** Actor */
+            actor: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decision Hash */
+            decision_hash: string;
+            /** Project Id */
+            project_id: string;
+            /** Qc Review Revision Id */
+            qc_review_revision_id?: string | null;
+            /** Qc Skip Id */
+            qc_skip_id: string;
+            /** Reason */
+            reason: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Version */
+            run_version: number;
+        };
         /**
          * RealignmentOptionsSource
          * @enum {string}
@@ -2851,7 +4148,7 @@ export interface components {
         };
         /**
          * RehoParameters
-         * @description Explicit ReHo choices mapped to DPABI V8.2 semantics.
+         * @description Explicit ReHo choices mapped to DPABI semantics.
          */
         RehoParameters: {
             /** Cluster Voxels */
@@ -2865,7 +4162,9 @@ export interface components {
                 number
             ] | null;
             /** Mask Artifact Id */
-            mask_artifact_id: string;
+            mask_artifact_id?: string | null;
+            /** @default registered_artifact */
+            mask_source: components["schemas"]["MetricMaskSource"];
             /** Provenance */
             provenance: components["schemas"]["ParameterProvenance"][];
             /** Requested Scalings */
@@ -3070,6 +4369,8 @@ export interface components {
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
             /**
              * Real Execution Confirmed
              * @default false
@@ -3088,6 +4389,8 @@ export interface components {
         };
         /** RunDiagnosisView */
         RunDiagnosisView: {
+            /** Attempt */
+            attempt?: number | null;
             diagnosis: components["schemas"]["FailureDiagnosis"];
             /** Run Id */
             run_id?: string | null;
@@ -3123,6 +4426,13 @@ export interface components {
             plan_revision_id: string;
             /** Project Id */
             project_id: string;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Qc Status
+             * @default pending
+             */
+            qc_status: string;
             /** Run Id */
             run_id: string;
             /**
@@ -3314,6 +4624,31 @@ export interface components {
             /** Warnings */
             warnings: components["schemas"]["SkillValidationIssue"][];
         };
+        /** SkillPlanDryRunView */
+        SkillPlanDryRunView: {
+            /**
+             * Environment Probed
+             * @default false
+             * @constant
+             */
+            environment_probed: false;
+            /** Issues */
+            issues?: components["schemas"]["ValidationIssue"][];
+            /** Manifest Hash */
+            manifest_hash: string;
+            /** Manifest Id */
+            manifest_id: string;
+            /** Plan Hash */
+            plan_hash?: string | null;
+            /** Ready */
+            ready: boolean;
+            /**
+             * Scope
+             * @default skill_contract_compile_only
+             * @constant
+             */
+            scope: "skill_contract_compile_only";
+        };
         /**
          * SkillPlanIntent
          * @description Client intent without client-authored Artifact lineage or environment locks.
@@ -3339,8 +4674,6 @@ export interface components {
             request_preprocessing: boolean;
             /** Requested Metrics */
             requested_metrics: components["schemas"]["MetricKind"][];
-            /** Study Protocol Ref */
-            study_protocol_ref: string;
         };
         /** SkillPlanResolveRequest */
         SkillPlanResolveRequest: {
@@ -3482,8 +4815,153 @@ export interface components {
          * @enum {string}
          */
         SmoothingTiming: "disabled" | "on_functional_data" | "on_results";
+        /** StatisticalAtlasPeakLocalization */
+        StatisticalAtlasPeakLocalization: {
+            /** Atlas Voxel Center Mm */
+            atlas_voxel_center_mm: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Atlas Voxel Ijk */
+            atlas_voxel_ijk: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Cluster Id */
+            cluster_id: string;
+            /**
+             * Coverage
+             * @default []
+             */
+            coverage: components["schemas"]["StatisticalAtlasRegionCoverage"][];
+            /** Distance To Voxel Center Mm */
+            distance_to_voxel_center_mm?: number | null;
+            /** Label */
+            label: string | null;
+            /** Label Value */
+            label_value: number | null;
+            /** Peak Coordinate Mm */
+            peak_coordinate_mm: [
+                number,
+                number,
+                number
+            ];
+        };
+        /** StatisticalAtlasRegionCoverage */
+        StatisticalAtlasRegionCoverage: {
+            /** Label */
+            label: string;
+            /** Label Value */
+            label_value: number;
+            /** Proportion */
+            proportion: number;
+            /** Voxel Count */
+            voxel_count: number;
+        };
+        /**
+         * StatisticalAtlasSelection
+         * @description Server-frozen post-analysis method and installed atlas evidence.
+         */
+        StatisticalAtlasSelection: {
+            /** Atlas Content Hash */
+            atlas_content_hash: string;
+            /**
+             * Atlas Id
+             * @enum {string}
+             */
+            atlas_id: "aal" | "aal3" | "brodmann";
+            /** Atlas Name */
+            atlas_name: string;
+            /**
+             * Cluster Connectivity
+             * @default 26
+             * @constant
+             */
+            cluster_connectivity: 26;
+            /**
+             * Coordinate Space
+             * @constant
+             */
+            coordinate_space: "MNI";
+            /**
+             * Localization Method
+             * @default nearest_neighbor_inverse_nifti_affine
+             * @constant
+             */
+            localization_method: "nearest_neighbor_inverse_nifti_affine";
+        };
+        /** StatisticalAtlasView */
+        StatisticalAtlasView: {
+            /** Atlas Id */
+            atlas_id: string;
+            /** Available */
+            available: boolean;
+            /** Content Hash */
+            content_hash?: string | null;
+            /** Coordinate Space */
+            coordinate_space: string;
+            /** Label Count */
+            label_count: number | null;
+            /** Name */
+            name: string;
+            /** Reason */
+            reason?: string | null;
+            /** Voxel Size Mm */
+            voxel_size_mm: [
+                number,
+                number,
+                number
+            ] | null;
+        };
+        /** StatisticalClusterRoiRow */
+        StatisticalClusterRoiRow: {
+            /** Condition */
+            condition?: string | null;
+            /** Group */
+            group?: string | null;
+            /** Mean Value */
+            mean_value: number;
+            /** Subject Id */
+            subject_id: string;
+        };
+        /** StatisticalClusterRoiView */
+        StatisticalClusterRoiView: {
+            /** Cluster Id */
+            cluster_id: string | null;
+            /**
+             * Limitation
+             * @default 显著簇内均值仅用于描述性展示；同一数据选择的 ROI 不构成独立验证，不提供二次显著性检验。
+             */
+            limitation: string;
+            /** Result Bundle Hash */
+            result_bundle_hash: string;
+            /** Result Id */
+            result_id: string;
+            /** Rows */
+            rows: components["schemas"]["StatisticalClusterRoiRow"][];
+            /** Source Map Artifact Id */
+            source_map_artifact_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "descriptive" | "no_significant_voxels" | "no_reportable_clusters";
+            /** Voxel Count */
+            voxel_count: number;
+        };
+        /** StatisticalCovariateSummary */
+        StatisticalCovariateSummary: {
+            /** Centering */
+            centering: string;
+            /** Name */
+            name: string;
+        };
         /** StatisticalDesignCreate */
         StatisticalDesignCreate: {
+            /** Atlas Id */
+            atlas_id?: ("aal" | "aal3" | "brodmann") | null;
             /** Correction */
             correction?: components["schemas"]["FdrCorrection"] | components["schemas"]["GrfCorrection"] | null;
             design: components["schemas"]["StatisticalDesignRevision"];
@@ -3495,6 +4973,7 @@ export interface components {
             project_id: string;
             /** Supersedes Plan Revision Id */
             supersedes_plan_revision_id?: string | null;
+            work_context?: components["schemas"]["StatisticalWorkContext"] | null;
         };
         /** StatisticalDesignRevision */
         StatisticalDesignRevision: {
@@ -3504,6 +4983,14 @@ export interface components {
             contrast: number[];
             /** Covariates */
             covariates: components["schemas"]["CovariateColumn"][];
+            /** External Demographics Hash */
+            external_demographics_hash?: string | null;
+            /** External Demographics Revision Id */
+            external_demographics_revision_id?: string | null;
+            /** External Import Hash */
+            external_import_hash?: string | null;
+            /** External Import Id */
+            external_import_id?: string | null;
             /** Group Order */
             group_order: string[];
             /** Images */
@@ -3514,9 +5001,17 @@ export interface components {
             /** One Sample Baseline */
             one_sample_baseline: number | null;
             /** Qc Review Hash */
-            qc_review_hash: string;
+            qc_review_hash?: string | null;
             /** Qc Review Revision Id */
-            qc_review_revision_id: string;
+            qc_review_revision_id?: string | null;
+            /** Qc Skip Hash */
+            qc_skip_hash?: string | null;
+            /** Qc Skip Id */
+            qc_skip_id?: string | null;
+            /** @default approved_review */
+            qc_source: components["schemas"]["StatisticalQcSource"];
+            /** Qc Source Run Id */
+            qc_source_run_id?: string | null;
             /** Revision Id */
             revision_id: string;
             /** Subject Order */
@@ -3536,6 +5031,7 @@ export interface components {
             design: components["schemas"]["StatisticalDesignRevision"];
             /** Design Matrix */
             design_matrix: number[][];
+            localization_plan?: components["schemas"]["StatisticalAtlasSelection"] | null;
             plan_revision: components["schemas"]["PlanRevisionView"];
         };
         /**
@@ -3543,6 +5039,121 @@ export interface components {
          * @enum {string}
          */
         StatisticalMapType: "T" | "F" | "Z" | "R";
+        /**
+         * StatisticalMethodSummary
+         * @description Path-free method facts, derived from a verified frozen result.
+         */
+        StatisticalMethodSummary: {
+            /** Actual P Threshold */
+            actual_p_threshold?: number | null;
+            /** Assumptions */
+            assumptions: string[];
+            /** Cluster Connectivity */
+            cluster_connectivity?: 26 | null;
+            /** Cluster P Threshold */
+            cluster_p_threshold?: number | null;
+            /** Condition Order */
+            condition_order: string[];
+            /** Contrast */
+            contrast: number[];
+            /**
+             * Correction Evidence Status
+             * @enum {string}
+             */
+            correction_evidence_status: "verified" | "not_registered" | "unavailable" | "not_applicable";
+            /** Correction Method */
+            correction_method?: ("fdr" | "grf") | null;
+            /** Covariates */
+            covariates: components["schemas"]["StatisticalCovariateSummary"][];
+            /** Df1 */
+            df1: number;
+            /** Df2 */
+            df2?: number | null;
+            /** Effective Fwhm */
+            effective_fwhm?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Effective Mask Voxel Count */
+            effective_mask_voxel_count?: number | null;
+            /** Effective Smoothness Dlh */
+            effective_smoothness_dlh?: number | null;
+            /**
+             * Evidence Issues
+             * @default []
+             */
+            evidence_issues: string[];
+            /** Function Name */
+            function_name: string;
+            /** Group Counts */
+            group_counts: {
+                [key: string]: number;
+            };
+            /** Image Count */
+            image_count: number;
+            /** Minimum Cluster Size */
+            minimum_cluster_size?: number | null;
+            /** Negative Direction */
+            negative_direction?: string | null;
+            /** Positive Direction */
+            positive_direction?: string | null;
+            /** Q Threshold */
+            q_threshold?: number | null;
+            /** Smoothness Mode */
+            smoothness_mode?: string | null;
+            /** Smoothness Source */
+            smoothness_source?: ("provided" | "header" | "estimated") | null;
+            /** Software Versions */
+            software_versions: {
+                [key: string]: string;
+            };
+            /**
+             * Statistic Type
+             * @enum {string}
+             */
+            statistic_type: "T" | "R" | "F";
+            /** Subject Count */
+            subject_count: number;
+            /** Tail */
+            tail: string;
+            /** Tail Label */
+            tail_label: string;
+            /** Test */
+            test: string;
+            /** Test Label */
+            test_label: string;
+            /** Voxel P Threshold */
+            voxel_p_threshold?: number | null;
+        };
+        /** StatisticalPlanSummaryView */
+        StatisticalPlanSummaryView: {
+            /** Condition Count */
+            condition_count: number;
+            /** Contrast */
+            contrast: number[];
+            /** Covariate Count */
+            covariate_count: number;
+            /** Group Count */
+            group_count: number;
+            /** Image Count */
+            image_count: number;
+            missing_value_policy: components["schemas"]["MissingValuePolicy"];
+            tail: components["schemas"]["Tail"];
+            test: components["schemas"]["StatisticalTest"];
+        };
+        /**
+         * StatisticalQcSource
+         * @enum {string}
+         */
+        StatisticalQcSource: "approved_review" | "skipped" | "external_import";
+        /** StatisticalResultClusterSliceView */
+        StatisticalResultClusterSliceView: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Slice Index */
+            slice_index: number;
+        };
         /**
          * StatisticalResultDetailView
          * @description Full registered result including the frozen manifest and both report renderings.
@@ -3565,6 +5176,7 @@ export interface components {
             manifest: {
                 [key: string]: unknown;
             };
+            method_summary?: components["schemas"]["StatisticalMethodSummary"] | null;
             /** Mode */
             mode: string;
             /** Non Scientific */
@@ -3583,6 +5195,49 @@ export interface components {
             run_id: string;
             /** Version */
             version: number;
+        };
+        /** StatisticalResultLocalizationView */
+        StatisticalResultLocalizationView: {
+            /** Atlas Content Hash */
+            atlas_content_hash?: string | null;
+            /** Atlas Id */
+            atlas_id?: string | null;
+            /** Atlas Name */
+            atlas_name?: string | null;
+            /** Clusters */
+            clusters: components["schemas"]["StatisticalAtlasPeakLocalization"][];
+            /** Coordinate Space */
+            coordinate_space?: string | null;
+            /**
+             * Localization Method
+             * @default nearest-neighbor sampling through inverse NIfTI affine
+             */
+            localization_method: string;
+            /** Result Bundle Hash */
+            result_bundle_hash: string;
+            /** Result Id */
+            result_id: string;
+            /** Significant Voxel Count */
+            significant_voxel_count?: number | null;
+            /**
+             * Status
+             * @default localized
+             * @enum {string}
+             */
+            status: "localized" | "no_significant_voxels" | "no_reportable_clusters";
+        };
+        /** StatisticalResultSliceInfoView */
+        StatisticalResultSliceInfoView: {
+            /** Cluster Slices */
+            cluster_slices: components["schemas"]["StatisticalResultClusterSliceView"][];
+            /** Initial Slice Index */
+            initial_slice_index: number;
+            /** Map Artifact Id */
+            map_artifact_id: string;
+            /** Result Id */
+            result_id: string;
+            /** Slice Count */
+            slice_count: number;
         };
         /**
          * StatisticalResultView
@@ -3621,7 +5276,16 @@ export interface components {
          * StatisticalTest
          * @enum {string}
          */
-        StatisticalTest: "one_sample_t" | "independent_two_sample_t" | "paired_t" | "correlation" | "regression";
+        StatisticalTest: "one_sample_t" | "independent_two_sample_t" | "paired_t" | "correlation" | "regression" | "one_way_anova_ancova";
+        /** StatisticalWorkContext */
+        StatisticalWorkContext: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Proposal Hash */
+            proposal_hash: string;
+            /** Proposal Message Id */
+            proposal_message_id?: string | null;
+        };
         /** StatisticsRunCreate */
         StatisticsRunCreate: {
             /** @default mock */
@@ -3642,6 +5306,234 @@ export interface components {
             real_execution_confirmed: boolean;
             /** Statistical Design Revision Id */
             statistical_design_revision_id: string;
+        };
+        /** StepPlanApproveCreate */
+        StepPlanApproveCreate: {
+            /** Actor */
+            actor: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** Reason */
+            reason: string;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+        };
+        /** StepPlanApproveView */
+        StepPlanApproveView: {
+            approval: components["schemas"]["ApprovalView"];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /** StepPlanReviewCovariateDetailView */
+        StepPlanReviewCovariateDetailView: {
+            centering: components["schemas"]["Centering"];
+            /** Name */
+            name: string;
+            /** Values */
+            values: components["schemas"]["StepPlanReviewCovariateValueDetailView"][];
+        };
+        /** StepPlanReviewCovariateValueDetailView */
+        StepPlanReviewCovariateValueDetailView: {
+            /** Subject Id */
+            subject_id: string;
+            /** Value */
+            value: number;
+        };
+        /** StepPlanReviewDetailView */
+        StepPlanReviewDetailView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Covariates */
+            covariates: components["schemas"]["StepPlanReviewCovariateDetailView"][];
+            /** Images */
+            images: components["schemas"]["StepPlanReviewImageDetailView"][];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision */
+            plan_revision: number;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Step Sequence */
+            step_sequence: number;
+            /** Step Version */
+            step_version: number;
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /** StepPlanReviewImageDetailView */
+        StepPlanReviewImageDetailView: {
+            /** Condition */
+            condition: string | null;
+            /** Group */
+            group: string | null;
+            /** Subject Id */
+            subject_id: string;
+        };
+        /** StepPlanReviewListView */
+        StepPlanReviewListView: {
+            /** Items */
+            items: components["schemas"]["StepPlanReviewSummaryView"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** StepPlanReviewSummaryView */
+        StepPlanReviewSummaryView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Execution Authorized
+             * @default false
+             * @constant
+             */
+            execution_authorized: false;
+            /** Expected Output Count */
+            expected_output_count: number;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision */
+            plan_revision: number;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            plan_state: components["schemas"]["PlanState"];
+            /** Plan Version */
+            plan_version: number;
+            preprocessing: components["schemas"]["PreprocessingPlanSummaryView"] | null;
+            /** Project Id */
+            project_id: string;
+            statistical: components["schemas"]["StatisticalPlanSummaryView"] | null;
+            /** Step Id */
+            step_id: string;
+            /** Step Kind */
+            step_kind: string;
+            /** Step Sequence */
+            step_sequence: number;
+            step_status: components["schemas"]["TaskStepStatus"];
+            /** Step Version */
+            step_version: number;
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: number;
+        };
+        /** StepRunAuthorizationCreate */
+        StepRunAuthorizationCreate: {
+            execution_backend: components["schemas"]["ExecutionBackend"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+            /** @default isolated */
+            workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
+        };
+        /** StepRunAuthorizationView */
+        StepRunAuthorizationView: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /** StepRunStartCreate */
+        StepRunStartCreate: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            execution_backend: components["schemas"]["ExecutionBackend"];
+            /**
+             * Max Attempts
+             * @default 1
+             */
+            max_attempts: number;
+            /**
+             * Mock Delay Ms
+             * @default 0
+             */
+            mock_delay_ms: number;
+            /** @default succeed */
+            mock_outcome: components["schemas"]["MockOutcome"];
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Plan Version */
+            plan_version: number;
+            /** @default require */
+            qc_mode: components["schemas"]["QcExecutionMode"];
+            /**
+             * Real Execution Confirmed
+             * @default false
+             */
+            real_execution_confirmed: boolean;
+            /** Step Version */
+            step_version: number;
+            /** Task Version */
+            task_version: number;
+            /** @default isolated */
+            workspace_mode: components["schemas"]["ExecutionWorkspaceMode"];
+        };
+        /** StepRunStartView */
+        StepRunStartView: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Plan Revision Id */
+            plan_revision_id: string;
+            /** Project Id */
+            project_id: string;
+            run: components["schemas"]["RunView"];
+            /** Step Id */
+            step_id: string;
+            /** Task Id */
+            task_id: string;
         };
         /**
          * StructuredRecommendation
@@ -3680,6 +5572,33 @@ export interface components {
             /** Subject Id */
             subject_id: string;
         };
+        /** T1Parameters */
+        T1Parameters: {
+            affine_regularization: components["schemas"]["AffineRegularization"] | null;
+            /**
+             * Bet
+             * @default false
+             */
+            bet: boolean;
+            /** Coregister To Functional */
+            coregister_to_functional: boolean;
+            /** Dartel */
+            dartel: boolean;
+            preparation: components["schemas"]["T1Preparation"];
+            segmentation: components["schemas"]["T1Segmentation"];
+            /** Structural Artifact Id */
+            structural_artifact_id: string;
+        };
+        /**
+         * T1Preparation
+         * @enum {string}
+         */
+        T1Preparation: "reorient_crop" | "prepared";
+        /**
+         * T1Segmentation
+         * @enum {string}
+         */
+        T1Segmentation: "disabled" | "segment" | "new_segment";
         /** TableColumnProfile */
         TableColumnProfile: {
             /**
@@ -3742,6 +5661,11 @@ export interface components {
          */
         Tail: "one_sided_positive" | "one_sided_negative" | "two_sided";
         /**
+         * TaskStepStatus
+         * @enum {string}
+         */
+        TaskStepStatus: "pending" | "ready" | "running" | "waiting" | "succeeded" | "failed" | "blocked" | "skipped";
+        /**
          * TaskType
          * @enum {string}
          */
@@ -3787,76 +5711,82 @@ export interface components {
             message: string;
             /** Path */
             path?: string | null;
+            /** Remediation */
+            remediation?: string | null;
             /** Severity */
             severity: string;
         };
-        /** WorkCard */
-        WorkCard: {
-            /** Allowed Operations */
-            allowed_operations?: ("saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview")[];
-            bindings?: components["schemas"]["WorkCardBindings"];
-            /** Card Id */
-            card_id: string;
-            /** Draft */
-            draft?: {
-                [key: string]: unknown;
-            };
-            /** Draft Ref */
-            draft_ref: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "project" | "data" | "plan" | "runs" | "qc" | "statistics" | "analysis" | "settings";
-            /** Title */
-            title: string;
-            /**
-             * Version
-             * @default 1
-             */
-            version: number;
-        };
-        /** WorkCardAction */
-        WorkCardAction: {
-            /** Args */
-            args?: unknown[];
+        /**
+         * WorkAgentRole
+         * @enum {string}
+         */
+        WorkAgentRole: "preprocessing" | "analysis";
+        /** WorkAgentSelection */
+        WorkAgentSelection: {
+            agent_role: components["schemas"]["WorkAgentRole"];
             /** Expected Version */
             expected_version: number;
-            /**
-             * Operation
-             * @enum {string}
-             */
-            operation: "saveDraft" | "selectProject" | "createProject" | "createDataset" | "inspectDataset" | "importDemographics" | "createSplit" | "resolveSkillPlan" | "approvePlan" | "createRun" | "cancelRun" | "retryRun" | "diagnoseRun" | "createQcReview" | "approveQcReview" | "createStatisticalDesign" | "validateStatisticalDesign" | "createStatisticsRun" | "inspectMlTable" | "createMlTemplate" | "validateRoiTable" | "localizeClusters" | "answerRsFmriQuestion" | "organizationPreview";
         };
-        /** WorkCardActionView */
-        WorkCardActionView: {
-            card: components["schemas"]["WorkCard"];
-            conversation: components["schemas"]["ConversationView"];
-            /** Result */
-            result?: unknown;
+        /**
+         * WorkConfirmationCreate
+         * @description UI selection of a server-issued action, never model-generated authority.
+         */
+        WorkConfirmationCreate: {
+            /** Command */
+            command: string;
+            /** Expected Draft Hash */
+            expected_draft_hash?: string | null;
         };
-        /** WorkCardBindings */
-        WorkCardBindings: {
-            /** Dataset Id */
-            dataset_id?: string | null;
-            /** Manifest Id */
-            manifest_id?: string | null;
-            /** Plan Revision Id */
-            plan_revision_id?: string | null;
-            /** Project Id */
-            project_id?: string | null;
-            /** Qc Review Id */
-            qc_review_id?: string | null;
-            /** Run Id */
-            run_id?: string | null;
-            /** Statistical Design Id */
-            statistical_design_id?: string | null;
+        /** WorkDraftUpdate */
+        WorkDraftUpdate: {
+            /** Base Hash */
+            base_hash: string;
+            /** Patch */
+            patch: {
+                [key: string]: unknown;
+            };
+        };
+        /** WorkReviewCreate */
+        WorkReviewCreate: {
+            /** Base Hash */
+            base_hash: string;
         };
         /**
          * WorkflowState
          * @enum {string}
          */
         WorkflowState: "queued" | "running" | "cancelling" | "qc_review" | "succeeded" | "failed_retryable" | "failed_terminal" | "timed_out" | "cancelled";
+        /** WorkspaceChangeProposal */
+        WorkspaceChangeProposal: {
+            /** Applied At */
+            applied_at?: string | null;
+            /**
+             * Citations
+             * @default []
+             */
+            citations: components["schemas"]["WorkspaceCitation"][];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Diff */
+            diff: string;
+            /** Edits */
+            edits: components["schemas"]["WorkspaceEdit"][];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Proposal Hash */
+            proposal_hash: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undone At */
+            undone_at?: string | null;
+            /** Workspace Hash */
+            workspace_hash: string;
+        };
         /**
          * WorkspaceCheckRequest
          * @description Read-only request to validate a user-selected DPABI workspace.
@@ -3864,6 +5794,8 @@ export interface components {
         WorkspaceCheckRequest: {
             /** Path */
             path: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
         };
         /** WorkspaceCheckView */
         WorkspaceCheckView: {
@@ -3895,6 +5827,15 @@ export interface components {
             output_directories?: string[];
             /** Path */
             path: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
+            /** Stage Candidates */
+            stage_candidates?: components["schemas"]["WorkspaceStageCandidate"][];
+            /**
+             * Stage Selection Required
+             * @default false
+             */
+            stage_selection_required: boolean;
             /** Subject Count */
             subject_count: number;
             /** Subjects */
@@ -3903,6 +5844,146 @@ export interface components {
             total_space_bytes: number;
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * WorkspaceCitation
+         * @description A location in a workspace file that can be independently re-read.
+         */
+        WorkspaceCitation: {
+            /** Locator */
+            locator: string;
+            /** Path */
+            path: string;
+            /** Quote */
+            quote?: string | null;
+        };
+        /** WorkspaceContentConsent */
+        WorkspaceContentConsent: {
+            /** Consent Id */
+            consent_id: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Granted At
+             * Format: date-time
+             */
+            granted_at: string;
+            /** Model */
+            model: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Profile Id */
+            profile_id: string;
+            /**
+             * Profile Revision
+             * @default
+             */
+            profile_revision: string;
+            /** Provider Host */
+            provider_host: string;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /**
+             * Valid For Current Context
+             * @default false
+             */
+            valid_for_current_context: boolean;
+            /** Workspace Hash */
+            workspace_hash: string;
+        };
+        /** WorkspaceContentConsentCreate */
+        WorkspaceContentConsentCreate: {
+            /**
+             * Acknowledge Remote Processing
+             * @default false
+             */
+            acknowledge_remote_processing: boolean;
+            /** Model */
+            model: string;
+            /** Profile Id */
+            profile_id: string;
+        };
+        /** WorkspaceEdit */
+        WorkspaceEdit: {
+            /** After Sha256 */
+            after_sha256?: string | null;
+            /** End Line */
+            end_line?: number | null;
+            /** Expected Sha256 */
+            expected_sha256?: string | null;
+            /** Path */
+            path: string;
+            /** Replacement */
+            replacement: string;
+            /** Start Line */
+            start_line?: number | null;
+        };
+        /** WorkspaceFileEntryResponse */
+        WorkspaceFileEntryResponse: {
+            /** Format */
+            format?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "file" | "directory";
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Readable */
+            readable?: boolean | null;
+            /** Size */
+            size?: number | null;
+        };
+        /** WorkspaceFileListingResponse */
+        WorkspaceFileListingResponse: {
+            /** Directory */
+            directory: string;
+            /** Entries */
+            entries: components["schemas"]["WorkspaceFileEntryResponse"][];
+            /** Next Offset */
+            next_offset?: number | null;
+            /** Total */
+            total: number;
+        };
+        /**
+         * WorkspaceFileScope
+         * @description Optional user-selected file scope for the Work file assistant.
+         */
+        WorkspaceFileScope: {
+            /**
+             * Paths
+             * @default []
+             */
+            paths: string[];
+        };
+        /** WorkspacePatchApplyRequest */
+        WorkspacePatchApplyRequest: {
+            /** Proposal Hash */
+            proposal_hash: string;
+        };
+        /** WorkspacePatchApplyView */
+        WorkspacePatchApplyView: {
+            /** Applied At */
+            applied_at?: string | null;
+            /** Proposal Hash */
+            proposal_hash: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undo Expires At */
+            undo_expires_at?: string | null;
+        };
+        /** WorkspacePatchUndoView */
+        WorkspacePatchUndoView: {
+            /** Proposal Id */
+            proposal_id: string;
+            /** Status */
+            status: string;
+            /** Undone At */
+            undone_at?: string | null;
         };
         /** WorkspacePickView */
         WorkspacePickView: {
@@ -3927,8 +6008,37 @@ export interface components {
             dataset_name: string;
             /** Project Name */
             project_name: string;
+            /** Selected Input Stage */
+            selected_input_stage?: string | null;
             /** Work Root */
             work_root: string;
+        };
+        /** WorkspaceStageCandidate */
+        WorkspaceStageCandidate: {
+            /** Completed Steps */
+            completed_steps?: string[];
+            /** File Count */
+            file_count: number;
+            /** Issues */
+            issues?: string[];
+            /** Label */
+            label: string;
+            /**
+             * Requires Realign Parameters
+             * @default false
+             */
+            requires_realign_parameters: boolean;
+            /** Rule Version */
+            rule_version: string;
+            /**
+             * Selectable
+             * @default false
+             */
+            selectable: boolean;
+            /** Stage */
+            stage: string;
+            /** Subject Count */
+            subject_count: number;
         };
     };
     responses: never;
@@ -4194,6 +6304,154 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ArtifactView"];
                 };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    download_artifact_api_v1_artifacts__artifact_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    preview_artifact_api_v1_artifacts__artifact_id__preview_png_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Bad Request */
             400: {
@@ -4563,7 +6821,7 @@ export interface operations {
             };
         };
     };
-    work_card_action_api_v1_conversations__conversation_id__cards__card_id__actions_post: {
+    retry_analysis_outbox_api_v1_conversations__conversation_id__analysis_outbox__intent_task_id__retry_post: {
         parameters: {
             query?: never;
             header: {
@@ -4571,13 +6829,168 @@ export interface operations {
             };
             path: {
                 conversation_id: string;
-                card_id: string;
+                intent_task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_composite_goal_progress_api_v1_conversations__conversation_id__composite_goals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompositeGoalProgressView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    select_composite_goal_api_v1_conversations__conversation_id__composite_goals__intent_task_id__select_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                intent_task_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WorkCardAction"];
+                "application/json": components["schemas"]["CompositeGoalSelection"];
             };
         };
         responses: {
@@ -4587,7 +7000,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkCardActionView"];
+                    "application/json": components["schemas"]["ConversationView"];
                 };
             };
             /** @description Bad Request */
@@ -4965,6 +7378,161 @@ export interface operations {
             };
         };
     };
+    retry_statistical_result_interpretation_api_v1_conversations__conversation_id__statistical_result_interpretations__task_id__retry_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_step_plan_reviews_api_v1_conversations__conversation_id__step_plan_reviews_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanReviewListView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     send_conversation_turn_api_v1_conversations__conversation_id__turns_post: {
         parameters: {
             query?: never;
@@ -4989,6 +7557,1209 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationTurnView"];
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    select_work_agent_api_v1_conversations__conversation_id__work_agent_patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkAgentSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_work_action_api_v1_conversations__conversation_id__work_confirmation_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkConfirmationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationTurnView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_work_draft_api_v1_conversations__conversation_id__work_draft_patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkDraftUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationTurnView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    prepare_work_review_api_v1_conversations__conversation_id__work_review_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkReviewCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationTurnView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_step_plan_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__approve_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepPlanApproveCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanApproveView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_step_plan_review_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPlanReviewDetailView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_step_run_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepRunStartCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepRunStartView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_step_run_authorization_api_v1_conversations__conversation_id__work_tasks__task_id__steps__step_id__run_authorizations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                task_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepRunAuthorizationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepRunAuthorizationView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_workspace_consents_api_v1_conversations__conversation_id__workspace_consents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_workspace_consent_api_v1_conversations__conversation_id__workspace_consents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceContentConsentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_workspace_consent_api_v1_conversations__conversation_id__workspace_consents__consent_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                consent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceContentConsent"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_workspace_files_api_v1_conversations__conversation_id__workspace_files_get: {
+        parameters: {
+            query?: {
+                directory?: string;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileListingResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceChangeProposal"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    apply_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePatchApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePatchApplyView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    undo_workspace_proposal_api_v1_conversations__conversation_id__workspace_proposals__proposal_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePatchUndoView"];
                 };
             };
             /** @description Bad Request */
@@ -8232,6 +12003,84 @@ export interface operations {
             };
         };
     };
+    diagnose_latest_run_api_v1_runs__run_id__diagnosis_get: {
+        parameters: {
+            query?: {
+                expected_attempt?: number | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunDiagnosisView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     diagnose_run_api_v1_runs__run_id__diagnosis_post: {
         parameters: {
             query?: never;
@@ -8395,6 +12244,246 @@ export interface operations {
             };
         };
     };
+    create_head_motion_qc_review_api_v1_runs__run_id__head_motion_qc_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HeadMotionQcCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcReviewView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_run_qc_review_api_v1_runs__run_id__qc_review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcReviewView"] | null;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    skip_qc_api_v1_runs__run_id__qc_skip_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QcSkipCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcSkipView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     retry_run_api_v1_runs__run_id__retry_post: {
         parameters: {
             query?: never;
@@ -8419,6 +12508,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    dry_run_skill_plan_api_v1_skill_plans_dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillPlanResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillPlanDryRunView"];
                 };
             };
             /** @description Bad Request */
@@ -9027,6 +13194,552 @@ export interface operations {
             };
         };
     };
+    list_statistical_atlases_api_v1_statistics_atlases_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticalAtlasView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_external_analysis_imports_api_v1_statistics_external_imports_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalAnalysisImportSummaryView"][];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    inspect_external_analysis_import_api_v1_statistics_external_imports_inspect_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalAnalysisImportInspectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalAnalysisImportView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_external_analysis_import_api_v1_statistics_external_imports__import_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalAnalysisImportView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_external_demographics_api_v1_statistics_external_imports__import_id__demographics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalDemographicsRevisionView"] | null;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    import_external_demographics_api_v1_statistics_external_imports__import_id__demographics_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalDemographicsImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalDemographicsRevisionView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    include_external_analysis_import_api_v1_statistics_external_imports__import_id__include_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalAnalysisImportIncludeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalAnalysisImportView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_statistical_results_api_v1_statistics_results_get: {
         parameters: {
             query: {
@@ -9180,28 +13893,26 @@ export interface operations {
             };
         };
     };
-    create_statistics_run_api_v1_statistics_runs_post: {
+    localize_statistical_result_api_v1_statistics_results__result_id__localization_get: {
         parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
+            query: {
+                atlas_id: string;
             };
-            path?: never;
+            header?: never;
+            path: {
+                result_id: string;
+            };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StatisticsRunCreate"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            202: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunView"];
+                    "application/json": components["schemas"]["StatisticalResultLocalizationView"];
                 };
             };
             /** @description Bad Request */
@@ -9260,11 +13971,15 @@ export interface operations {
             };
         };
     };
-    work_capabilities_api_v1_work_capabilities_get: {
+    statistical_cluster_roi_api_v1_statistics_results__result_id__roi_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cluster_id?: string | null;
+            };
             header?: never;
-            path?: never;
+            path: {
+                result_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -9275,9 +13990,239 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["StatisticalClusterRoiView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    statistical_result_slice_info_api_v1_statistics_results__result_id__slice_info_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                result_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticalResultSliceInfoView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    statistical_result_slice_preview_api_v1_statistics_results__result_id__slice_png_get: {
+        parameters: {
+            query: {
+                slice_index: number;
+            };
+            header?: never;
+            path: {
+                result_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_statistics_run_api_v1_statistics_runs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StatisticsRunCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
                 };
             };
             /** @description Bad Request */

@@ -1,6 +1,12 @@
 # 本地运行、诊断与恢复
 
-本手册适用于 Windows 单机候选基线。公共 Worker 默认使用 Mock；真实 MATLAB/DPABI 只有在前端选择本机环境、环境探测通过并完成逐次确认后才会启动。
+- 状态：Implementing
+- 文档类型：Operations
+- 维护者：matlab_dpabi_engineer
+- 更新日期：2026-09-23
+- 关联：[长任务等待、恢复与错误诊断](long-running-jobs.md)
+
+本手册适用于 Windows 单机部署。公共 Worker 默认使用 Mock；真实 MATLAB/DPABI 只有在前端选择本机环境、环境探测通过并完成逐次确认后才会启动。
 
 ## 首次准备
 

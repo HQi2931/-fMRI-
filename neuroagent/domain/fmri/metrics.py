@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from math import isclose
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 
 from neuroagent.domain.fmri.artifacts import (
     ArtifactLineage,
@@ -22,6 +22,7 @@ class MetricKind(StrEnum):
 
 
 class ParameterSource(StrEnum):
+    PROPOSAL = "proposal"
     USER = "user"
     STUDY_PROTOCOL = "study_protocol"
     DATASET_METADATA = "dataset_metadata"
@@ -40,6 +41,13 @@ class SmoothingTiming(StrEnum):
     ON_RESULTS = "on_results"
 
 
+class MetricMaskSource(StrEnum):
+    """Reviewed source for the metric brain mask."""
+
+    REGISTERED_ARTIFACT = "registered_artifact"
+    DPABI_AUTO = "dpabi_auto"
+
+
 class ParameterProvenance(FrozenModel):
     name: str = Field(min_length=1)
     source: ParameterSource
@@ -53,21 +61,20 @@ class AlffFalffParameters(FrozenModel):
     frequency_band: FrequencyBand
     requested_metrics: tuple[MetricKind, ...]
     requested_scalings: tuple[MetricScaling, ...]
-    mask_artifact_id: str = Field(min_length=1)
+    mask_source: MetricMaskSource = MetricMaskSource.REGISTERED_ARTIFACT
+    mask_artifact_id: str | None = None
     filter_timing: TemporalFilterTiming
     result_smoothing: bool
     result_smoothing_fwhm_mm: tuple[float, float, float] | None
     provenance: tuple[ParameterProvenance, ...]
 
-    @field_validator("mask_artifact_id", mode="before")
-    @classmethod
-    def mask_is_mandatory(cls, value: object) -> object:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("all ALFF/fALFF outputs require a mask (typed brain mask)")
-        return value
-
     @model_validator(mode="after")
     def validate_parameters(self) -> AlffFalffParameters:
+        if self.mask_source is MetricMaskSource.REGISTERED_ARTIFACT:
+            if not self.mask_artifact_id or not self.mask_artifact_id.strip():
+                raise ValueError("registered ALFF/fALFF outputs require a mask Artifact ID")
+        elif self.mask_artifact_id is not None:
+            raise ValueError("DPABI auto masks must not declare a pre-existing Artifact ID")
         allowed = {MetricKind.ALFF, MetricKind.FALFF}
         if not self.requested_metrics or not set(self.requested_metrics).issubset(allowed):
             raise ValueError("ALFF/fALFF request must select alff and/or falff")
@@ -97,13 +104,14 @@ class AlffFalffParameters(FrozenModel):
 
 
 class RehoParameters(FrozenModel):
-    """Explicit ReHo choices mapped to DPABI V8.2 semantics."""
+    """Explicit ReHo choices mapped to DPABI semantics."""
 
     tr_seconds: float = Field(gt=0)
     temporal_filter_band: FrequencyBand | None
     temporal_filter_add_mean_back: bool | None
     cluster_voxels: int
-    mask_artifact_id: str = Field(min_length=1)
+    mask_source: MetricMaskSource = MetricMaskSource.REGISTERED_ARTIFACT
+    mask_artifact_id: str | None = None
     requested_scalings: tuple[MetricScaling, ...]
     smooth_reho: bool
     smooth_reho_fwhm_mm: tuple[float, float, float] | None
@@ -111,15 +119,13 @@ class RehoParameters(FrozenModel):
     global_result_smoothing_fwhm_mm: tuple[float, float, float] | None
     provenance: tuple[ParameterProvenance, ...]
 
-    @field_validator("mask_artifact_id", mode="before")
-    @classmethod
-    def mask_is_mandatory(cls, value: object) -> object:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("all ReHo outputs require a mask (typed brain mask)")
-        return value
-
     @model_validator(mode="after")
     def validate_parameters(self) -> RehoParameters:
+        if self.mask_source is MetricMaskSource.REGISTERED_ARTIFACT:
+            if not self.mask_artifact_id or not self.mask_artifact_id.strip():
+                raise ValueError("registered ReHo outputs require a mask Artifact ID")
+        elif self.mask_artifact_id is not None:
+            raise ValueError("DPABI auto masks must not declare a pre-existing Artifact ID")
         if self.cluster_voxels not in {7, 19, 27}:
             raise ValueError("ReHo cluster_voxels must be one of 7, 19 or 27")
         if self.temporal_filter_band is not None:
@@ -172,7 +178,10 @@ def validate_alff_falff_input(
         issues.append("FALFF_INPUT_ALREADY_FILTERED")
     if artifact.spatially_smoothed:
         issues.append("ALFF_INPUT_SPATIALLY_SMOOTHED")
-    if not artifact.is_compatible_with_mask(parameters.mask_artifact_id):
+    if (
+        parameters.mask_source is MetricMaskSource.REGISTERED_ARTIFACT
+        and not artifact.is_compatible_with_mask(parameters.mask_artifact_id or "")
+    ):
         issues.append("MASK_GRID_MISMATCH")
     if parameters.filter_timing is TemporalFilterTiming.BEFORE_NORMALIZE:
         issues.append("ALFF_FILTER_TIMING_BEFORE_NORMALIZE")
@@ -190,7 +199,10 @@ def validate_reho_input(artifact: ArtifactLineage, parameters: RehoParameters) -
     )
     if artifact.spatially_smoothed:
         issues.append("REHO_INPUT_SPATIALLY_SMOOTHED")
-    if not artifact.is_compatible_with_mask(parameters.mask_artifact_id):
+    if (
+        parameters.mask_source is MetricMaskSource.REGISTERED_ARTIFACT
+        and not artifact.is_compatible_with_mask(parameters.mask_artifact_id or "")
+    ):
         issues.append("MASK_GRID_MISMATCH")
     # The reviewed ReHo DAG always owns the optional temporal-filter step.  A
     # pre-filtered checkpoint would otherwise be accepted here and then passed

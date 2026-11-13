@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from neuroagent.api.app import create_app
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 
 
 def create_chat(client: TestClient, key: str = "phase-one-chat-create") -> str:
@@ -19,7 +19,7 @@ def create_chat(client: TestClient, key: str = "phase-one-chat-create") -> str:
 
 
 def test_chat_api_returns_stable_agent_metadata_and_persists_session(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client)
@@ -39,8 +39,8 @@ def test_chat_api_returns_stable_agent_metadata_and_persists_session(
     assert [item["sequence"] for item in restored.json()["messages"]] == [1, 2, 3]
 
 
-def test_chat_streaming_extension_fails_explicitly_until_implemented(
-    service: NeuroAgentService,
+def test_chat_streaming_returns_sse_and_a_persisted_final_turn(
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "stream-chat-create")
@@ -49,12 +49,14 @@ def test_chat_streaming_extension_fails_explicitly_until_implemented(
             json={"content": "解释 ReHo", "stream": True},
             headers={"Idempotency-Key": "stream-chat-turn"},
         )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "chat_streaming_not_implemented"
+    assert response.status_code == 201
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: final" in response.text
+    assert "chat_streaming_not_implemented" not in response.text
 
 
 def test_chat_work_request_is_only_drafted_and_never_dispatched(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "work-draft-chat-create")
@@ -75,7 +77,7 @@ def test_chat_work_request_is_only_drafted_and_never_dispatched(
 
 
 def test_method_question_about_preprocessing_is_knowledge_query(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "method-question-chat-create")
@@ -89,7 +91,7 @@ def test_method_question_about_preprocessing_is_knowledge_query(
     assert response.json()["assistant_message"]["payload"]["chat"]["intent"] == "knowledge_query"
 
 
-def test_chat_unknown_session_returns_not_found(service: NeuroAgentService) -> None:
+def test_chat_unknown_session_returns_not_found(service: ApplicationServices) -> None:
     with TestClient(create_app(service=service)) as client:
         response = client.post(
             "/api/v1/conversations/missing-session/turns",
@@ -101,7 +103,7 @@ def test_chat_unknown_session_returns_not_found(service: NeuroAgentService) -> N
 
 
 def test_conversation_memory_can_be_confirmed_and_forgotten(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     with TestClient(create_app(service=service)) as client:
         session_id = create_chat(client, "memory-chat-create")
@@ -194,7 +196,35 @@ async def test_context_reaches_gateway_once_and_is_redacted() -> None:
     assert call.args[2][1]["content"].count("那它有什么区别？") == 1
 
 
-def test_followup_retrieval_and_per_message_citations_persist(service: NeuroAgentService) -> None:
+def test_work_gateway_blocks_group_mappings_in_current_or_prior_messages() -> None:
+    import pytest
+
+    from neuroagent.agent.gateway import ModelGateway
+    from neuroagent.agent.redaction import OutboundContextPolicy, OutboundPolicyError
+    from neuroagent.agent.router import ModelRouter
+
+    gateway = ModelGateway(
+        ModelRouter([], {}),
+        {},
+        OutboundContextPolicy("work-context-redaction-salt"),
+        object(),
+    )
+
+    with pytest.raises(OutboundPolicyError):
+        gateway.build_chat_messages(
+            question="请继续生成预处理方案",
+            evidence=[],
+            recent_messages=[
+                {
+                    "role": "user",
+                    "content": "subject_id,group\nsub-01,ASD\nsub-02,HC",
+                }
+            ],
+            work_mode=True,
+        )
+
+
+def test_followup_retrieval_and_per_message_citations_persist(service: ApplicationServices) -> None:
     from unittest.mock import AsyncMock, Mock
 
     from neuroagent.chat.interfaces import LlmResult
@@ -249,9 +279,8 @@ def test_followup_retrieval_and_per_message_citations_persist(service: NeuroAgen
             headers={"Idempotency-Key": "greeting"},
         )
     assert rag.retrieve.call_count == calls_before_greeting
-    # Only contextual follow-ups need a model rewrite; standalone questions use
-    # deterministic routing and preserve the provider call for the answer.
-    assert classifier.call_count == 1
+    # Both standalone questions and follow-ups use semantic intent classification.
+    assert classifier.call_count == 2
     assert "ALFF 是什么？" in [m.content for m in classifier.call_args.args[0].recent_messages]
     assert classifier.call_args.args[0].model == "chosen"
     rag.retrieve.assert_awaited_with("ALFF 与 fALFF 的区别", filters={"paper_ids": ["paper-1"]})

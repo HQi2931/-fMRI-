@@ -1,5 +1,11 @@
 # Tools 层
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：skill_workflow_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.tools` 提供边界清晰、确定性且可测试的类型化工具。工具不解释科研意图、不推进工作流状态、不执行任意命令，也不修改原始数据。
 
 当前能力包括：

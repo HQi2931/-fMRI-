@@ -6,14 +6,63 @@ import hashlib
 import hmac
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from neuroagent.agent.models import RedactedContext
 
+_WORK_PARTICIPANT_TABLE = re.compile(
+    r"(?is)(?:participant|subject|受试者|被试)[-_ ]?(?:id|编号)?[^\n]*(?:\t|,|\|)"
+    r"[^\n]*(?:group|组别|condition|分组)[^\n]*(?:\n|$)[^\n]+(?:\t|,|\|)[^\n]+"
+)
+_WORK_PARTICIPANT_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:sub|subject|participant)[-_ ]?\d+[a-z]?\b.{0,24}"
+    r"\b(?:ASD|HC|MDD|BD|OCD|ADHD|PTSD|SZ|SCZ|patient|control|case)\b"
+    r"|\b(?:ASD|HC|MDD|BD|OCD|ADHD|PTSD|SZ|SCZ|patient|control|case)\b.{0,24}"
+    r"\b(?:sub|subject|participant)[-_ ]?\d+[a-z]?\b"
+)
+_WORK_IMAGE_PAYLOAD = re.compile(
+    r"(?is)(?:data:image/[^;,\s]+;base64,|base64\s*[:=]\s*)[A-Za-z0-9+/=]{80,}"
+    r"|(?:^|\W)[A-Za-z0-9+/]{256,}={0,2}(?:$|\W)"
+)
+
+
+def reject_sensitive_work_context(payload: Mapping[str, Any]) -> None:
+    """Block subject-to-group mappings and raw image payloads from Work models."""
+
+    def strings(value: Any) -> Iterator[str]:
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, Mapping):
+            for child in value.values():
+                yield from strings(child)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for child in value:
+                yield from strings(child)
+
+    for value in strings(payload):
+        if (
+            "\x00" in value
+            or _WORK_PARTICIPANT_TABLE.search(value)
+            or _WORK_PARTICIPANT_ASSIGNMENT.search(value)
+            or _WORK_IMAGE_PAYLOAD.search(value)
+        ):
+            raise OutboundPolicyError(
+                "subject-group mappings and image payloads cannot leave the local machine"
+            )
+
 
 class OutboundPolicyError(ValueError):
     """Raised when outbound content cannot be proven safe."""
+
+
+class _Dropped:
+    """Sentinel: this leaf value cannot be proven safe, so it is omitted."""
+
+    __slots__ = ()
+
+
+_DROPPED = _Dropped()
 
 
 class OutboundContextPolicy:
@@ -74,22 +123,6 @@ class OutboundContextPolicy:
         re.IGNORECASE,
     )
     _opaque_subject_token = re.compile(r"\b(?:S|P)\d{3,}\b")
-    # Free-form text is permitted only when it does not look like a clinical
-    # narrative.  These patterns intentionally reject instead of attempting a
-    # lossy substitution: a partial redaction is not proof that the remaining
-    # sentence is de-identified.
-    _clinical_identifier = re.compile(
-        r"(?:患者|病人|受试者|姓名|住院号|病历号|门诊号|就诊号|身份证(?:号)?|"
-        r"医保号|手机号|联系电话|家庭住址|出生日期|"
-        r"\b(?:patient|name|mrn|medical\s*record|admission)\b)",
-        re.IGNORECASE,
-    )
-    _age_demographic = re.compile(
-        r"(?<!\d)(?:[1-9]?\d|1[01]\d|120)\s*岁(?:\s*(?:男|女|男性|女性))?"
-    )
-    _chinese_person_reference = re.compile(
-        r"(?:患者|病人|受试者|姓名(?:为|是)?)[\uff1a:\s]*[\u3400-\u9fff·]{2,8}"
-    )
     _credential = re.compile(
         r"(?:\bBearer\s+[A-Za-z0-9._~-]{16,}|\bsk-[A-Za-z0-9_-]{16,}|"
         r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}|"
@@ -119,8 +152,42 @@ class OutboundContextPolicy:
             context_hash=context_hash,
         )
 
+    def redact_tool_result(self, payload: Mapping[str, Any]) -> RedactedContext:
+        """Redact machine-shaped tool output before it re-enters model context.
+
+        A tool result is structured data rather than user prose, so a leaf string
+        that cannot be proven de-identified is *dropped and counted* instead of
+        rejecting the whole result; that keeps one stray field from destroying an
+        otherwise usable tool call.  Structural violations (binary content,
+        excessive depth, width or length) still fail closed, because those
+        indicate a defective tool contract rather than hostile input.
+        """
+
+        sanitized, count = self._sanitize_mapping(
+            payload, depth=0, subject_context=False, drop_unsafe=True
+        )
+        encoded = json.dumps(
+            sanitized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if self._absolute_path.search(encoded) or self._email.search(encoded):
+            raise OutboundPolicyError("tool result still contains a prohibited identifier")
+        context_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return RedactedContext(
+            payload=sanitized,
+            redaction_count=count,
+            context_hash=context_hash,
+        )
+
     def _sanitize_mapping(
-        self, payload: Mapping[str, Any], *, depth: int, subject_context: bool
+        self,
+        payload: Mapping[str, Any],
+        *,
+        depth: int,
+        subject_context: bool,
+        drop_unsafe: bool = False,
     ) -> tuple[dict[str, Any], int]:
         if depth > 12:
             raise OutboundPolicyError("outbound context is nested too deeply")
@@ -168,23 +235,35 @@ class OutboundContextPolicy:
                 value,
                 depth=depth + 1,
                 subject_context=subject_context or is_subject_container,
+                drop_unsafe=drop_unsafe,
             )
+            if cleaned is _DROPPED:
+                redactions += child_count
+                continue
             result[key] = cleaned
             redactions += child_count
         return result, redactions
 
-    def _sanitize_value(self, value: Any, *, depth: int, subject_context: bool) -> tuple[Any, int]:
+    def _sanitize_value(
+        self,
+        value: Any,
+        *,
+        depth: int,
+        subject_context: bool,
+        drop_unsafe: bool = False,
+    ) -> tuple[Any, int]:
         if value is None or isinstance(value, (bool, int, float)):
             return value, 0
         if isinstance(value, bytes):
             raise OutboundPolicyError("binary content cannot leave the local machine")
         if isinstance(value, str):
-            return self._sanitize_string(value)
+            return self._sanitize_string(value, drop_unsafe=drop_unsafe)
         if isinstance(value, Mapping):
             return self._sanitize_mapping(
                 value,
                 depth=depth,
                 subject_context=subject_context,
+                drop_unsafe=drop_unsafe,
             )
         if isinstance(value, Sequence):
             if len(value) > 100:
@@ -196,22 +275,22 @@ class OutboundContextPolicy:
                     item,
                     depth=depth + 1,
                     subject_context=subject_context,
+                    drop_unsafe=drop_unsafe,
                 )
-                items.append(cleaned)
                 redactions += child_count
+                if cleaned is _DROPPED:
+                    continue
+                items.append(cleaned)
             return items, redactions
         raise OutboundPolicyError(f"unsupported outbound value type: {type(value).__name__}")
 
-    def _sanitize_string(self, value: str) -> tuple[str, int]:
+    def _sanitize_string(self, value: str, *, drop_unsafe: bool = False) -> tuple[Any, int]:
         if len(value) > 20_000:
             raise OutboundPolicyError("outbound string is too long")
-        if (
-            self._clinical_identifier.search(value)
-            or self._age_demographic.search(value)
-            or self._chinese_person_reference.search(value)
-            or self._credential.search(value)
-        ):
-            raise OutboundPolicyError("free-form sensitive text cannot leave the local machine")
+        if self._credential.search(value):
+            if drop_unsafe:
+                return _DROPPED, 1
+            raise OutboundPolicyError("credential-like content cannot leave the local machine")
         redactions = 0
         cleaned = value
         if self._absolute_path.search(cleaned):
@@ -249,3 +328,11 @@ class OutboundContextPolicy:
     def _pseudonym(self, source_id: str) -> str:
         digest = hmac.new(self._salt, source_id.encode("utf-8"), hashlib.sha256).hexdigest()
         return f"subject-{digest[:12]}"
+
+    def workspace_component_alias(self, component: str) -> str:
+        """Stable opaque handles for names altered by the outbound policy."""
+        sanitized = self.redact_tool_result({"name": component}).payload.get("name")
+        if sanitized == component:
+            return component
+        digest = hmac.new(self._salt, component.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"entry-{digest[:12]}"

@@ -32,7 +32,8 @@ export type WorkspaceState = {
 
 const STORAGE_KEY = "rsfmri-workspace-v1";
 const listeners = new Set<() => void>();
-let memoryState: WorkspaceState = {};
+let memoryState: WorkspaceState | null = null;
+type PersistedWorkspaceState = Pick<WorkspaceState, "workspacePath" | "projectId">;
 
 function storage(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -44,25 +45,48 @@ function storage(): Storage | null {
 }
 
 function read(): WorkspaceState {
-  if (typeof window === "undefined") return memoryState;
+  if (typeof window === "undefined") return {};
   try {
     const persistent = storage()?.getItem(STORAGE_KEY);
-    if (persistent) return JSON.parse(persistent) as WorkspaceState;
+    if (persistent) return persistedSelection(JSON.parse(persistent));
 
-    // Migrate the pre-MVP tab-scoped workspace without losing an in-progress review.
+    // Keep only user-selected context from the previous tab-scoped snapshot.
     const legacy = window.sessionStorage.getItem(STORAGE_KEY);
     if (legacy) {
-      storage()?.setItem(STORAGE_KEY, legacy);
-      return JSON.parse(legacy) as WorkspaceState;
+      const selected = persistedSelection(JSON.parse(legacy));
+      persist(selected);
+      return selected;
     }
     return {};
   } catch {
-    return memoryState;
+    return {};
   }
 }
 
+function persistedSelection(value: unknown): PersistedWorkspaceState {
+  if (!value || typeof value !== "object") return {};
+  const candidate = value as Partial<WorkspaceState>;
+  return {
+    ...(typeof candidate.workspacePath === "string" ? { workspacePath: candidate.workspacePath } : {}),
+    ...(typeof candidate.projectId === "string" ? { projectId: candidate.projectId } : {}),
+  };
+}
+
+function persist(state: WorkspaceState): void {
+  try {
+    storage()?.setItem(STORAGE_KEY, JSON.stringify(persistedSelection(state)));
+  } catch {
+    // Runtime state remains usable when browser storage is unavailable.
+  }
+}
+
+function currentState(): WorkspaceState {
+  if (memoryState === null) memoryState = read();
+  return memoryState;
+}
+
 function snapshot(): string {
-  return JSON.stringify(read());
+  return JSON.stringify(currentState());
 }
 
 function subscribe(listener: () => void): () => void {
@@ -71,31 +95,39 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function updateWorkspace(patch: Partial<WorkspaceState>): WorkspaceState {
-  memoryState = { ...read(), ...patch };
-  storage()?.setItem(STORAGE_KEY, JSON.stringify(memoryState));
+  memoryState = { ...currentState(), ...patch };
+  persist(memoryState);
   listeners.forEach((listener) => listener());
   return memoryState;
 }
 
 export function selectWorkspaceProject(projectId: string, projectVersion: number): WorkspaceState {
   memoryState = { projectId, projectVersion };
-  storage()?.setItem(STORAGE_KEY, JSON.stringify(memoryState));
+  persist(memoryState);
   if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
   listeners.forEach((listener) => listener());
   return memoryState;
 }
 
 export function resetWorkspace(): void {
-  memoryState = {};
-  storage()?.removeItem(STORAGE_KEY);
-  if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
+  memoryState = null;
+  try {
+    storage()?.removeItem(STORAGE_KEY);
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // The in-memory selection is still reset.
+  }
   listeners.forEach((listener) => listener());
 }
 
 export function restoreWorkspace(state: WorkspaceState): void {
   memoryState = { ...state };
-  storage()?.setItem(STORAGE_KEY, JSON.stringify(memoryState));
-  if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
+  persist(memoryState);
+  try {
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // The in-memory selection is still restored.
+  }
   listeners.forEach((listener) => listener());
 }
 

@@ -2,75 +2,40 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol
 
-from pydantic import BaseModel
-
-from neuroagent.agent.models import GatewayResult
-from neuroagent.application.contracts import (
-    AgentTaskView,
-    ApprovalCreate,
-    ApprovalView,
-    ArtifactView,
-    ContextSummaryView,
-    ConversationContextView,
-    ConversationMessageView,
-    ConversationMode,
-    ConversationToolCallView,
-    ConversationView,
-    DatasetSplitView,
-    DatasetView,
-    DemographicsRevisionView,
-    ManifestRevisionView,
-    MemoryCreate,
-    MemoryKind,
-    MemoryScope,
-    MemoryStatus,
-    MemoryUpdate,
-    MemoryView,
-    ModelProfileInput,
-    ModelProfileView,
-    PlanRevisionView,
-    ProjectView,
-    QcReviewApprove,
-    QcReviewCreate,
-    QcReviewView,
-    RuntimeEventView,
-    RunView,
-    StatisticalResultDetailView,
-    StatisticalResultView,
-    ValidationIssue,
-    WorkflowState,
+from neuroagent.application.repository_ports import (
+    JobQueueRepositoryPort,
+)
+from neuroagent.application.repository_ports import (
+    RepositoryPort as RepositoryPort,
+)
+from neuroagent.domain.fmri.qc import HeadMotionQcCriteria, HeadMotionQcReport
+from neuroagent.execution.ports import (
+    ExecutionResult as ExecutionResult,
+)
+from neuroagent.execution.ports import (
+    MatlabExecutionCatalog,
+    MockExecutionCatalog,
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionResult:
-    status: str
-    output: dict[str, Any] = field(default_factory=dict)
-    artifacts: tuple[dict[str, Any], ...] = ()
-    error: str | None = None
+class WorkerHostRepositoryPort(
+    JobQueueRepositoryPort, MatlabExecutionCatalog, MockExecutionCatalog, Protocol
+):
+    """Infrastructure surface composed by the Worker host, never by use cases."""
+
+    def register_artifacts(
+        self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
+    ) -> None: ...
 
 
-class ClaimedJob(TypedDict):
-    job_id: str
-    run_id: str
-    payload: dict[str, Any]
-    attempt: int
-    max_attempts: int
+class ApplicationCapabilityRegistryPort(Protocol):
+    """Resolve a named application capability from the composition root."""
 
-
-class JobExecutor(Protocol):
-    def execute(
-        self,
-        payload: dict[str, Any],
-        *,
-        is_cancelled: Callable[[], bool],
-    ) -> ExecutionResult: ...
+    def resolve_capability(self, name: str) -> object: ...
 
 
 class EventReader(Protocol):
@@ -102,11 +67,30 @@ class PathPolicyPort(Protocol):
 
 
 class DatasetInspectorPort(Protocol):
-    def inspect(self, source_path: Path, *, report_only: bool = False) -> dict[str, Any]: ...
+    def inspect(
+        self,
+        source_path: Path,
+        *,
+        report_only: bool = False,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class WorkspacePickerPort(Protocol):
     def pick_directory(self) -> str | None: ...
+
+
+class WorkspaceFilePolicyPort(Protocol):
+    root: Path
+
+    def list_entries(self, **kwargs: Any) -> dict[str, Any]: ...
+    def search(self, query: str, **kwargs: Any) -> dict[str, Any]: ...
+    def read(self, relative: str, **kwargs: Any) -> Any: ...
+    def read_image_metadata(self, relative: str) -> dict[str, Any]: ...
+    def build_patch(self, edits: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]: ...
+    def apply_patch(self, edits: list[dict[str, Any]], backup_root: Path) -> dict[str, Any]: ...
+    def _check_file(self, relative: str) -> Path: ...
+    def _relative(self, value: str, *, must_exist: bool = True) -> Path: ...
 
 
 class DemographicsReaderPort(Protocol):
@@ -121,360 +105,25 @@ class DemographicsReaderPort(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class HeadMotionQcParserPort(Protocol):
+    """Turn DPABI RealignParameter evidence into typed head-motion QC.
+
+    The parser reads files from the filesystem, so the application layer depends
+    on this port rather than importing the infrastructure adapter directly.
+    """
+
+    def __call__(
+        self,
+        realign_parameter_dir: Path,
+        *,
+        input_manifest_hash: str,
+        subject_ids: tuple[str, ...],
+        criteria: HeadMotionQcCriteria | None = None,
+        expected_volume_counts: dict[str, int] | None = None,
+    ) -> HeadMotionQcReport: ...
+
+
 class SecretWriterPort(Protocol):
     """Write one validated secret through a controlled local adapter."""
 
     def write(self, secrets_file: Path, name: str, value: str) -> None: ...
-
-
-class RepositoryPort(Protocol):
-    """Typed persistence operations required by application use cases and the worker."""
-
-    def atomic(self) -> AbstractContextManager[None]: ...
-
-    def create_conversation(
-        self,
-        *,
-        mode: ConversationMode,
-        title: str,
-        welcome: str,
-        workspace_path: str | None,
-        preferred_profile_id: str | None,
-        project_id: str | None = None,
-    ) -> ConversationView: ...
-
-    def get_conversation(self, conversation_id: str) -> ConversationView: ...
-
-    def list_conversations(
-        self, *, mode: ConversationMode | None = None
-    ) -> list[ConversationView]: ...
-
-    def save_work_card_draft(
-        self, conversation_id: str, card: dict[str, Any]
-    ) -> ConversationView: ...
-
-    def append_conversation_exchange(
-        self,
-        conversation_id: str,
-        *,
-        user_content: str,
-        assistant_content: str,
-        assistant_payload: dict[str, Any],
-        tool: dict[str, Any] | None,
-        workspace_path: str | None,
-        preferred_profile_id: str | None,
-        project_id: str | None,
-        active_run_id: str | None,
-    ) -> tuple[
-        ConversationView,
-        ConversationMessageView,
-        ConversationMessageView,
-        ConversationToolCallView | None,
-    ]: ...
-
-    def get_conversation_context(self, conversation_id: str) -> ConversationContextView: ...
-
-    def create_memory(self, conversation_id: str, request: MemoryCreate) -> MemoryView: ...
-
-    def store_memory_embedding(
-        self,
-        conversation_id: str,
-        memory_id: str,
-        *,
-        expected_version: int,
-        model_identity: str,
-        vector: tuple[float, ...],
-    ) -> bool: ...
-
-    def get_memory_embeddings(
-        self,
-        conversation_id: str,
-    ) -> dict[str, tuple[int, str, tuple[float, ...]]]: ...
-
-    def upsert_memory_candidate(
-        self,
-        conversation_id: str,
-        *,
-        kind: MemoryKind,
-        key: str,
-        content: str,
-        status: MemoryStatus,
-        pinned: bool,
-        confidence: float,
-        source_message_id: str,
-        scope: MemoryScope = MemoryScope.CONVERSATION,
-        importance: float = 0.5,
-    ) -> MemoryView: ...
-
-    def get_forgotten_source_message_ids(self, conversation_id: str) -> set[str]: ...
-
-    def update_memory(
-        self, conversation_id: str, memory_id: str, request: MemoryUpdate
-    ) -> MemoryView: ...
-
-    def create_context_summary(
-        self,
-        conversation_id: str,
-        *,
-        content: str,
-        covered_sequence: int,
-        source_hash: str,
-        method: str,
-    ) -> ContextSummaryView: ...
-
-    def create_context_snapshot(
-        self,
-        conversation_id: str,
-        *,
-        assistant_message_id: str | None,
-        context_hash: str,
-        profile_id: str | None,
-        manifest: dict[str, Any],
-    ) -> None: ...
-
-    def begin_idempotent_request(
-        self,
-        scope: str,
-        key: str,
-        request_hash: str,
-        owner_token: str,
-        lease_seconds: int,
-    ) -> dict[str, Any] | None: ...
-
-    def complete_idempotent_request(
-        self,
-        scope: str,
-        key: str,
-        request_hash: str,
-        owner_token: str,
-        response: BaseModel,
-    ) -> None: ...
-
-    def renew_idempotent_request(
-        self,
-        scope: str,
-        key: str,
-        request_hash: str,
-        owner_token: str,
-        lease_seconds: int,
-    ) -> bool: ...
-
-    def release_idempotent_request(
-        self, scope: str, key: str, request_hash: str, owner_token: str
-    ) -> None: ...
-
-    def create_project(self, name: str, source_roots: list[str], work_root: str) -> ProjectView: ...
-
-    def get_project(self, project_id: str) -> ProjectView: ...
-
-    def list_projects(self) -> list[ProjectView]: ...
-
-    def create_dataset(
-        self,
-        project_id: str,
-        *,
-        name: str,
-        source_path: str,
-        expected_project_version: int,
-    ) -> DatasetView: ...
-
-    def get_dataset(self, dataset_id: str) -> DatasetView: ...
-
-    def create_manifest(
-        self,
-        dataset_id: str,
-        *,
-        expected_version: int,
-        content: dict[str, Any],
-    ) -> ManifestRevisionView: ...
-
-    def get_manifest(self, manifest_id: str) -> ManifestRevisionView: ...
-
-    def get_manifest_content(self, manifest_id: str) -> dict[str, Any]: ...
-
-    def create_demographics(
-        self,
-        dataset_id: str,
-        *,
-        expected_version: int,
-        content: dict[str, Any],
-    ) -> DemographicsRevisionView: ...
-
-    def get_demographics_content(self, demographics_id: str) -> tuple[str, dict[str, Any]]: ...
-
-    def get_demographics(self, demographics_id: str) -> DemographicsRevisionView: ...
-
-    def create_split(
-        self,
-        dataset_id: str,
-        *,
-        expected_version: int,
-        content: dict[str, Any],
-    ) -> DatasetSplitView: ...
-
-    def get_split(self, split_id: str) -> DatasetSplitView: ...
-
-    def create_plan(
-        self,
-        *,
-        project_id: str,
-        expected_project_version: int,
-        plan: dict[str, Any],
-        plan_hash: str,
-        manifest_hash: str,
-        environment_hash: str,
-        supersedes_id: str | None,
-    ) -> PlanRevisionView: ...
-
-    def get_plan(self, plan_revision_id: str) -> PlanRevisionView: ...
-
-    def validate_plan(
-        self,
-        plan_revision_id: str,
-        *,
-        expected_version: int,
-        issues: list[ValidationIssue],
-    ) -> PlanRevisionView: ...
-
-    def record_approval(
-        self, plan_revision_id: str, request: ApprovalCreate
-    ) -> tuple[ApprovalView, PlanRevisionView]: ...
-
-    def get_approved_plan_approval(self, plan_revision_id: str) -> ApprovalView: ...
-
-    def create_run(
-        self,
-        *,
-        project_id: str,
-        plan_revision_id: str,
-        expected_plan_hash: str,
-        max_attempts: int,
-        payload: dict[str, Any],
-    ) -> RunView: ...
-
-    def get_run(self, run_id: str) -> RunView: ...
-
-    def list_runs(
-        self,
-        *,
-        project_id: str | None = None,
-        state: WorkflowState | None = None,
-    ) -> list[RunView]: ...
-
-    def request_cancel(self, run_id: str, expected_version: int) -> RunView: ...
-
-    def retry_run(self, run_id: str, *, expected_version: int) -> RunView: ...
-
-    def create_qc_review(self, request: QcReviewCreate) -> QcReviewView: ...
-
-    def get_qc_review(self, review_revision_id: str) -> QcReviewView: ...
-
-    def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None: ...
-
-    def approve_qc_review(
-        self, review_revision_id: str, request: QcReviewApprove
-    ) -> tuple[QcReviewView, RunView]: ...
-
-    def get_approved_qc_review(self, review_revision_id: str) -> QcReviewView: ...
-
-    def list_artifacts(self, run_id: str) -> list[ArtifactView]: ...
-
-    def get_artifact(self, artifact_id: str) -> ArtifactView: ...
-
-    def assert_artifacts_belong_to_run(
-        self, artifact_ids: tuple[str, ...], run_id: str
-    ) -> None: ...
-
-    def create_statistical_result(
-        self,
-        *,
-        project_id: str,
-        run_id: str,
-        design_revision_id: str,
-        mode: str,
-        non_scientific: bool,
-        non_scientific_reason: str | None,
-        bundle_hash: str,
-        manifest: dict[str, Any],
-        report_markdown: str,
-        report_json: str,
-        actor: str,
-    ) -> StatisticalResultView: ...
-
-    def list_statistical_results(
-        self, *, project_id: str, run_id: str | None = None
-    ) -> list[StatisticalResultView]: ...
-
-    def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView: ...
-
-    def append_event(
-        self,
-        *,
-        project_id: str | None,
-        run_id: str | None,
-        event_type: str,
-        severity: str,
-        payload: dict[str, object],
-    ) -> None: ...
-
-    def list_events(
-        self,
-        run_id: str | None = None,
-        after_event_id: int = 0,
-        *,
-        project_id: str | None = None,
-    ) -> list[RuntimeEventView]: ...
-
-    def create_model_profile(self, profile: ModelProfileInput) -> ModelProfileView: ...
-
-    def get_model_profile(self, profile_id: str) -> ModelProfileView: ...
-
-    def list_model_profiles(self) -> list[ModelProfileView]: ...
-
-    def delete_model_profile(self, profile_id: str) -> None: ...
-
-    def create_agent_task(
-        self,
-        *,
-        project_id: str,
-        expected_project_version: int,
-        task_type: str,
-        result: GatewayResult,
-    ) -> AgentTaskView: ...
-
-    def get_agent_task(self, task_id: str) -> AgentTaskView: ...
-
-    def claim_next_job(self, worker_id: str, lease_seconds: int) -> ClaimedJob | None: ...
-
-    def is_cancel_requested(self, run_id: str) -> bool: ...
-
-    def renew_job_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool: ...
-
-    def finalize_job_success(
-        self,
-        job_id: str,
-        worker_id: str,
-        *,
-        result: dict[str, object],
-        artifacts: tuple[dict[str, Any], ...],
-        actor: str,
-    ) -> bool: ...
-
-    def finalize_job_failure(
-        self,
-        job_id: str,
-        worker_id: str,
-        *,
-        requested_state: WorkflowState,
-        error: str,
-        actor: str,
-    ) -> bool: ...
-
-    def finalize_job_cancel(
-        self,
-        job_id: str,
-        worker_id: str,
-        *,
-        error: str | None,
-        actor: str,
-    ) -> bool: ...

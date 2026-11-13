@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import EnvironmentConfigUpdate
+from neuroagent.application.contracts.environment import (
+    EnvironmentConfigUpdate,
+)
 from neuroagent.application.settings import Settings
 from neuroagent.infrastructure.environment import SettingsEnvironmentLockProvider
 
@@ -14,9 +16,14 @@ DPABI_ENTRY_FILES = (
     "StatisticalAnalysis/y_TTest1_Image.m",
     "StatisticalAnalysis/y_TTest2_Image.m",
     "StatisticalAnalysis/y_TTestPaired_Image.m",
+    "StatisticalAnalysis/y_Correlation_Image.m",
     "StatisticalAnalysis/y_GroupAnalysis_Image.m",
+    "StatisticalAnalysis/y_ANCOVA1_Image.m",
     "StatisticalAnalysis/y_FDR_Image.m",
     "StatisticalAnalysis/y_GRF_Threshold.m",
+    "StatisticalAnalysis/y_TFRtoZ.m",
+    "StatisticalAnalysis/y_Smoothest.m",
+    "Subfunctions/w_ReadFWHM.m",
     "Subfunctions/y_ReadAll.m",
     "Subfunctions/y_ReadRPI.m",
     "Subfunctions/y_Write.m",

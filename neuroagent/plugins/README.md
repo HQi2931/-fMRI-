@@ -1,5 +1,11 @@
 # plugins
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `plugins` 负责插件发现、插件元数据、插件注册和插件加载边界。插件可以提供工具、工作流、schema、技能和领域实现。

@@ -1,4 +1,4 @@
-"""Artifacts and runtime events."""
+"""Artifact catalog and statistical result persistence."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.runs import (
     ArtifactView,
-    RuntimeEventView,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalResultDetailView,
     StatisticalResultView,
 )
@@ -28,17 +29,15 @@ from neuroagent.infrastructure.persistence.models import (
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
-    _as_utc,
     _id,
-    _load,
     _validate_artifact_relative_path,
 )
 from neuroagent.observability.events import redact_event_payload
 from neuroagent.observability.tracing import current_trace_id
 
 
-class ArtifactEventMixin(RepositoryBaseMixin):
-    # -- artifacts and events ----------------------------------------------
+class ArtifactCatalogMixin(RepositoryBaseMixin):
+    # -- artifact catalog --------------------------------------------------
 
     def register_artifacts(
         self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
@@ -70,10 +69,13 @@ class ArtifactEventMixin(RepositoryBaseMixin):
         if plan is None:
             raise NotFoundError("plan_revision", run.plan_revision_id)
 
+        identities = [
+            (_validate_artifact_relative_path(artifact["relative_path"]), _id())
+            for artifact in artifacts
+        ]
+        generated_ids = {relative_path: artifact_id for relative_path, artifact_id in identities}
         prepared: list[ArtifactRow] = []
-        for artifact in artifacts:
-            relative_path = _validate_artifact_relative_path(artifact["relative_path"])
-            artifact_id = _id()
+        for artifact, (relative_path, artifact_id) in zip(artifacts, identities, strict=True):
             provenance = dict(artifact.get("provenance", {}))
             lineage_data = provenance.get("lineage")
             if lineage_data is not None:
@@ -83,6 +85,18 @@ class ArtifactEventMixin(RepositoryBaseMixin):
                         "Artifact lineage 必须是结构化对象。",
                     )
                 bound_lineage = {**lineage_data, "artifact_id": artifact_id}
+                mask_id = bound_lineage.get("mask_artifact_id")
+                if isinstance(mask_id, str) and mask_id.startswith("generated-output:"):
+                    mask_path = _validate_artifact_relative_path(
+                        mask_id.removeprefix("generated-output:")
+                    )
+                    try:
+                        bound_lineage["mask_artifact_id"] = generated_ids[mask_path]
+                    except KeyError as exc:
+                        raise InputValidationError(
+                            "generated_mask_artifact_missing",
+                            "指标产物引用的自动掩膜未在同一运行中登记。",
+                        ) from exc
                 try:
                     lineage = ArtifactLineage.model_validate(bound_lineage)
                 except ValidationError as exc:
@@ -112,7 +126,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
         return prepared
 
     def list_artifacts(self, run_id: str) -> list[ArtifactView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             rows = session.scalars(
                 select(ArtifactRow)
                 .where(ArtifactRow.run_id == run_id)
@@ -121,14 +135,14 @@ class ArtifactEventMixin(RepositoryBaseMixin):
             return [self._artifact(row) for row in rows]
 
     def get_artifact(self, artifact_id: str) -> ArtifactView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ArtifactRow, artifact_id)
             if row is None:
                 raise NotFoundError("artifact", artifact_id)
             return self._artifact(row)
 
     def assert_artifacts_belong_to_run(self, artifact_ids: tuple[str, ...], run_id: str) -> None:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             for artifact_id in artifact_ids:
                 row = session.get(ArtifactRow, artifact_id)
                 if row is None:
@@ -224,7 +238,7 @@ class ArtifactEventMixin(RepositoryBaseMixin):
     def list_statistical_results(
         self, *, project_id: str, run_id: str | None = None
     ) -> list[StatisticalResultView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             if session.get(ProjectRow, project_id) is None:
                 raise NotFoundError("project", project_id)
             query = select(StatisticalResultRow).where(
@@ -240,57 +254,8 @@ class ArtifactEventMixin(RepositoryBaseMixin):
             return [self._statistical_result_view(row) for row in rows]
 
     def get_statistical_result(self, result_id: str) -> StatisticalResultDetailView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(StatisticalResultRow, result_id)
             if row is None:
                 raise NotFoundError("statistical_result", result_id)
             return self._statistical_result_detail(row)
-
-    def append_event(
-        self,
-        *,
-        project_id: str | None,
-        run_id: str | None,
-        event_type: str,
-        severity: str,
-        payload: dict[str, object],
-    ) -> None:
-        with self._write_session() as session:
-            session.add(
-                RuntimeEventRow(
-                    trace_id=current_trace_id(),
-                    project_id=project_id,
-                    run_id=run_id,
-                    event_type=event_type,
-                    severity=severity,
-                    payload_json=canonical_json(redact_event_payload(payload)),
-                )
-            )
-
-    def list_events(
-        self,
-        run_id: str | None = None,
-        after_event_id: int = 0,
-        *,
-        project_id: str | None = None,
-    ) -> list[RuntimeEventView]:
-        with self.database.session_factory() as session:
-            query = select(RuntimeEventRow).where(RuntimeEventRow.event_id > after_event_id)
-            if run_id is not None:
-                query = query.where(RuntimeEventRow.run_id == run_id)
-            if project_id is not None:
-                query = query.where(RuntimeEventRow.project_id == project_id)
-            rows = session.scalars(query.order_by(RuntimeEventRow.event_id)).all()
-            return [
-                RuntimeEventView(
-                    event_id=row.event_id,
-                    trace_id=row.trace_id,
-                    project_id=row.project_id,
-                    run_id=row.run_id,
-                    event_type=row.event_type,
-                    severity=row.severity,
-                    payload=_load(row.payload_json, {}),
-                    created_at=_as_utc(row.created_at),
-                )
-                for row in rows
-            ]

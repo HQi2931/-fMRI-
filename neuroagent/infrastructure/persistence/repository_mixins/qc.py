@@ -8,26 +8,36 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.runs import (
+    HeadMotionQcCreate,
+    QcExecutionMode,
     QcReviewApprove,
     QcReviewCreate,
     QcReviewState,
     QcReviewView,
+    QcSkipCreate,
+    QcSkipView,
     RunView,
-    WorkflowState,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json, content_hash
 from neuroagent.domain.fmri.artifacts import ArtifactKind, ArtifactLineage
-from neuroagent.domain.fmri.qc import QcReviewRevision
+from neuroagent.domain.fmri.qc import (
+    HeadMotionQcReport,
+    QcCheck,
+    QcReviewRevision,
+    QcReviewScope,
+    QcSeverity,
+)
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.infrastructure.persistence.models import (
     ArtifactRow,
     DatasetRow,
-    JobRow,
     ManifestRevisionRow,
     PlanRevisionRow,
     QcApprovalRow,
     QcReviewRow,
+    QcSkipRow,
     WorkflowRunRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
@@ -265,7 +275,7 @@ class QcReviewMixin(RepositoryBaseMixin):
                         artifact_id=artifact_id,
                     )
             missing_included = included - metric_subjects
-            if missing_included:
+            if request.review_scope is QcReviewScope.PRE_STATISTICS and missing_included:
                 raise InputValidationError(
                     "qc_included_subject_artifact_missing",
                     "每个纳入统计的受试者都必须至少有一个 QC 指标 Artifact。",
@@ -281,6 +291,7 @@ class QcReviewMixin(RepositoryBaseMixin):
             ) + 1
             review_revision_id = _id()
             content = {
+                "review_scope": request.review_scope.value,
                 "input_manifest_hash": plan.manifest_hash,
                 "metric_artifact_ids": list(request.metric_artifact_ids),
                 "checks": [check.model_dump(mode="json") for check in request.checks],
@@ -319,8 +330,394 @@ class QcReviewMixin(RepositoryBaseMixin):
             session.flush()
             return self._qc_review(row)
 
+    def create_head_motion_qc_review(
+        self, run_id: str, request: HeadMotionQcCreate
+    ) -> QcReviewView:
+        with self._write_session() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run", run_id)
+            self._check_version("run", run.version, request.expected_run_version)
+            if WorkflowState(run.state) is not WorkflowState.QC_REVIEW:
+                raise ConflictError(
+                    "qc_not_pending",
+                    "运行当前不处于 QC 审核状态。",
+                    state=run.state,
+                )
+            plan = session.get(PlanRevisionRow, run.plan_revision_id)
+            if plan is None:
+                raise NotFoundError("plan_revision", run.plan_revision_id)
+            report_row = self._latest_head_motion_report_row(session, run_id, required=False)
+            if report_row is None:
+                content = self._source_head_motion_qc_content_for_metric_only(
+                    session, run=run, plan=plan, required=True
+                )
+            else:
+                content = self._head_motion_qc_content(
+                    session,
+                    run=run,
+                    plan=plan,
+                    report_row=report_row,
+                    criteria=request.criteria.model_dump(mode="json"),
+                )
+            assert content is not None
+            return self._insert_or_get_qc_review(session, run=run, content=content)
+
+    def _auto_create_head_motion_qc_review_in_session(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        registered_rows: list[ArtifactRow],
+    ) -> QcReviewView | None:
+        reports = [row for row in registered_rows if row.artifact_type == "qc.head_motion_report"]
+        if not reports:
+            content = self._source_head_motion_qc_content_for_metric_only(
+                session, run=run, plan=plan, required=False
+            )
+            if content is None:
+                return None
+            return self._insert_or_get_qc_review(session, run=run, content=content)
+        if len(reports) != 1:
+            raise InputValidationError(
+                "head_motion_qc_report_ambiguous",
+                "同一次运行只能登记一个头动 QC 报告。",
+            )
+        content = self._head_motion_qc_content(
+            session,
+            run=run,
+            plan=plan,
+            report_row=reports[0],
+            criteria=None,
+        )
+        return self._insert_or_get_qc_review(session, run=run, content=content)
+
+    @staticmethod
+    def _latest_head_motion_report_row(
+        session: Session, run_id: str, *, required: bool = True
+    ) -> ArtifactRow | None:
+        row = session.scalar(
+            select(ArtifactRow)
+            .where(
+                ArtifactRow.run_id == run_id,
+                ArtifactRow.artifact_type == "qc.head_motion_report",
+            )
+            .order_by(ArtifactRow.created_at.desc(), ArtifactRow.artifact_id.desc())
+            .limit(1)
+        )
+        if row is None and required:
+            raise ConflictError(
+                "head_motion_qc_report_missing",
+                "当前运行尚未登记头动 QC 报告。",
+            )
+        return row
+
+    def _source_head_motion_qc_content_for_metric_only(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        required: bool,
+    ) -> dict[str, object] | None:
+        plan_json = _load(plan.plan_json, {})
+        skill_plan = plan_json.get("skill_plan") if isinstance(plan_json, dict) else None
+        if not isinstance(skill_plan, dict):
+            if required:
+                raise ConflictError("metric_only_qc_plan_missing", "运行计划缺少 SkillPlan。")
+            return None
+        input_artifact_id = skill_plan.get("input_artifact_id")
+        if not isinstance(input_artifact_id, str) or not input_artifact_id:
+            if required:
+                raise ConflictError(
+                    "metric_only_source_artifact_missing",
+                    "metric-only 运行缺少来源预处理 Artifact。",
+                )
+            return None
+        source_artifact = session.get(ArtifactRow, input_artifact_id)
+        if source_artifact is None:
+            if required:
+                raise NotFoundError("artifact", input_artifact_id)
+            return None
+        source_lineage = self._artifact_lineage(source_artifact)
+        if source_lineage.subject_manifest_hash != plan.manifest_hash:
+            raise ConflictError(
+                "metric_only_source_manifest_mismatch",
+                "来源预处理 Artifact 与当前计划 manifest 不一致。",
+            )
+        source_review_row = session.scalar(
+            select(QcReviewRow)
+            .where(
+                QcReviewRow.run_id == source_artifact.run_id,
+                QcReviewRow.state == QcReviewState.APPROVED.value,
+            )
+            .order_by(QcReviewRow.revision.desc())
+            .limit(1)
+        )
+        if source_review_row is None:
+            if required:
+                raise ConflictError(
+                    "metric_only_source_head_motion_qc_missing",
+                    "metric-only 运行需要来源预处理运行已批准的头动 QC。",
+                )
+            return None
+        source_approval = session.scalar(
+            select(QcApprovalRow)
+            .where(QcApprovalRow.review_revision_id == source_review_row.review_revision_id)
+            .order_by(QcApprovalRow.created_at.desc())
+            .limit(1)
+        )
+        source_review = self._qc_review(source_review_row, source_approval)
+        if source_review.review.review_scope not in {
+            QcReviewScope.HEAD_MOTION,
+            QcReviewScope.PRE_STATISTICS,
+        }:
+            if required:
+                raise ConflictError(
+                    "metric_only_source_head_motion_qc_scope_invalid",
+                    "来源 QC 不是可复用的头动 QC。",
+                )
+            return None
+        if source_review.review.input_manifest_hash != plan.manifest_hash:
+            raise ConflictError(
+                "metric_only_source_qc_manifest_mismatch",
+                "来源头动 QC 与当前计划 manifest 不一致。",
+            )
+        metric_rows = list(
+            session.scalars(
+                select(ArtifactRow)
+                .where(ArtifactRow.run_id == run.run_id, ArtifactRow.artifact_type.like("metric.%"))
+                .order_by(ArtifactRow.created_at, ArtifactRow.artifact_id)
+            ).all()
+        )
+        if not metric_rows:
+            if required:
+                raise ConflictError(
+                    "metric_only_metric_artifacts_missing",
+                    "当前运行尚未登记指标 Artifact。",
+                )
+            return None
+        metric_subjects: set[str] = set()
+        for row in metric_rows:
+            lineage = self._artifact_lineage(row)
+            if lineage.subject_manifest_hash != plan.manifest_hash:
+                raise ConflictError(
+                    "metric_only_artifact_manifest_mismatch",
+                    "指标 Artifact 与冻结 manifest 不一致。",
+                    artifact_id=row.artifact_id,
+                )
+            if lineage.subject_id is not None:
+                metric_subjects.add(lineage.subject_id)
+        missing_subjects = set(source_review.review.included_subject_ids) - metric_subjects
+        if missing_subjects:
+            raise InputValidationError(
+                "metric_only_included_subject_artifact_missing",
+                "来源 QC 纳入的受试者必须在本次指标运行中有指标 Artifact。",
+                subject_ids=sorted(missing_subjects),
+            )
+        source_evidence_ids = tuple(
+            dict.fromkeys(
+                artifact_id
+                for check in source_review.review.checks
+                for artifact_id in check.evidence_artifact_ids
+            )
+        )
+        checks = [
+            QcCheck(
+                code="SOURCE_HEAD_MOTION_QC_APPROVED",
+                severity=QcSeverity.BLOCKING,
+                passed=True,
+                evidence_artifact_ids=source_evidence_ids,
+                message=(
+                    "Metric-only run reused an approved head-motion QC review from the "
+                    "source preprocessing run."
+                ),
+            ),
+            QcCheck(
+                code="METRIC_ARTIFACTS_AVAILABLE",
+                severity=QcSeverity.BLOCKING,
+                passed=True,
+                evidence_artifact_ids=tuple(row.artifact_id for row in metric_rows),
+                message="Metric artifacts are available for pre-statistics QC.",
+            ),
+        ]
+        return {
+            "review_scope": QcReviewScope.PRE_STATISTICS.value,
+            "input_manifest_hash": plan.manifest_hash,
+            "metric_artifact_ids": [row.artifact_id for row in metric_rows],
+            "checks": [check.model_dump(mode="json") for check in checks],
+            "included_subject_ids": list(source_review.review.included_subject_ids),
+            "excluded_subject_ids": list(source_review.review.excluded_subject_ids),
+            "exclusion_reasons": [list(item) for item in source_review.review.exclusion_reasons],
+        }
+
+    def _head_motion_qc_content(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        report_row: ArtifactRow,
+        criteria: dict[str, object] | None,
+    ) -> dict[str, object]:
+        manifest_subject_ids = self._manifest_subject_ids_for_plan(session, plan)
+        provenance = _load(report_row.provenance_json, {})
+        report_data = provenance.get("head_motion_qc") if isinstance(provenance, dict) else None
+        if not isinstance(report_data, dict):
+            raise InputValidationError(
+                "head_motion_qc_report_invalid",
+                "头动 QC Artifact 缺少结构化报告证据。",
+                artifact_id=report_row.artifact_id,
+            )
+        try:
+            report = HeadMotionQcReport.model_validate(report_data)
+        except ValidationError as exc:
+            raise InputValidationError(
+                "head_motion_qc_report_invalid",
+                "头动 QC Artifact 的结构化报告无效。",
+                artifact_id=report_row.artifact_id,
+            ) from exc
+        if criteria is not None and report.criteria.model_dump(mode="json") != criteria:
+            raise ConflictError(
+                "head_motion_qc_criteria_mismatch",
+                "已登记头动 QC 报告的阈值与本次请求不一致。",
+            )
+        if report.input_manifest_hash != plan.manifest_hash:
+            raise ConflictError(
+                "head_motion_qc_manifest_mismatch",
+                "头动 QC 报告与冻结 manifest 不一致。",
+            )
+        if set(report.included_subject_ids) | set(report.excluded_subject_ids) != set(
+            manifest_subject_ids
+        ):
+            raise InputValidationError(
+                "head_motion_qc_subject_manifest_mismatch",
+                "头动 QC 纳入与排除受试者必须完整覆盖冻结 manifest。",
+            )
+        metric_rows = list(
+            session.scalars(
+                select(ArtifactRow)
+                .where(ArtifactRow.run_id == run.run_id, ArtifactRow.artifact_type.like("metric.%"))
+                .order_by(ArtifactRow.created_at, ArtifactRow.artifact_id)
+            ).all()
+        )
+        review_scope = QcReviewScope.PRE_STATISTICS if metric_rows else QcReviewScope.HEAD_MOTION
+        included_pass = all(
+            item.passed
+            for item in report.subjects
+            if item.subject_id in report.included_subject_ids
+        )
+        checks = [
+            QcCheck(
+                code="HEAD_MOTION_EVIDENCE_COMPLETE",
+                severity=QcSeverity.BLOCKING,
+                passed=True,
+                evidence_artifact_ids=(report_row.artifact_id,),
+                message="DPABI RealignParameter evidence was parsed and matched to the manifest.",
+            ),
+            QcCheck(
+                code="HEAD_MOTION_INCLUDED_SUBJECTS_PASS",
+                severity=QcSeverity.BLOCKING,
+                passed=included_pass,
+                evidence_artifact_ids=(report_row.artifact_id,),
+                message=(
+                    f"{len(report.included_subject_ids)} included subjects satisfy the frozen "
+                    "head-motion thresholds."
+                ),
+            ),
+            QcCheck(
+                code="HEAD_MOTION_EXCLUSIONS_RECORDED",
+                severity=QcSeverity.WARNING,
+                passed=not report.excluded_subject_ids,
+                evidence_artifact_ids=(report_row.artifact_id,),
+                message=(
+                    f"{len(report.excluded_subject_ids)} subjects were excluded by head-motion QC."
+                ),
+            ),
+            QcCheck(
+                code="HEAD_MOTION_INCLUDED_SUBJECTS_NONEMPTY",
+                severity=QcSeverity.BLOCKING,
+                passed=bool(report.included_subject_ids),
+                evidence_artifact_ids=(report_row.artifact_id,),
+                message="At least one subject must remain after head-motion QC.",
+            ),
+        ]
+        if review_scope is QcReviewScope.PRE_STATISTICS:
+            checks.append(
+                QcCheck(
+                    code="METRIC_ARTIFACTS_AVAILABLE",
+                    severity=QcSeverity.BLOCKING,
+                    passed=True,
+                    evidence_artifact_ids=tuple(row.artifact_id for row in metric_rows),
+                    message="Metric artifacts are available for pre-statistics QC.",
+                )
+            )
+        return {
+            "review_scope": review_scope.value,
+            "input_manifest_hash": plan.manifest_hash,
+            "metric_artifact_ids": [row.artifact_id for row in metric_rows],
+            "checks": [check.model_dump(mode="json") for check in checks],
+            "included_subject_ids": list(report.included_subject_ids),
+            "excluded_subject_ids": list(report.excluded_subject_ids),
+            "exclusion_reasons": [list(item) for item in report.exclusion_reasons],
+        }
+
+    def _insert_or_get_qc_review(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        content: dict[str, object],
+    ) -> QcReviewView:
+        review_hash = content_hash(content)
+        existing = session.scalar(
+            select(QcReviewRow)
+            .where(QcReviewRow.run_id == run.run_id, QcReviewRow.content_hash == review_hash)
+            .order_by(QcReviewRow.revision.desc())
+            .limit(1)
+        )
+        if existing is not None:
+            return self._qc_review(existing)
+        revision = (
+            session.scalar(
+                select(func.max(QcReviewRow.revision)).where(QcReviewRow.run_id == run.run_id)
+            )
+            or 0
+        ) + 1
+        review_revision_id = _id()
+        try:
+            QcReviewRevision.model_validate(
+                {
+                    "review_revision_id": review_revision_id,
+                    **content,
+                    "approved": False,
+                    "approved_by": None,
+                    "approval_reason": None,
+                    "content_hash": review_hash,
+                }
+            )
+        except ValidationError as exc:
+            raise InputValidationError(
+                "qc_review_invalid",
+                "QC review 内容未通过完整性校验。",
+            ) from exc
+        row = QcReviewRow(
+            review_revision_id=review_revision_id,
+            run_id=run.run_id,
+            project_id=run.project_id,
+            revision=revision,
+            version=1,
+            state=QcReviewState.DRAFT.value,
+            content_hash=review_hash,
+            content_json=canonical_json(content),
+        )
+        session.add(row)
+        session.flush()
+        return self._qc_review(row)
+
     def get_qc_review(self, review_revision_id: str) -> QcReviewView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(QcReviewRow, review_revision_id)
             if row is None:
                 raise NotFoundError("qc_review_revision", review_revision_id)
@@ -333,7 +730,7 @@ class QcReviewMixin(RepositoryBaseMixin):
             return self._qc_review(row, approval)
 
     def get_latest_qc_review_for_run(self, run_id: str) -> QcReviewView | None:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.scalar(
                 select(QcReviewRow)
                 .where(QcReviewRow.run_id == run_id)
@@ -414,10 +811,82 @@ class QcReviewMixin(RepositoryBaseMixin):
             validate_workflow_transition(WorkflowState.QC_REVIEW, target)
             run.state = target.value
             run.error = None if request.approved else f"QC rejected: {request.reason}"
+            run.qc_status = "approved" if request.approved else "rejected"
             run.version += 1
             run.updated_at = datetime.now(UTC)
             session.flush()
             return self._qc_review(row, approval if request.approved else None), self._run(run)
+
+    @staticmethod
+    def _qc_skip(row: QcSkipRow) -> QcSkipView:
+        return QcSkipView(
+            qc_skip_id=row.qc_skip_id,
+            run_id=row.run_id,
+            project_id=row.project_id,
+            run_version=row.run_version,
+            decision_hash=row.decision_hash,
+            actor=row.actor,
+            reason=row.reason,
+            qc_review_revision_id=row.qc_review_revision_id,
+            created_at=row.created_at,
+        )
+
+    def get_qc_skip_for_run(self, run_id: str) -> QcSkipView | None:
+        with self._read_session() as session:
+            row = session.scalar(select(QcSkipRow).where(QcSkipRow.run_id == run_id))
+            return None if row is None else self._qc_skip(row)
+
+    def skip_qc(self, run_id: str, request: QcSkipCreate) -> tuple[QcSkipView, RunView]:
+        with self._write_session() as session:
+            run = session.get(WorkflowRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run", run_id)
+            existing = session.scalar(select(QcSkipRow).where(QcSkipRow.run_id == run_id))
+            if existing is not None:
+                if existing.actor == request.actor and existing.reason == request.reason:
+                    return self._qc_skip(existing), self._run(run)
+                raise ConflictError("qc_skip_already_recorded", "该运行已记录 QC 跳过决定。")
+            self._check_version("run", run.version, request.expected_run_version)
+            state = WorkflowState(run.state)
+            if state is not WorkflowState.QC_REVIEW:
+                raise ConflictError(
+                    "qc_skip_not_available",
+                    "只有完成计算后等待 QC 的运行可以跳过 QC。",
+                    state=state.value,
+                )
+            review = session.scalars(
+                select(QcReviewRow)
+                .where(QcReviewRow.run_id == run_id)
+                .order_by(QcReviewRow.revision.desc())
+                .limit(1)
+            ).first()
+            decision_payload = {
+                "run_id": run_id,
+                "project_id": run.project_id,
+                "run_version": run.version,
+                "actor": request.actor,
+                "reason": request.reason,
+                "qc_review_revision_id": review.review_revision_id if review else None,
+            }
+            record = QcSkipRow(
+                qc_skip_id=_id(),
+                run_id=run_id,
+                project_id=run.project_id,
+                run_version=run.version,
+                decision_hash=content_hash(decision_payload),
+                actor=request.actor,
+                reason=request.reason,
+                qc_review_revision_id=review.review_revision_id if review else None,
+            )
+            session.add(record)
+            validate_workflow_transition(state, WorkflowState.SUCCEEDED)
+            run.state = WorkflowState.SUCCEEDED.value
+            run.qc_mode = QcExecutionMode.SKIP.value
+            run.qc_status = "skipped"
+            run.version += 1
+            run.updated_at = datetime.now(UTC)
+            session.flush()
+            return self._qc_skip(record), self._run(run)
 
     def get_approved_qc_review(self, review_revision_id: str) -> QcReviewView:
         view = self.get_qc_review(review_revision_id)
@@ -428,37 +897,3 @@ class QcReviewMixin(RepositoryBaseMixin):
                 state=view.state.value,
             )
         return view
-
-    def retry_run(self, run_id: str, *, expected_version: int) -> RunView:
-        with self._write_session() as session:
-            run = session.get(WorkflowRunRow, run_id)
-            if run is None:
-                raise NotFoundError("run", run_id)
-            self._check_version("run", run.version, expected_version)
-            state = WorkflowState(run.state)
-            if state not in {WorkflowState.FAILED_RETRYABLE, WorkflowState.TIMED_OUT}:
-                raise ConflictError(
-                    "run_not_retryable", "当前运行状态不允许重试。", state=state.value
-                )
-            job = session.scalar(select(JobRow).where(JobRow.run_id == run_id))
-            if job is None:
-                raise NotFoundError("job_for_run", run_id)
-            if job.attempt >= job.max_attempts:
-                raise ConflictError(
-                    "retry_budget_exhausted",
-                    "运行已耗尽已批准计划的重试预算。",
-                    attempt=job.attempt,
-                    max_attempts=job.max_attempts,
-                )
-            validate_workflow_transition(state, WorkflowState.QUEUED)
-            run.state = WorkflowState.QUEUED.value
-            run.version += 1
-            run.error = None
-            run.cancel_requested = False
-            run.updated_at = datetime.now(UTC)
-            job.state = "queued"
-            job.lease_owner = None
-            job.lease_expires_at = None
-            job.updated_at = datetime.now(UTC)
-            session.flush()
-            return self._run(run)

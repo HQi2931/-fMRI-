@@ -1,15 +1,15 @@
 """Durable Agent conversations, messages, and tool-call audit records."""
 
-# ruff: noqa: RUF001
-
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select, update
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
+    ConfirmationChallengeView,
     ContextSummaryView,
     ConversationContextView,
     ConversationMessageView,
@@ -18,6 +18,7 @@ from neuroagent.application.contracts import (
     ConversationToolCallView,
     ConversationToolStatus,
     ConversationView,
+    ConversationWorkTaskView,
     MemoryAction,
     MemoryCreate,
     MemoryKind,
@@ -25,10 +26,15 @@ from neuroagent.application.contracts import (
     MemoryStatus,
     MemoryUpdate,
     MemoryView,
+    WorkAgentSelection,
 )
 from neuroagent.application.errors import ConflictError, InputValidationError, NotFoundError
 from neuroagent.application.hashing import canonical_json
+from neuroagent.application.work_agents import analysis_payload_intent_id
+from neuroagent.application.work_tasks import require_analysis_task
+from neuroagent.domain.execution import ExecutionBackend, ExecutionWorkspaceMode
 from neuroagent.infrastructure.persistence.models import (
+    ConfirmationChallengeRow,
     ContextSnapshotRow,
     ContextSummaryRow,
     ConversationMessageRow,
@@ -36,7 +42,9 @@ from neuroagent.infrastructure.persistence.models import (
     ConversationToolCallRow,
     MemoryEmbeddingRow,
     MemoryRecordRow,
+    PlanRevisionRow,
     ProjectRow,
+    WorkflowRunRow,
 )
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
@@ -44,33 +52,278 @@ from neuroagent.infrastructure.persistence.repository_mixins._base import (
     _id,
     _load,
 )
+from neuroagent.multi_agent.registry import WorkAgentRole
 
 
 class ConversationMixin(RepositoryBaseMixin):
-    def save_work_card_draft(self, conversation_id: str, card: dict[str, Any]) -> ConversationView:
-        """Replace the newest card snapshot without adding autosave messages."""
+    def select_analysis_goal(
+        self,
+        conversation_id: str,
+        *,
+        project_id: str,
+        expected_version: int,
+        task: ConversationWorkTaskView,
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            self._check_version("conversation", row.version, expected_version)
+            if (
+                row.mode != "work"
+                or row.project_id != project_id
+                or task.agent_role is not WorkAgentRole.ANALYSIS
+                or task.analysis_intent_task_id is None
+                or (task.run_id is not None and task.plan_revision_id is None)
+            ):
+                raise ConflictError("analysis_goal_selection_conflict", "分析目标上下文已变化。")
+            if task.plan_revision_id is not None:
+                plan = session.get(PlanRevisionRow, task.plan_revision_id)
+                run = session.get(WorkflowRunRow, task.run_id) if task.run_id is not None else None
+                if (
+                    plan is None
+                    or plan.project_id != project_id
+                    or (
+                        task.run_id is not None
+                        and (
+                            run is None
+                            or run.project_id != project_id
+                            or run.plan_revision_id != task.plan_revision_id
+                        )
+                    )
+                ):
+                    raise ConflictError(
+                        "analysis_goal_selection_conflict", "统计方案或运行身份已变化。"
+                    )
+            tasks = _load(row.work_tasks_json, {})
+            tasks["analysis"] = task.model_dump(mode="json")
+            row.work_tasks_json = canonical_json(tasks)
+            row.foreground_agent_role = WorkAgentRole.ANALYSIS.value
+            row.active_run_id = task.run_id
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
+    def select_work_agent(
+        self, conversation_id: str, request: WorkAgentSelection
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if row.mode != "work":
+                raise InputValidationError(
+                    "work_agent_mode_required", "仅 Work 会话可以切换负责 Agent。"
+                )
+            self._check_version("conversation", row.version, request.expected_version)
+            row.foreground_agent_role = request.agent_role.value
+            tasks = _load(row.work_tasks_json, {})
+            row.active_run_id = tasks.get(request.agent_role.value, {}).get("run_id")
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
+    def bind_statistics_task(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str | None,
+        proposal_hash: str,
+        plan_revision_id: str,
+        run_id: str | None = None,
+        work_task_id: str | None = None,
+    ) -> ConversationView:
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if project_id is None:
+                raise ConflictError("statistics_work_project_mismatch", "方案不属于此会话项目。")
+            task = require_analysis_task(
+                self._conversation_view(session, row),
+                project_id=project_id,
+                proposal_hash=proposal_hash,
+                plan_revision_id=plan_revision_id if run_id else None,
+            )
+            plan = session.get(PlanRevisionRow, plan_revision_id)
+            if plan is None or plan.project_id != project_id:
+                raise ConflictError("statistics_work_project_mismatch", "方案不属于此会话项目。")
+            if run_id:
+                run = session.get(WorkflowRunRow, run_id)
+                if (
+                    run is None
+                    or run.project_id != project_id
+                    or run.plan_revision_id != plan_revision_id
+                ):
+                    raise ConflictError(
+                        "statistics_work_run_mismatch", "运行与当前统计方案不匹配。"
+                    )
+            tasks = _load(row.work_tasks_json, {})
+            updates: dict[str, Any] = {
+                "plan_revision_id": plan_revision_id,
+                **({"run_id": run_id} if run_id else {}),
+            }
+            if work_task_id is not None:
+                updates["work_task_id"] = work_task_id
+            tasks["analysis"] = task.model_copy(update=updates).model_dump(mode="json")
+            row.work_tasks_json = canonical_json(tasks)
+            if run_id:
+                row.active_run_id = run_id
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row)
+
+    @staticmethod
+    def _confirmation_challenge(row: ConfirmationChallengeRow) -> ConfirmationChallengeView:
+        from neuroagent.application.contracts.runs import QcExecutionMode
+
+        return ConfirmationChallengeView(
+            confirmation_id=row.confirmation_id,
+            conversation_id=row.conversation_id,
+            project_id=row.project_id,
+            plan_revision_id=row.plan_revision_id,
+            plan_hash=row.plan_hash,
+            qc_mode=QcExecutionMode(row.qc_mode),
+            task_id=row.task_id,
+            step_id=row.step_id,
+            task_version=row.task_version,
+            step_version=row.step_version,
+            plan_version=row.plan_version,
+            execution_backend=(
+                ExecutionBackend(row.execution_backend) if row.execution_backend else None
+            ),
+            workspace_mode=(
+                ExecutionWorkspaceMode(row.workspace_mode) if row.workspace_mode else None
+            ),
+            issued_at=_as_utc(row.issued_at),
+            expires_at=_as_utc(row.expires_at),
+            consumed_at=_as_utc(row.consumed_at) if row.consumed_at else None,
+            consumed_run_id=row.consumed_run_id,
+        )
+
+    def create_confirmation_challenge(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str | None,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: Any,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
+        ttl_seconds: int = 600,
+    ) -> ConfirmationChallengeView:
         with self._write_session() as session:
             conversation = session.get(ConversationRow, conversation_id)
             if conversation is None:
                 raise NotFoundError("conversation", conversation_id)
-            messages = session.scalars(
-                select(ConversationMessageRow)
-                .where(ConversationMessageRow.conversation_id == conversation_id)
-                .order_by(ConversationMessageRow.sequence.desc())
-            ).all()
-            for message in messages:
-                payload = _load(message.payload_json)
-                cards = payload.get("work_cards", [])
-                for index, stored in enumerate(cards):
-                    if stored.get("card_id") == card["card_id"]:
-                        if stored["version"] != card["version"] - 1:
-                            raise ConflictError("work_card_stale", "卡片已经更新，请刷新。")
-                        cards[index] = card
-                        message.payload_json = canonical_json(payload)
-                        conversation.version += 1
-                        session.flush()
-                        return self._conversation_view(session, conversation)
-            raise NotFoundError("work_card", card["card_id"])
+            if conversation.project_id is not None and conversation.project_id != project_id:
+                raise ConflictError("confirmation_project_mismatch", "确认挑战与当前项目不匹配。")
+            now = datetime.now(UTC)
+            row = ConfirmationChallengeRow(
+                confirmation_id=_id(),
+                conversation_id=conversation_id,
+                project_id=project_id,
+                plan_revision_id=plan_revision_id,
+                plan_hash=plan_hash,
+                qc_mode=str(getattr(qc_mode, "value", qc_mode)),
+                task_id=task_id,
+                step_id=step_id,
+                task_version=task_version,
+                step_version=step_version,
+                plan_version=plan_version,
+                execution_backend=(
+                    str(getattr(execution_backend, "value", execution_backend))
+                    if execution_backend is not None
+                    else None
+                ),
+                workspace_mode=(
+                    str(getattr(workspace_mode, "value", workspace_mode))
+                    if workspace_mode is not None
+                    else None
+                ),
+                issued_at=now,
+                expires_at=now + timedelta(seconds=max(30, min(ttl_seconds, 3600))),
+            )
+            session.add(row)
+            session.flush()
+            return self._confirmation_challenge(row)
+
+    def consume_confirmation_challenge(
+        self,
+        *,
+        confirmation_id: str,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: Any,
+        run_id: str,
+        task_id: str | None = None,
+        step_id: str | None = None,
+        task_version: int | None = None,
+        step_version: int | None = None,
+        plan_version: int | None = None,
+        execution_backend: str | None = None,
+        workspace_mode: str | None = None,
+        require_prior_consumption: bool = False,
+    ) -> ConfirmationChallengeView:
+        with self._write_session() as session:
+            row = session.get(ConfirmationChallengeRow, confirmation_id)
+            expected_qc = str(getattr(qc_mode, "value", qc_mode))
+            now = datetime.now(UTC)
+            if (
+                row is None
+                or row.conversation_id != conversation_id
+                or row.project_id != project_id
+                or row.plan_revision_id != plan_revision_id
+                or row.plan_hash != plan_hash
+                or row.qc_mode != expected_qc
+                or row.task_id != task_id
+                or row.step_id != step_id
+                or row.task_version != task_version
+                or row.step_version != step_version
+                or row.plan_version != plan_version
+                or row.execution_backend
+                != (
+                    str(getattr(execution_backend, "value", execution_backend))
+                    if execution_backend
+                    else None
+                )
+                or row.workspace_mode
+                != (
+                    str(getattr(workspace_mode, "value", workspace_mode))
+                    if workspace_mode
+                    else None
+                )
+                or (row.consumed_at is not None and row.consumed_run_id != run_id)
+                or (
+                    require_prior_consumption
+                    and (row.consumed_at is None or row.consumed_run_id != run_id)
+                )
+                or (
+                    _as_utc(row.expires_at) <= now
+                    and not (
+                        require_prior_consumption
+                        and row.consumed_at is not None
+                        and row.consumed_run_id == run_id
+                    )
+                )
+            ):
+                raise ConflictError(
+                    "confirmation_challenge_invalid",
+                    "启动确认无效、已使用、已过期或与当前方案不匹配。",
+                )
+            if row.consumed_at is None:
+                row.consumed_at = now
+                row.consumed_run_id = run_id
+            session.flush()
+            return self._confirmation_challenge(row)
 
     def create_conversation(
         self,
@@ -110,14 +363,14 @@ class ConversationMixin(RepositoryBaseMixin):
             return self._conversation_view(session, row)
 
     def get_conversation(self, conversation_id: str) -> ConversationView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(ConversationRow, conversation_id)
             if row is None:
                 raise NotFoundError("conversation", conversation_id)
             return self._conversation_view(session, row)
 
     def list_conversations(self, *, mode: ConversationMode | None = None) -> list[ConversationView]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             statement = select(ConversationRow)
             if mode is not None:
                 statement = statement.where(ConversationRow.mode == mode.value)
@@ -136,12 +389,22 @@ class ConversationMixin(RepositoryBaseMixin):
         preferred_profile_id: str | None,
         project_id: str | None,
         active_run_id: str | None,
+        tool_calls: Sequence[dict[str, Any]] | None = None,
+        work_task_id: str | None = None,
+        existing_user_message_id: str | None = None,
     ) -> tuple[
         ConversationView,
         ConversationMessageView,
         ConversationMessageView,
         ConversationToolCallView | None,
     ]:
+        """Append one user/assistant exchange and its audit rows atomically.
+
+        ``tool`` is the long-standing single-call form; ``tool_calls`` carries the
+        ordered steps of a bounded Agent tool loop.  Writing them in the same
+        transaction as the messages means a loop's audit trail can never be
+        half-persisted, and it avoids needing the user message id before insert.
+        """
         with self._write_session() as session:
             row = session.get(ConversationRow, conversation_id)
             if row is None:
@@ -151,14 +414,29 @@ class ConversationMixin(RepositoryBaseMixin):
                     ConversationMessageRow.conversation_id == conversation_id
                 )
             )
-            user_row = ConversationMessageRow(
-                message_id=_id(),
-                conversation_id=conversation_id,
-                sequence=int(last_sequence or 0) + 1,
-                role=ConversationRole.USER.value,
-                content=user_content,
-                payload_json="{}",
-            )
+            if existing_user_message_id is None:
+                user_row = ConversationMessageRow(
+                    message_id=_id(),
+                    conversation_id=conversation_id,
+                    sequence=int(last_sequence or 0) + 1,
+                    role=ConversationRole.USER.value,
+                    content=user_content,
+                    payload_json="{}",
+                )
+            else:
+                existing_user_row = session.get(ConversationMessageRow, existing_user_message_id)
+                if (
+                    existing_user_row is None
+                    or existing_user_row.conversation_id != conversation_id
+                    or existing_user_row.role != ConversationRole.USER.value
+                    or existing_user_row.content != user_content
+                    or existing_user_row.sequence != int(last_sequence or 0)
+                ):
+                    raise ConflictError(
+                        "conversation_admitted_message_changed",
+                        "已持久化的复合目标用户消息已变化或不再是本轮最新消息。",
+                    )
+                user_row = existing_user_row
             assistant_row = ConversationMessageRow(
                 message_id=_id(),
                 conversation_id=conversation_id,
@@ -167,7 +445,9 @@ class ConversationMixin(RepositoryBaseMixin):
                 content=assistant_content,
                 payload_json=canonical_json(assistant_payload),
             )
-            session.add_all((user_row, assistant_row))
+            if existing_user_message_id is None:
+                session.add(user_row)
+            session.add(assistant_row)
             session.flush()
             tool_row: ConversationToolCallRow | None = None
             if tool is not None:
@@ -180,12 +460,149 @@ class ConversationMixin(RepositoryBaseMixin):
                     input_json=canonical_json(tool.get("input", {})),
                     output_json=canonical_json(tool.get("output", {})),
                     error=tool.get("error"),
+                    agent_role=tool.get("agent_role"),
                 )
                 session.add(tool_row)
+            for step_index, call in enumerate(tool_calls or (), start=1):
+                session.add(
+                    ConversationToolCallRow(
+                        tool_call_id=_id(),
+                        conversation_id=conversation_id,
+                        user_message_id=user_row.message_id,
+                        tool_name=str(call["tool_name"]),
+                        status=str(call["status"]),
+                        input_json=canonical_json(call.get("input", {})),
+                        output_json=canonical_json(call.get("output", {})),
+                        error=call.get("error"),
+                        step_index=int(call["step_index"])
+                        if call.get("step_index") is not None
+                        else step_index,
+                        risk_tier=str(call["risk_tier"])
+                        if call.get("risk_tier") is not None
+                        else None,
+                        provider_call_id=str(call["provider_call_id"])
+                        if call.get("provider_call_id") is not None
+                        else None,
+                        duration_ms=int(call["duration_ms"])
+                        if call.get("duration_ms") is not None
+                        else None,
+                        agent_role=str(call["agent_role"])
+                        if call.get("agent_role") is not None
+                        else None,
+                    )
+                )
             row.workspace_path = workspace_path
             row.preferred_profile_id = preferred_profile_id
+            tasks = _load(row.work_tasks_json, {}) if row.project_id == project_id else {}
             row.project_id = project_id
             row.active_run_id = active_run_id
+            if row.mode == "work":
+                role = WorkAgentRole(assistant_payload.get("agent_role", "preprocessing"))
+                row.foreground_agent_role = role.value
+                task = ConversationWorkTaskView.model_validate(
+                    tasks.get(role.value, {"agent_role": role.value})
+                )
+                snapshot = assistant_payload.get(
+                    "analysis_draft" if role is WorkAgentRole.ANALYSIS else "work_draft"
+                )
+                if role is WorkAgentRole.ANALYSIS and isinstance(snapshot, dict):
+                    intent_id = analysis_payload_intent_id(assistant_payload)
+                    if task.analysis_intent_task_id != intent_id or (
+                        not isinstance(assistant_payload.get("statistical_design_proposal"), dict)
+                        and assistant_payload.get("analysis_draft_unchanged") is not True
+                    ):
+                        task = task.model_copy(
+                            update={
+                                "proposal_hash": None,
+                                "proposal_message_id": None,
+                                "plan_revision_id": None,
+                                "work_task_id": None,
+                                "run_id": None,
+                            }
+                        )
+                    task = task.model_copy(update={"analysis_intent_task_id": intent_id})
+                if (
+                    isinstance(snapshot, dict)
+                    and isinstance(snapshot.get("hash"), str)
+                    and snapshot["hash"] != task.draft_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "draft_hash": snapshot["hash"],
+                            "proposal_hash": None,
+                            "proposal_message_id": None,
+                            "plan_revision_id": None,
+                            "work_task_id": None,
+                            "run_id": None,
+                        }
+                    )
+                if role in {WorkAgentRole.PREPROCESSING, WorkAgentRole.ANALYSIS} and (
+                    work_task_id is not None
+                ):
+                    task = task.model_copy(update={"work_task_id": work_task_id})
+                plan_data = assistant_payload.get("plan_revision")
+                if role is WorkAgentRole.PREPROCESSING and isinstance(plan_data, dict):
+                    plan_id = plan_data.get("plan_revision_id")
+                    plan = (
+                        session.get(PlanRevisionRow, plan_id) if isinstance(plan_id, str) else None
+                    )
+                    plan_body = _load(plan.plan_json, {}) if plan is not None else {}
+                    skill_plan = plan_body.get("skill_plan")
+                    if (
+                        plan is not None
+                        and plan.project_id == project_id
+                        and plan_body.get("kind") == "skill_plan"
+                        and isinstance(skill_plan, dict)
+                        and isinstance(skill_plan.get("preprocessing_parameters_hash"), str)
+                    ):
+                        changes: dict[str, Any] = {"plan_revision_id": plan.plan_revision_id}
+                        if task.plan_revision_id != plan.plan_revision_id:
+                            changes.update(
+                                {
+                                    "run_id": None,
+                                    "work_task_id": work_task_id,
+                                }
+                            )
+                        task = task.model_copy(update=changes)
+                proposal = assistant_payload.get("statistical_design_proposal")
+                if (
+                    role is WorkAgentRole.ANALYSIS
+                    and isinstance(proposal, dict)
+                    and proposal.get("proposal_hash") != task.proposal_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "plan_revision_id": None,
+                            "run_id": None,
+                            "proposal_hash": proposal["proposal_hash"],
+                            "proposal_message_id": assistant_row.message_id,
+                            "work_task_id": work_task_id,
+                        }
+                    )
+                # An analysis turn may refer to an upstream run; it must never
+                # replace the analysis run reference with that preprocessing source.
+                if active_run_id:
+                    run = session.get(WorkflowRunRow, active_run_id)
+                    plan = session.get(PlanRevisionRow, run.plan_revision_id) if run else None
+                    is_statistics = (
+                        plan is not None
+                        and _load(plan.plan_json, {}).get("kind") == "statistical_design"
+                    )
+                    if (
+                        run is not None
+                        and run.project_id == project_id
+                        and task.plan_revision_id in {None, run.plan_revision_id}
+                        and (role is WorkAgentRole.ANALYSIS) == is_statistics
+                    ):
+                        task = task.model_copy(
+                            update={
+                                "run_id": active_run_id,
+                                "plan_revision_id": run.plan_revision_id,
+                            }
+                        )
+                tasks[role.value] = task.model_dump(mode="json")
+                row.work_tasks_json = canonical_json(tasks)
+                row.active_run_id = task.run_id
             row.version += 1
             session.flush()
             return (
@@ -195,8 +612,249 @@ class ConversationMixin(RepositoryBaseMixin):
                 self._tool_call(tool_row) if tool_row is not None else None,
             )
 
+    def admit_preprocessing_goal_intent_message(
+        self,
+        conversation_id: str,
+        *,
+        message_id: str,
+        user_content: str,
+        intent_task_id: str,
+        project_id: str,
+        analysis_request_hash: str,
+    ) -> ConversationMessageView:
+        """Durably admit one explicit two-stage user request before model work."""
+
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if row.mode != ConversationMode.WORK.value or row.project_id not in {
+                None,
+                project_id,
+            }:
+                raise ConflictError(
+                    "composite_goal_conversation_mismatch",
+                    "复合预处理目标必须绑定到同项目的 Work 会话。",
+                )
+            existing = session.get(ConversationMessageRow, message_id)
+            admission_payload = canonical_json(
+                {
+                    "composite_goal_admission": {
+                        "intent_task_id": intent_task_id,
+                        "conversation_id": conversation_id,
+                        "project_id": project_id,
+                        "analysis_request_hash": analysis_request_hash,
+                    }
+                }
+            )
+            if existing is not None:
+                if (
+                    existing.conversation_id != conversation_id
+                    or existing.role != ConversationRole.USER.value
+                    or existing.content != user_content
+                    or existing.payload_json != admission_payload
+                ):
+                    raise ConflictError(
+                        "composite_goal_admission_message_conflict",
+                        "幂等复合目标身份已绑定到不同的用户消息。",
+                    )
+                return self._message(existing)
+            last_sequence = session.scalar(
+                select(func.max(ConversationMessageRow.sequence)).where(
+                    ConversationMessageRow.conversation_id == conversation_id
+                )
+            )
+            message = ConversationMessageRow(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                sequence=int(last_sequence or 0) + 1,
+                role=ConversationRole.USER.value,
+                content=user_content,
+                payload_json=admission_payload,
+            )
+            session.add(message)
+            if row.project_id is None:
+                row.project_id = project_id
+            row.version += 1
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+            return self._message(message)
+
+    def append_assistant_continuation(
+        self,
+        conversation_id: str,
+        *,
+        continuation_key: str,
+        assistant_content: str,
+        assistant_payload: dict[str, Any],
+        project_id: str | None,
+        work_task_id: str | None,
+        update_work_state: bool = True,
+    ) -> tuple[ConversationView, ConversationMessageView]:
+        """Append one idempotent assistant-only continuation inside the caller UoW."""
+        with self._write_session() as session:
+            row = session.get(ConversationRow, conversation_id)
+            if row is None:
+                raise NotFoundError("conversation", conversation_id)
+            if update_work_state and project_id is None:
+                raise ConflictError(
+                    "analysis_continuation_conversation_changed",
+                    "分析续接会话已切换模式或项目。",
+                )
+            if row.project_id != project_id or (
+                update_work_state and row.mode != ConversationMode.WORK.value
+            ):
+                raise ConflictError(
+                    "analysis_continuation_conversation_changed",
+                    "分析续接会话已切换模式或项目。",
+                )
+            existing = session.scalar(
+                select(ConversationMessageRow).where(
+                    ConversationMessageRow.continuation_key == continuation_key
+                )
+            )
+            if existing is not None:
+                existing_payload = _load(existing.payload_json, {})
+                binding_keys = (
+                    "analysis_outbox_continuation",
+                    "statistical_result_interpretation",
+                    "statistical_result_interpretation_retry",
+                )
+                existing_binding = next(
+                    (
+                        (key, existing_payload.get(key))
+                        for key in binding_keys
+                        if isinstance(existing_payload.get(key), dict)
+                    ),
+                    None,
+                )
+                requested_binding = next(
+                    (
+                        (key, assistant_payload.get(key))
+                        for key in binding_keys
+                        if isinstance(assistant_payload.get(key), dict)
+                    ),
+                    None,
+                )
+                bindings_match = False
+                if (
+                    existing_binding is not None
+                    and requested_binding is not None
+                    and existing_binding[0] == requested_binding[0]
+                ):
+                    existing_data = existing_binding[1]
+                    requested_data = requested_binding[1]
+                    identity_fields = (
+                        "intent_task_id",
+                        "task_id",
+                        "retry_generation",
+                    )
+                    if isinstance(existing_data, dict) and isinstance(requested_data, dict):
+                        present_fields = tuple(
+                            key
+                            for key in identity_fields
+                            if key in existing_data or key in requested_data
+                        )
+                        bindings_match = bool(present_fields) and all(
+                            existing_data.get(key) == requested_data.get(key)
+                            for key in present_fields
+                        )
+                if (
+                    existing.conversation_id != conversation_id
+                    or existing.role != ConversationRole.ASSISTANT.value
+                    or not bindings_match
+                ):
+                    raise ConflictError(
+                        "analysis_continuation_key_conflict",
+                        "续接幂等键已绑定到其他会话消息。",
+                    )
+                return self._conversation_view(session, row), self._message(existing)
+
+            last_sequence = session.scalar(
+                select(func.max(ConversationMessageRow.sequence)).where(
+                    ConversationMessageRow.conversation_id == conversation_id
+                )
+            )
+            assistant_row = ConversationMessageRow(
+                message_id=_id(),
+                conversation_id=conversation_id,
+                sequence=int(last_sequence or 0) + 1,
+                role=ConversationRole.ASSISTANT.value,
+                content=assistant_content,
+                payload_json=canonical_json(assistant_payload),
+                continuation_key=continuation_key,
+            )
+            session.add(assistant_row)
+            session.flush()
+
+            current_tasks = _load(row.work_tasks_json, {})
+            selected_intent = current_tasks.get("analysis", {}).get("analysis_intent_task_id")
+            if selected_intent and analysis_payload_intent_id(assistant_payload) != selected_intent:
+                update_work_state = False
+            if update_work_state:
+                tasks = _load(row.work_tasks_json, {})
+                role = WorkAgentRole.ANALYSIS
+                task = ConversationWorkTaskView.model_validate(
+                    tasks.get(role.value, {"agent_role": role.value})
+                )
+                snapshot = assistant_payload.get("analysis_draft")
+                if isinstance(snapshot, dict):
+                    intent_id = analysis_payload_intent_id(assistant_payload)
+                    if task.analysis_intent_task_id != intent_id or (
+                        not isinstance(assistant_payload.get("statistical_design_proposal"), dict)
+                        and assistant_payload.get("analysis_draft_unchanged") is not True
+                    ):
+                        task = task.model_copy(
+                            update={
+                                "proposal_hash": None,
+                                "proposal_message_id": None,
+                                "plan_revision_id": None,
+                                "work_task_id": None,
+                                "run_id": None,
+                            }
+                        )
+                    task = task.model_copy(update={"analysis_intent_task_id": intent_id})
+                if (
+                    isinstance(snapshot, dict)
+                    and isinstance(snapshot.get("hash"), str)
+                    and snapshot["hash"] != task.draft_hash
+                ):
+                    task = task.model_copy(
+                        update={
+                            "draft_hash": snapshot["hash"],
+                            "proposal_hash": None,
+                            "proposal_message_id": None,
+                            "plan_revision_id": None,
+                            "work_task_id": None,
+                            "run_id": None,
+                        }
+                    )
+                proposal = assistant_payload.get("statistical_design_proposal")
+                if isinstance(proposal, dict):
+                    task = task.model_copy(
+                        update={
+                            "proposal_hash": proposal.get("proposal_hash"),
+                            "proposal_message_id": assistant_row.message_id,
+                            "plan_revision_id": None,
+                            "run_id": None,
+                            "work_task_id": work_task_id,
+                        }
+                    )
+                elif work_task_id is not None:
+                    raise ConflictError(
+                        "analysis_continuation_task_without_proposal",
+                        "只有完整统计提案可以绑定分析 WorkTask。",
+                    )
+                row.foreground_agent_role = role.value
+                tasks[role.value] = task.model_dump(mode="json")
+                row.work_tasks_json = canonical_json(tasks)
+                row.active_run_id = task.run_id
+            row.version += 1
+            session.flush()
+            return self._conversation_view(session, row), self._message(assistant_row)
+
     def get_conversation_context(self, conversation_id: str) -> ConversationContextView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             conversation = session.get(ConversationRow, conversation_id)
             if conversation is None:
                 raise NotFoundError("conversation", conversation_id)
@@ -396,7 +1054,7 @@ class ConversationMixin(RepositoryBaseMixin):
             return self._memory(row)
 
     def get_forgotten_source_message_ids(self, conversation_id: str) -> set[str]:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             source_ids = session.scalars(
                 select(MemoryRecordRow.source_message_id).where(
                     MemoryRecordRow.conversation_id == conversation_id,
@@ -574,7 +1232,7 @@ class ConversationMixin(RepositoryBaseMixin):
             for item in state.memories
             if item.status is MemoryStatus.CONFIRMED
         }
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             rows = session.scalars(
                 select(MemoryEmbeddingRow).where(
                     MemoryEmbeddingRow.memory_id.in_(versions),
@@ -645,7 +1303,13 @@ class ConversationMixin(RepositoryBaseMixin):
         tools = session.scalars(
             select(ConversationToolCallRow)
             .where(ConversationToolCallRow.conversation_id == row.conversation_id)
-            .order_by(ConversationToolCallRow.created_at)
+            .order_by(
+                ConversationToolCallRow.created_at,
+                # Loop steps share one timestamp, so order them by their step so
+                # the transcript the model produced is the transcript shown.
+                ConversationToolCallRow.step_index,
+                ConversationToolCallRow.tool_call_id,
+            )
         ).all()
         return ConversationView(
             conversation_id=row.conversation_id,
@@ -655,6 +1319,11 @@ class ConversationMixin(RepositoryBaseMixin):
             preferred_profile_id=row.preferred_profile_id,
             project_id=row.project_id,
             active_run_id=row.active_run_id,
+            foreground_agent_role=WorkAgentRole(row.foreground_agent_role),
+            work_tasks=tuple(
+                ConversationWorkTaskView.model_validate(value)
+                for value in _load(row.work_tasks_json, {}).values()
+            ),
             version=row.version,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
@@ -685,6 +1354,10 @@ class ConversationMixin(RepositoryBaseMixin):
             input=_load(row.input_json, {}),
             output=_load(row.output_json, {}),
             error=row.error,
+            step_index=row.step_index,
+            risk_tier=row.risk_tier,
+            duration_ms=row.duration_ms,
+            agent_role=row.agent_role,
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
         )

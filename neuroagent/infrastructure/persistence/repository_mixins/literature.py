@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from neuroagent.application.errors import NotFoundError
+from neuroagent.infrastructure.persistence.database import Database
 from neuroagent.infrastructure.persistence.models import (
     LiteratureChunkRow,
     PaperRow,
     PaperSectionRow,
 )
-from neuroagent.infrastructure.persistence.repository_mixins._base import (
-    RepositoryBaseMixin,
-    _as_utc,
-    _load,
-)
+from neuroagent.infrastructure.persistence.repository_mixins._base import _as_utc, _load
 from neuroagent.literature.models import (
     ChunkMetadata,
     IndexStatus,
@@ -29,7 +29,14 @@ from neuroagent.literature.models import (
 )
 
 
-class LiteratureMixin(RepositoryBaseMixin):
+class LiteratureMixin(ABC):
+    """Literature persistence capability, independent of the aggregate adapter MRO."""
+
+    database: Database
+
+    @abstractmethod
+    def _write_session(self) -> AbstractContextManager[Session]: ...
+
     def set_literature_index_status(
         self, paper_id: str, status: IndexStatus, error: str | None = None
     ) -> None:

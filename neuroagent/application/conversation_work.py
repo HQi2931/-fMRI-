@@ -4,33 +4,94 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.conversations import (
     ConversationAction,
     ConversationToolStatus,
     ConversationTurnCreate,
-    DatasetCreate,
-    DatasetView,
-    ExecutionBackend,
-    ExecutionWorkspaceMode,
-    ManifestRevisionView,
-    ManifestScanRequest,
+)
+from neuroagent.application.contracts.plans import (
+    ApprovalCreate,
+    ApprovalDecision,
+    ApprovalView,
     PlanRevisionView,
-    PlanState,
-    ProjectCreate,
-    ProjectView,
-    QcReviewView,
-    RunCreate,
-    RunView,
+    SkillPlanIntent,
     SkillPlanResolveRequest,
     SkillPlanResolveView,
-    StatisticalResultView,
 )
+from neuroagent.application.contracts.projects import (
+    DatasetCreate,
+    DatasetView,
+    ManifestRevisionView,
+    ManifestScanRequest,
+    ProjectCreate,
+    ProjectView,
+    WorkspaceSetupIntent,
+)
+from neuroagent.application.contracts.runs import (
+    ExecutionBackend,
+    ExecutionWorkspaceMode,
+    HeadMotionQcCreate,
+    QcExecutionMode,
+    QcReviewApprove,
+    QcReviewView,
+    QcSkipCreate,
+    QcSkipView,
+    RunCreate,
+    RunView,
+)
+from neuroagent.application.contracts.statistics import StatisticalResultView
 from neuroagent.application.errors import ApplicationError, ConflictError, InputValidationError
-from neuroagent.application.ports import PathPolicyPort, RepositoryPort
+from neuroagent.application.ports import PathPolicyPort
+from neuroagent.application.repository_ports import (
+    ConversationRepositoryPort,
+    EventRepositoryPort,
+    PlanRepositoryPort,
+    ProjectRepositoryPort,
+)
+from neuroagent.application.work_draft import WorkDraft, confirmed_skill_intent, draft_hash
+from neuroagent.domain.fmri.dpabi_stages import canonical_stage_name
+from neuroagent.domain.lifecycle import PlanState
+
+_RUN_STATE_LABELS = {
+    "queued": "排队中",
+    "running": "执行中",
+    "cancelling": "正在取消",
+    "qc_review": "等待 QC 审核",
+    "succeeded": "已完成",
+    "failed_retryable": "暂时失败，可重试",
+    "failed_terminal": "失败",
+    "timed_out": "已超时",
+    "cancelled": "已取消",
+}
+_QC_STATE_LABELS = {
+    "draft": "待确认",
+    "approved": "已批准",
+    "rejected": "已拒绝",
+}
+_QC_SCOPE_LABELS = {
+    "head_motion": "头动检查",
+    "pre_statistics": "统计前检查",
+}
+
+
+def _display_run_state(value: str) -> str:
+    return _RUN_STATE_LABELS.get(value, value)
+
+
+def _display_qc_state(value: str) -> str:
+    return _QC_STATE_LABELS.get(value, value)
+
+
+def _display_qc_scope(value: str) -> str:
+    return _QC_SCOPE_LABELS.get(value, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +102,7 @@ class WorkActionResult:
     workspace_path: str | None = None
     project_id: str | None = None
     active_run_id: str | None = None
+    commit: Callable[[], WorkActionResult] | None = None
 
 
 class ConversationWorkCoordinator:
@@ -49,31 +111,216 @@ class ConversationWorkCoordinator:
     def __init__(
         self,
         *,
-        repository: RepositoryPort,
+        conversation_repository: ConversationRepositoryPort,
+        project_repository: ProjectRepositoryPort,
+        plan_repository: PlanRepositoryPort,
+        event_store: EventRepositoryPort,
         path_policy: PathPolicyPort,
         create_project: Callable[[ProjectCreate, str], ProjectView],
         create_dataset: Callable[[str, DatasetCreate, str], DatasetView],
         inspect_dataset: Callable[[str, ManifestScanRequest, str], ManifestRevisionView],
+        inspect_source: Callable[..., dict[str, Any]] | None = None,
         resolve_skill_plan: Callable[[SkillPlanResolveRequest, str], SkillPlanResolveView],
         validate_plan_current: Callable[[PlanRevisionView], None],
         get_qc_review: Callable[[str], QcReviewView],
+        get_latest_qc_review_for_run: Callable[[str], QcReviewView | None],
+        create_head_motion_qc_review: Callable[[str, HeadMotionQcCreate, str], QcReviewView],
+        approve_qc_review: Callable[[str, QcReviewApprove, str], QcReviewView],
+        skip_qc: Callable[[str, QcSkipCreate, str], QcSkipView],
         list_statistical_results: Callable[..., list[StatisticalResultView]],
         get_run: Callable[[str], RunView],
         create_run: Callable[[RunCreate, str], RunView],
+        approve_plan: Callable[[str, ApprovalCreate, str], ApprovalView],
         tool_result: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]],
+        work_root: Path,
+        get_result_facts: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
-        self._repository = repository
+        self._conversation_repository = conversation_repository
+        self._project_repository = project_repository
+        self._plan_repository = plan_repository
+        self._event_store = event_store
         self._path_policy = path_policy
         self._create_project = create_project
         self._create_dataset = create_dataset
         self._inspect_dataset = inspect_dataset
+        self._inspect_source_callback = inspect_source
         self._resolve_skill_plan = resolve_skill_plan
         self._validate_plan_current = validate_plan_current
         self._get_qc_review = get_qc_review
+        self._get_latest_qc_review_for_run = get_latest_qc_review_for_run
+        self._create_head_motion_qc_review = create_head_motion_qc_review
+        self._approve_qc_review = approve_qc_review
+        self._skip_qc = skip_qc
         self._list_statistical_results = list_statistical_results
+        self._get_result_facts = get_result_facts
         self._get_run = get_run
         self._create_run = create_run
+        self._approve_plan = approve_plan
         self._tool_result = tool_result
+        self._work_root = work_root
+
+    @staticmethod
+    def stage_confirmation_token(workspace_path: str, candidates: list[dict[str, Any]]) -> str:
+        payload = {
+            "workspace": str(Path(workspace_path).resolve()),
+            "candidates": candidates,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def workspace_stage_candidates(
+        self,
+        workspace_path: str | None,
+        *,
+        confirmed_stage: str | None = None,
+    ) -> dict[str, Any]:
+        if not workspace_path:
+            return {"candidates": [], "token": None, "selection_required": False}
+        source = self._path_policy.validate_project_source_root(workspace_path)
+        if self._inspect_source_callback is None:
+            return {"candidates": [], "token": None, "selection_required": False}
+        content = self._inspect_source_callback(
+            source,
+            report_only=True,
+            selected_input_stage=confirmed_stage,
+        )
+        candidates = list(content.get("stage_candidates", []))
+        profile = content.get("profile")
+        subjects = content.get("subjects")
+        subject_items = subjects if isinstance(subjects, list) else []
+        workspace_profile = {
+            "kind": profile.get("kind") if isinstance(profile, dict) else None,
+            "file_count": profile.get("file_count") if isinstance(profile, dict) else None,
+            "nifti_count": profile.get("nifti_count") if isinstance(profile, dict) else None,
+            "dicom_count": profile.get("dicom_count") if isinstance(profile, dict) else None,
+            "subject_count": profile.get("subject_count") if isinstance(profile, dict) else None,
+            "functional_subject_count": sum(
+                bool(item.get("functional_files"))
+                for item in subject_items
+                if isinstance(item, dict)
+            ),
+            "anatomical_subject_count": sum(
+                bool(item.get("anatomical_files"))
+                for item in subject_items
+                if isinstance(item, dict)
+            ),
+            "issues": list(profile.get("issues", []))[:20] if isinstance(profile, dict) else [],
+            "warnings": list(profile.get("warnings", []))[:20] if isinstance(profile, dict) else [],
+            "input_stage": content.get("input_stage"),
+            "selected_input_stage": content.get("selected_input_stage"),
+            "metadata_revision": content.get("metadata_revision"),
+            "output_directories": list(content.get("output_directories", []))[:20],
+        }
+        return {
+            "candidates": candidates,
+            "token": self.stage_confirmation_token(str(source), candidates),
+            "selection_required": bool(content.get("stage_selection_required", False)),
+            "rule_version": content.get("stage_rule_version"),
+            "data_profile": workspace_profile,
+        }
+
+    def confirm_workspace_stage(
+        self,
+        *,
+        dataset_id: str,
+        workspace_path: str,
+        selected_input_stage: str,
+        token: str,
+        idempotency_key: str,
+    ) -> ManifestRevisionView:
+        dataset = self._project_repository.get_dataset(dataset_id)
+        project = self._project_repository.get_project(dataset.project_id)
+        source = self._path_policy.validate_read_path(
+            dataset.source_path,
+            project_roots=project.source_roots,
+            expect_directory=True,
+        )
+        selected_workspace = self._path_policy.validate_project_source_root(workspace_path)
+        if source != selected_workspace:
+            raise ConflictError("conversation_workspace_plan_mismatch", "确认阶段的工作区已变化。")
+        if self._inspect_source_callback is None:
+            raise InputValidationError(
+                "dataset_inspector_unavailable", "工作区阶段检查服务不可用。"
+            )
+        report = self._inspect_source_callback(source, report_only=True)
+        candidates = list(report.get("stage_candidates", []))
+        expected_token = self.stage_confirmation_token(str(source), candidates)
+        if token != expected_token:
+            raise ConflictError(
+                "workspace_stage_confirmation_stale", "工作区阶段清单已变化，请重新读取并确认。"
+            )
+        canonical = canonical_stage_name(selected_input_stage)
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("stage", "")).casefold() == str(canonical or "").casefold()
+            ),
+            None,
+        )
+        if candidate is None:
+            raise InputValidationError(
+                "workspace_stage_not_candidate", "所选起始阶段不在本轮服务端候选清单中。"
+            )
+        if not bool(candidate.get("selectable", False)):
+            issues = candidate.get("issues") or ["候选阶段当前不可执行"]
+            raise InputValidationError(
+                "workspace_stage_not_selectable",
+                "所选起始阶段当前不可执行：" + "；".join(str(issue) for issue in issues),
+            )
+        content = self._inspect_source_callback(
+            source, report_only=False, selected_input_stage=selected_input_stage
+        )
+        result = self._project_repository.create_manifest(
+            dataset_id,
+            expected_version=dataset.version,
+            content=content,
+        )
+        self._event_store.append_event(
+            project_id=project.project_id,
+            run_id=None,
+            event_type="WorkspaceStageConfirmed",
+            severity="info",
+            payload={
+                "dataset_id": dataset_id,
+                "manifest_id": result.manifest_id,
+                "selected_input_stage": selected_input_stage,
+                "stage_rule_version": content.get("stage_rule_version"),
+            },
+        )
+        return result
+
+    def record_workspace_stage_recommendation(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str | None,
+        workspace_path: str,
+        stage: str,
+        intent: str | None,
+        reasoning: str | None,
+        questions: list[str],
+    ) -> None:
+        """Keep the model suggestion auditable without granting it authority."""
+
+        self._event_store.append_event(
+            project_id=project_id,
+            run_id=None,
+            event_type="WorkspaceStageRecommended",
+            severity="info",
+            payload={
+                "conversation_id": conversation_id,
+                "workspace_hash": hashlib.sha256(
+                    str(Path(workspace_path).resolve()).encode("utf-8")
+                ).hexdigest(),
+                "stage": stage,
+                "intent_length": len(intent or ""),
+                "reasoning_hash": hashlib.sha256((reasoning or "").encode("utf-8")).hexdigest(),
+                "question_count": len(questions),
+            },
+        )
 
     def execute(
         self,
@@ -83,19 +330,67 @@ class ConversationWorkCoordinator:
         active_run_id: str | None,
         project_id: str | None,
         idempotency_key: str,
+        conversation_id: str | None = None,
     ) -> WorkActionResult:
-        action = self._resolve_action(request, workspace_path, active_run_id)
+        if request.action is ConversationAction.AUTO and self._is_demo_alff_request(
+            request.content
+        ):
+            try:
+                return self._prepare_demo_alff(
+                    request,
+                    workspace_path=workspace_path,
+                    idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
+                )
+            except ApplicationError as exc:
+                return WorkActionResult(
+                    assistant_content=exc.message,
+                    tool={
+                        "tool_name": "prepare_demo_alff",
+                        "status": ConversationToolStatus.FAILED.value,
+                        "input": {"workspace_path": workspace_path},
+                        "output": {},
+                        "error": exc.message,
+                    },
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=active_run_id,
+                )
+        if request.action is ConversationAction.AUTO:
+            conversational_reply = self._conversational_reply(request.content)
+            if conversational_reply is not None:
+                return WorkActionResult(
+                    assistant_content=conversational_reply,
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                    active_run_id=active_run_id,
+                )
+        action = self.resolve_action(request, workspace_path, active_run_id)
         try:
             if action is ConversationAction.SETUP_WORKSPACE:
                 return self._setup_workspace(request, workspace_path, idempotency_key)
             if action is ConversationAction.PREPARE_PREPROCESSING_PLAN:
-                return self._prepare_preprocessing_plan(request, project_id, idempotency_key)
+                return self._prepare_preprocessing_plan(
+                    request, workspace_path, project_id, idempotency_key
+                )
             if action is ConversationAction.PREVIEW_PREPROCESSING_RUN:
                 return self._preview_preprocessing_run(request, workspace_path, project_id)
             if action is ConversationAction.GET_PROGRESS:
-                return self._progress(active_run_id)
+                return replace(
+                    self._progress(active_run_id),
+                    workspace_path=workspace_path,
+                    project_id=project_id,
+                )
             if action is ConversationAction.GET_QC_STATUS:
                 return self._qc_status(request, active_run_id, project_id)
+            if action is ConversationAction.CREATE_HEAD_MOTION_QC:
+                return self._create_head_motion_qc(
+                    request, active_run_id, project_id, idempotency_key
+                )
+            if action is ConversationAction.APPROVE_QC_REVIEW:
+                return self._approve_qc(request, active_run_id, project_id, idempotency_key)
+            if action is ConversationAction.SKIP_QC:
+                return self._skip_qc_action(request, active_run_id, project_id, idempotency_key)
             if action is ConversationAction.GET_STATISTICAL_RESULTS:
                 return self._statistical_results(request, active_run_id, project_id)
             if action is ConversationAction.START_PREPROCESSING:
@@ -104,15 +399,26 @@ class ConversationWorkCoordinator:
                     workspace_path=workspace_path,
                     project_id=project_id,
                     idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
                 )
             return WorkActionResult(
-                "我已记录这条工作要求。你可以让我准备预处理方案、查看运行进度，"
-                "或在已有审核计划后明确启动 DPABI 预处理。",
+                "我可以协助准备预处理方案、查看运行进度、完成 QC 审核并启动 DPABI。"
+                "请直接告诉我你的目标；如果要生成 ALFF 方案，请补充 TR、时间点数、"
+                "预处理步骤、频段和 QC 要求。",
                 workspace_path=workspace_path,
                 project_id=project_id,
                 active_run_id=active_run_id,
             )
         except ApplicationError as exc:
+            # A challenge failure can occur after the idempotent run insert is
+            # staged.  Let the outer repository transaction roll that insert
+            # back; returning a friendly WorkActionResult here would otherwise
+            # commit a run that never held valid execution authority.
+            if action is ConversationAction.START_PREPROCESSING and exc.code in {
+                "confirmation_challenge_required",
+                "confirmation_challenge_invalid",
+            }:
+                raise
             return WorkActionResult(
                 assistant_content=exc.message,
                 tool={
@@ -125,6 +431,156 @@ class ConversationWorkCoordinator:
                 workspace_path=workspace_path,
                 project_id=project_id,
                 active_run_id=active_run_id,
+            )
+
+    def create_confirmation_challenge(
+        self,
+        *,
+        conversation_id: str,
+        project_id: str,
+        plan_revision_id: str,
+        plan_hash: str,
+        qc_mode: QcExecutionMode,
+    ) -> str:
+        challenge = self._conversation_repository.create_confirmation_challenge(
+            conversation_id=conversation_id,
+            project_id=project_id,
+            plan_revision_id=plan_revision_id,
+            plan_hash=plan_hash,
+            qc_mode=qc_mode,
+        )
+        return challenge.confirmation_id
+
+    def register_workspace_for_stage_confirmation(
+        self,
+        request: ConversationTurnCreate,
+        *,
+        workspace_path: str,
+        conversation_id: str,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        """Register only after the user echoes the server's stage challenge."""
+        setup = request.model_copy(
+            update={
+                "action": ConversationAction.SETUP_WORKSPACE,
+                "selected_input_stage": None,
+                "workspace_setup": WorkspaceSetupIntent(
+                    project_name="对话研究项目",
+                    dataset_name="工作区数据集",
+                    work_root=str(self._work_root / "conversations" / conversation_id),
+                ),
+            }
+        )
+        return self._setup_workspace(setup, workspace_path, idempotency_key + ":setup")
+
+    def prepare_plan_from_draft(
+        self,
+        request: ConversationTurnCreate,
+        draft: WorkDraft,
+        *,
+        workspace_path: str | None,
+        project_id: str | None,
+        dataset_id: str | None,
+        conversation_id: str,
+        user_confirmation_ref: str,
+        idempotency_key: str,
+        proposal: bool = False,
+    ) -> WorkActionResult:
+        """Bind a user-reviewed draft to the frozen dataset and compile a plan.
+
+        This is the escalation path from free-form dialogue into a server-owned
+        plan, so the binding lives here rather than in the dialogue layer.  The
+        draft arrived as a model *suggestion*: only ``confirmed_skill_intent``
+        attaches parameter provenance, and it refuses a draft whose reviewed hash
+        no longer matches.  Compiling neither approves nor runs anything.
+        """
+
+        payload: dict[str, Any] = {}
+        try:
+            if not workspace_path:
+                return WorkActionResult("请先选择工作区，再确认参数草稿。", project_id=project_id)
+            if project_id is not None:
+                project = self._project_repository.get_project(project_id)
+                if dataset_id is None:
+                    datasets = self._project_repository.list_datasets_for_project(project_id)
+                    if not datasets:
+                        raise ConflictError(
+                            "project_dataset_not_registered",
+                            "当前项目尚无已登记数据集，请先登记数据集并冻结清单，再编译方案。",
+                            project_id=project_id,
+                        )
+                    if len(datasets) > 1:
+                        raise ConflictError(
+                            "project_dataset_ambiguous",
+                            "当前项目已登记多个数据集，无法安全自动选择；请先明确绑定唯一数据集，再编译方案。",
+                            project_id=project_id,
+                            dataset_count=len(datasets),
+                        )
+                    dataset = datasets[0]
+                else:
+                    dataset = self._project_repository.get_dataset(dataset_id)
+                if dataset.project_id != project_id:
+                    raise ValueError("dataset project mismatch")
+                bound = self._path_policy.validate_read_path(
+                    dataset.source_path,
+                    project_roots=project.source_roots,
+                    expect_directory=True,
+                )
+                self._validate_workspace_match(workspace_path, bound, project.source_roots)
+            else:
+                setup = request.model_copy(
+                    update={
+                        "action": ConversationAction.SETUP_WORKSPACE,
+                        "workspace_setup": WorkspaceSetupIntent(
+                            project_name="对话研究项目",
+                            dataset_name="工作区数据集",
+                            work_root=str(self._work_root / "conversations" / conversation_id),
+                        ),
+                    }
+                )
+                registered = self._setup_workspace(
+                    setup, workspace_path, idempotency_key + ":setup"
+                )
+                payload.update(registered.payload)
+                project_id = registered.project_id
+                dataset = self._project_repository.get_dataset(payload["dataset"]["dataset_id"])
+                assert project_id is not None
+                project = self._project_repository.get_project(project_id)
+            if dataset.current_manifest_id is None:
+                raise ValueError("workspace has no frozen manifest")
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
+            intent = confirmed_skill_intent(
+                draft,
+                project_id=project.project_id,
+                dataset_ref=dataset.dataset_id,
+                input_manifest_hash=manifest.content_hash,
+                reviewed_hash=draft_hash(draft),
+                user_confirmation_ref=user_confirmation_ref,
+                structural_artifact_id=f"manifest:{manifest.manifest_id}:anatomical-source",
+                proposal=proposal,
+            )
+            resolved = self._prepare_preprocessing_plan(
+                request.model_copy(
+                    update={
+                        "skill_plan_intent": intent,
+                        "expected_project_version": project.version,
+                    }
+                ),
+                workspace_path,
+                project_id,
+                idempotency_key + ":compile",
+            )
+            payload.update(resolved.payload)
+            return replace(resolved, payload=payload, workspace_path=workspace_path)
+        except (ApplicationError, ValueError) as exc:
+            explanation = (
+                exc.message if isinstance(exc, ApplicationError) else "参数或工作区绑定未通过校验"
+            )
+            return WorkActionResult(
+                "方案尚未编译，也未运行：" + explanation,
+                payload=payload,
+                project_id=project_id,
+                workspace_path=workspace_path,
             )
 
     def _setup_workspace(
@@ -165,17 +621,32 @@ class ConversationWorkCoordinator:
             ),
             f"{idempotency_key}:dataset",
         )
+        selected_stage = request.selected_input_stage or setup.selected_input_stage
         manifest = self._inspect_dataset(
             dataset.dataset_id,
-            ManifestScanRequest(expected_dataset_version=dataset.version, report_only=True),
+            ManifestScanRequest(
+                expected_dataset_version=dataset.version,
+                # Discovery can be cheap; an explicitly selected stage must
+                # freeze full file evidence for subsequent compilation/run.
+                report_only=selected_stage is None,
+                selected_input_stage=selected_stage,
+            ),
             f"{idempotency_key}:manifest",
         )
-        project = self._repository.get_project(project.project_id)
-        dataset = self._repository.get_dataset(dataset.dataset_id)
+        project = self._project_repository.get_project(project.project_id)
+        dataset = self._project_repository.get_dataset(dataset.dataset_id)
         payload = {
             "project": project.model_dump(mode="json"),
             "dataset": dataset.model_dump(mode="json"),
             "manifest": manifest.model_dump(mode="json"),
+            "stage_candidates": self._project_repository.get_manifest_content(
+                manifest.manifest_id
+            ).get("stage_candidates", []),
+            "stage_selection_required": bool(
+                self._project_repository.get_manifest_content(manifest.manifest_id).get(
+                    "stage_selection_required", False
+                )
+            ),
         }
         return WorkActionResult(
             assistant_content=(
@@ -200,6 +671,7 @@ class ConversationWorkCoordinator:
     def _prepare_preprocessing_plan(
         self,
         request: ConversationTurnCreate,
+        workspace_path: str | None,
         project_id: str | None,
         idempotency_key: str,
     ) -> WorkActionResult:
@@ -207,7 +679,8 @@ class ConversationWorkCoordinator:
             return WorkActionResult(
                 assistant_content=(
                     "生成方案前必须提交完整的科研参数、参数来源证据和当前项目版本。"
-                    "请在方案表单中逐项确认，系统不会根据对话猜测 TR、频段或预处理选择。"
+                    "可以在参数面板或输入框中补充这些信息；"
+                    "系统不会根据对话猜测 TR、频段或预处理选择。"
                 ),
                 tool={
                     "tool_name": "prepare_preprocessing_plan",
@@ -220,6 +693,23 @@ class ConversationWorkCoordinator:
         intent = request.skill_plan_intent
         if project_id is not None and intent.project_id != project_id:
             raise ConflictError("conversation_project_mismatch", "方案不属于当前对话绑定的项目。")
+        dataset = self._project_repository.get_dataset(intent.dataset_ref)
+        if dataset.current_manifest_id is not None:
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
+            manifest_content = self._project_repository.get_manifest_content(manifest.manifest_id)
+            if manifest.profile.kind.value == "dpabi_ready" and not manifest_content.get(
+                "selected_input_stage"
+            ):
+                return WorkActionResult(
+                    "尚未确认预处理起点。请在方案区域选择并确认输入阶段，再继续准备方案。",
+                    payload={
+                        "manifest_profile": manifest.profile.model_dump(mode="json"),
+                        "stage_candidates": manifest_content.get("stage_candidates", []),
+                        "stage_selection_required": True,
+                    },
+                    project_id=project_id,
+                    workspace_path=workspace_path,
+                )
         resolved = self._resolve_skill_plan(
             SkillPlanResolveRequest(
                 request=intent,
@@ -230,10 +720,9 @@ class ConversationWorkCoordinator:
             f"{idempotency_key}:skill-plan",
         )
         manifest_profile: dict[str, Any] = {}
-        dataset = self._repository.get_dataset(intent.dataset_ref)
         if dataset.current_manifest_id is not None:
-            manifest = self._repository.get_manifest(dataset.current_manifest_id)
-            manifest_content = self._repository.get_manifest_content(manifest.manifest_id)
+            manifest = self._project_repository.get_manifest(dataset.current_manifest_id)
+            manifest_content = self._project_repository.get_manifest_content(manifest.manifest_id)
             manifest_profile = manifest.profile.model_dump(mode="json")
             manifest_profile.update(
                 {
@@ -248,9 +737,8 @@ class ConversationWorkCoordinator:
         }
         return WorkActionResult(
             assistant_content=(
-                "不可变预处理方案已编译并通过阻断校验。"
-                f"计划版本为 {resolved.plan_revision.revision}，状态为 "
-                f"{resolved.plan_revision.state.value}；请审查 DAG、警告和哈希后再批准。"
+                "预处理方案已生成，并通过了必要的阻断校验。"
+                "请重点审查处理流程、科研参数和提示信息；确认无误后再批准并启动。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -272,7 +760,7 @@ class ConversationWorkCoordinator:
         payload = {"run": run.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"运行 {run.run_id[:8]} 当前状态为 {run.state.value}，已执行 {run.attempt} 次。"
+                f"当前任务状态为“{_display_run_state(run.state.value)}”，已尝试 {run.attempt} 次。"
             ),
             payload=payload,
             tool=self._tool_result("get_run_progress", {"run_id": active_run_id}, payload),
@@ -285,41 +773,182 @@ class ConversationWorkCoordinator:
         active_run_id: str | None,
         project_id: str | None,
     ) -> WorkActionResult:
-        if request.qc_review_id is None:
+        review = None
+        target_run_id = request.target_run_id or active_run_id
+        if request.qc_review_id is None and target_run_id is not None:
+            review = self._get_latest_qc_review_for_run(target_run_id)
+        if request.qc_review_id is None and review is None:
             return WorkActionResult(
                 assistant_content=(
-                    "当前请求没有指定 QC review；请先在质量控制页创建或选择一个版本。"
+                    "当前运行还没有生成 QC 审核结果；如果 DPABI 已完成 Realign，"
+                    "可以继续进行头动 QC。"
                 ),
                 tool={
                     "tool_name": "get_qc_status",
                     "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
-                    "input": {"run_id": request.target_run_id or active_run_id},
+                    "input": {"run_id": target_run_id},
                     "output": {},
                 },
                 project_id=project_id,
                 active_run_id=active_run_id,
             )
-        review = self._get_qc_review(request.qc_review_id)
+        if review is None:
+            assert request.qc_review_id is not None
+            review = self._get_qc_review(request.qc_review_id)
         if project_id is not None and review.project_id != project_id:
-            raise ConflictError("cross_project_qc_review", "QC review 不属于当前对话项目。")
-        target_run_id = request.target_run_id or active_run_id
+            raise ConflictError("cross_project_qc_review", "QC 审核不属于当前对话项目。")
         if target_run_id is not None and review.run_id != target_run_id:
-            raise ConflictError("conversation_run_qc_mismatch", "QC review 不属于当前运行。")
+            raise ConflictError("conversation_run_qc_mismatch", "QC 审核不属于当前运行。")
         payload = {"qc_review": review.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"QC review {review.review.review_revision_id[:8]} 当前状态为 "
-                f"{review.state.value}；纳入 {len(review.review.included_subject_ids)} 名，"
+                f"QC 审核当前状态为“{_display_qc_state(review.state.value)}”，"
+                f"检查范围为“{_display_qc_scope(review.review.review_scope.value)}”；"
+                f"纳入 {len(review.review.included_subject_ids)} 名，"
                 f"排除 {len(review.review.excluded_subject_ids)} 名受试者。"
             ),
             payload=payload,
             tool=self._tool_result(
                 "get_qc_status",
-                {"qc_review_id": request.qc_review_id, "run_id": review.run_id},
+                {"qc_review_id": review.review.review_revision_id, "run_id": review.run_id},
                 payload,
             ),
             project_id=review.project_id,
             active_run_id=review.run_id,
+        )
+
+    def _create_head_motion_qc(
+        self,
+        request: ConversationTurnCreate,
+        active_run_id: str | None,
+        project_id: str | None,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        run_id = request.target_run_id or active_run_id
+        if run_id is None:
+            return WorkActionResult(
+                assistant_content="请先指定一个已完成 DPABI realign 的运行，再生成头动 QC。",
+                tool={
+                    "tool_name": "create_head_motion_qc",
+                    "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
+                    "input": {},
+                    "output": {},
+                },
+                project_id=project_id,
+            )
+        run = self._get_run(run_id)
+        review = self._create_head_motion_qc_review(
+            run_id,
+            HeadMotionQcCreate(expected_run_version=run.version),
+            f"{idempotency_key}:head-motion-qc",
+        )
+        payload = {"qc_review": review.model_dump(mode="json")}
+        return WorkActionResult(
+            assistant_content=(
+                "头动 QC 草稿已生成："
+                f"纳入 {len(review.review.included_subject_ids)} 名，"
+                f"排除 {len(review.review.excluded_subject_ids)} 名。"
+                "请检查结果；确认无误后回复“批准 QC”。"
+            ),
+            payload=payload,
+            tool=self._tool_result(
+                "create_head_motion_qc",
+                {"run_id": run_id},
+                payload,
+            ),
+            project_id=review.project_id,
+            active_run_id=review.run_id,
+        )
+
+    def _approve_qc(
+        self,
+        request: ConversationTurnCreate,
+        active_run_id: str | None,
+        project_id: str | None,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        review = None
+        run_id = request.target_run_id or active_run_id
+        if request.qc_review_id is not None:
+            review = self._get_qc_review(request.qc_review_id)
+        elif run_id is not None:
+            review = self._get_latest_qc_review_for_run(run_id)
+        if review is None:
+            return WorkActionResult(
+                assistant_content="当前对话没有可批准的 QC 审核结果。",
+                tool={
+                    "tool_name": "approve_qc_review",
+                    "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
+                    "input": {"run_id": run_id},
+                    "output": {},
+                },
+                project_id=project_id,
+                active_run_id=active_run_id,
+            )
+        if project_id is not None and review.project_id != project_id:
+            raise ConflictError("cross_project_qc_review", "QC 审核不属于当前对话项目。")
+        run = self._get_run(review.run_id)
+        approved = self._approve_qc_review(
+            review.review.review_revision_id,
+            QcReviewApprove(
+                expected_review_version=review.version,
+                expected_run_version=run.version,
+                review_hash=review.review.content_hash,
+                actor="work-conversation-agent",
+                approved=True,
+                reason="用户在 Work 对话中明确批准 QC 审核。",
+            ),
+            f"{idempotency_key}:approve-qc",
+        )
+        payload = {"qc_review": approved.model_dump(mode="json")}
+        return WorkActionResult(
+            assistant_content=("QC 审核已批准，当前任务已通过质量控制，可以继续进行统计设计。"),
+            payload=payload,
+            tool=self._tool_result(
+                "approve_qc_review",
+                {
+                    "qc_review_id": approved.review.review_revision_id,
+                    "review_hash": approved.review.content_hash,
+                    "run_id": approved.run_id,
+                },
+                payload,
+            ),
+            project_id=approved.project_id,
+            active_run_id=approved.run_id,
+        )
+
+    def _skip_qc_action(
+        self,
+        request: ConversationTurnCreate,
+        active_run_id: str | None,
+        project_id: str | None,
+        idempotency_key: str,
+    ) -> WorkActionResult:
+        run_id = request.target_run_id or active_run_id
+        if run_id is None:
+            return WorkActionResult("请先指定一个已完成计算、等待 QC 的运行。")
+        run = self._get_run(run_id)
+        if project_id is not None and run.project_id != project_id:
+            raise ConflictError("cross_project_run", "运行不属于当前对话项目。")
+        skip = self._skip_qc(
+            run_id,
+            QcSkipCreate(
+                expected_run_version=run.version,
+                actor="work-conversation-agent",
+                reason="用户在 Work 对话中明确选择跳过 QC。",
+            ),
+            f"{idempotency_key}:skip-qc",
+        )
+        payload = {
+            "qc_skip": skip.model_dump(mode="json"),
+            "run": self._get_run(run_id).model_dump(mode="json"),
+        }
+        return WorkActionResult(
+            assistant_content="QC 跳过决定已记录；该运行的可用指标图现在可以继续进入统计设计。",
+            payload=payload,
+            tool=self._tool_result("skip_qc", {"run_id": run_id}, payload),
+            project_id=run.project_id,
+            active_run_id=run_id,
         )
 
     def _statistical_results(
@@ -338,15 +967,24 @@ class ConversationWorkCoordinator:
                     "output": {},
                 },
             )
-        run_id = request.target_run_id
+        run_id = request.target_run_id or active_run_id
         results = self._list_statistical_results(project_id=project_id, run_id=run_id)
-        payload = {"statistical_results": [item.model_dump(mode="json") for item in results]}
+        payload: dict[str, Any] = {
+            "statistical_results": [item.model_dump(mode="json") for item in results]
+        }
         if results:
             scientific_count = sum(not item.non_scientific for item in results)
             message = (
                 f"找到 {len(results)} 个已登记统计结果，"
                 f"其中 {scientific_count} 个具有真实科学证据合同。"
             )
+            if self._get_result_facts is not None:
+                from neuroagent.application.statistical_result_facts import render_result_readout
+
+                facts = [self._get_result_facts(item.result_id) for item in results[:5]]
+                payload["result_fact_summaries"] = facts
+                payload["result_fact_summaries_truncated"] = len(results) > 5
+                message += "\n\n" + "\n\n".join(render_result_readout(item) for item in facts)
         else:
             message = "当前项目尚无符合条件的已登记统计结果。"
         return WorkActionResult(
@@ -378,7 +1016,7 @@ class ConversationWorkCoordinator:
         ]
         if missing:
             return WorkActionResult(
-                assistant_content="运行预览需要当前项目、已验证计划和精确计划哈希。",
+                assistant_content="运行预览需要当前项目和已审核的预处理方案。",
                 tool={
                     "tool_name": "preview_dpabi_preprocessing",
                     "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
@@ -391,12 +1029,15 @@ class ConversationWorkCoordinator:
         assert project_id is not None
         assert request.plan_revision_id is not None
         assert request.expected_plan_hash is not None
-        project = self._repository.get_project(project_id)
-        plan = self._repository.get_plan(request.plan_revision_id)
+        project = self._project_repository.get_project(project_id)
+        plan = self._plan_repository.get_plan(request.plan_revision_id)
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
         if plan.plan_hash != request.expected_plan_hash:
-            raise ConflictError("run_plan_hash_mismatch", "运行预览的计划哈希已失配。")
+            raise ConflictError(
+                "run_plan_hash_mismatch",
+                "运行预览所依据的方案已发生变化，请重新生成并审核方案。",
+            )
         if plan.state is not PlanState.APPROVED:
             raise ConflictError("approved_plan_required", "只有已批准计划可以进入运行预览。")
         dataset_ref = plan.plan.get("skill_plan", {}).get("dataset_ref")
@@ -405,7 +1046,7 @@ class ConversationWorkCoordinator:
                 "preprocessing_skill_plan_required",
                 "原位 DPABI 运行只接受已编译的预处理 SkillPlan。",
             )
-        dataset = self._repository.get_dataset(dataset_ref)
+        dataset = self._project_repository.get_dataset(dataset_ref)
         bound_workspace = self._path_policy.validate_read_path(
             dataset.source_path,
             project_roots=project.source_roots,
@@ -464,6 +1105,7 @@ class ConversationWorkCoordinator:
         workspace_path: str | None,
         project_id: str | None,
         idempotency_key: str,
+        conversation_id: str | None,
     ) -> WorkActionResult:
         missing = [
             name
@@ -471,20 +1113,27 @@ class ConversationWorkCoordinator:
                 ("project_id", project_id),
                 ("plan_revision_id", request.plan_revision_id),
                 ("expected_plan_hash", request.expected_plan_hash),
+                ("confirmation_id", request.confirmation_id),
             )
             if value is None
         ]
-        if missing or not request.real_execution_confirmed:
+        qc_mode = self._requested_qc_mode(request)
+        if missing or not request.real_execution_confirmed or qc_mode is None:
             return WorkActionResult(
                 assistant_content=(
-                    "启动前需要已验证并审批的计划，以及本次真实 MATLAB/DPABI 运行确认。"
-                    "确认后，任务会进入现有 Workflow/Worker 队列，"
+                    "启动前需要已验证并审批的计划、本次真实 MATLAB/DPABI 运行确认，"
+                    "以及明确选择“做头动 QC”或“跳过 QC”。"
+                    "确认后，任务会进入执行队列，"
                     "并在所选工作区原位生成 DPABI 结果目录。"
                 ),
                 tool={
                     "tool_name": "start_dpabi_preprocessing",
                     "status": ConversationToolStatus.AWAITING_CONFIRMATION.value,
-                    "input": {"workspace_path": workspace_path, "missing": missing},
+                    "input": {
+                        "workspace_path": workspace_path,
+                        "missing": missing,
+                        "qc_mode": None,
+                    },
                     "output": {},
                 },
                 workspace_path=workspace_path,
@@ -492,39 +1141,85 @@ class ConversationWorkCoordinator:
         assert project_id is not None
         assert request.plan_revision_id is not None
         assert request.expected_plan_hash is not None
-        project = self._repository.get_project(project_id)
-        plan = self._repository.get_plan(request.plan_revision_id)
+        assert qc_mode is not None
+        project = self._project_repository.get_project(project_id)
+        plan = self._plan_repository.get_plan(request.plan_revision_id)
         if plan.project_id != project_id:
             raise ConflictError("cross_project_plan", "审批计划不属于当前项目。")
+        if plan.plan_hash != request.expected_plan_hash:
+            raise ConflictError("run_plan_hash_mismatch", "方案版本已变化，请重新审查并确认。")
         dataset_ref = plan.plan.get("skill_plan", {}).get("dataset_ref")
         if not isinstance(dataset_ref, str):
             raise InputValidationError(
                 "preprocessing_skill_plan_required",
                 "原位 DPABI 运行只接受已编译的预处理 SkillPlan。",
             )
-        dataset = self._repository.get_dataset(dataset_ref)
+        dataset = self._project_repository.get_dataset(dataset_ref)
         bound_workspace = self._path_policy.validate_read_path(
             dataset.source_path,
             project_roots=project.source_roots,
             expect_directory=True,
         )
         self._validate_workspace_match(workspace_path, bound_workspace, project.source_roots)
+        manifest_id = plan.plan.get("dataset_manifest_id")
+        if not isinstance(manifest_id, str) or dataset.current_manifest_id != manifest_id:
+            raise ConflictError(
+                "dataset_manifest_revision_changed",
+                "工作区起始阶段或文件清单已变化，原方案和审批已失效；请重新确认并生成方案。",
+            )
+        if plan.state is PlanState.AWAITING_APPROVAL:
+            self._approve_plan(
+                plan.plan_revision_id,
+                ApprovalCreate(
+                    expected_version=plan.version,
+                    plan_hash=plan.plan_hash,
+                    actor="work-conversation-agent",
+                    decision=ApprovalDecision.APPROVED,
+                    reason="用户在 Work 对话中明确确认批准并启动真实 MATLAB/DPABI 任务。",
+                ),
+                f"{idempotency_key}:approval",
+            )
+            plan = self._plan_repository.get_plan(plan.plan_revision_id)
+        frozen_values = dict(plan.plan.get("skill_plan", {}).get("resolved_parameters", []))
+        frozen_preprocessing = frozen_values.get("preprocessing", {})
+        has_t1 = isinstance(frozen_preprocessing, dict) and (
+            isinstance(frozen_preprocessing.get("t1"), dict)
+            or frozen_preprocessing.get("normalization", {}).get("mode") in {2, 3}
+        )
         run = self._create_run(
             RunCreate(
                 project_id=project_id,
                 plan_revision_id=request.plan_revision_id,
                 expected_plan_hash=request.expected_plan_hash,
                 execution_backend=ExecutionBackend.MATLAB,
-                workspace_mode=ExecutionWorkspaceMode.IN_PLACE,
+                workspace_mode=(
+                    ExecutionWorkspaceMode.ISOLATED if has_t1 else ExecutionWorkspaceMode.IN_PLACE
+                ),
                 real_execution_confirmed=True,
+                qc_mode=qc_mode,
             ),
             f"{idempotency_key}:run",
+        )
+        if conversation_id is None or request.confirmation_id is None:
+            raise ConflictError(
+                "confirmation_challenge_required",
+                "真实运行必须通过当前对话签发的一次性确认挑战。",
+            )
+        self._conversation_repository.consume_confirmation_challenge(
+            confirmation_id=request.confirmation_id,
+            conversation_id=conversation_id,
+            project_id=project_id,
+            plan_revision_id=request.plan_revision_id,
+            plan_hash=request.expected_plan_hash,
+            qc_mode=qc_mode,
+            run_id=run.run_id,
         )
         payload = {"run": run.model_dump(mode="json")}
         return WorkActionResult(
             assistant_content=(
-                f"DPABI 任务已进入 Workflow/Worker 队列，运行 ID 为 {run.run_id}。"
-                "结果会写入该计划绑定的数据集工作区；可以继续询问运行进度。"
+                "DPABI 任务已进入执行队列。"
+                f"本次将{'跳过 QC' if qc_mode is QcExecutionMode.SKIP else '执行头动 QC'}；"
+                "任务完成后我会报告结果和质量控制状态。"
             ),
             payload=payload,
             tool=self._tool_result(
@@ -533,6 +1228,7 @@ class ConversationWorkCoordinator:
                     "project_id": project_id,
                     "plan_revision_id": request.plan_revision_id,
                     "workspace_mode": "in_place",
+                    "qc_mode": qc_mode.value,
                 },
                 payload,
             ),
@@ -540,6 +1236,262 @@ class ConversationWorkCoordinator:
             project_id=project_id,
             active_run_id=run.run_id,
         )
+
+    def _prepare_demo_alff(
+        self,
+        request: ConversationTurnCreate,
+        *,
+        workspace_path: str | None,
+        idempotency_key: str,
+        conversation_id: str | None = None,
+    ) -> WorkActionResult:
+        if workspace_path is None:
+            return WorkActionResult(
+                "请先选择只包含 DemoData/FunImg/Sub_001 副本的独立工作区，再发送同一请求。"
+            )
+        selected_workspace = self._path_policy.validate_project_source_root(workspace_path)
+        project = self._create_project(
+            ProjectCreate(
+                name="DemoData ALFF Work",
+                source_roots=[str(selected_workspace)],
+                work_root=str(self._work_root / "conversation-alff-runs"),
+            ),
+            f"{idempotency_key}:project",
+        )
+        dataset = self._create_dataset(
+            project.project_id,
+            DatasetCreate(
+                name="DemoData Sub_001",
+                source_path=str(selected_workspace),
+                expected_project_version=project.version,
+            ),
+            f"{idempotency_key}:dataset",
+        )
+        manifest = self._inspect_dataset(
+            dataset.dataset_id,
+            ManifestScanRequest(
+                expected_dataset_version=dataset.version,
+                report_only=False,
+                selected_input_stage="FunImg",
+            ),
+            f"{idempotency_key}:manifest",
+        )
+        if (
+            manifest.profile.subject_count != 1
+            or len(manifest.subjects) != 1
+            or len(manifest.subjects[0].functional_files) != 1
+        ):
+            raise InputValidationError(
+                "demo_alff_workspace_invalid",
+                "DemoData ALFF 冒烟要求工作区只有一个受试者和一个明确的 4D 功能像。",
+            )
+        project = self._project_repository.get_project(project.project_id)
+        preprocessing_names = (
+            "tr_seconds",
+            "expected_time_points",
+            "dummy_scans",
+            "slice_timing",
+            "realignment",
+            "nuisance",
+            "normalization",
+            "detrend",
+            "temporal_filter",
+            "scrubbing",
+            "smoothing",
+        )
+        metadata_names = {"tr_seconds", "expected_time_points", "slice_timing"}
+        provenance = [
+            {
+                "name": name,
+                "source": "dataset_metadata" if name in metadata_names else "reviewed_preset",
+                "evidence_ref": (
+                    "DemoData JSON/NIfTI"
+                    if name in metadata_names
+                    else "compatibility-smoke://demo-alff-v1"
+                ),
+            }
+            for name in preprocessing_names
+        ]
+        alff_provenance = [
+            {
+                "name": name,
+                "source": "dataset_metadata" if name == "tr_seconds" else "reviewed_preset",
+                "evidence_ref": "DemoData JSON/NIfTI"
+                if name == "tr_seconds"
+                else "compatibility-smoke://demo-alff-v1",
+            }
+            for name in (
+                "tr_seconds",
+                "frequency_band",
+                "requested_metrics",
+                "requested_scalings",
+                "filter_timing",
+                "result_smoothing",
+            )
+        ]
+        intent = SkillPlanIntent.model_validate(
+            {
+                "project_id": project.project_id,
+                "dataset_ref": dataset.dataset_id,
+                "input_manifest_hash": manifest.content_hash,
+                "requested_metrics": ["alff"],
+                "primary_outputs": ["raw_alff"],
+                "request_preprocessing": True,
+                "preprocessing": {
+                    "tr_seconds": 2.0,
+                    "expected_time_points": 234,
+                    "dummy_scans": 0,
+                    "slice_timing": {
+                        "enabled": True,
+                        "slice_count": 33,
+                        "slice_order": [*range(1, 34, 2), *range(2, 33, 2)],
+                        "reference_slice": 33,
+                    },
+                    "realignment": {"enabled": True, "options_source": "dpabi_v82_jobmat"},
+                    "nuisance": {
+                        "enabled": False,
+                        "timing": None,
+                        "polynomial_trend": None,
+                        "head_motion_model": None,
+                        "head_motion_scrubbing": None,
+                        "white_matter": None,
+                        "csf": None,
+                        "global_signal": None,
+                        "warp_masks_to_individual_space": None,
+                        "add_mean_back": None,
+                    },
+                    "normalization": {
+                        "mode": 0,
+                        "timing": None,
+                        "bounding_box_mm": None,
+                        "voxel_size_mm": None,
+                        "structural_artifact_id": None,
+                        "affine_regularization": None,
+                    },
+                    "detrend": False,
+                    "temporal_filter": {
+                        "timing": "disabled",
+                        "frequency_band": None,
+                        "add_mean_back": None,
+                    },
+                    "scrubbing": {
+                        "enabled": False,
+                        "timing": None,
+                        "censoring": None,
+                        "method": None,
+                    },
+                    "smoothing": {"timing": "disabled", "method": None, "fwhm_mm": None},
+                    "provenance": provenance,
+                },
+                "alff_falff": {
+                    "tr_seconds": 2.0,
+                    "frequency_band": {"low_hz": 0.01, "high_hz": 0.08},
+                    "requested_metrics": ["alff"],
+                    "requested_scalings": ["raw"],
+                    "mask_source": "dpabi_auto",
+                    "mask_artifact_id": None,
+                    "filter_timing": "disabled",
+                    "result_smoothing": False,
+                    "result_smoothing_fwhm_mm": None,
+                    "provenance": alff_provenance,
+                },
+                "reho": None,
+            }
+        )
+        resolved = self._resolve_skill_plan(
+            SkillPlanResolveRequest(
+                request=intent,
+                expected_project_version=project.version,
+                validation_mode="report_only",
+            ),
+            f"{idempotency_key}:skill-plan",
+        )
+        payload = {
+            "project": project.model_dump(mode="json"),
+            "dataset": self._project_repository.get_dataset(dataset.dataset_id).model_dump(
+                mode="json"
+            ),
+            "manifest": manifest.model_dump(mode="json"),
+            "skill_plan": resolved.skill_plan.model_dump(mode="json"),
+            "plan_revision": resolved.plan_revision.model_dump(mode="json"),
+        }
+        assistant_content = (
+            "已从独立 DemoData 副本冻结单受试者方案：TR 2.0 秒、234 时间点、"
+            "不删除初始点；Slice Timing 开启（奇数层后偶数层，参考层 33）；"
+            "Realign 使用 DPABI Jobmat；协变量回归、标准化、去趋势、时序滤波、"
+            "Scrubbing 和平滑全部关闭；计算 raw ALFF，频段 0.01–0.08 Hz，"
+            "使用 DPABI 自动掩膜。该方案仅用于技术兼容性检查。"
+            "复核无误后，请使用下方服务端签发的一次性确认指令。"
+        )
+        if conversation_id is not None:
+            require_id = self.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=resolved.plan_revision.plan_revision_id,
+                plan_hash=resolved.plan_revision.plan_hash,
+                qc_mode=QcExecutionMode.REQUIRE,
+            )
+            skip_id = self.create_confirmation_challenge(
+                conversation_id=conversation_id,
+                project_id=project.project_id,
+                plan_revision_id=resolved.plan_revision.plan_revision_id,
+                plan_hash=resolved.plan_revision.plan_hash,
+                qc_mode=QcExecutionMode.SKIP,
+            )
+            assistant_content += (
+                "\n"
+                + f"批准并启动 {resolved.plan_revision.plan_hash[:12]} 做头动QC {require_id}"
+                + "\n"
+                + f"批准并启动 {resolved.plan_revision.plan_hash[:12]} 跳过QC {skip_id}"
+            )
+        return WorkActionResult(
+            assistant_content=assistant_content,
+            payload=payload,
+            tool=self._tool_result(
+                "prepare_demo_alff",
+                {"workspace_path": str(selected_workspace)},
+                payload,
+            ),
+            workspace_path=str(selected_workspace),
+            project_id=project.project_id,
+        )
+
+    @staticmethod
+    def _is_demo_alff_request(content: str) -> bool:
+        text = content.casefold()
+        return "alff" in text and any(word in text for word in ("demodata", "demo data", "sub_001"))
+
+    @staticmethod
+    def _conversational_reply(content: str) -> str | None:
+        """Handle lightweight conversation before falling back to an execution action."""
+
+        text = content.strip().casefold()
+        if re.fullmatch(r"(?:你好|您好|嗨|hello|hi|谢谢|感谢)[\s，,。!！?？]*", text):
+            return (
+                "你好！我可以协助你完成 rs-fMRI 预处理、ALFF 计算、QC 审核和结果查看。"
+                "你可以直接告诉我想处理的数据和目标；如果使用 DemoData，也可以直接说明要计算 ALFF。"
+            )
+        if (
+            "方案表单" in text
+            or ("表单" in text and any(word in text for word in ("方案", "预处理", "参数")))
+            or any(phrase in text for phrase in ("参数怎么填", "怎么填写参数", "如何填写参数"))
+        ):
+            return (
+                "当前 Work 页面没有单独的方案表单，直接在下方输入框填写即可。"
+                "生成方案时请提供 TR、时间点数、Slice Timing、Realign、标准化、"
+                "协变量回归、去趋势、滤波、平滑、ALFF 频段和 QC 要求。"
+                "如果使用 DemoData，可以直接说“使用当前 DemoData 计算 ALFF”，"
+                "我会先读取数据并列出待确认参数。"
+            )
+        if any(
+            phrase in text for phrase in ("你能做什么", "怎么开始", "如何开始", "帮助", "使用说明")
+        ):
+            return (
+                "你可以先选择工作区，然后直接用自然语言告诉我目标。"
+                "我会先整理方案和参数，等你确认后才启动真实计算；"
+                "计算完成后可以继续查看进度、QC 和结果。"
+            )
+        return None
 
     def _validate_workspace_match(
         self,
@@ -561,11 +1513,19 @@ class ConversationWorkCoordinator:
             )
 
     @staticmethod
-    def _resolve_action(
+    def resolve_action(
         request: ConversationTurnCreate,
         workspace_path: str | None,
         active_run_id: str | None,
     ) -> ConversationAction:
+        """Keyword fallback used when no model is connected.
+
+        This path may only ever return a read or draft action.  Actions that
+        start, approve, skip or set up work are server-only, so a keyword match
+        must not reach them: the safety property is enforced here rather than
+        left to whichever caller happens to remember to check.
+        """
+
         if request.action is not ConversationAction.AUTO:
             return request.action
         text = request.content.casefold()
@@ -577,10 +1537,6 @@ class ConversationWorkCoordinator:
             return ConversationAction.GET_PROGRESS
         if any(word in text for word in ("生成方案", "准备方案", "创建方案", "预处理方案")):
             return ConversationAction.PREPARE_PREPROCESSING_PLAN
-        if any(word in text for word in ("启动", "运行", "执行", "开始预处理")):
-            return ConversationAction.START_PREPROCESSING
-        if workspace_path and any(word in text for word in ("建立项目", "注册工作区", "冻结清单")):
-            return ConversationAction.SETUP_WORKSPACE
         return ConversationAction.AUTO
 
     @staticmethod
@@ -590,10 +1546,28 @@ class ConversationWorkCoordinator:
             ConversationAction.PREPARE_PREPROCESSING_PLAN: "prepare_preprocessing_plan",
             ConversationAction.PREVIEW_PREPROCESSING_RUN: "preview_dpabi_preprocessing",
             ConversationAction.GET_PROGRESS: "get_run_progress",
+            ConversationAction.CREATE_HEAD_MOTION_QC: "create_head_motion_qc",
             ConversationAction.GET_QC_STATUS: "get_qc_status",
+            ConversationAction.APPROVE_QC_REVIEW: "approve_qc_review",
+            ConversationAction.SKIP_QC: "skip_qc",
             ConversationAction.GET_STATISTICAL_RESULTS: "get_statistical_results",
             ConversationAction.START_PREPROCESSING: "start_dpabi_preprocessing",
         }.get(action, "conversation_work_request")
+
+    @staticmethod
+    def _requested_qc_mode(request: ConversationTurnCreate) -> QcExecutionMode | None:
+        if request.qc_mode is not None:
+            return request.qc_mode
+        text = request.content.casefold()
+        if any(
+            word in text for word in ("跳过qc", "跳过 qc", "不做qc", "不做 qc", "无需qc", "无需 qc")
+        ):
+            return QcExecutionMode.SKIP
+        if any(
+            word in text for word in ("做qc", "做 qc", "进行qc", "进行 qc", "头动qc", "头动 qc")
+        ):
+            return QcExecutionMode.REQUIRE
+        return None
 
 
 __all__ = ["ConversationWorkCoordinator", "WorkActionResult"]

@@ -49,6 +49,7 @@
         "temporal_filter": {"$ref": "#/$defs/temporal_filter"},
         "scrubbing": {"$ref": "#/$defs/scrubbing"},
         "smoothing": {"$ref": "#/$defs/smoothing"},
+        "t1": {"oneOf": [{"$ref": "#/$defs/t1"}, {"type": "null"}]},
         "provenance": {
           "type": "array",
           "minItems": 11,
@@ -56,6 +57,24 @@
           "items": {"$ref": "#/$defs/provenance"}
         }
       }
+    },
+    "t1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preparation", "structural_artifact_id", "coregister_to_functional", "segmentation", "affine_regularization", "dartel"],
+      "properties": {
+        "preparation": {"enum": ["reorient_crop", "prepared"]},
+        "bet": {"type": "boolean", "description": "DPABI BET on T1 and mean functional image; absent retains legacy disabled behavior"},
+        "structural_artifact_id": {"type": "string", "minLength": 1},
+        "coregister_to_functional": {"type": "boolean"},
+        "segmentation": {"enum": ["disabled", "segment", "new_segment"]},
+        "affine_regularization": {"enum": ["mni", "eastern", null]},
+        "dartel": {"type": "boolean", "description": "Must be true exactly when segmentation is new_segment; New Segment and DARTEL are selected together"}
+      },
+      "oneOf": [
+        {"properties": {"segmentation": {"const": "new_segment"}, "dartel": {"const": true}}},
+        {"properties": {"segmentation": {"enum": ["disabled", "segment"]}, "dartel": {"const": false}}}
+      ]
     },
     "slice_timing": {
       "type": "object",
@@ -248,7 +267,7 @@
       "required": ["name", "source", "evidence_ref"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset"]},
+        "source": {"enum": ["user", "study_protocol", "dataset_metadata", "reviewed_preset", "proposal"]},
         "evidence_ref": {"type": "string", "minLength": 1}
       }
     }

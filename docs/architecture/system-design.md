@@ -1,15 +1,22 @@
 # rs-fMRI Agent 系统设计
 
-状态：v0.1.0 候选架构；公共运行路径默认 Mock，真实 MATLAB 受授权门保护
-版本：0.1
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-10-10
+- 关联：[目标架构](target-architecture.md)、[计划 0007](../plans/0007-capability-modularization-roadmap.md)
 
 ## 目标
 
 目标系统在本机完成静息态 fMRI 数据检查、方案编译、人工审批、MATLAB/DPABI 执行、QC 和组统计。Agent 用于解释和补全结构化请求，所有科学规则、状态变更和外部执行由确定性组件控制。
 
-当前候选基线已经完成元数据、Skill、审批、SQLite 队列、统一 ToolRuntime Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 Worker 已提供受控 MATLAB/DPABI 路由；真实执行仍必须通过配置、环境和逐次确认三重门，并以 smoke 证据作为发布验收。
+当前实现已完成元数据、Skill、审批、SQLite 队列、统一 ToolRuntime Mock 执行、人工 QC、统计设计/校正参数校验、结果完整性合同和确定性复现报告。公共 Worker 已提供受控 MATLAB/DPABI 路由；真实执行仍必须通过配置、环境和逐次确认三重门，并以 smoke 证据作为验证依据。
 
 ## 运行拓扑
+
+Chat 与 Work 的自然语言输入先经已配置模型理解。Work 协调器在同一会话中路由到预处理 Agent 或数据分析 Agent；两者共用模型网关、工作流和 MATLAB Worker，分别持有提示词、权限白名单、历史摘要与草稿。短续接沿用当前角色，明确意图可以切换；交接只传结构化任务摘要和服务端证据引用，不传完整源角色历史。没有第三个协调模型。
+
+预处理 Agent 输出未批准的增量参数草稿并进入原有预处理审查、QC 与执行链。数据分析 Agent 维护独立统计草稿，可将其绑定到成功运行、批准 QC 顺序、登记指标和最新已对齐的人口学 revision，生成带数据哈希的统计设计预览。正式统计设计审批与 MATLAB 执行仍受原有服务端确认控制。两个 Agent 都只能选择闭集 read/propose 动作；模型输出不能提供批准、路径、项目身份或执行确认字段。模型调用在数据库写事务外进行；编译和启动的提交回调在会话版本校验之后、同一事务内执行。
 
 ```text
 React Web (localhost)
@@ -40,6 +47,8 @@ Synthetic verification seam (test-only; not a public Worker/API path)
 
 SQLite 保存元数据、计划、审批、运行和事件。受控执行在隔离运行目录保存配置、日志和衍生产物，并在数据库中只保存 Artifact 引用、校验和与谱系；Mock 路径只登记合成协议产物，不生成科学影像。API 进程不启动 MATLAB，Worker 不接受自由 Shell/MATLAB 文本。
 
+两个 Agent 的草稿、交接凭据与角色任务引用复用该数据库。浏览器和进程内缓存只用于展示或加速，可从服务端及文件重新生成；科研文件解析缓存按内容哈希失效。图谱选择与版本进入正式方案及冻结报告，见 [ADR 0032](../adr/0032-frozen-statistical-atlas.md)。
+
 Web/API 默认创建 Mock 作业，也可在不可跳过确认后选择 MATLAB。Worker 对 SkillPlan 使用 `WorkflowFactory`/`ToolRuntime` 遍历冻结 DAG，逐节点验证 Tool/Skill 锁、输入谱系和输出合同；MATLAB 路由由服务端从批准统计设计编译类型化 `MatlabJobSpec`，默认关闭真实执行。
 
 本机科学软件环境由用户在 Web 首次配置页选择。配置文件保存在工作根目录下的本地运行配置文件中，环境锁只绑定用户标签、受控入口指纹和哈希；版本标签不构成通用兼容承诺，实际入口不匹配时仍失败关闭。
@@ -52,7 +61,7 @@ Web/API 默认创建 Mock 作业，也可在不可跳过确认后选择 MATLAB�
 - Skills：加载、解析、校验和编译声明式协议；输出不可变 SkillPlan。
 - Workflow/Tools：Workflow 状态机与 `ToolRuntime` 已接入 Mock 闭环；Tool 合同、Registry、能力锁和步骤级事件共同形成执行边界。
 - Execution/Infrastructure：SQLite、文件、模型 Provider 和 MATLAB 适配器。
-- Agent：只生成结构化建议；不能直接推进 PlanRevision 或 WorkflowInstance。
+- Agent：运行**有界工具调用循环**，可读取状态与生成草稿，但不能推进 PlanRevision 或 WorkflowInstance。工具按 `read`/`propose`/`execute` 三级声明权威，`execute` 工具在目录构建阶段即被排除，不进入 Provider 请求；循环自带步数、墙钟、token 预算与重复失败熔断，工步随会话在同一事务内落库。设计见 [ADR 0014](../adr/0014-bounded-tool-loop.md)。
 
 目标依赖方向为 API/Application -> Domain/Ports，Infrastructure 实现 Ports。领域层不得导入 FastAPI、SQLAlchemy、httpx 或 subprocess；候选树必须通过架构检查并在发布审查中确认没有反向依赖。
 
@@ -71,7 +80,7 @@ queued -> running -> qc_review -> succeeded
 
 重试创建新的 attempt 并复用不可变计划，不覆盖历史事件或产物记录。常规/指标 Mock 路径需要人工 QC；真实统计在完整证据登记后才进入 `succeeded`。
 
-当前通用 Mock 作业可以进入 `qc_review`，但 `mock.result` 不是可用于科学 QC 或统计的指标图。统计运行默认创建 `statistics_mock`；选择 MATLAB 时使用三类 t 检验及可选 FDR/GRF 模板，并要求完整设计矩阵、contrast、图、效应量、簇表、日志和版本证据，否则失败关闭。纯合成演示仍醒目标记为 `synthetic_non_scientific`。
+当前通用 Mock 作业可以进入 `qc_review`，但 `mock.result` 不是可用于科学 QC 或统计的指标图。统计运行可选择显式标记的 `statistics_mock`，或通过固定模板调用 DPABI 的三类 t 检验、相关／偏相关、回归及 ANOVA/ANCOVA，总体结果可选 FDR/GRF。六类统计已在本机 MATLAB R2024b、SPM25、DPABI V9.0_250415 上通过真实执行 smoke，能力目录记录对应验证状态。真实结果要求完整设计矩阵、contrast、图、效应图、簇表、校正证据、日志和版本证据，否则失败关闭。纯合成演示仍醒目标记为 `synthetic_non_scientific`。
 
 ## 数据安全
 

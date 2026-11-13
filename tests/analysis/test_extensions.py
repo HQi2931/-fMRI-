@@ -32,6 +32,10 @@ from neuroagent.analysis.templates import generate_ml_template
         ("Undefined function spm_vol", FailureCode.SOFTWARE_ENVIRONMENT),
         ("Out of memory", FailureCode.RESOURCE),
         ("Access is denied", FailureCode.PATH_POLICY),
+        (
+            "std::exception::what: CreateFile failed: 拒绝访问。 [system:5]",
+            FailureCode.PATH_POLICY,
+        ),
         ("Job timed out", FailureCode.TIMEOUT),
     ],
 )
@@ -42,9 +46,105 @@ def test_dpabi_log_diagnosis_is_classified_and_redacted(log: str, code: FailureC
     assert diagnosis.suggestions
 
 
+def test_matlab_startup_permission_diagnosis_is_actionable_and_redacted() -> None:
+    private_path = r"C:\Users\Researcher\AppData\Roaming\MathWorks\MATLAB\R2024b"
+    diagnosis = diagnose_dpabi_log(
+        "Fatal Startup Error:\n"
+        "std::exception::what: CreateFile failed: 拒绝访问。 [system:5] "
+        f"{private_path}"
+    )
+
+    assert diagnosis.code is FailureCode.PATH_POLICY
+    assert "MATLAB 启动" in diagnosis.summary
+    assert any("mathworks-<uuid>" in item for item in diagnosis.suggestions)
+    assert any("mwEndpointRegistry" in item for item in diagnosis.suggestions)
+    assert any("MATLAB_PREFDIR" in item for item in diagnosis.suggestions)
+    assert private_path not in "\n".join(diagnosis.evidence)
+
+
+@pytest.mark.parametrize(
+    ("private_path", "private_fragments"),
+    [
+        (
+            r"C:\Users\Jane Doe\Research Data\sub-001\func.nii",
+            ("Jane Doe", "Research Data", "func.nii"),
+        ),
+        (
+            r"\\ResearchServer\Studies With Space\Lab Members\sub-001\func.nii",
+            ("ResearchServer", "Studies With Space", "Lab Members", "func.nii"),
+        ),
+    ],
+)
+def test_dpabi_diagnosis_redacts_full_windows_and_unc_paths_with_spaces(
+    private_path: str, private_fragments: tuple[str, ...]
+) -> None:
+    diagnosis = diagnose_dpabi_log(f"Error using load: cannot read {private_path}")
+
+    assert diagnosis.code is FailureCode.UNKNOWN
+    assert diagnosis.severity == "error"
+    evidence = "\n".join(diagnosis.evidence)
+    assert "<path>" in evidence
+    assert all(fragment not in evidence for fragment in private_fragments)
+
+
+def test_dpabi_log_redaction_keeps_non_path_slashes() -> None:
+    diagnosis = diagnose_dpabi_log("Error using compare: expected ratio 4 / 2")
+
+    assert "4 / 2" in "\n".join(diagnosis.evidence)
+
+
 def test_dpabi_log_diagnosis_handles_cancel_and_unknown() -> None:
     assert diagnose_dpabi_log("user cancelled").code is FailureCode.CANCELLED
-    assert diagnose_dpabi_log("unexpected output").code is FailureCode.UNKNOWN
+    ordinary = diagnose_dpabi_log("DPABI started\nprocessing volume 42\n")
+    assert ordinary.code is FailureCode.UNKNOWN
+    assert ordinary.severity == "info"
+    assert ordinary.evidence == ()
+
+    unknown_error = diagnose_dpabi_log(
+        "Error using custom_step (line 42)\nC:\\Users\\Researcher\\project\\subject-07\\bold.nii"
+    )
+    assert unknown_error.code is FailureCode.UNKNOWN
+    assert unknown_error.severity == "error"
+    assert "Error using custom_step" in unknown_error.evidence[0]
+    assert "C:\\Users\\Researcher" not in "\n".join(unknown_error.evidence)
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "Cancellation requested by user\nError using run_preprocessing (line 42)",
+        "Error using run_preprocessing (line 42): cancellation check failed",
+        "Run interrupted\nException: MATLAB failure detected after cancellation",
+    ],
+)
+def test_matlab_error_evidence_takes_precedence_over_cancel_text(log: str) -> None:
+    diagnosis = diagnose_dpabi_log(log)
+
+    assert diagnosis.code is FailureCode.UNKNOWN
+    assert diagnosis.severity == "error"
+    assert diagnosis.summary == "发现尚未匹配已知规则的 MATLAB/DPABI 错误"
+
+
+def test_auto_mask_binding_error_has_targeted_feedback_and_redacted_subject_id() -> None:
+    diagnosis = diagnose_dpabi_log(
+        "No auto mask binding exists for Sub-001.\nError using run_preprocessing (line 42)"
+    )
+
+    assert diagnosis.code is FailureCode.DPABI_CONFIGURATION
+    assert diagnosis.summary == "DPABI 未找到该受试者的 AutoMask 绑定"
+    assert any("AutoMask 输出" in item for item in diagnosis.suggestions)
+    evidence = "\n".join(diagnosis.evidence)
+    assert "Sub<id>" in evidence
+    assert "Sub-001" not in evidence
+
+
+def test_t1_conversion_diagnosis_does_not_infer_a_specific_root_cause() -> None:
+    diagnosis = diagnose_dpabi_log("���� assert\nT1 converter failed.\nrsfmri:t1:ConverterFailed")
+    assert diagnosis.code is FailureCode.INPUT_FORMAT
+    assert diagnosis.summary == "T1 重定向与裁剪未完成"
+    assert diagnosis.requires_new_plan
+    assert not any("不存在" in suggestion for suggestion in diagnosis.suggestions)
+    assert any("在新方案" in suggestion for suggestion in diagnosis.suggestions)
 
 
 def test_table_inspection_detects_quality_issues(tmp_path: Path) -> None:

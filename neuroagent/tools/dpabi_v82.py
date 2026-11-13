@@ -1,6 +1,6 @@
-"""Explicit domain-to-DPABI V8.2 mapping.
+"""Explicit domain-to-DPABI parameter mapping.
 
-Only fields confirmed in the local V8.2 source are emitted here.  The adapter
+Only fields confirmed in the locally installed DPABI source are emitted here.  The adapter
 does not choose scientific parameters and does not execute MATLAB.
 """
 
@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from neuroagent.domain.fmri.metrics import (
     AlffFalffParameters,
+    MetricMaskSource,
     RehoParameters,
     TemporalFilterTiming,
 )
@@ -54,13 +55,16 @@ class DpabiMetricRequest(FrozenToolModel):
     functional_session_number: int = Field(gt=0)
     starting_dir_name: str = Field(pattern=r"^[A-Za-z0-9_]+$")
     input_manifest_hash: str = Field(min_length=64, max_length=64)
-    mask_relative_path: str = Field(min_length=1)
+    mask_relative_path: str | None = None
+    auto_mask: bool = False
     alff_falff: AlffFalffParameters | None
     reho: RehoParameters | None
 
     @field_validator("mask_relative_path")
     @classmethod
-    def safe_mask_path(cls, value: str) -> str:
+    def safe_mask_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = PurePosixPath(value.replace("\\", "/"))
         if normalized.is_absolute() or ".." in normalized.parts:
             raise ValueError("mask path must remain inside the run staging directory")
@@ -74,6 +78,16 @@ class DpabiMetricRequest(FrozenToolModel):
             raise ValueError("subject IDs contain unsafe characters")
         if self.alff_falff is None and self.reho is None:
             raise ValueError("at least one metric configuration is required")
+        sources = {item.mask_source for item in (self.alff_falff, self.reho) if item is not None}
+        if len(sources) != 1:
+            raise ValueError("combined metrics require one mask source")
+        uses_auto = sources == {MetricMaskSource.DPABI_AUTO}
+        if uses_auto != self.auto_mask:
+            raise ValueError("metric mask source and auto-mask projection disagree")
+        if uses_auto and self.mask_relative_path is not None:
+            raise ValueError("exactly one registered mask path or DPABI auto mask is required")
+        if not uses_auto and self.mask_relative_path is None:
+            raise ValueError("mask_relative_path must be a valid string")
         if self.alff_falff and self.reho:
             if self.alff_falff.result_smoothing != self.reho.global_result_smoothing:
                 raise ValueError(
@@ -116,7 +130,9 @@ class StatisticsFunction(StrEnum):
     TTEST1 = "y_TTest1_Image"
     TTEST2 = "y_TTest2_Image"
     TTEST_PAIRED = "y_TTestPaired_Image"
+    CORRELATION = "y_Correlation_Image"
     GROUP_ANALYSIS = "y_GroupAnalysis_Image"
+    ANCOVA1 = "y_ANCOVA1_Image"
 
 
 class StatisticsCall(FrozenToolModel):
@@ -233,6 +249,22 @@ class DpabiV82Adapter:
 
         cfg.update(_project_nuisance(parameters))
         cfg.update(_project_normalization(parameters))
+        if parameters.t1 is not None:
+            t1 = parameters.t1
+            cfg.update(
+                {
+                    "IsBet": int(t1.bet),
+                    "IsNeedT1CoregisterToFun": int(t1.coregister_to_functional),
+                    "IsSegment": {"disabled": 0, "segment": 1, "new_segment": 2}[
+                        t1.segmentation.value
+                    ],
+                    "IsDARTEL": int(t1.dartel),
+                }
+            )
+            if t1.affine_regularization is not None:
+                cfg["Segment"] = {
+                    "AffineRegularisationInSegmentation": t1.affine_regularization.value
+                }
         cfg.update(_project_filter(parameters))
         cfg.update(_project_scrubbing(parameters))
         cfg.update(_project_smoothing(parameters))
@@ -320,7 +352,9 @@ class DpabiV82Adapter:
         cfg["TR"] = tr_values.pop()
         # Every metric is bound to a staged, typed mask.  Never fall back to
         # DPARSFA_run's hidden ``'Default'`` mask selection.
-        cfg["MaskFile"] = request.mask_relative_path
+        cfg["MaskFile"] = "__DPABI_AUTO_MASK__" if request.auto_mask else request.mask_relative_path
+        if request.auto_mask:
+            cfg["IsAutoMask"] = 1
 
         if request.alff_falff:
             alff_params = request.alff_falff
@@ -394,15 +428,19 @@ class DpabiV82Adapter:
             StatisticalTest.ONE_SAMPLE_T: StatisticsFunction.TTEST1,
             StatisticalTest.INDEPENDENT_TWO_SAMPLE_T: StatisticsFunction.TTEST2,
             StatisticalTest.PAIRED_T: StatisticsFunction.TTEST_PAIRED,
-            StatisticalTest.CORRELATION: StatisticsFunction.GROUP_ANALYSIS,
+            StatisticalTest.CORRELATION: StatisticsFunction.CORRELATION,
             StatisticalTest.REGRESSION: StatisticsFunction.GROUP_ANALYSIS,
+            StatisticalTest.ONE_WAY_ANOVA_ANCOVA: StatisticsFunction.ANCOVA1,
         }[design.test]
         centered_columns = centered_covariate_columns(design)
         covariate_by_subject = {
             subject_id: tuple(column[index] for column in centered_columns)
             for index, subject_id in enumerate(design.subject_order)
         }
-        if design.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
+        if design.test in {
+            StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+            StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
+        }:
             groups = tuple(
                 tuple(image.artifact_id for image in design.images if image.group == group)
                 for group in design.group_order
@@ -424,11 +462,17 @@ class DpabiV82Adapter:
                 tuple(covariate_by_subject[subject_id] for subject_id in design.subject_order)
                 for _condition in design.condition_order
             )
-        else:
+        elif design.test in {
+            StatisticalTest.ONE_SAMPLE_T,
+            StatisticalTest.CORRELATION,
+            StatisticalTest.REGRESSION,
+        }:
             groups = (tuple(image.artifact_id for image in design.images),)
             covariate_groups = (
                 tuple(covariate_by_subject[subject_id] for subject_id in design.subject_order),
             )
+        else:
+            raise ValueError(f"unsupported statistical design: {design.test.value}")
         body = {
             "function": function.value,
             "subjects": design.subject_order,
@@ -523,7 +567,7 @@ def _project_nuisance(parameters: PreprocessingParameters) -> dict[str, Any]:
         if regressor.enabled and regressor.method is TissueRegressorMethod.COMPCOR
     }
     if compcor_counts:
-        # DPARSFA V8.2 reads only Cfg.Covremove.CSF.CompCorPCNum for the
+        # DPARSFA reads only Cfg.Covremove.CSF.CompCorPCNum for the
         # combined WM/CSF CompCor mask, even when only WM is selected.
         covremove["CSF"]["CompCorPCNum"] = compcor_counts.pop()
     if nuisance.head_motion_scrubbing is not None:

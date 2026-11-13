@@ -4,24 +4,34 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import re
 import struct
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
-from neuroagent.application.contracts import (
-    DatasetKind,
+from neuroagent.application.contracts.projects import (
     DatasetProfile,
     SubjectManifestEntry,
 )
 from neuroagent.application.errors import InputValidationError
+from neuroagent.domain.fmri.dataset import DatasetKind
+from neuroagent.domain.fmri.dpabi_stages import (
+    DPABI_STAGE_RULE_VERSION,
+    canonical_stage_name,
+    expected_anatomical_stage,
+    known_stage_roots,
+    stage_candidate,
+    stage_rule,
+)
 from neuroagent.infrastructure.filesystem.path_policy import PathPolicy
+from neuroagent.observability.work_timings import measure_work_stage
 
 NIFTI_SUFFIXES = (".nii", ".nii.gz")
 DICOM_SUFFIXES = (".dcm", ".ima")
 DPABI_FUNCTIONAL_INPUT_STAGES = frozenset({"funraw", "funimg"})
-DPABI_ANATOMICAL_STAGE_BY_FUNCTIONAL = {"funraw": "t1raw", "funimg": "t1img"}
 DPABI_INVENTORY_ROOTS = frozenset({"results", "realignparameter"})
 MODALITY_DIRECTORIES = frozenset({"anat", "bold", "func", "functional", "rest", "t1"})
 PLAIN_FUNCTIONAL_DIRECTORIES = frozenset({"bold", "func", "functional", "rest"})
@@ -33,7 +43,7 @@ PLAIN_INVENTORY_DIRECTORIES = frozenset(
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with measure_work_stage("hashing"), path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -141,11 +151,7 @@ def _is_dpabi_stage_like_root(name: str) -> bool:
 
 def _is_known_dpabi_inventory_stage(name: str) -> bool:
     lowered = name.lower()
-    return bool(
-        lowered in {"t1raw", "t1img"}
-        or re.fullmatch(r"funimg[a-z]+", lowered)
-        or re.fullmatch(r"t1img[a-z]+", lowered)
-    )
+    return bool(lowered in {"t1raw", "t1img"} or stage_rule(name) is not None)
 
 
 def _dpabi_scientific_candidate(
@@ -157,7 +163,7 @@ def _dpabi_scientific_candidate(
     if not relative_parts:
         return None
     stage = relative_parts[0].lower()
-    anatomical_stage = DPABI_ANATOMICAL_STAGE_BY_FUNCTIONAL[selected_functional_stage]
+    anatomical_stage = expected_anatomical_stage(selected_functional_stage).casefold()
     if stage not in {selected_functional_stage, anatomical_stage}:
         return None
     if len(relative_parts) < 3:
@@ -207,7 +213,14 @@ class DatasetInspector:
         self._path_policy = path_policy
         self._max_files = max_files
 
-    def inspect(self, source_path: Path, *, report_only: bool = False) -> dict[str, Any]:
+    def inspect(
+        self,
+        source_path: Path,
+        *,
+        report_only: bool = False,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]:
+        inspection_started = perf_counter()
         all_files = sorted((item for item in source_path.rglob("*") if item.is_file()), key=str)
         if len(all_files) > self._max_files:
             raise InputValidationError(
@@ -218,6 +231,7 @@ class DatasetInspector:
             )
         for path in all_files:
             self._path_policy.relative_source_path(path, source_path)
+        inventory_ms = (perf_counter() - inspection_started) * 1000
 
         nifti = [path for path in all_files if _is_nifti(path)]
         dicom = [path for path in all_files if _is_dicom(path)]
@@ -230,15 +244,17 @@ class DatasetInspector:
         dpabi_stage_roots = [name for name in top_directories if _is_dpabi_stage_like_root(name)]
         has_dpabi = bool(dpabi_stage_roots or top_names.intersection(DPABI_INVENTORY_ROOTS))
         selected_dpabi_stage: str | None = None
+        selected_dpabi_stage_root: str | None = None
+        stage_candidates: list[dict[str, Any]] = []
         if has_bids:
             kind = DatasetKind.BIDS
         elif has_dpabi:
             kind = DatasetKind.DPABI_READY
+            known_roots = known_stage_roots(dpabi_stage_roots)
             unsupported_stages = sorted(
                 name
                 for name in dpabi_stage_roots
-                if name.lower() not in DPABI_FUNCTIONAL_INPUT_STAGES
-                and not _is_known_dpabi_inventory_stage(name)
+                if name not in known_roots and not _is_known_dpabi_inventory_stage(name)
             )
             if unsupported_stages:
                 if report_only:
@@ -248,30 +264,88 @@ class DatasetInspector:
                         "dpabi_input_stage_unsupported",
                         "DPABI-ready 目录包含当前扫描契约不支持的 stage root。",
                         unsupported_stage_roots=unsupported_stages,
-                        supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
+                        supported_input_stage_roots=[
+                            supported_rule.name
+                            for item in known_roots
+                            if (supported_rule := stage_rule(item)) is not None
+                        ],
                     )
-            available_input_stages = sorted(
-                name for name in dpabi_stage_roots if name.lower() in DPABI_FUNCTIONAL_INPUT_STAGES
-            )
-            if len(available_input_stages) != 1:
-                code = (
-                    "dpabi_input_stage_missing"
-                    if not available_input_stages
-                    else "dpabi_input_stage_ambiguous"
+            # Every recognized functional stage is a candidate.  Selection is
+            # intentionally never inferred, even when there is only one root.
+            functional_roots = [name for name in known_roots if stage_rule(name) is not None]
+            selected_name = canonical_stage_name(selected_input_stage)
+            if selected_input_stage is not None and selected_name is None:
+                raise InputValidationError(
+                    "dpabi_input_stage_unsupported",
+                    "所选 DPABI 起始 stage 不在当前已核验规则中。",
+                    selected_input_stage=selected_input_stage,
+                    rule_version=DPABI_STAGE_RULE_VERSION,
                 )
-                if report_only:
-                    issues.append(
-                        "DPABI-ready 科学输入必须精确锁定一个 FunRaw 或 FunImg stage root。"
-                    )
-                else:
+            if selected_name is not None:
+                selected_dpabi_stage_root = next(
+                    (
+                        name
+                        for name in functional_roots
+                        if name.casefold() == selected_name.casefold()
+                    ),
+                    None,
+                )
+                if selected_dpabi_stage_root is None:
                     raise InputValidationError(
-                        code,
-                        "DPABI-ready 科学输入必须精确锁定一个 FunRaw 或 FunImg stage root。",
-                        candidate_input_stage_roots=available_input_stages,
-                        supported_input_stage_roots=sorted(DPABI_FUNCTIONAL_INPUT_STAGES),
+                        "dpabi_input_stage_not_found",
+                        "所选 DPABI 起始 stage 不存在于工作区。",
+                        selected_input_stage=selected_name,
+                        candidate_input_stage_roots=functional_roots,
                     )
+                selected_dpabi_stage = selected_dpabi_stage_root.casefold()
+            elif not report_only:
+                raise InputValidationError(
+                    "dpabi_input_stage_selection_required",
+                    "DPABI-ready 工作区必须由用户明确确认一个起始 stage。",
+                    candidate_input_stage_roots=functional_roots,
+                    rule_version=DPABI_STAGE_RULE_VERSION,
+                )
+            elif not functional_roots:
+                issues.append("DPABI-ready 工作区没有可核验的功能 stage。")
             else:
-                selected_dpabi_stage = available_input_stages[0].lower()
+                issues.append("DPABI-ready 起始 stage 尚未由用户明确确认。")
+            for root_name in functional_roots:
+                rule = stage_rule(root_name)
+                assert rule is not None
+                root_files = [
+                    path
+                    for path in nifti
+                    if path.relative_to(source_path).parts[0].casefold() == root_name.casefold()
+                ]
+                stage_subjects = {
+                    path.relative_to(source_path).parts[1]
+                    for path in root_files
+                    if len(path.relative_to(source_path).parts) >= 3
+                }
+                candidate_issues: list[str] = []
+                if not root_files:
+                    candidate_issues.append("stage 中没有可读取的 NIfTI 文件")
+                if any(len(path.relative_to(source_path).parts) < 3 for path in root_files):
+                    candidate_issues.append("stage 必须使用 stage/subject/file 的受试者层级")
+                if any(
+                    len(path.relative_to(source_path).parts) >= 3
+                    and not re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_.-]*",
+                        path.relative_to(source_path).parts[1],
+                    )
+                    for path in root_files
+                ):
+                    candidate_issues.append("stage 含有不安全的受试者目录名")
+                if any(not _nifti_header_is_readable(path) for path in root_files):
+                    candidate_issues.append("stage 含有无法读取有效 header 的 NIfTI 文件")
+                stage_candidates.append(
+                    stage_candidate(
+                        root_name,
+                        subject_count=len(stage_subjects),
+                        file_count=len(root_files),
+                        issues=candidate_issues,
+                    )
+                )
         elif dicom and nifti:
             kind = DatasetKind.MIXED
         elif dicom:
@@ -288,7 +362,7 @@ class DatasetInspector:
         unclassified_bids_nifti = 0
         inventory_only_dpabi_nifti = 0
         inventory_only_plain_nifti = 0
-        # The immutable revision covers every regular file, including BIDS JSON
+        # A frozen revision covers every regular file, including BIDS JSON
         # sidecars and participants metadata.  Otherwise a scientifically
         # meaningful source change could leave the approved manifest hash
         # unchanged.  Paths stay relative and source files are opened read-only.
@@ -297,7 +371,11 @@ class DatasetInspector:
         invalid_nifti_files: list[str] = []
         for path in all_files:
             relative = self._path_policy.relative_source_path(path, source_path)
-            file_hashes[relative] = sha256_file(path)
+            # Report-only discovery is not an executable frozen manifest.  Do
+            # not reread all image bytes on every ordinary conversation turn.
+            # Strict inspection and Worker preflight retain full integrity checks.
+            if not report_only:
+                file_hashes[relative] = sha256_file(path)
             file_sizes[relative] = path.stat().st_size
             if path in nifti and not _nifti_header_is_readable(path):
                 invalid_nifti_files.append(relative)
@@ -491,10 +569,15 @@ class DatasetInspector:
             issues=issues,
             warnings=warnings,
         )
-        return {
+        content: dict[str, Any] = {
             "profile": profile.model_dump(mode="json"),
             "subjects": [entry.model_dump(mode="json") for entry in subjects],
-            "input_stage": selected_dpabi_stage,
+            "input_stage": selected_dpabi_stage_root,
+            "selected_input_stage": selected_dpabi_stage_root,
+            "stage_selection_required": kind is DatasetKind.DPABI_READY
+            and selected_dpabi_stage_root is None,
+            "stage_candidates": stage_candidates,
+            "stage_rule_version": DPABI_STAGE_RULE_VERSION,
             "issues": list(issues),
             "output_directories": sorted(
                 name
@@ -502,6 +585,36 @@ class DatasetInspector:
                 if name.lower() in {"results", "output", "outputs", "qc", "derivatives"}
             ),
             "invalid_nifti_files": sorted(invalid_nifti_files),
-            "file_hashes": dict(sorted(file_hashes.items())),
+            # None makes report-only content fail closed if a caller attempts
+            # to use it as frozen execution evidence.  An empty dict would
+            # silently pass the Worker's file-hash iteration.
+            "file_hashes": None if report_only else dict(sorted(file_hashes.items())),
             "file_sizes": dict(sorted(file_sizes.items())),
         }
+        if report_only:
+            # A cheap change hint for planning evidence, never execution proof.
+            # Full content hashes remain mandatory in frozen manifests/Worker.
+            inventory = []
+            for path in all_files:
+                stat = path.stat()
+                inventory.append(
+                    (
+                        path.relative_to(source_path).as_posix(),
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ctime_ns,
+                    )
+                )
+            content["metadata_revision"] = hashlib.sha256(
+                json.dumps(
+                    [DPABI_STAGE_RULE_VERSION, top_directories, inventory],
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            # Timings are operational telemetry, never part of the deterministic
+            # frozen input content hashed by plan compilation and execution.
+            content["inspection_timing_ms"] = round((perf_counter() - inspection_started) * 1000, 3)
+            content["inventory_ms"] = round(inventory_ms, 3)
+            content["hashing_ms"] = 0.0
+        return content

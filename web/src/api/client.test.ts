@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, describeError } from "./client";
+import { api, ApiError, describeError, type ConversationStreamEvent, type ConversationTurn, type SkillPlanResolveBody } from "./client";
 
 describe("API client", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -10,6 +10,95 @@ describe("API client", () => {
       new Response(JSON.stringify({ status: "ok", version: "0.1.0" }), { status: 200 }),
     );
     await expect(api.health()).resolves.toEqual({ status: "ok", version: "0.1.0" });
+  });
+  it("recovers a confirmation with the same key when its successful response body is lost", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: { active_run_id: "one-run" } }), { status: 200 }));
+    await expect(api.confirmWorkAction("lost-body", "issued command", "a".repeat(64))).rejects.toThrow();
+    await expect(api.confirmWorkAction("lost-body", "issued command", "a".repeat(64))).resolves.toMatchObject({ conversation: { active_run_id: "one-run" } });
+    const keys = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+  });
+  it("patches a work draft with revision guard and an idempotency key", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ conversation: {} }), { status: 200 }));
+    await api.patchWorkDraft("work / 1", "hash", { preprocessing: { detrend: false } });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/conversations/work%20%2F%201/work-draft");
+    const init = fetchMock.mock.calls[0][1];
+    expect(init?.method).toBe("PATCH");
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+    expect(JSON.parse(String(init?.body))).toEqual({ base_hash: "hash", patch: { preprocessing: { detrend: false } } });
+  });
+
+  it("posts a metric-only Skill dry-run with the explicit request and abort signal", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        ready: true,
+        manifest_id: "manifest-1",
+        manifest_hash: "b".repeat(64),
+        plan_hash: "c".repeat(64),
+        scope: "skill_contract_compile_only",
+        environment_probed: false,
+        issues: [],
+      }), { status: 200 }),
+    );
+    const controller = new AbortController();
+    const body: SkillPlanResolveBody = {
+      expected_project_version: 7,
+      validation_mode: "strict" as const,
+      request: {
+        project_id: "project-1",
+        dataset_ref: "dataset-1",
+        input_manifest_hash: "a".repeat(64),
+        input_artifact_id: "artifact-1",
+        request_preprocessing: false,
+        requested_metrics: ["alff"],
+        primary_outputs: ["alff"],
+        alff_falff: {
+          filter_timing: "disabled",
+          frequency_band: { low_hz: 0.01, high_hz: 0.08 },
+          mask_source: "dpabi_auto",
+          provenance: [{ name: "TR", source: "user", evidence_ref: "explicit-test-input" }],
+          requested_metrics: ["alff"],
+          requested_scalings: ["raw"],
+          result_smoothing: false,
+          result_smoothing_fwhm_mm: null,
+          tr_seconds: 2,
+        },
+      },
+    };
+
+    await expect(api.dryRunSkillPlan(body, controller.signal)).resolves.toMatchObject({
+      ready: true,
+      scope: "skill_contract_compile_only",
+      environment_probed: false,
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/skill-plans/dry-run");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST",
+      signal: controller.signal,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(body);
+  });
+
+  it("posts project demographics with explicit columns and the current dataset revision", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ demographics_id: "demographics-1" }), { status: 201 }),
+    );
+    const body = {
+      source_path: "D:\\Study\\participants.tsv",
+      subject_id_column: "participant_id",
+      column_mapping: { group: "group", age: "age" },
+      encoding: "utf-8-sig",
+      expected_dataset_version: 4,
+    } as const;
+
+    await api.importDemographics("dataset-1", body);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/datasets/dataset-1/demographics/import");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(body);
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 
   it("converts a failed response to ApiError", async () => {
@@ -48,6 +137,21 @@ describe("API client", () => {
     const init = fetchMock.mock.calls[0][1];
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
     expect(JSON.parse(String(init?.body))).toMatchObject({ expected_version: 3 });
+  });
+
+  it("posts an explicit QC skip decision", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ qc_skip_id: "skip-1" }), { status: 201 }),
+    );
+    await api.skipQc("run-1", {
+      expected_run_version: 3,
+      actor: "local-user",
+      reason: "Proceed without QC.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs/run-1/qc-skip",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("reuses one logical mutation key after an indeterminate network failure", async () => {
@@ -237,6 +341,7 @@ describe("API client", () => {
     await api.cancelRun("r", {} as never);
     await api.retryRun("r", {} as never);
     await api.artifacts("r");
+    await api.createHeadMotionQc("r", {} as never);
     await api.createQcReview({} as never);
     await api.qcReview("q");
     await api.approveQcReview("q", {} as never);
@@ -254,9 +359,89 @@ describe("API client", () => {
   });
 
   it("formats API, cancellation, generic, and unknown errors", () => {
-    expect(describeError(new ApiError("bad", 409, { trace_id: "t" }))).toBe("bad（追踪号：t）");
+    expect(describeError(new ApiError("bad", 409, { trace_id: "t" }))).toBe("bad");
     expect(describeError(new DOMException("cancel", "AbortError"))).toBe("请求已取消");
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError(null)).toBe("发生未知错误");
   });
+});
+
+
+describe("conversation streaming", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const turn = { conversation: { conversation_id: "stream-1" }, assistant_message: { content: "最终回答" } } as ConversationTurn;
+  const body = { content: "你好" } as never;
+  function streamed(content: string, chunkSize = 7): Response {
+    const bytes = new TextEncoder().encode(content);
+    return new Response(new ReadableStream({ start(controller) {
+      for (let i = 0; i < bytes.length; i += chunkSize) controller.enqueue(bytes.slice(i, i + chunkSize));
+      controller.close();
+    } }), { status: 201, headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+  }
+  it("decodes split UTF-8, CRLF, comments, reset, status and authoritative final", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(streamed(
+      ': keep-alive\r\n\r\nevent: status\r\ndata: {"message":"正在检索"}\r\n\r\n'
+      + 'event: delta\ndata: {"text":"你好"}\n\nevent: reset\ndata: {}\n\n'
+      + 'event: delta\ndata: {\n' + 'data: "text":"新回答"}\n\n'
+      + `event: final\ndata: ${JSON.stringify(turn)}\n\n`, 1,
+    ));
+    const events: ConversationStreamEvent[] = [];
+    await expect(api.streamConversationTurn("stream-utf8", body, (event) => events.push(event))).resolves.toEqual(turn);
+    expect(events).toEqual([
+      { type: "status", message: "正在检索" }, { type: "delta", text: "你好" },
+      { type: "reset" }, { type: "delta", text: "新回答" }, { type: "final", turn },
+    ]);
+    expect(new Headers(fetchSpy.mock.calls[0][1]?.headers).get("Accept")).toBe("text/event-stream");
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toMatchObject({ stream: true });
+  });
+  it("preserves the mutation key after disconnect and clears it after final", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(streamed('event: delta\ndata: {"text":"部分"}\n\n'))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    await expect(api.streamConversationTurn("stream-retry", body, () => undefined)).rejects.toThrow("尚未收到完整回答");
+    await api.streamConversationTurn("stream-retry", body, () => undefined);
+    await api.streamConversationTurn("stream-retry", body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[0]).toBeTruthy(); expect(keys[1]).toBe(keys[0]); expect(keys[2]).not.toBe(keys[0]);
+  });
+  it.each([422, 503])("maps SSE errors and retains uncertain keys for status %s", async (status) => {
+    const error = { code: "provider_error", message: "失败", details: { reason: "test" }, trace_id: "stream-trace" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(streamed(`event: error\ndata: ${JSON.stringify({ error, status })}\n\n`))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    await expect(api.streamConversationTurn(`stream-error-${status}`, body, () => undefined)).rejects.toMatchObject({ status, code: "provider_error", traceId: "stream-trace" });
+    await api.streamConversationTurn(`stream-error-${status}`, body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    if (status >= 500) expect(keys[1]).toBe(keys[0]); else expect(keys[1]).not.toBe(keys[0]);
+  });
+  it("preserves keys after abort and transport failures and accepts legacy JSON", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new DOMException("aborted", "AbortError"))
+      .mockRejectedValueOnce(new TypeError("network"))
+      .mockResolvedValueOnce(new Response(JSON.stringify(turn), { status: 201, headers: { "Content-Type": "application/json" } }));
+    const onEvent = vi.fn();
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).rejects.toThrow("network");
+    await expect(api.streamConversationTurn("stream-abort", body, onEvent)).resolves.toEqual(turn);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(new Set(keys).size).toBe(1); expect(onEvent).toHaveBeenCalledWith({ type: "final", turn });
+  });
+  it("cancels active stream reading on abort while retaining the retry key", async () => {
+    const cancelled = vi.fn();
+    const abort = new AbortController();
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(new ReadableStream({ cancel: cancelled }), { headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(streamed(`event: final\ndata: ${JSON.stringify(turn)}\n\n`));
+    const pending = api.streamConversationTurn("stream-reader-abort", body, () => undefined, abort.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    abort.abort();
+    await rejected;
+    expect(cancelled).toHaveBeenCalled();
+    await api.streamConversationTurn("stream-reader-abort", body, () => undefined);
+    const keys = fetchSpy.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
 });

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, or_, select, update
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import WorkflowState
+from neuroagent.application.contracts.runs import QcReviewView
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json
-from neuroagent.application.ports import ClaimedJob
+from neuroagent.domain.lifecycle import WorkflowState
 from neuroagent.infrastructure.persistence.models import (
+    ArtifactRow,
     JobRow,
     PlanRevisionRow,
     RuntimeEventRow,
@@ -28,10 +30,44 @@ from neuroagent.infrastructure.persistence.statistical_completion import (
 )
 from neuroagent.observability.events import redact_event_payload
 from neuroagent.observability.tracing import current_trace_id
+from neuroagent.workflow.models import ClaimedJob, JobEnvelope
 from neuroagent.workflow.state import validate_workflow_transition
 
 
+def _decoded_job_payload(job: JobRow) -> dict[str, Any]:
+    """Expose the validated executor command to legacy completion rules."""
+
+    persisted = _load(job.payload_json, {})
+    envelope = JobEnvelope.from_persisted(
+        persisted,
+        job_id=job.job_id,
+        run_id=job.run_id,
+        attempt=max(1, job.attempt),
+    )
+    return envelope.executor_payload()
+
+
 class JobExecutionMixin(RepositoryBaseMixin):
+    @abstractmethod
+    def _register_artifacts_in_session(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        run: WorkflowRunRow,
+        artifacts: tuple[dict[str, Any], ...],
+    ) -> list[ArtifactRow]: ...
+
+    @abstractmethod
+    def _auto_create_head_motion_qc_review_in_session(
+        self,
+        session: Session,
+        *,
+        run: WorkflowRunRow,
+        plan: PlanRevisionRow,
+        registered_rows: list[ArtifactRow],
+    ) -> QcReviewView | None: ...
+
     def claim_next_job(self, worker_id: str, lease_seconds: int) -> ClaimedJob | None:
         now = datetime.now(UTC)
         with self._write_session() as session:
@@ -312,7 +348,7 @@ class JobExecutionMixin(RepositoryBaseMixin):
                     actor=actor,
                 )
             current = WorkflowState(run.state)
-            payload = _load(job.payload_json, {})
+            payload = _decoded_job_payload(job)
             is_statistics_mock = (
                 isinstance(payload, dict) and payload.get("run_kind") == "statistics_mock"
             )
@@ -321,7 +357,9 @@ class JobExecutionMixin(RepositoryBaseMixin):
             )
             target = (
                 WorkflowState.SUCCEEDED
-                if is_statistics_mock or is_statistics_real
+                if is_statistics_mock
+                or is_statistics_real
+                or str(run.qc_mode or "require") == "skip"
                 else WorkflowState.QC_REVIEW
             )
             validate_workflow_transition(current, target)
@@ -331,18 +369,30 @@ class JobExecutionMixin(RepositoryBaseMixin):
                 run=run,
                 artifacts=artifacts,
             )
-            if is_statistics_real:
+            plan = None
+            if is_statistics_real or target is WorkflowState.QC_REVIEW:
                 plan = session.get(PlanRevisionRow, run.plan_revision_id)
                 if plan is None:
                     raise NotFoundError("plan_revision", run.plan_revision_id)
+            if is_statistics_real:
+                assert plan is not None
                 register_real_statistical_result(
                     session,
                     run=run,
                     plan=plan,
-                    payload=cast(dict[str, Any], payload),
+                    payload=payload,
                     artifact_rows=registered_rows,
                     actor=actor,
                     created_at=now,
+                )
+            auto_qc_review = None
+            if target is WorkflowState.QC_REVIEW:
+                assert plan is not None
+                auto_qc_review = self._auto_create_head_motion_qc_review_in_session(
+                    session,
+                    run=run,
+                    plan=plan,
+                    registered_rows=registered_rows,
                 )
             job.state = "succeeded"
             job.result_json = canonical_json(result)
@@ -353,6 +403,14 @@ class JobExecutionMixin(RepositoryBaseMixin):
             run.state = target.value
             run.version += 1
             run.error = None
+            if str(run.qc_mode or "require") == "skip":
+                run.qc_status = "skipped"
+            elif target is WorkflowState.QC_REVIEW:
+                run.qc_status = (
+                    "failed"
+                    if any(row.artifact_type == "qc.head_motion_failure" for row in registered_rows)
+                    else "awaiting_review"
+                )
             run.updated_at = now
             self._add_run_event(
                 session,
@@ -370,6 +428,8 @@ class JobExecutionMixin(RepositoryBaseMixin):
                         if is_statistics_mock
                         else "real statistics evidence registered"
                         if is_statistics_real
+                        else "executor completed; QC was explicitly skipped"
+                        if str(run.qc_mode or "require") == "skip"
                         else "executor completed; manual QC required"
                     ),
                     "synthetic": is_statistics_mock,
@@ -381,6 +441,22 @@ class JobExecutionMixin(RepositoryBaseMixin):
                     "attempt": job.attempt,
                 },
             )
+            if auto_qc_review is not None:
+                self._add_run_event(
+                    session,
+                    run=run,
+                    event_type="QcReviewRevisionCreated",
+                    severity="info",
+                    payload={
+                        "review_revision_id": auto_qc_review.review.review_revision_id,
+                        "review_hash": auto_qc_review.review.content_hash,
+                        "review_scope": auto_qc_review.review.review_scope.value,
+                        "included_count": len(auto_qc_review.review.included_subject_ids),
+                        "excluded_count": len(auto_qc_review.review.excluded_subject_ids),
+                        "artifact_count": len(auto_qc_review.review.metric_artifact_ids),
+                        "automatic": True,
+                    },
+                )
             session.flush()
             return True
 

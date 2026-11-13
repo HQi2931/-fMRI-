@@ -11,7 +11,12 @@ from neuroagent.infrastructure.persistence.models import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``fileConfig`` defaults to ``disable_existing_loggers=True``, which would
+    # switch off every already-imported ``neuroagent.*`` logger the moment
+    # migrations run in-process.  That silently discarded application and
+    # worker error logs (the API unhandled-error log and the worker executor
+    # traceback among them), so keep existing loggers enabled.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 target_metadata = Base.metadata
 
 

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TypeVar
+from pathlib import Path
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from neuroagent.agent.providers import ModelProvider
 from neuroagent.agent.secrets import SecretResolver
-from neuroagent.application.contracts import ProjectView
+from neuroagent.application.contracts.projects import ProjectView
 from neuroagent.application.environment_lock import EnvironmentLockProvider
 from neuroagent.application.errors import ConflictError
 from neuroagent.application.hashing import content_hash
@@ -19,11 +20,18 @@ from neuroagent.application.ports import (
     DatabaseLifecyclePort,
     DatasetInspectorPort,
     DemographicsReaderPort,
+    HeadMotionQcParserPort,
     PathPolicyPort,
-    RepositoryPort,
     SecretWriterPort,
+    WorkspaceFilePolicyPort,
+)
+from neuroagent.application.repository_ports import (
+    EventRepositoryPort,
+    IdempotencyStorePort,
+    ProjectRepositoryPort,
 )
 from neuroagent.application.settings import Settings
+from neuroagent.observability.work_timings import measure_work_stage
 from neuroagent.skills.compiler import SkillCompiler
 from neuroagent.skills.registry import SkillRegistry
 from neuroagent.skills.resolver import SkillResolver
@@ -37,21 +45,94 @@ U = TypeVar("U")
 class BaseServiceMixin:
     """Declares the shared dependencies every use-case mixin reads through ``self``."""
 
+    def __init__(self) -> None:
+        """Capabilities receive shared ports and collaborators explicitly."""
+
+    def bind_shared_dependencies(
+        self,
+        *,
+        settings: Settings,
+        database: DatabaseLifecyclePort,
+        idempotency_store: IdempotencyStorePort,
+        event_store: EventRepositoryPort,
+        project_repository: ProjectRepositoryPort,
+        secret_resolver: SecretResolver,
+        secret_writer: SecretWriterPort,
+        providers: Mapping[str, ModelProvider],
+        path_policy: PathPolicyPort,
+        dataset_inspector: DatasetInspectorPort,
+        demographics_reader: DemographicsReaderPort,
+        head_motion_qc_parser: HeadMotionQcParserPort,
+        environment_provider: EnvironmentLockProvider,
+        skill_registry: SkillRegistry,
+        skill_validator: SkillValidator,
+        skill_resolver: SkillResolver,
+        tool_registry: ToolRegistry,
+        skill_compiler: SkillCompiler,
+    ) -> None:
+        """Bind the small set of infrastructure-independent shared use-case ports."""
+
+        self.settings = settings
+        self.database = database
+        self.idempotency_store = idempotency_store
+        self.event_store = event_store
+        self.project_repository = project_repository
+        self.secret_resolver = secret_resolver
+        self.secret_writer = secret_writer
+        self.providers = providers
+        self.path_policy = path_policy
+        self.dataset_inspector = dataset_inspector
+        self.demographics_reader = demographics_reader
+        self.head_motion_qc_parser = head_motion_qc_parser
+        self.environment_provider = environment_provider
+        self.skill_registry = skill_registry
+        self.skill_validator = skill_validator
+        self.skill_resolver = skill_resolver
+        self.tool_registry = tool_registry
+        self.skill_compiler = skill_compiler
+
     settings: Settings
     database: DatabaseLifecyclePort
-    repository: RepositoryPort
+    idempotency_store: IdempotencyStorePort
+    event_store: EventRepositoryPort
+    project_repository: ProjectRepositoryPort
     secret_resolver: SecretResolver
     secret_writer: SecretWriterPort
     providers: Mapping[str, ModelProvider]
     path_policy: PathPolicyPort
     dataset_inspector: DatasetInspectorPort
     demographics_reader: DemographicsReaderPort
+    head_motion_qc_parser: HeadMotionQcParserPort
     environment_provider: EnvironmentLockProvider
     skill_registry: SkillRegistry
     skill_validator: SkillValidator
     skill_resolver: SkillResolver
     tool_registry: ToolRegistry
     skill_compiler: SkillCompiler
+    workspace_file_factory: Callable[[Path], WorkspaceFilePolicyPort | None]
+
+    def _inspect_source(
+        self,
+        source: Path,
+        *,
+        report_only: bool,
+        selected_input_stage: str | None = None,
+    ) -> dict[str, Any]:
+        with measure_work_stage("workspace_inspection"):
+            try:
+                return self.dataset_inspector.inspect(
+                    source,
+                    report_only=report_only,
+                    selected_input_stage=selected_input_stage,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with lightweight test/integration inspectors.
+                if "report_only" not in str(exc) and "selected_input_stage" not in str(exc):
+                    raise
+                try:
+                    return self.dataset_inspector.inspect(source, report_only=report_only)
+                except TypeError:
+                    return self.dataset_inspector.inspect(source)
 
     def _idempotent(
         self,
@@ -64,8 +145,8 @@ class BaseServiceMixin:
     ) -> T:
         request_hash = content_hash(request.model_dump(mode="json"))
         owner_token = str(uuid4())
-        with self.repository.atomic():
-            stored = self.repository.begin_idempotent_request(
+        with self.idempotency_store.atomic():
+            stored = self.idempotency_store.begin_idempotent_request(
                 scope,
                 key,
                 request_hash,
@@ -75,7 +156,7 @@ class BaseServiceMixin:
             if stored is not None:
                 return response_type.model_validate(stored)
             response = action()
-            self.repository.complete_idempotent_request(
+            self.idempotency_store.complete_idempotent_request(
                 scope, key, request_hash, owner_token, response
             )
         return response
@@ -94,7 +175,7 @@ class BaseServiceMixin:
 
         request_hash = content_hash(request.model_dump(mode="json"))
         owner_token = str(uuid4())
-        stored = self.repository.begin_idempotent_request(
+        stored = self.idempotency_store.begin_idempotent_request(
             scope,
             key,
             request_hash,
@@ -105,9 +186,9 @@ class BaseServiceMixin:
             return response_type.model_validate(stored)
         try:
             prepared = prepare()
-            with self.repository.atomic():
+            with self.idempotency_store.atomic():
                 response = finalize(prepared)
-                self.repository.complete_idempotent_request(
+                self.idempotency_store.complete_idempotent_request(
                     scope, key, request_hash, owner_token, response
                 )
             return response
@@ -116,7 +197,7 @@ class BaseServiceMixin:
             # preparation/finalization failure releases it so the exact same
             # request can safely retry; business writes and response storage
             # are committed (or rolled back) together above.
-            self.repository.release_idempotent_request(scope, key, request_hash, owner_token)
+            self.idempotency_store.release_idempotent_request(scope, key, request_hash, owner_token)
             raise
 
     async def _idempotent_async(
@@ -128,10 +209,20 @@ class BaseServiceMixin:
         response_type: type[T],
         prepare: Callable[[], Awaitable[U]],
         finalize: Callable[[U], T],
+        legacy_key: str | None = None,
+        legacy_request_hashes: tuple[str, ...] = (),
     ) -> T:
         request_hash = content_hash(request.model_dump(mode="json"))
         owner_token = str(uuid4())
-        stored = self.repository.begin_idempotent_request(
+        if legacy_key is not None and legacy_key != key:
+            self.idempotency_store.migrate_legacy_idempotency_key(
+                scope,
+                legacy_key,
+                key,
+                request_hash=request_hash,
+                legacy_request_hashes=legacy_request_hashes,
+            )
+        stored = self.idempotency_store.begin_idempotent_request(
             scope,
             key,
             request_hash,
@@ -204,8 +295,8 @@ class BaseServiceMixin:
             prepared = prepare_task.result()
             stop_heartbeat.set()
             await heartbeat_task
-            with self.repository.atomic():
-                if not self.repository.renew_idempotent_request(
+            with self.idempotency_store.atomic():
+                if not self.idempotency_store.renew_idempotent_request(
                     scope,
                     key,
                     request_hash,
@@ -218,7 +309,7 @@ class BaseServiceMixin:
                         scope=scope,
                     )
                 response = finalize(prepared)
-                self.repository.complete_idempotent_request(
+                self.idempotency_store.complete_idempotent_request(
                     scope, key, request_hash, owner_token, response
                 )
             return response
@@ -243,7 +334,7 @@ class BaseServiceMixin:
             # provider so SQLite writers are never blocked by network latency.
             # A handled failure releases it, allowing an explicit retry with
             # the same request and key.
-            self.repository.release_idempotent_request(scope, key, request_hash, owner_token)
+            self.idempotency_store.release_idempotent_request(scope, key, request_hash, owner_token)
             raise
 
     async def _renew_idempotency_lease(
@@ -263,7 +354,7 @@ class BaseServiceMixin:
                 return
             except TimeoutError:
                 renewed = await asyncio.to_thread(
-                    self.repository.renew_idempotent_request,
+                    self.idempotency_store.renew_idempotent_request,
                     scope,
                     key,
                     request_hash,
@@ -278,7 +369,7 @@ class BaseServiceMixin:
                     ) from None
 
     def _require_project_version(self, project_id: str, expected_version: int) -> ProjectView:
-        project = self.repository.get_project(project_id)
+        project = self.project_repository.get_project(project_id)
         if project.version != expected_version:
             raise ConflictError(
                 "revision_conflict",

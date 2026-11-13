@@ -1,9 +1,13 @@
 # 静息态 fMRI Skill 层架构
 
-- 状态：Skill Registry、Resolver、Validator、Compiler、`WorkflowFactory`/`ToolRuntime`、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包）；公共 Worker 默认 Mock，并提供受控 MATLAB 路由
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：skill_workflow_engineer
 - 决策日期：2026-08-06
-- 关联 ADR：[0001：Skill 编译为受控 Workflow](../adr/0001-skill-compiles-to-workflow.md)
-- 实施计划：[0001：fMRI Skill 层 MVP](../plans/0001-skill-layer-mvp.md)
+- 更新日期：2026-09-23
+- 关联：[ADR 0001](../adr/0001-skill-compiles-to-workflow.md)、[计划 0001](../plans/0001-skill-layer-mvp.md)
+
+实现现状：Skill Registry、Resolver、Validator、Compiler、`WorkflowFactory`/`ToolRuntime`、9 个运行时 Skill 与 16 个磁盘参数 schema 已实现（其中 10 个为 Phase 10–17 契约预览包）；公共 Worker 默认 Mock，并提供受控 MATLAB 路由。
 
 ## 1. 定义与目标
 
@@ -66,6 +70,8 @@ flowchart LR
 
 图中从请求到编译、计划 revision 和人工审批的控制面已经接入应用服务。审批后的 DAG→Tool→Executor 路径由 `WorkflowFactory` 冻结并由 `ToolRuntime` 遍历；Mock 和 MATLAB 适配器都必须通过同一份冻结步骤合同。真实执行还受环境探测、配置开关和逐次确认保护。
 
+Work 对话在形成 `SkillRequest` 前使用部分参数草稿。应用服务从草稿和服务端来源标记生成 `planning_decisions`，列出关键参数的候选值、用户编辑状态、缺失项、校验冲突与 ALFF/ReHo 分支；同一摘要进入模型上下文和对话回复。它不提供已核实的扫描事实或执行许可，完整科学参数仍须经用户审阅、`SkillValidator` 校验和计划审批。
+
 运行时状态只有一个真源：`WorkflowInstance`。可以保存 Skill 与运行的关联记录，但不得建立第二套可变的 `SkillRun` 状态机。
 
 ## 4. 核心模型
@@ -100,7 +106,6 @@ project_id
 dataset_ref
 requested_metrics
 requested_primary_outputs
-study_protocol_ref
 user_overrides
 execution_backend
 ```

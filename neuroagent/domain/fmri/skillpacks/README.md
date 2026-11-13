@@ -38,7 +38,7 @@ skills/<skill_name>/
 
 ## 扩展契约/预览包（未注册运行时）
 
-以下十个包位于仓库根目录 `skills/`，采用与内置包相同的 `SkillSpec` 形态，但**未注册进 `builtin.py` 运行时 Registry**，其 `required_capabilities` 与 `workflow_template_ref` 也尚未在 `ToolRegistry` 落地。它们是 Phase 10–17 的确定性预览、诊断、模板与 API 合同，**不启动 MATLAB、不训练模型、不联网检索**；真实执行与运行时接线待 v0.2.0 单独授权。
+以下十个包位于仓库根目录 `skills/`，采用与内置包相同的 `SkillSpec` 形态，但**未注册进 `builtin.py` 运行时 Registry**，其 `required_capabilities` 与 `workflow_template_ref` 也尚未在 `ToolRegistry` 落地。它们是 Phase 10–17 的确定性预览、诊断、模板与 API 合同，**不启动 MATLAB、不训练模型、不联网检索**；真实执行与运行时接线待单独授权。
 
 `diagnose-dpabi-failure`、`extract-roi-signals`、`organize-dpabi-input`、`prepare-demographics-template`、`inspect-ml-table`、`design-tabular-ml`、`run-tabular-ml`、`analyze-ml-results`、`localize-statistical-clusters`、`answer-rsfmri-methodology`。
 
@@ -48,4 +48,4 @@ skills/<skill_name>/
 
 本项目不在每个 Skill 包内复制 `tests/cases.yaml`。Skill 解析、编译、科学负向用例、DPABI 映射、统计设计和执行边界测试集中位于 `tests/science/`，主要由 `test_skill_packages.py`、`test_skill_compiler.py`、`test_skill_engine_edges.py`、`test_metric_rules.py` 和 `test_statistics.py` 覆盖。
 
-`reviewed` 表示声明、schema、证据和测试达到当前候选基线要求，不表示公共 Worker 已获准执行真实数据。当前公共运行路径仍为 Mock-only；真实 DPABI/统计执行必须完成接线、单独授权和 smoke 验证。
+`reviewed` 表示声明、schema、证据和测试达到当前要求，不表示公共 Worker 已获准执行真实数据。当前公共运行路径仍为 Mock-only；真实 DPABI/统计执行必须完成接线、单独授权和 smoke 验证。

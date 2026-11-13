@@ -11,7 +11,7 @@ required_capabilities: ["fmri.dpabi.roi_signal", "table.export"]
 workflow_template_ref: "dpabi.roi.extract.v1"
 steps: [{step_id: "extract", capability: "fmri.dpabi.roi_signal", needs: [], consumes: ["functional_timeseries", "roi_atlas"], produces: ["table.roi_long"], parameter_names: ["tr_seconds", "band_low_hz", "band_high_hz"], qc_gate: false}, {step_id: "export", capability: "table.export", needs: ["extract"], consumes: ["table.roi_long"], produces: ["table.roi_wide"], parameter_names: [], qc_gate: true}]
 qc_requirements: ["atlas_grid_match", "subject_alignment"]
-compatibility: {matlab: "R2023b", spm: "SPM12", dpabi: "V8.2_240510", adapter: "1.0.0"}
-evidence_refs: ["DPABI_V8.2_240510/DPARSF/Subfunctions/y_ExtractROISignal.m"]
+compatibility: {matlab: "R2024b", spm: "SPM25", dpabi: "V9.0_250415", adapter: "1.0.0"}
+evidence_refs: ["DPABI_V9.0_250415/DPARSF/Subfunctions/y_ExtractROISignal.m"]
 known_limitations: ["The current MVP validates and exports supplied records; real MATLAB execution remains opt-in"]
 reviewed_by: ["matlab_dpabi_engineer", "fmri_methodologist"]

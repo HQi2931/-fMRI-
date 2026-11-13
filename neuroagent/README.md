@@ -1,6 +1,6 @@
 # NeuroAgent
 
-`neuroagent` 是 rs-fMRI Agent 的模块化单体后端。当前候选基线已经实现数据检查、Skill 计划、审批、SQLite Worker、Mock 执行、QC、统计设计、模型路由和受控 MATLAB 适配器；公共 Worker 仍明确为 Mock-only，真实 MATLAB 小数据 smoke 必须另行授权。
+`neuroagent` 是 rs-fMRI Agent 的模块化单体后端。已实现数据检查、Skill 计划、审批、SQLite Worker、Mock 执行、QC、统计设计、模型路由和受控 MATLAB 适配器；公共 Worker 仍明确为 Mock-only，真实 MATLAB 小数据 smoke 必须另行授权。
 
 ## 运行模块
 

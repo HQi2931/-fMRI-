@@ -25,16 +25,19 @@ steps:
     qc_gate: true
 qc_requirements: ["approved_qc_revision", "frozen_subject_order"]
 compatibility:
-  matlab: "R2023b"
-  spm: "SPM12"
-  dpabi: "V8.2_240510"
+  matlab: "R2024b"
+  spm: "SPM25"
+  dpabi: "V9.0_250415"
   adapter: "1.0.0"
 evidence_refs:
-  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest1_Image.m:1"
-  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTest2_Image.m:1"
-  - "DPABI_V8.2_240510/StatisticalAnalysis/y_TTestPaired_Image.m:1"
-  - "DPABI_V8.2_240510/StatisticalAnalysis/y_FDR_Image.m:1"
-  - "DPABI_V8.2_240510/StatisticalAnalysis/y_GRF_Threshold.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest1_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTest2_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_TTestPaired_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_Correlation_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_GroupAnalysis_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_ANCOVA1_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_FDR_Image.m:1"
+  - "DPABI_V9.0_250415/StatisticalAnalysis/y_GRF_Threshold.m:1"
 known_limitations:
   - "Thresholds, tails and covariates require study-level approval"
 reviewed_by: ["skill_workflow_engineer", "matlab_dpabi_engineer", "fmri_methodologist"]

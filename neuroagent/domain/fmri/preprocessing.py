@@ -2,14 +2,15 @@
 
 The models in this module deliberately have no study-specific defaults.  A
 disabled operation is still an explicit choice, and every enabled operation
-must carry the parameters that DPABI V8.2 will consume.
+must carry the parameters that DPABI will consume.
 """
 
 from __future__ import annotations
 
 from enum import IntEnum, StrEnum
+from typing import Any, cast
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from neuroagent.domain.fmri.artifacts import FrequencyBand, FrozenModel
 from neuroagent.domain.fmri.metrics import (
@@ -85,6 +86,69 @@ class NormalizationTiming(StrEnum):
     ON_RESULTS = "on_results"
 
 
+def unsupported_result_normalization_with_metrics(
+    *,
+    request_preprocessing: bool,
+    metrics_requested: bool,
+    normalization_timing: NormalizationTiming | None,
+) -> bool:
+    """Return whether the current DPARSFA contract cannot represent this combination.
+
+    The executor has one mask binding for metric outputs.  This predicate
+    describes that implementation boundary; it does not infer mask or image
+    compatibility from input data.
+    """
+
+    return (
+        request_preprocessing
+        and metrics_requested
+        and normalization_timing is NormalizationTiming.ON_RESULTS
+    )
+
+
+def unsupported_result_stage_operations_without_metric_output(
+    *,
+    request_preprocessing: bool,
+    metrics_requested: bool,
+    preprocessing: PreprocessingParameters | None,
+) -> bool:
+    """Return whether the executor's result-stage operations lack a metric output.
+
+    This reports an execution capability boundary for the frozen preprocessing
+    contract; it does not infer scientific or image facts from the input data.
+    """
+
+    return (
+        request_preprocessing
+        and not metrics_requested
+        and preprocessing is not None
+        and (
+            preprocessing.normalization.timing is NormalizationTiming.ON_RESULTS
+            or preprocessing.smoothing.timing is SmoothingTiming.ON_RESULTS
+        )
+    )
+
+
+def reho_cut_requires_verified_checkpoint_before_metric_plan(
+    *,
+    request_preprocessing: bool,
+    reho_requested: bool,
+    preprocessing: PreprocessingParameters | None,
+) -> bool:
+    """Return whether CUT preprocessing and ReHo share an unsupported plan.
+
+    The current executor cannot materialize and verify the retained-volume
+    checkpoint between CUT scrubbing and ReHo calculation in one plan.
+    """
+
+    return (
+        request_preprocessing
+        and reho_requested
+        and preprocessing is not None
+        and preprocessing.scrubbing.method is ScrubbingMethod.CUT
+    )
+
+
 class AffineRegularization(StrEnum):
     MNI = "mni"
     EASTERN = "eastern"
@@ -93,6 +157,44 @@ class AffineRegularization(StrEnum):
 class SmoothingMethod(IntEnum):
     SPM = 1
     DARTEL = 2
+
+
+class T1Preparation(StrEnum):
+    REORIENT_CROP = "reorient_crop"
+    PREPARED = "prepared"
+
+
+class T1Segmentation(StrEnum):
+    DISABLED = "disabled"
+    SEGMENT = "segment"
+    NEW_SEGMENT = "new_segment"
+
+
+class T1Parameters(FrozenModel):
+    preparation: T1Preparation
+    bet: bool = False
+    structural_artifact_id: str = Field(min_length=1)
+    coregister_to_functional: bool
+    segmentation: T1Segmentation
+    affine_regularization: AffineRegularization | None
+    dartel: bool
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_bet_choice(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        value = cast(dict[str, Any], handler(self))
+        if "bet" not in self.model_fields_set:
+            value.pop("bet", None)
+        return value
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> T1Parameters:
+        if self.dartel and self.segmentation is not T1Segmentation.NEW_SEGMENT:
+            raise ValueError("DARTEL requires New Segment")
+        if self.segmentation is T1Segmentation.NEW_SEGMENT and not self.dartel:
+            raise ValueError("New Segment requires DARTEL")
+        if (self.segmentation is T1Segmentation.DISABLED) != (self.affine_regularization is None):
+            raise ValueError("segmentation requires explicit affine regularization")
+        return self
 
 
 class SliceTimingParameters(FrozenModel):
@@ -129,7 +231,7 @@ class RealignmentParameters(FrozenModel):
     @model_validator(mode="after")
     def approved_options_are_explicit(self) -> RealignmentParameters:
         if self.enabled != (self.options_source is not None):
-            raise ValueError("realignment requires the explicit DPABI V8.2 Jobmat options source")
+            raise ValueError("realignment requires the explicit DPABI Jobmat options source")
         return self
 
 
@@ -325,7 +427,15 @@ class PreprocessingParameters(FrozenModel):
     temporal_filter: TemporalFilteringParameters
     scrubbing: ScrubbingParameters
     smoothing: SmoothingParameters
+    t1: T1Parameters | None = None
     provenance: tuple[ParameterProvenance, ...]
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_shape(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        value = cast(dict[str, Any], handler(self))
+        if self.t1 is None:
+            value.pop("t1", None)
+        return value
 
     @model_validator(mode="after")
     def validate_pipeline_choices(self) -> PreprocessingParameters:
@@ -376,11 +486,44 @@ class PreprocessingParameters(FrozenModel):
             and regressor.mask_source is TissueMaskSource.SEGMENT
             for regressor in (self.nuisance.white_matter, self.nuisance.csf)
         )
-        if segment_masks and self.normalization.mode not in {
-            NormalizationMode.T1_SEGMENT,
-            NormalizationMode.DARTEL,
-        }:
+        if (
+            segment_masks
+            and not (self.t1 and self.t1.segmentation is not T1Segmentation.DISABLED)
+            and self.normalization.mode
+            not in {
+                NormalizationMode.T1_SEGMENT,
+                NormalizationMode.DARTEL,
+            }
+        ):
             raise ValueError("Segment tissue masks require T1 segmentation or DARTEL")
+        if self.t1 is not None:
+            if self.t1.coregister_to_functional and not self.realignment.enabled:
+                raise ValueError("T1 coregistration requires realignment mean-image evidence")
+            if (
+                segment_masks
+                or self.normalization.mode
+                in {NormalizationMode.T1_SEGMENT, NormalizationMode.DARTEL}
+            ) and not self.t1.coregister_to_functional:
+                raise ValueError(
+                    "functional T1 normalization or tissue masks require coregistration"
+                )
+            if (
+                self.normalization.mode is NormalizationMode.T1_SEGMENT
+                and self.t1.segmentation is not T1Segmentation.SEGMENT
+            ):
+                raise ValueError("T1 Segment normalization requires Segment")
+            if self.normalization.mode is NormalizationMode.DARTEL and not self.t1.dartel:
+                raise ValueError("DARTEL normalization requires template construction")
+            if (
+                self.normalization.structural_artifact_id is not None
+                and self.normalization.structural_artifact_id != self.t1.structural_artifact_id
+            ):
+                raise ValueError("T1 and normalization structural bindings differ")
+            if (
+                self.normalization.affine_regularization is not None
+                and self.normalization.affine_regularization != self.t1.affine_regularization
+            ):
+                raise ValueError("T1 and normalization affine regularization differ")
         if self.nuisance.enabled:
             compcor_counts = {
                 regressor.compcor_components
@@ -390,9 +533,7 @@ class PreprocessingParameters(FrozenModel):
                 and regressor.method is TissueRegressorMethod.COMPCOR
             }
             if len(compcor_counts) > 1:
-                raise ValueError(
-                    "DPABI V8.2 uses one shared CompCor component count for WM and CSF"
-                )
+                raise ValueError("DPABI uses one shared CompCor component count for WM and CSF")
         if (
             self.smoothing.method is SmoothingMethod.DARTEL
             and self.normalization.mode is not NormalizationMode.DARTEL
@@ -412,6 +553,7 @@ class PreprocessingParameters(FrozenModel):
                 "temporal_filter",
                 "scrubbing",
                 "smoothing",
+                *({"t1"} if self.t1 is not None else set()),
             },
         )
         return self

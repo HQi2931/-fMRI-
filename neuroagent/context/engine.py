@@ -82,6 +82,8 @@ class ContextEngine:
         metadata = {
             "phase": "context_engine_v1",
             "context_kind": context_kind,
+            "context_window_tokens": context_window_tokens,
+            "max_output_tokens": max_output_tokens,
             "token_budget": available,
             "estimated_tokens": selected_tokens,
             "selected": {

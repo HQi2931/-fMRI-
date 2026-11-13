@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,21 @@ from neuroagent.execution import (
     MatlabTemplateRenderer,
     PreprocessingJobPayload,
 )
+from neuroagent.infrastructure.matlab_executor import MatlabJobExecutor
 from neuroagent.tools import DpabiCfgProjection
+
+
+def test_head_motion_failure_report_bytes_match_registered_hash(tmp_path: Path) -> None:
+    artifact = MatlabJobExecutor._head_motion_qc_failure_artifact(
+        tmp_path,
+        job_hash="j" * 64,
+        plan_hash="p" * 64,
+        error_type="InvalidQcReport",
+    )[0]
+    content = (tmp_path / artifact["relative_path"]).read_bytes()
+    assert artifact["checksum"] == hashlib.sha256(content).hexdigest()
+    assert artifact["size_bytes"] == len(content)
+    assert b"\r\n" not in content
 
 
 def job() -> MatlabJobSpec:
@@ -76,16 +91,19 @@ def test_renderer_uses_fixed_template_and_quotes_space_paths(tmp_path: Path) -> 
     rendered = renderer.render(job(), environment(tmp_path), work)
     script = rendered.entry_script.read_text(encoding="utf-8")
     assert "DPARSFA_run(cfg_mat_path, staging_directory, subject_list_path, 0)" in script
+    assert script.count("DPARSFA_run(") == 1
+    assert "metric_cfg_path" not in script
+    assert "fullfile(staging_directory, result_directory, '**', filename)" in script
+    assert "result_directory = EffectiveCfg.StartingDirName" in script
+    assert "rsfmri:output:UnexpectedResultDirectory" in script
+    assert "auto_mask_paths{index} = EffectiveCfg.MaskFileForEachSubject{index}" in script
+    assert "rsfmri:mask:EffectiveMaskMissing" in script
+    assert "['AutoMask_', Cfg.SubjectID{index}, '.nii']" not in script
     assert "jsondecode" in script
     assert rendered.command[0].endswith("matlab.exe")
-    assert rendered.command[1:5] == (
-        "-nodisplay",
-        "-nosplash",
-        "-nodesktop",
-        "-batch",
-    )
-    assert "work root" in rendered.command[5]
-    assert rendered.command[5].endswith("');")
+    assert rendered.command[1] == "-batch"
+    assert "work root" in rendered.command[2]
+    assert rendered.command[2].endswith("');")
     assert rendered.generated_files == (
         "scripts/bootstrap.m",
         "config/preprocessing.json",

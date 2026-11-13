@@ -30,6 +30,10 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw 'Documentation policy gate failed.'
 }
+& "$PSScriptRoot/check-docs.ps1"
+if ($LASTEXITCODE -ne 0) {
+    throw 'Documentation standard gate failed.'
+}
 
 Invoke-Checked { git diff --check } 'Git whitespace policy'
 

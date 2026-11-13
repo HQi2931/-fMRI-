@@ -8,8 +8,10 @@
 - ALFF/fALFF、ReHo 统一强制 typed 脑掩膜，并校验 TR、有效频率分辨率、网格和处理顺序。
 - 完整、强类型且带参数来源的通用预处理协议：TR、删除初始时间点、层间时间校正、头动校正、协变量回归、标准化、去趋势、滤波、Scrubbing 与平滑均须显式选择。
 - 人工 QC revision、受试者冻结顺序、统计设计及 FDR/GRF 校正合同。
+- `StatisticalAtlasSelection` 冻结正式方案的图谱身份、内容哈希、空间和定位方法；该模型不读取文件，实际绑定与复核由应用服务负责。
 - 真实/合成模式分离的 `StatisticalResultManifest`：真实结果缺少设计矩阵、contrast、统计图、effect map、簇表、日志或版本证据时失败关闭；合成占位必须明确标记不可用于科学推断。
-- 不调用 Agent/Provider 的确定性 Markdown/JSON 复现报告。当前公共 Worker 仍不生成真实统计图、效应量或显著簇表。
+- 不调用 Agent/Provider 的确定性 Markdown/JSON 复现报告。公共 MATLAB Worker 可登记真实统计图、效应量、校正图和簇表，零显著体素正常完成且定位不适用。
+- 外部指标扫描把文件名/一级目录映射保留为带来源的候选；研究者纳入声明与候选分开保存，且不能升级为执行器 verified。未建模的 session/run 持续标为 unknown；统计引用不伪造内部 Artifact 谱系或预处理运行。
 - 数据检查、通用预处理、指标计算、QC 和统计分析的内置 `SkillSpec`。
 
 科学参数没有隐藏默认值。模型只验证结构、顺序与已确认的 DPABI V8.2 约束；频带、阈值、是否回归全局信号等研究选择必须来自用户、研究方案、数据元信息或经审核的预设。

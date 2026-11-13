@@ -16,6 +16,7 @@ class StatisticalTest(StrEnum):
     PAIRED_T = "paired_t"
     CORRELATION = "correlation"
     REGRESSION = "regression"
+    ONE_WAY_ANOVA_ANCOVA = "one_way_anova_ancova"
 
 
 class Tail(StrEnum):
@@ -29,6 +30,12 @@ class MissingValuePolicy(StrEnum):
     EXCLUDE_EXPLICITLY = "exclude_explicitly"
 
 
+class StatisticalQcSource(StrEnum):
+    APPROVED_REVIEW = "approved_review"
+    SKIPPED = "skipped"
+    EXTERNAL_IMPORT = "external_import"
+
+
 class Centering(StrEnum):
     NONE = "none"
     GRAND_MEAN = "grand_mean"
@@ -36,7 +43,7 @@ class Centering(StrEnum):
 
 
 class GrfSmoothnessMode(StrEnum):
-    """Explicit DPABI V8.2 smoothness source used by GRF inference."""
+    """Explicit DPABI smoothness source used by GRF inference."""
 
     DPABI_HEADER_OR_ESTIMATE = "dpabi_header_or_estimate"
     PROVIDED_DLH = "provided_dlh"
@@ -80,8 +87,16 @@ class StatisticalDesignRevision(FrozenModel):
     mask_artifact_id: str = Field(min_length=1)
     tail: Tail
     missing_value_policy: MissingValuePolicy
-    qc_review_revision_id: str = Field(min_length=1)
-    qc_review_hash: str = Field(min_length=64, max_length=64)
+    qc_source: StatisticalQcSource = StatisticalQcSource.APPROVED_REVIEW
+    qc_review_revision_id: str | None = Field(default=None, min_length=1)
+    qc_review_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    qc_skip_id: str | None = Field(default=None, min_length=1)
+    qc_skip_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    qc_source_run_id: str | None = Field(default=None, min_length=1)
+    external_import_id: str | None = Field(default=None, min_length=1)
+    external_import_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    external_demographics_revision_id: str | None = Field(default=None, min_length=1)
+    external_demographics_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @field_validator("contrast")
     @classmethod
@@ -92,6 +107,51 @@ class StatisticalDesignRevision(FrozenModel):
 
     @model_validator(mode="after")
     def explicit_alignment(self) -> StatisticalDesignRevision:
+        if bool(self.external_demographics_revision_id) != bool(self.external_demographics_hash):
+            raise ValueError("external demographics revision and hash must be frozen together")
+        if (
+            self.external_demographics_revision_id
+            and self.qc_source is not StatisticalQcSource.EXTERNAL_IMPORT
+        ):
+            raise ValueError("external demographics require an external input source")
+        if self.qc_source is StatisticalQcSource.APPROVED_REVIEW:
+            if not self.qc_review_revision_id or not self.qc_review_hash:
+                raise ValueError("approved-review statistics require QC review ID and hash")
+            if any(
+                (
+                    self.qc_skip_id,
+                    self.qc_skip_hash,
+                    self.qc_source_run_id,
+                    self.external_import_id,
+                    self.external_import_hash,
+                )
+            ):
+                raise ValueError("approved-review statistics cannot carry other source bindings")
+        elif self.qc_source is StatisticalQcSource.SKIPPED:
+            if not (self.qc_skip_id and self.qc_skip_hash and self.qc_source_run_id):
+                raise ValueError("QC-skipped statistics require skip ID, hash, and source run")
+            if any(
+                (
+                    self.qc_review_revision_id,
+                    self.qc_review_hash,
+                    self.external_import_id,
+                    self.external_import_hash,
+                )
+            ):
+                raise ValueError("QC-skipped statistics cannot carry other source bindings")
+        else:
+            if not (self.external_import_id and self.external_import_hash):
+                raise ValueError("external statistics require an included import ID and hash")
+            if any(
+                (
+                    self.qc_review_revision_id,
+                    self.qc_review_hash,
+                    self.qc_skip_id,
+                    self.qc_skip_hash,
+                    self.qc_source_run_id,
+                )
+            ):
+                raise ValueError("external statistics cannot carry internal QC bindings")
         if not self.subject_order or len(set(self.subject_order)) != len(self.subject_order):
             raise ValueError("subject_order must be non-empty and unique")
         image_subjects = tuple(image.subject_id for image in self.images)
@@ -106,10 +166,12 @@ class StatisticalDesignRevision(FrozenModel):
             covariate_subjects = tuple(value.subject_id for value in covariate.values)
             if covariate_subjects != self.subject_order:
                 raise ValueError(f"covariate {covariate.name!r} is not aligned to subject_order")
-            if covariate.centering is Centering.WITHIN_GROUP and self.test is not (
-                StatisticalTest.INDEPENDENT_TWO_SAMPLE_T
+            if (
+                covariate.centering is Centering.WITHIN_GROUP
+                and self.test is not (StatisticalTest.INDEPENDENT_TWO_SAMPLE_T)
+                and self.test is not StatisticalTest.ONE_WAY_ANOVA_ANCOVA
             ):
-                raise ValueError("within-group centering requires an independent two-sample test")
+                raise ValueError("within-group centering requires a grouped between-subject test")
         if self.test is StatisticalTest.PAIRED_T and self.covariates:
             raise ValueError(
                 "paired-test subject covariates are unsupported: repeating one value across "
@@ -118,7 +180,7 @@ class StatisticalDesignRevision(FrozenModel):
         if self.test is StatisticalTest.ONE_SAMPLE_T and any(
             column.centering is not Centering.GRAND_MEAN for column in self.covariates
         ):
-            raise ValueError("DPABI V8.2 y_TTest1_Image always grand-mean centers other covariates")
+            raise ValueError("DPABI y_TTest1_Image always grand-mean centers other covariates")
         if len({column.name for column in self.covariates}) != len(self.covariates):
             raise ValueError("covariate names must be unique")
         self._validate_test_specific_fields()
@@ -141,6 +203,24 @@ class StatisticalDesignRevision(FrozenModel):
                     "DPABI t-test helpers require the canonical first-column contrast; "
                     "reverse group_order/condition_order or select a negative tail instead"
                 )
+        elif self.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+            expected_group_contrast = (
+                *(1.0 for _ in range(len(self.group_order) - 1)),
+                *(0.0 for _ in range(expected_columns - len(self.group_order) + 1)),
+            )
+            if self.contrast != expected_group_contrast:
+                raise ValueError("ANOVA/ANCOVA requires the canonical omnibus group F contrast")
+            if self.tail is not Tail.TWO_SIDED:
+                raise ValueError("ANOVA/ANCOVA F tests do not support directional tails")
+        elif self.test is StatisticalTest.CORRELATION:
+            canonical = (1.0, *(0.0 for _ in range(expected_columns - 1)))
+            if self.contrast != canonical:
+                raise ValueError("correlation requires the canonical target-predictor contrast")
+        elif self.test is StatisticalTest.REGRESSION:
+            if sum(value != 0 for value in self.contrast) != 1 or any(
+                value not in {0.0, 1.0} for value in self.contrast
+            ):
+                raise ValueError("regression requires one explicit unit contrast for a predictor")
         matrix = design_matrix(self)
         if _matrix_rank(matrix) != expected_columns:
             raise ValueError(
@@ -178,6 +258,18 @@ class StatisticalDesignRevision(FrozenModel):
                 raise ValueError("both declared groups must contain subjects")
             if self.condition_order:
                 raise ValueError("independent t test must not declare condition_order")
+        elif self.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+            if self.one_sample_baseline is not None:
+                raise ValueError("ANOVA/ANCOVA must not declare a one-sample baseline")
+            if len(self.group_order) < 2 or len(set(self.group_order)) != len(self.group_order):
+                raise ValueError("ANOVA/ANCOVA requires at least two ordered groups")
+            groups = tuple(image.group for image in self.images)
+            if any(group not in self.group_order for group in groups):
+                raise ValueError("every ANOVA/ANCOVA image requires a declared group")
+            if any(group not in groups for group in self.group_order):
+                raise ValueError("every declared ANOVA/ANCOVA group must contain subjects")
+            if self.condition_order:
+                raise ValueError("ANOVA/ANCOVA must not declare condition_order")
         elif self.test is StatisticalTest.PAIRED_T:
             if self.one_sample_baseline is not None:
                 raise ValueError("paired t test must not declare a one-sample baseline")
@@ -190,7 +282,7 @@ class StatisticalDesignRevision(FrozenModel):
                 raise ValueError("one-sample t test must not declare group or condition order")
             if any(image.group is not None or image.condition is not None for image in self.images):
                 raise ValueError("one-sample t test images must not carry group/condition labels")
-        else:
+        elif self.test in {StatisticalTest.CORRELATION, StatisticalTest.REGRESSION}:
             if self.one_sample_baseline is not None:
                 raise ValueError("correlation/regression must not declare a one-sample baseline")
             if self.group_order or self.condition_order:
@@ -267,6 +359,8 @@ def design_column_count(design: StatisticalDesignRevision) -> int:
             if design.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T
             else 1 + covariate_count
         )
+    if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+        return len(design.group_order) + covariate_count
     return 1 + covariate_count
 
 
@@ -293,11 +387,24 @@ def design_matrix(design: StatisticalDesignRevision) -> tuple[tuple[float, ...],
         if design.test is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T:
             group_code = 1.0 if image.group == design.group_order[0] else -1.0
             base = (group_code, 1.0)
+        elif design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+            group_columns = tuple(
+                1.0 if image.group == group else 0.0 for group in design.group_order[:-1]
+            )
+            base = (*group_columns, 1.0)
         elif design.test is StatisticalTest.ONE_SAMPLE_T:
             base = (1.0,)
+        elif design.test is StatisticalTest.CORRELATION:
+            predictors = tuple(column[index] for column in covariates)
+            base = (predictors[0], 1.0, *predictors[1:])
         else:
             base = (1.0,)
-        rows.append((*base, *(column[index] for column in covariates)))
+        if design.test is StatisticalTest.CORRELATION:
+            rows.append(base)
+        elif design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+            rows.append((*base, *(column[index] for column in covariates)))
+        else:
+            rows.append((*base, *(column[index] for column in covariates)))
     return tuple(rows)
 
 
@@ -310,7 +417,7 @@ def centered_covariate_columns(
 
 
 def residual_degrees_of_freedom(design: StatisticalDesignRevision) -> int:
-    """Return the residual DF used by the DPABI V8.2 image helpers."""
+    """Return the residual DF used by the DPABI image helpers."""
 
     row_count = len(design.images)
     return row_count - design_column_count(design)
@@ -356,29 +463,52 @@ def validate_correction_for_design(
 ) -> None:
     """Validate correction metadata against the statistical map actually produced.
 
-    All currently registered statistical calls produce a T map.  Keeping this
-    check in the domain lets API services and JobSpec construction share one
-    deterministic scientific guard.
+    Correction metadata is checked against the frozen design, keeping API
+    services and JobSpec construction on one deterministic scientific guard.
     """
 
     if correction is None:
         return
     if correction.mask_artifact_id != design.mask_artifact_id:
         raise ValueError("correction mask must equal the frozen statistical-design mask")
-    if correction.statistic_type is not StatisticalMapType.T:
-        raise ValueError("registered statistical designs currently produce T maps only")
-    expected_df = float(residual_degrees_of_freedom(design))
-    if not math.isclose(correction.df1, expected_df, rel_tol=0.0, abs_tol=1e-9):
+    if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+        if correction.statistic_type is not StatisticalMapType.F:
+            raise ValueError("ANOVA/ANCOVA correction requires an F map")
+        expected_df1 = float(len(design.group_order) - 1)
+        expected_df2 = float(residual_degrees_of_freedom(design))
+    elif design.test is StatisticalTest.CORRELATION:
+        if correction.statistic_type is not StatisticalMapType.R:
+            raise ValueError("correlation correction requires an R map")
+        expected_df1 = float(residual_degrees_of_freedom(design))
+        expected_df2 = None
+    else:
+        if correction.statistic_type is not StatisticalMapType.T:
+            raise ValueError("t-test and regression correction requires a T map")
+        expected_df1 = float(residual_degrees_of_freedom(design))
+        expected_df2 = None
+    if not math.isclose(correction.df1, expected_df1, rel_tol=0.0, abs_tol=1e-9):
         raise ValueError(
-            f"correction df1 {correction.df1:g} does not match design residual DF {expected_df:g}"
+            f"correction df1 {correction.df1:g} does not match design DF {expected_df1:g}"
         )
-    if correction.df2 is not None:
-        raise ValueError("T-map correction must not declare df2")
+    if expected_df2 is None:
+        if correction.df2 is not None:
+            raise ValueError("T/R-map correction must not declare df2")
+    elif correction.df2 is None or not math.isclose(
+        correction.df2, expected_df2, rel_tol=0.0, abs_tol=1e-9
+    ):
+        raise ValueError("F-map correction df2 must equal the design residual DF")
     if isinstance(correction, FdrCorrection):
+        if correction.statistic_type is StatisticalMapType.F:
+            raise ValueError("first-version FDR supports only two-sided T/R maps")
         if design.tail is not Tail.TWO_SIDED:
-            raise ValueError("DPABI V8.2 y_FDR_Image supports only two-sided T-map p values")
+            raise ValueError("DPABI y_FDR_Image supports only two-sided T/R-map p values")
         return
-    if correction.two_tailed != (design.tail is Tail.TWO_SIDED):
+    expected_two_tailed = (
+        False
+        if design.test is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+        else design.tail is Tail.TWO_SIDED
+    )
+    if correction.two_tailed != expected_two_tailed:
         raise ValueError("GRF two_tailed must match the statistical-design tail")
 
 

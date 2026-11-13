@@ -1,19 +1,45 @@
 """SQLite-backed worker that executes only registered executor objects.
 
-This module contains no subprocess entry point.  The initial worker uses the
-MockJobExecutor; a later MATLAB adapter can implement the same JobExecutor
-port without changing API or workflow state rules.
+This module contains no subprocess entry point.  The worker dispatches through
+the executor registry: the Mock executor drives ``ToolRuntime``, while the
+MATLAB adapter validates a frozen plan and compiles controlled jobs.  Both
+implement the same ``JobExecutor`` port, so API and workflow state rules do not
+change with the backend.
 """
 
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 import uuid
 from typing import Any, Protocol
 
-from neuroagent.application.contracts import PlanRevisionView, RunView, WorkflowState
-from neuroagent.application.ports import ClaimedJob, JobExecutor
+from neuroagent.domain.lifecycle import WorkflowState
+from neuroagent.execution.ports import JobExecutor
+from neuroagent.observability.events import redact_event_payload
+from neuroagent.observability.tracing import bind_trace_id, reset_trace_id
+from neuroagent.workflow.models import ClaimedJob, JobEnvelope
+
+logger = logging.getLogger(__name__)
+
+_MAX_PERSISTED_REASON = 500
+
+
+def _safe_failure_reason(exc: BaseException) -> str:
+    """Return a stable, path-free failure summary for the persisted run record.
+
+    The full traceback is written to the local worker log.  Only this redacted
+    summary reaches the database, the audit trail and SSE consumers, so a
+    workstation path or free-form clinical text cannot leak through a run
+    record while the operator still receives an actionable reason.
+    """
+
+    summary = f"executor_error:{type(exc).__name__}"
+    redacted = redact_event_payload({"detail": str(exc)}).get("detail")
+    if isinstance(redacted, str) and redacted:
+        summary = f"{summary}: {redacted[:_MAX_PERSISTED_REASON]}"
+    return summary
 
 
 class WorkerRepository(Protocol):
@@ -54,9 +80,13 @@ class WorkerRepository(Protocol):
         actor: str,
     ) -> bool: ...
 
-    def get_run(self, run_id: str) -> RunView: ...
+    def get_run(self, run_id: str) -> WorkerRun: ...
 
-    def get_plan(self, plan_revision_id: str) -> PlanRevisionView: ...
+    def get_plan(self, plan_revision_id: str) -> WorkerPlan: ...
+
+    def register_artifacts(
+        self, project_id: str, run_id: str, artifacts: tuple[dict[str, Any], ...]
+    ) -> None: ...
 
     def append_event(
         self,
@@ -67,6 +97,16 @@ class WorkerRepository(Protocol):
         severity: str,
         payload: dict[str, object],
     ) -> None: ...
+
+
+class WorkerRun(Protocol):
+    project_id: str
+    plan_revision_id: str
+
+
+class WorkerPlan(Protocol):
+    plan_hash: str
+    manifest_hash: str
 
 
 class SQLiteWorker:
@@ -86,6 +126,22 @@ class SQLiteWorker:
         self._lease_seconds = lease_seconds
 
     def run_once(self) -> bool:
+        """Claim and process at most one job inside a per-attempt trace context.
+
+        Binding the trace id here means every event and log line produced for
+        one attempt shares a correlation id; without it ``current_trace_id()``
+        mints a fresh id per event, so worker activity could not be correlated.
+        The value stays within the 36-character ``runtime_events.trace_id``
+        column shared with the API middleware.
+        """
+
+        token = bind_trace_id(f"wk-{uuid.uuid4().hex}")
+        try:
+            return self._run_once()
+        finally:
+            reset_trace_id(token)
+
+    def _run_once(self) -> bool:
         claimed = self._repository.claim_next_job(self.worker_id, self._lease_seconds)
         if claimed is None:
             return False
@@ -120,13 +176,39 @@ class SQLiteWorker:
         if not isinstance(payload, dict):
             payload = {}
         plan = self._repository.get_plan(run.plan_revision_id)
-        payload = {
-            **payload,
-            "job_id": job_id,
-            "run_id": run_id,
-            "plan_hash": str(payload.get("plan_hash", plan.plan_hash)),
-            "input_manifest_hash": str(payload.get("input_manifest_hash", plan.manifest_hash)),
-        }
+        attempt = int(claimed.get("attempt", 1))
+        try:
+            envelope = JobEnvelope.from_persisted(
+                payload, job_id=job_id, run_id=run_id, attempt=attempt
+            )
+        except (TypeError, ValueError) as exc:
+            finalized = self._repository.finalize_job_failure(
+                job_id,
+                self.worker_id,
+                requested_state=WorkflowState.FAILED_TERMINAL,
+                error=f"invalid_job_envelope:{type(exc).__name__}",
+                actor=self.worker_id,
+            )
+            if not finalized:
+                self._record_lease_lost(run.project_id, run_id, job_id)
+            return True
+        command = dict(envelope.command)
+        approval_binding = dict(envelope.approval_binding)
+        approval_binding.setdefault("plan_hash", plan.plan_hash)
+        approval_binding.setdefault("input_manifest_hash", plan.manifest_hash)
+        envelope = envelope.model_copy(
+            update={
+                "command": command,
+                "approval_binding": approval_binding,
+                "job_id": job_id,
+                "run_id": run_id,
+                "attempt": attempt,
+            }
+        )
+        # Keep the long-standing executor port stable during migration. The
+        # queue and worker boundary use JobEnvelope; controlled adapters receive
+        # the flattened, server-validated command until all plugins migrate.
+        payload = envelope.executor_payload()
         lease_lost = threading.Event()
         heartbeat_stop = threading.Event()
         heartbeat_interval = max(0.05, self._lease_seconds / 3)
@@ -170,7 +252,13 @@ class SQLiteWorker:
                 ),
             )
         except Exception as exc:
-            execution_error = f"executor raised {type(exc).__name__}"
+            logger.error(
+                "Executor raised for job %s (run %s); classifying as retryable",
+                job_id,
+                run_id,
+                exc_info=True,
+            )
+            execution_error = _safe_failure_reason(exc)
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=max(heartbeat_interval * 2, 0.2))
@@ -204,6 +292,15 @@ class SQLiteWorker:
             if not finalized:
                 self._record_lease_lost(run.project_id, run_id, job_id)
             return True
+
+        if result.status != "succeeded" and result.artifacts:
+            logs = tuple(
+                item
+                for item in result.artifacts
+                if item.get("artifact_type") == "execution.matlab_log"
+            )
+            if logs:
+                self._repository.register_artifacts(run.project_id, run_id, logs)
 
         if result.status == "cancelled":
             self._repository.append_event(
@@ -239,6 +336,12 @@ class SQLiteWorker:
                     actor=self.worker_id,
                 )
             except Exception as exc:
+                logger.error(
+                    "Artifact finalization failed for job %s (run %s)",
+                    job_id,
+                    run_id,
+                    exc_info=True,
+                )
                 finalized = self._repository.finalize_job_failure(
                     job_id,
                     self.worker_id,
@@ -268,6 +371,14 @@ class SQLiteWorker:
         else:
             target = WorkflowState.FAILED_TERMINAL
 
+        logger.warning(
+            "Job %s (run %s) finished with status %s -> %s: %s",
+            job_id,
+            run_id,
+            result.status,
+            target.value,
+            error,
+        )
         finalized = self._repository.finalize_job_failure(
             job_id,
             self.worker_id,

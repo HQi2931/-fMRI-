@@ -48,41 +48,74 @@ pytestmark = pytest.mark.skipif(
 def _design(kind: StatisticalTest) -> StatisticalDesignRevision:
     paired = kind is StatisticalTest.PAIRED_T
     two_sample = kind is StatisticalTest.INDEPENDENT_TWO_SAMPLE_T
+    anova = kind is StatisticalTest.ONE_WAY_ANOVA_ANCOVA
+    correlation = kind is StatisticalTest.CORRELATION
+    regression = kind is StatisticalTest.REGRESSION
     subjects = tuple(f"synthetic-{i:02d}" for i in range(1, 7))
+    values = (-2, -1, 0, 0, 1, 2)
+    nuisance_values = (1, -1, -1, 1, 1, -1)
+    group_order = (
+        ("first", "second") if two_sample else ("first", "second", "third") if anova else ()
+    )
     images = tuple(
         AnalysisImage(
             subject_id=subject,
             artifact_id=f"image-{condition}-{index}",
-            group=("first" if index < 3 else "second") if two_sample else None,
+            group=(
+                ("first" if index < 3 else "second")
+                if two_sample
+                else group_order[index // 2]
+                if anova
+                else None
+            ),
             condition=condition if paired else None,
         )
         for condition in (("first", "second") if paired else ("only",))
         for index, subject in enumerate(subjects)
     )
-    covariates = (
-        (
-            CovariateColumn(
-                name="synthetic_covariate",
-                centering="grand_mean",
-                values=tuple(
-                    CovariateValue(subject_id=subject, value=value)
-                    for subject, value in zip(subjects, (-2, -1, 0, 0, 1, 2), strict=True)
-                ),
+    covariate_specs: list[tuple[str, tuple[int, ...]]] = []
+    if two_sample:
+        covariate_specs = [("synthetic_covariate", values)]
+    elif correlation or regression:
+        covariate_specs = [("target_predictor", values), ("nuisance", nuisance_values)]
+    elif anova:
+        covariate_specs = [("synthetic_covariate", (-1, 1, 0, 0, -1, 1))]
+    covariates = tuple(
+        CovariateColumn(
+            name=name,
+            centering="grand_mean",
+            values=tuple(
+                CovariateValue(subject_id=subject, value=value)
+                for subject, value in zip(subjects, column_values, strict=True)
             ),
         )
-        if two_sample
-        else ()
+        for name, column_values in covariate_specs
     )
-    columns = 7 if paired else (3 if two_sample else 1)
+    columns = (
+        7
+        if paired
+        else 2 + len(covariates)
+        if two_sample
+        else len(group_order) + len(covariates)
+        if anova
+        else 1 + len(covariates)
+    )
+    contrast = (
+        (1.0, 1.0, *(0.0 for _ in range(columns - 2)))
+        if anova
+        else (0.0, 1.0, *(0.0 for _ in range(columns - 2)))
+        if regression
+        else (1.0, *(0.0 for _ in range(columns - 1)))
+    )
     return StatisticalDesignRevision(
         revision_id=kind.value,
         test=kind,
         subject_order=subjects,
         images=images,
-        group_order=("first", "second") if two_sample else (),
+        group_order=group_order,
         condition_order=("first", "second") if paired else (),
         covariates=covariates,
-        contrast=(1.0, *(0.0 for _ in range(columns - 1))),
+        contrast=contrast,
         one_sample_baseline=2.0 if kind is StatisticalTest.ONE_SAMPLE_T else None,
         mask_artifact_id="mask",
         tail="one_sided_negative" if paired else "two_sided",
@@ -95,7 +128,7 @@ def _design(kind: StatisticalTest) -> StatisticalDesignRevision:
 def _matlab(executable: Path, script: Path) -> None:
     quoted = script.as_posix().replace("'", "''")
     result = subprocess.run(
-        [str(executable), "-nodisplay", "-nosplash", "-nodesktop", "-batch", f"run('{quoted}');"],
+        [str(executable), "-batch", f"run('{quoted}');"],
         capture_output=True,
         text=True,
         timeout=180,
@@ -127,11 +160,17 @@ def test_real_matlab_statistics_and_report_smoke() -> None:
         StatisticalTest.ONE_SAMPLE_T,
         StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
         StatisticalTest.PAIRED_T,
+        StatisticalTest.CORRELATION,
+        StatisticalTest.REGRESSION,
+        StatisticalTest.ONE_WAY_ANOVA_ANCOVA,
     ):
         design = _design(kind)
         call = adapter.project_statistics(design)
         correction: CorrectionSpec | None = None
-        if kind is StatisticalTest.ONE_SAMPLE_T:
+        if kind in {
+            StatisticalTest.ONE_SAMPLE_T,
+            StatisticalTest.INDEPENDENT_TWO_SAMPLE_T,
+        }:
             correction = FdrCorrection(
                 method="fdr",
                 q_threshold=0.05,
@@ -153,6 +192,28 @@ def test_real_matlab_statistics_and_report_smoke() -> None:
                 smoothness_mode="provided_dlh",
                 smoothness_dlh=0.05,
             )
+        elif kind is StatisticalTest.CORRELATION:
+            correction = FdrCorrection(
+                method="fdr",
+                q_threshold=0.05,
+                mask_artifact_id="mask",
+                statistic_type="R",
+                df1=call.residual_df,
+                df2=None,
+            )
+        elif kind is StatisticalTest.ONE_WAY_ANOVA_ANCOVA:
+            correction = GrfCorrection(
+                method="grf",
+                voxel_p_threshold=0.001,
+                cluster_p_threshold=0.05,
+                two_tailed=False,
+                mask_artifact_id="mask",
+                statistic_type="F",
+                df1=2,
+                df2=call.residual_df,
+                smoothness_mode="provided_dlh",
+                smoothness_dlh=0.05,
+            )
         roles = {
             "design_matrix": "output/design_matrix.json",
             "contrast": "output/contrast.json",
@@ -161,9 +222,12 @@ def test_real_matlab_statistics_and_report_smoke() -> None:
             "cluster_table": "output/clusters.tsv",
             "execution_log": "logs/matlab.log",
             "software_version_evidence": "output/software-version.json",
+            "correction_evidence": "output/correction.json",
         }
         if correction:
             roles["corrected_statistical_map"] = "output/statistic_corrected.nii"
+            if isinstance(correction, GrfCorrection):
+                roles["corrected_z_map"] = "output/statistic_corrected_z.nii"
         job = MatlabJobSpec(
             job_id=kind.value,
             run_id=kind.value,
@@ -207,8 +271,8 @@ def test_real_matlab_statistics_and_report_smoke() -> None:
         assert evidence["matlab"].startswith("R") and evidence["spm"].startswith("SPM")
         with (rendered.run_directory / "output/clusters.tsv").open(newline="") as stream:
             clusters = list(csv.DictReader(stream, delimiter="\t"))
-        assert clusters
         if design.test is StatisticalTest.PAIRED_T:
+            assert clusters
             assert all(float(row["peak_statistic"]) < 0 for row in clusters)
         artifacts = tuple(
             RegisteredArtifactMetadata(
@@ -269,7 +333,8 @@ def test_real_matlab_statistics_and_report_smoke() -> None:
 
 _FIXTURE_SCRIPT = r"""
 root = fileparts(mfilename('fullpath'));
-cases = {'one_sample_t', 'independent_two_sample_t', 'paired_t'};
+    cases = {'one_sample_t', 'independent_two_sample_t', 'paired_t', ...
+        'correlation', 'regression', 'one_way_anova_ancova'};
 [x,y,z] = ndgrid(1:10,1:10,1:10);
 mask = x>=2 & x<=9 & y>=2 & y<=9 & z>=2 & z<=9;
 signal = 1 - 2*(x>5);
@@ -283,24 +348,53 @@ for k = 1:numel(cases)
         volume = 4 + X(i,1)*signal + noise;
         if strcmp(cases{k}, 'one_sample_t'), volume = 2 + signal + noise; end
         if strcmp(cases{k}, 'independent_two_sample_t'), volume = volume + 0.4*X(i,3); end
+        if strcmp(cases{k}, 'correlation'), volume = 4 + 1.3*X(i,1)*signal + 0.5*X(i,3) + noise; end
+        if strcmp(cases{k}, 'regression'), volume = 4 + 1.3*X(i,2)*signal + 0.5*X(i,3) + noise; end
+        if strcmp(cases{k}, 'one_way_anova_ancova')
+            volume = 4 + 1.2*X(i,1)*signal + 0.8*X(i,2)*signal + 0.3*X(i,4) + noise;
+        end
         Y(i,:) = volume(:)';
-        paths = vertcat(req.dependent_groups.paths);
-        save_image(paths(i).value, volume);
+        paths = {};
+        for group_index = 1:numel(req.dependent_groups)
+            group_paths = req.dependent_groups(group_index).paths;
+            for path_index = 1:numel(group_paths)
+                paths{end+1} = group_paths(path_index).value; %#ok<AGROW>
+            end
+        end
+        save_image(paths{i}, volume);
     end
     save_image(req.mask_path, double(mask));
     if strcmp(cases{k}, 'one_sample_t'), Y = Y-req.one_sample_baseline; end
     beta = (X'*X)\(X'*Y); residual = Y-X*beta;
     sigma = sqrt(sum(residual.^2,1)/req.residual_df);
-    expected_t = (c'*beta)./(sigma*sqrt(c'*((X'*X)\c)));
-    if strcmp(cases{k}, 'one_sample_t')
-        expected_effect = (c'*beta)./sigma;
-    elseif strcmp(cases{k}, 'independent_two_sample_t')
-        expected_effect = (1-3/(4*req.residual_df-1))*2*(c'*beta)./sigma;
+    if strcmp(cases{k}, 'one_way_anova_ancova')
+        X0 = X(:,~logical(c'));
+        beta0 = (X0'*X0)\(X0'*Y); residual0 = Y-X0*beta0;
+        SSE0 = sum(residual0.^2,1); SSE = sum(residual.^2,1);
+        df1 = sum(c~=0);
+        expected_stat = ((SSE0-SSE)/df1)./(SSE/req.residual_df);
+        expected_effect = (SSE0-SSE)./SSE;
     else
+        expected_t = (c'*beta)./(sigma*sqrt(c'*((X'*X)\c)));
+        if strcmp(cases{k}, 'correlation')
+            expected_stat = expected_t./sqrt(req.residual_df + expected_t.^2);
+        else
+            expected_stat = expected_t;
+        end
+        if strcmp(cases{k}, 'one_sample_t')
+        expected_effect = (c'*beta)./sigma;
+        elseif strcmp(cases{k}, 'independent_two_sample_t')
+        expected_effect = (1-3/(4*req.residual_df-1))*2*(c'*beta)./sigma;
+        elseif strcmp(cases{k}, 'paired_t')
         differences = Y(1:n/2,:)-Y(n/2+1:end,:);
         expected_effect = mean(differences,1)./std(differences,0,1);
+        elseif strcmp(cases{k}, 'correlation')
+            expected_effect = expected_stat;
+        else
+            expected_effect = c'*beta;
+        end
     end
-    save_image(fullfile(folder,'expected_t.nii'), reshape(expected_t,size(x)).*mask);
+    save_image(fullfile(folder,'expected_t.nii'), reshape(expected_stat,size(x)).*mask);
     save_image(fullfile(folder,'expected_effect.nii'), reshape(expected_effect,size(x)).*mask);
 end
 disp('SYNTHETIC_FIXTURES_CREATED');
@@ -313,16 +407,21 @@ end
 
 _VERIFY_SCRIPT = r"""
 root = fileparts(mfilename('fullpath'));
-cases = {'one_sample_t', 'independent_two_sample_t', 'paired_t'};
+cases = {'one_sample_t', 'independent_two_sample_t', 'paired_t', ...
+    'correlation', 'regression', 'one_way_anova_ancova'};
 for k = 1:numel(cases)
     folder = fullfile(root,cases{k});
     expected = y_ReadRPI(fullfile(folder,'expected_t.nii'));
     actual = y_ReadRPI(fullfile(folder,'output','statistic.nii'));
-    assert(max(abs(actual(:)-expected(:))) < 1e-4);
+    assert(max(abs(actual(:)-expected(:))./(1+abs(expected(:)))) < 1e-6);
     expected_effect = y_ReadRPI(fullfile(folder,'expected_effect.nii'));
     effect = y_ReadRPI(fullfile(folder,'output','effect.nii'));
-    assert(max(abs(effect(:)-expected_effect(:))) < 1e-4);
-    assert(any(actual(:)>0) && any(actual(:)<0));
+    assert(max(abs(effect(:)-expected_effect(:))./(1+abs(expected_effect(:)))) < 1e-6);
+    if ~strcmp(cases{k}, 'one_way_anova_ancova')
+        assert(any(actual(:)>0) && any(actual(:)<0));
+    else
+        assert(all(actual(:)>=0));
+    end
     if k==1
         p = 2*tcdf(-abs(expected(expected~=0)),5);
         ps = sort(p); thresholds = (1:numel(ps))'/numel(ps)*0.05;
@@ -330,11 +429,46 @@ for k = 1:numel(cases)
         corrected = y_ReadRPI(fullfile(folder,'output','statistic_corrected.nii'));
         expected_corrected = expected.*(2*tcdf(-abs(expected),5)<=q);
         assert(max(abs(corrected(:)-expected_corrected(:))) < 1e-4);
+    elseif k==2
+        correction_info = jsondecode(fileread(fullfile(folder,'output','correction.json')));
+        design_info = jsondecode(fileread(fullfile(folder,'output','design_matrix.json')));
+        assert(strcmp(correction_info.method, 'fdr'));
+        assert(strcmp(correction_info.statistic_type, 'T'));
+        assert(isfield(correction_info, 'actual_p_threshold'));
+        corrected = y_ReadRPI(fullfile(folder,'output','statistic_corrected.nii'));
+        p = 2*(1-tcdf(abs(actual),design_info.residual_df));
+        expected_corrected = actual.*(p<=correction_info.actual_p_threshold);
+        assert(max(abs(corrected(:)-expected_corrected(:))) < 1e-4);
     elseif k==3
         corrected = y_ReadRPI(fullfile(folder,'output','statistic_corrected.nii'));
         assert(any(corrected(:)<0) && ~any(corrected(:)>0));
         assert(max(abs(corrected(corrected~=0)-expected(corrected~=0))) < 1e-4);
+    elseif strcmp(cases{k}, 'correlation')
+        correction_info = jsondecode(fileread(fullfile(folder,'output','correction.json')));
+        assert(strcmp(correction_info.method, 'fdr'));
+        assert(isfield(correction_info, 'actual_p_threshold'));
+        corrected = y_ReadRPI(fullfile(folder,'output','statistic_corrected.nii'));
+        df = 3;
+        % Match DPABI's R-to-p transform and operate on the actual single-
+        % precision statistic map so a voxel on the BH cutoff is deterministic.
+        p = 2*(1-tcdf(abs(actual).*sqrt(df./(1-actual.^2)),df));
+        expected_corrected = actual.*(p<=correction_info.actual_p_threshold);
+        assert(max(abs(corrected(:)-expected_corrected(:))) < 1e-4);
+    elseif strcmp(cases{k}, 'one_way_anova_ancova')
+        correction_info = jsondecode(fileread(fullfile(folder,'output','correction.json')));
+        assert(strcmp(correction_info.method, 'grf'));
+        assert(strcmp(correction_info.statistic_type, 'F'));
+        corrected = y_ReadRPI(fullfile(folder,'output','statistic_corrected.nii'));
+        corrected_z = y_ReadRPI(fullfile(folder,'output','statistic_corrected_z.nii'));
+        assert(all(corrected(:)>=0) && all(corrected_z(:)>=0));
+        design_info = jsondecode(fileread(fullfile(folder,'output','design_matrix.json')));
+        assert(strcmp(design_info.statistic_type, 'F') && design_info.df1==2);
+        clusters = readtable(fullfile(folder,'output','clusters.tsv'), ...
+            'FileType','text','Delimiter','\t');
+        assert(all(ismissing(clusters.direction)));
     end
+    correction_info = jsondecode(fileread(fullfile(folder,'output','correction.json')));
+    assert(isfield(correction_info, 'method'));
     fprintf('%s T/effect/correction numerical checks passed\n', cases{k});
 end
 disp('REAL_STATISTICS_SMOKE_PASS');

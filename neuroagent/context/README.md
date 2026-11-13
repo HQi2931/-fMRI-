@@ -1,5 +1,11 @@
 # context
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：backend_service_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 ## 模块职责
 
 `context` 负责 Gather、Select、Structure、Compress 流程，把任务、消息、记忆、证据、工作流状态和产物引用整理成可审计的 ContextPacket 与 ContextSnapshot。

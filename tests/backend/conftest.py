@@ -5,16 +5,20 @@ from pathlib import Path
 
 import pytest
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
     PlanRevisionCreate,
     PlanValidationRequest,
+)
+from neuroagent.application.contracts.projects import (
     ProjectCreate,
 )
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
+
+from .work_router_fakes import FakeWorkAgentRouter
 
 
 @pytest.fixture
@@ -32,8 +36,17 @@ def work_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[NeuroAgentService]:
+def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[ApplicationServices]:
+    # Tests must never inherit the developer's machine state.  The repository
+    # ``.env`` is untracked and holds real DPABI paths, real API keys and
+    # ``RSFMRI_ENABLE_REAL_EXECUTION``; inheriting it made the suite report a
+    # different result locally than in CI.  ``_env_file=None`` drops the dotenv
+    # file entirely, and the security-relevant fields are pinned so that an
+    # exported process variable cannot re-enable real execution either.
     settings = Settings(
+        _env_file=None,
+        enable_real_execution=False,
+        serve_frontend=False,
         rag_db_dir=None,  # Never inherit a developer's paid RAG configuration in tests.
         database_url=f"sqlite:///{(tmp_path / 'metadata.sqlite').as_posix()}",
         allowed_source_roots=[source_root],
@@ -41,17 +54,20 @@ def service(tmp_path: Path, source_root: Path, work_root: Path) -> Iterator[Neur
         matlab_executable=tmp_path / "missing" / "matlab.exe",
         spm_dir=tmp_path / "missing" / "spm12",
         dpabi_dir=tmp_path / "missing" / "dpabi",
-        worker_lease_seconds=1,
+        secrets_file=tmp_path / ".env",  # Never read the developer's real API keys.
+        # Keep leases long enough that mock jobs finish under CI load; lease
+        # expiry tests construct SQLiteWorker with an explicit short lease.
+        worker_lease_seconds=30,
     )
-    app_service = build_service(settings)
+    app_service = build_service(settings, work_agent_router=FakeWorkAgentRouter())
     yield app_service
     app_service.close()
 
 
 def make_project(
-    service: NeuroAgentService, source_root: Path, work_root: Path, *, key: str = "project-key"
+    service: ApplicationServices, source_root: Path, work_root: Path, *, key: str = "project-key"
 ):
-    return service.create_project(
+    return service.projects.create_project(
         ProjectCreate(
             name="Synthetic project",
             source_roots=[str(source_root)],
@@ -62,27 +78,27 @@ def make_project(
 
 
 def make_approved_plan(
-    service: NeuroAgentService,
+    service: ApplicationServices,
     project_id: str,
     *,
     manifest_hash: str = "a" * 64,
 ):
-    plan = service.create_plan(
+    plan = service.plans.create_plan(
         PlanRevisionCreate(
             project_id=project_id,
-            expected_project_version=service.get_project(project_id).version,
+            expected_project_version=service.projects.get_project(project_id).version,
             plan={"skill_id": "test.mock", "steps": [{"capability": "mock.execute"}]},
             manifest_hash=manifest_hash,
             environment_hash="b" * 64,
         ),
         "plan-create-key",
     )
-    plan = service.validate_plan(
+    plan = service.plans.validate_plan(
         plan.plan_revision_id,
         PlanValidationRequest(expected_version=plan.version, issues=[]),
         "plan-validate-key",
     )
-    service.approve_plan(
+    service.plans.approve_plan(
         plan.plan_revision_id,
         ApprovalCreate(
             expected_version=plan.version,
@@ -93,7 +109,7 @@ def make_approved_plan(
         ),
         "plan-approve-key",
     )
-    return service.get_plan(plan.plan_revision_id)
+    return service.plans.get_plan(plan.plan_revision_id)
 
 
 def make_bids_dataset(root: Path) -> Path:

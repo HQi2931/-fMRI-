@@ -7,13 +7,20 @@ from typing import Any
 
 from neuroagent.domain.fmri.metrics import (
     MetricKind,
+    MetricMaskSource,
     SmoothingTiming,
     TemporalFilterTiming,
     validate_alff_falff_input,
     validate_frequency_resolution,
     validate_reho_input,
 )
-from neuroagent.domain.fmri.preprocessing import ScrubbingMethod
+from neuroagent.domain.fmri.preprocessing import (
+    NormalizationTiming,
+    ScrubbingMethod,
+    reho_cut_requires_verified_checkpoint_before_metric_plan,
+    unsupported_result_normalization_with_metrics,
+    unsupported_result_stage_operations_without_metric_output,
+)
 from neuroagent.skills.loader import SkillLoader, SkillLoadError
 from neuroagent.skills.models import (
     IssueSeverity,
@@ -128,6 +135,74 @@ class SkillValidator:
                     )
                 )
         requested = set(request.requested_metrics)
+        metrics_requested = request.alff_falff is not None or request.reho is not None
+        if unsupported_result_normalization_with_metrics(
+            request_preprocessing=request.request_preprocessing,
+            metrics_requested=metrics_requested,
+            normalization_timing=(
+                request.preprocessing.normalization.timing
+                if request.preprocessing is not None
+                else None
+            ),
+        ):
+            issues.append(
+                SkillValidationIssue(
+                    code="RESULT_NORMALIZATION_METRIC_MASK_SPACES_UNSUPPORTED",
+                    severity=IssueSeverity.BLOCKING,
+                    message=(
+                        "当前 DPARSFA 执行合同只有一个指标掩膜绑定，无法表达 ON_RESULTS "  # noqa: RUF001
+                        "标准化与指标输出所需的独立 mask-space 输入；"  # noqa: RUF001
+                        "此能力提示不判断真实图像或掩膜空间。"
+                    ),
+                    path="preprocessing.normalization.timing",
+                    remediation=(
+                        "请由研究者决定是否改用受支持的标准化阶段，"  # noqa: RUF001
+                        "或调整为符合当前单掩膜绑定合同的方案，"  # noqa: RUF001
+                        "再重新运行预检。"
+                    ),
+                )
+            )
+        if unsupported_result_stage_operations_without_metric_output(
+            request_preprocessing=request.request_preprocessing,
+            metrics_requested=metrics_requested,
+            preprocessing=request.preprocessing,
+        ):
+            remediation = (
+                "请由研究者确认是否需要指标输出。若仅做预处理请停用 ON_RESULTS 阶段操作后重新预检。"
+            )
+            active_paths = []
+            if request.preprocessing is not None:
+                if request.preprocessing.normalization.timing is NormalizationTiming.ON_RESULTS:
+                    active_paths.append("preprocessing.normalization.timing")
+                if request.preprocessing.smoothing.timing is SmoothingTiming.ON_RESULTS:
+                    active_paths.append("preprocessing.smoothing.timing")
+            for path in active_paths:
+                issues.append(
+                    SkillValidationIssue(
+                        code="RESULT_STAGE_OPERATION_WITHOUT_METRIC_UNSUPPORTED",
+                        severity=IssueSeverity.BLOCKING,
+                        message="执行器要求 ON_RESULTS 操作有指标输出。本方案未请求指标输出。",
+                        path=path,
+                        remediation=remediation,
+                    )
+                )
+        if reho_cut_requires_verified_checkpoint_before_metric_plan(
+            request_preprocessing=request.request_preprocessing,
+            reho_requested=request.reho is not None,
+            preprocessing=request.preprocessing,
+        ):
+            issues.append(
+                SkillValidationIssue(
+                    code="REHO_CUT_CHECKPOINT_UNSUPPORTED",
+                    severity=IssueSeverity.BLOCKING,
+                    message="当前执行器无法在同一计划中物化并核验 ReHo 所需 checkpoint。",
+                    path="preprocessing.scrubbing.method",
+                    remediation=(
+                        "请先完成并核验 CUT 预处理 checkpoint。之后再创建 ReHo 计划。"
+                        "系统不会自动修改 scrubbing 选择。"
+                    ),
+                )
+            )
         if request.request_preprocessing and request.preprocessing is not None:
             issues.extend(
                 self.validate_parameter_payload(
@@ -300,6 +375,11 @@ def _validate_preprocessing_checkpoint(request: Any) -> list[SkillValidationIssu
         if item is not None
     }
     if len(mask_ids) > 1:
+        issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
+    mask_sources = {item.mask_source for item in (alff, reho) if item is not None}
+    if len(mask_sources) > 1:
+        issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
+    if MetricMaskSource.DPABI_AUTO in mask_sources and not request.request_preprocessing:
         issues.append(_scientific_issue("MASK_ARTIFACT_MISMATCH"))
     return issues
 

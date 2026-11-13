@@ -15,13 +15,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from neuroagent.api.routes import router
+from neuroagent.api.schemas.shared import ErrorBody, ErrorResponse
 from neuroagent.api.static import SpaStaticFiles
-from neuroagent.application.contracts import ErrorBody, ErrorResponse
-from neuroagent.application.errors import ApplicationError
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.services import ApplicationServices
 from neuroagent.application.settings import Settings
 from neuroagent.bootstrap import build_service
 from neuroagent.observability.tracing import bind_trace_id, reset_trace_id
+from neuroagent.shared.errors import ApplicationError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     settings: Settings | None = None,
     *,
-    service: NeuroAgentService | None = None,
+    service: ApplicationServices | None = None,
 ) -> FastAPI:
     owned_service = service is None
     resolved_settings = settings or (

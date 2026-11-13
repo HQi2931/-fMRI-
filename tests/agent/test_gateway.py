@@ -11,12 +11,37 @@ from neuroagent.agent.models import (
     ModelProfile,
     ProviderResponse,
     TaskType,
+    ToolCall,
 )
 from neuroagent.agent.providers import MockProvider, RetryableProviderError
 from neuroagent.agent.redaction import OutboundContextPolicy
 from neuroagent.agent.router import ModelRouter
 from neuroagent.agent.secrets import ProcessEnvironmentSecretResolver
+from neuroagent.agent.tool_spec import LlmTool, ToolTier
+from neuroagent.application.work_prompts import work_system_prompt
 from neuroagent.infrastructure.secrets import LocalDotenvSecretResolver
+
+
+def test_work_prompt_distinguishes_planning_action_from_callable_tools() -> None:
+    configured = profile("work-provider", "WORK_KEY", 1)
+    gateway = ModelGateway(
+        ModelRouter([configured], {}),
+        {},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+
+    rendered = gateway.build_chat_messages(
+        question="Prepare an ALFF plan; do not execute.",
+        evidence=[],
+        work_mode=True,
+        system_prompt=work_system_prompt("preprocessing"),
+    )
+
+    system_prompt = rendered.messages[0]["content"]
+    assert "prepare_preprocessing_plan 是最终 JSON 的 action 字段取值" in system_prompt
+    assert "不是工具" in system_prompt
+    assert "绝不能作为 tool/function 调用" in system_prompt
 
 
 def profile(profile_id: str, key: str, priority: int) -> ModelProfile:
@@ -301,4 +326,108 @@ async def test_chat_gateway_reports_no_profile_and_exhausted_retry(
             preferred_profile_id=None,
             model=None,
             allow_web_search=False,
+        )
+
+
+def _tool_profile(profile_id: str, key: str, priority: int) -> ModelProfile:
+    return ModelProfile(
+        id=profile_id,
+        provider=profile_id,
+        base_url="https://provider.example/v1",
+        model="tool-model",
+        api_key_env=key,
+        priority=priority,
+        capabilities=frozenset({ModelCapability.JSON_OBJECT, ModelCapability.TOOL_USE}),
+    )
+
+
+_TOOL = LlmTool(
+    name="get_run_status",
+    description="Read run state.",
+    parameters={"type": "object", "properties": {"run_id": {"type": "string"}}},
+    tier=ToolTier.READ,
+)
+
+
+@pytest.mark.asyncio
+async def test_tool_turn_requires_a_tool_capable_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    plain = profile("no-tools", "NO_TOOLS_KEY", 1)
+    monkeypatch.setenv("NO_TOOLS_KEY", "test-secret")
+    gateway = ModelGateway(
+        ModelRouter([plain], {}),
+        {plain.provider: MockProvider(["unused"])},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+
+    assert await gateway.tool_capable(None) is False
+    with pytest.raises(ModelGatewayError, match="no tool-use provider"):
+        await gateway.generate_tool_turn(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[_TOOL],
+            preferred_profile_id=None,
+            model=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_turn_sends_the_catalog_and_returns_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capable = _tool_profile("tool-provider", "TOOL_TURN_KEY", 1)
+    monkeypatch.setenv("TOOL_TURN_KEY", "test-secret")
+    provider = MockProvider(
+        [
+            ProviderResponse(
+                content="",
+                model="tool-model",
+                tool_calls=(
+                    ToolCall(
+                        call_id="call-9",
+                        name="get_run_status",
+                        arguments={"run_id": "r1"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    gateway = ModelGateway(
+        ModelRouter([capable], {}),
+        {capable.provider: provider},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+
+    assert await gateway.tool_capable(None) is True
+    result = await gateway.generate_tool_turn(
+        messages=[{"role": "user", "content": "how is the run going?"}],
+        tools=[_TOOL],
+        preferred_profile_id=None,
+        model=None,
+    )
+
+    assert provider.tool_requests == [("get_run_status",)]
+    assert result.selected_profile_id == "tool-provider"
+    assert result.response.tool_calls[0].name == "get_run_status"
+    assert result.response.tool_calls[0].arguments == {"run_id": "r1"}
+
+
+@pytest.mark.asyncio
+async def test_tool_turn_rejects_an_empty_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    capable = _tool_profile("tool-provider", "TOOL_TURN_KEY", 1)
+    monkeypatch.setenv("TOOL_TURN_KEY", "test-secret")
+    gateway = ModelGateway(
+        ModelRouter([capable], {}),
+        {capable.provider: MockProvider(["unused"])},
+        OutboundContextPolicy("a-stable-test-salt-value"),
+        ProcessEnvironmentSecretResolver(),
+    )
+
+    with pytest.raises(ModelGatewayError, match="at least one model-visible tool"):
+        await gateway.generate_tool_turn(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            preferred_profile_id=None,
+            model=None,
         )

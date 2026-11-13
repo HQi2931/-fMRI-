@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -89,6 +90,7 @@ class MatlabTemplateRenderer:
                         "base_cfg_allowed_fields": job.payload.base_cfg_allowed_fields,
                         "builtin_base_cfg": job.payload.base_cfg_artifact_id.startswith("builtin:"),
                         "outputs": [item.model_dump(mode="json") for item in job.payload.outputs],
+                        "t1_preparation": job.payload.t1_preparation,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -161,9 +163,6 @@ class MatlabTemplateRenderer:
         generated.append("provenance.json")
         command = (
             str(environment.matlab_executable.resolve()),
-            "-nodisplay",
-            "-nosplash",
-            "-nodesktop",
             "-batch",
             f"run('{_matlab_quote(entry_path)}');",
         )
@@ -226,6 +225,19 @@ class MatlabTemplateRenderer:
             "design_hash": call.design_hash,
             "test": _statistics_test_name(call.function.value),
             "group_counts": [len(group) for group in call.dependent_artifact_groups],
+            "statistic_type": (
+                "F"
+                if call.function.value == "y_ANCOVA1_Image"
+                else "R"
+                if call.function.value == "y_Correlation_Image"
+                else "T"
+            ),
+            "df1": (
+                len(call.dependent_artifact_groups) - 1
+                if call.function.value == "y_ANCOVA1_Image"
+                else call.residual_df
+            ),
+            "df2": (call.residual_df if call.function.value == "y_ANCOVA1_Image" else None),
         }
         if payload.correction is not None:
             parameters = dict(payload.correction.parameters)
@@ -246,6 +258,9 @@ def _statistics_test_name(function: str) -> str:
         "y_TTest1_Image": "one_sample_t",
         "y_TTest2_Image": "independent_two_sample_t",
         "y_TTestPaired_Image": "paired_t",
+        "y_Correlation_Image": "correlation",
+        "y_GroupAnalysis_Image": "regression",
+        "y_ANCOVA1_Image": "one_way_anova_ancova",
     }.get(function, "unsupported")
 
 
@@ -260,10 +275,12 @@ class ControlledMatlabExecutor:
         *,
         allow_real_execution: bool = False,
         preprocessing_workspace: Path | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> None:
         self._renderer = renderer
         self._environment = environment
         self._allowed_work_root = allowed_work_root
+        self._on_output = on_output
         self._allow_real_execution = allow_real_execution
         self._preprocessing_workspace = preprocessing_workspace
 
@@ -300,6 +317,11 @@ class ControlledMatlabExecutor:
             raise MatlabExecutionError(f"MATLAB executable not found: {executable}")
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         stdout_path, stderr_path = _allocate_execution_logs(rendered.run_directory, job.job_id)
+        preferences_directory = _prepare_matlab_preferences_directory(
+            rendered.run_directory, stdout_path.parent
+        )
+        child_environment = os.environ.copy()
+        child_environment["MATLAB_PREFDIR"] = str(preferences_directory)
         prior_artifacts = _snapshot_expected_artifacts(job, rendered.run_directory)
         requested_status: MatlabJobStatus | None = None
         with (
@@ -314,9 +336,29 @@ class ControlledMatlabExecutor:
                 text=True,
                 shell=False,
                 creationflags=creation_flags,
+                env=child_environment,
             )
             deadline = time.monotonic() + job.timeout_seconds
+            output_cursor = 0
+
+            def publish_output() -> None:
+                nonlocal output_cursor
+                if self._on_output is None:
+                    return
+                with stdout_path.open("rb") as reader:
+                    reader.seek(output_cursor)
+                    chunk = reader.read(64 * 1024)
+                    output_cursor += len(chunk)
+                if chunk:
+                    try:
+                        self._on_output(chunk.decode("utf-8", errors="replace"))
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "MATLAB progress publication unavailable"
+                        )
+
             while process.poll() is None:
+                publish_output()
                 if is_cancelled():
                     requested_status = MatlabJobStatus.CANCELLED
                     _terminate_process_tree(process)
@@ -339,6 +381,16 @@ class ControlledMatlabExecutor:
                 ) from exc
             _append_communicated_output(stdout_log, communicated_stdout)
             _append_communicated_output(stderr_log, communicated_stderr)
+            stdout_log.flush()
+            # The process has exited: drain the known remaining bytes in bounded
+            # chunks, so a burst larger than one chunk cannot hide final phases.
+            if self._on_output is not None:
+                final_size = stdout_path.stat().st_size
+                while output_cursor < final_size:
+                    previous_cursor = output_cursor
+                    publish_output()
+                    if output_cursor == previous_cursor:
+                        break
 
         stdout = _read_bounded_log(stdout_path)
         stderr = _read_bounded_log(stderr_path)
@@ -410,6 +462,33 @@ def _allocate_execution_logs(run_directory: Path, job_id: str) -> tuple[Path, Pa
             attempt_directory / "matlab.stderr.log",
         )
     raise MatlabExecutionError(f"too many preserved execution logs for job {job_id!r}")
+
+
+def _prepare_matlab_preferences_directory(run_directory: Path, attempt_directory: Path) -> Path:
+    """Create an isolated preference directory for one MATLAB process launch."""
+    try:
+        run_root = run_directory.resolve(strict=True)
+        attempt_root = attempt_directory.resolve(strict=True)
+        _assert_within(attempt_root, run_root)
+        if not attempt_root.is_dir():
+            raise MatlabExecutionError("MATLAB execution attempt directory is not a directory")
+
+        candidate = attempt_root / "matlab-preferences"
+        # Check the resolved path before mkdir so a pre-existing symlink or
+        # junction cannot redirect creation outside the execution attempt.
+        _assert_within(candidate.resolve(strict=False), attempt_root)
+        if candidate.is_symlink():
+            raise MatlabExecutionError("MATLAB preference directory cannot be a symbolic link")
+        candidate.mkdir(exist_ok=True)
+        preferences_directory = candidate.resolve(strict=True)
+        _assert_within(preferences_directory, attempt_root)
+        if not preferences_directory.is_dir():
+            raise MatlabExecutionError("MATLAB preference path is not a directory")
+        return preferences_directory
+    except OSError as exc:
+        raise MatlabExecutionError(
+            "failed to prepare the per-attempt MATLAB preference directory"
+        ) from exc
 
 
 def _read_bounded_log(path: Path) -> str:

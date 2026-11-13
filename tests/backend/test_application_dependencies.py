@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neuroagent.application.contracts import ModelProfileCreate, ModelProfileInput
-from neuroagent.application.services import NeuroAgentService
+from neuroagent.application.contracts.agent import (
+    ModelProfileCreate,
+    ModelProfileInput,
+)
+from neuroagent.application.services import ApplicationServices
 from neuroagent.bootstrap import build_service
 
 
@@ -16,7 +19,7 @@ class RecordingSecretWriter:
 
 
 def test_model_profile_creation_uses_injected_secret_writer(
-    service: NeuroAgentService,
+    service: ApplicationServices,
 ) -> None:
     writer = RecordingSecretWriter()
     isolated_service = build_service(
@@ -38,7 +41,7 @@ def test_model_profile_creation_uses_injected_secret_writer(
             timeout_seconds=30,
         )
 
-        isolated_service.create_model_profile(
+        isolated_service.models.create_model_profile(
             ModelProfileCreate(profile=profile, api_key="secret-value"),
             "injected-secret-profile-create",
         )

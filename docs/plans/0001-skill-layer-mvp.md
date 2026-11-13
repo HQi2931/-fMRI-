@@ -1,6 +1,7 @@
 # 计划 0001：fMRI Skill 层 MVP
 
-- 状态：已实现（计划编译与 Mock 闭环范围）
+- 状态：Implemented
+- 文档类型：Plan
 - 创建日期：2026-08-06
 - 完成日期：2026-08-07
 - 架构依据：[静息态 fMRI Skill 层架构](../architecture/fmri-skill-layer.md)
@@ -9,7 +10,7 @@
 
 交付一个不运行真实 MATLAB 的最小闭环：给定 DatasetProfile 和 ALFF/fALFF、ReHo 请求，系统能够选择经过审核的 SkillSpec、报告冲突和缺失参数、生成带类型化检查点的不可变 SkillPlan，并实例化 Mock Workflow。
 
-该范围已经实现并纳入候选基线。这里的“完成”仅指声明式 Skill、计划校验/编译、审批与 Mock 执行合同，不表示真实 DPABI 指标计算已经接入公共 Worker，也不表示科学结果已经通过真实数据验证。
+该范围已经实现。这里的“完成”仅指声明式 Skill、计划校验/编译、审批与 Mock 执行合同，不表示真实 DPABI 指标计算已经接入公共 Worker，也不表示科学结果已经通过真实数据验证。
 
 ## 范围
 
@@ -28,7 +29,7 @@
 3. 完成 DAG 编译、公共节点合并和冲突解释。
 4. 增加科学负向用例与审批失效测试。
 5. 接入 Mock Workflow/Tool，形成端到端计划演示。
-6. 在全量 MVP 路线图中继续实现 DPABI V8.2 adapter，并将用户批准的小数据验证作为独立发布条件。
+6. 在全量 MVP 路线图中继续实现 DPABI V8.2 adapter，并将用户批准的小数据验证作为独立验收项。
 
 ## 必须通过的验收用例
 

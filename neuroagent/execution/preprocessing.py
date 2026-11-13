@@ -7,18 +7,25 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from neuroagent.application.contracts import (
-    DatasetKind,
-    ManifestRevisionView,
-    SubjectManifestEntry,
+from neuroagent.domain.fmri.dataset import DatasetKind
+from neuroagent.domain.fmri.dpabi_stages import stage_rule
+from neuroagent.domain.fmri.metrics import (
+    AlffFalffParameters,
+    MetricMaskSource,
+    RehoParameters,
 )
-from neuroagent.domain.fmri.metrics import AlffFalffParameters, RehoParameters, SmoothingTiming
 from neuroagent.domain.fmri.preprocessing import (
     NormalizationMode,
-    NormalizationTiming,
     PreprocessingParameters,
-    ScrubbingMethod,
+    reho_cut_requires_verified_checkpoint_before_metric_plan,
+    unsupported_result_normalization_with_metrics,
+    unsupported_result_stage_operations_without_metric_output,
 )
+from neuroagent.domain.fmri.preprocessing_outputs import (
+    enumerate_dpabi_preprocessing_outputs,
+)
+from neuroagent.domain.fmri.preprocessing_scope import validate_preprocessing_subject_scope
+from neuroagent.execution.manifest import FrozenManifest, ManifestSubject
 from neuroagent.execution.models import (
     ArtifactPathBinding,
     ExpectedArtifact,
@@ -26,6 +33,16 @@ from neuroagent.execution.models import (
     MatlabJobSpec,
     PreprocessingJobPayload,
     PreprocessingOutput,
+)
+from neuroagent.execution.units import (
+    ArtifactPort,
+    ExecutionGate,
+    ExecutionUnit,
+    ExecutionUnitKind,
+    GateOutcome,
+    GatePosition,
+    VerificationMaturity,
+    VerificationStage,
 )
 from neuroagent.skills.models import SkillPlan, stable_hash
 from neuroagent.tools.dpabi_v82 import (
@@ -48,13 +65,14 @@ class PreprocessingCompilation:
     parameters: PreprocessingParameters | None
     alff: AlffFalffParameters | None
     reho: RehoParameters | None
-    subjects: tuple[SubjectManifestEntry, ...]
+    subjects: tuple[ManifestSubject, ...]
     producer_step_hashes: tuple[tuple[str, str], ...]
+    execution_unit: ExecutionUnit | None
 
 
 def compile_preprocessing(
     plan: SkillPlan,
-    manifest: ManifestRevisionView,
+    manifest: FrozenManifest,
     manifest_content: dict[str, Any],
     *,
     job_id: str,
@@ -70,6 +88,7 @@ def compile_preprocessing(
     role assignments, never by recursively guessing a functional series.
     """
     _validate_frozen_inputs(plan, manifest, manifest_content)
+    validate_preprocessing_capability_coverage(plan)
     names = [name for name, _ in plan.resolved_parameters]
     if len(names) != len(set(names)):
         raise ValueError("frozen scientific parameters contain duplicate names")
@@ -113,18 +132,32 @@ def compile_preprocessing(
         )
     ]
     metrics_requested = alff is not None or reho is not None
+    metric_parameters = tuple(item for item in (alff, reho) if item is not None)
+    auto_mask = bool(metric_parameters) and all(
+        item.mask_source is MetricMaskSource.DPABI_AUTO for item in metric_parameters
+    )
     if metrics_requested:
-        mask_ids = {item.mask_artifact_id for item in (alff, reho) if item is not None}
-        if mask_binding is None or mask_ids != {mask_binding.artifact_id}:
-            raise ValueError("all requested metrics require the same registered mask binding")
-        mask_name = _nifti_name(mask_binding.relative_path)
-        bindings.append(
-            ArtifactPathBinding(
-                artifact_id=mask_binding.artifact_id,
-                relative_path=f"staging/mask/{mask_name}",
-                read_only=mask_binding.read_only,
+        sources = {item.mask_source for item in metric_parameters}
+        if len(sources) != 1:
+            raise ValueError("all requested metrics require the same mask source")
+        if auto_mask:
+            if parameters is None or mask_binding is not None:
+                raise ValueError(
+                    "DPABI auto mask requires preprocessing and cannot use a "
+                    "registered mask binding"
+                )
+        else:
+            mask_ids = {item.mask_artifact_id for item in metric_parameters}
+            if mask_binding is None or mask_ids != {mask_binding.artifact_id}:
+                raise ValueError("all requested metrics require the same registered mask binding")
+            mask_name = _nifti_name(mask_binding.relative_path)
+            bindings.append(
+                ArtifactPathBinding(
+                    artifact_id=mask_binding.artifact_id,
+                    relative_path=f"staging/mask/{mask_name}",
+                    read_only=mask_binding.read_only,
+                )
             )
-        )
     elif mask_binding is not None:
         raise ValueError("a mask binding requires a requested metric")
     metric_request = (
@@ -133,9 +166,12 @@ def compile_preprocessing(
             functional_session_number=1,
             starting_dir_name="FunImg",
             input_manifest_hash=manifest.content_hash,
-            mask_relative_path=PurePosixPath(bindings[-1].relative_path)
-            .relative_to("staging")
-            .as_posix(),
+            mask_relative_path=(
+                None
+                if auto_mask
+                else PurePosixPath(bindings[-1].relative_path).relative_to("staging").as_posix()
+            ),
+            auto_mask=auto_mask,
             alff_falff=alff,
             reho=reho,
         )
@@ -144,28 +180,36 @@ def compile_preprocessing(
     )
     adapter = DpabiV82Adapter()
     staging_plan: StagingCopyPlan | None = None
+    needs_t1 = False
     if parameters is not None:
-        if parameters.normalization.mode in {
+        needs_t1 = parameters.t1 is not None or parameters.normalization.mode in {
             NormalizationMode.T1_SEGMENT,
             NormalizationMode.DARTEL,
-        }:
-            raise ValueError(
-                "T1 segmentation and DARTEL require an interactive DPARSFA path and are "
-                "not supported by the headless executor"
-            )
+        }
+        if parameters.t1 is None and needs_t1 and not parameters.realignment.enabled:
+            raise ValueError("T1 coregistration requires realignment mean-image evidence")
         if (
             parameters.normalization.mode is NormalizationMode.EPI_TEMPLATE
             and not parameters.realignment.enabled
         ):
             raise ValueError("EPI template normalization requires realignment mean-image evidence")
-        if not metrics_requested and (
-            parameters.normalization.timing is NormalizationTiming.ON_RESULTS
-            or parameters.smoothing.timing is SmoothingTiming.ON_RESULTS
+        if unsupported_result_stage_operations_without_metric_output(
+            request_preprocessing=True,
+            metrics_requested=metrics_requested,
+            preprocessing=parameters,
         ):
             raise ValueError("result-stage operations require a requested metric output")
-        if metrics_requested and parameters.normalization.timing is NormalizationTiming.ON_RESULTS:
+        if unsupported_result_normalization_with_metrics(
+            request_preprocessing=True,
+            metrics_requested=metrics_requested,
+            normalization_timing=parameters.normalization.timing,
+        ):
             raise ValueError("result normalization with metrics requires separate mask spaces")
-        if reho is not None and parameters.scrubbing.method is ScrubbingMethod.CUT:
+        if reho_cut_requires_verified_checkpoint_before_metric_plan(
+            request_preprocessing=True,
+            reho_requested=reho is not None,
+            preprocessing=parameters,
+        ):
             raise ValueError("CUT scrubbing requires a verified checkpoint before a ReHo plan")
         staging_plan = _staging_plan(plan, manifest, manifest_content, parameters)
         projection = adapter.project_pipeline_cfg(
@@ -201,19 +245,103 @@ def compile_preprocessing(
             cfg=cfg,
             cfg_hash=stable_hash(cfg),
         )
-    outputs = _outputs(subject_ids, alff, reho)
+    outputs = _outputs(subject_ids, alff, reho, auto_mask=auto_mask)
     expected_artifacts = (
         *(
             ExpectedArtifact(
                 artifact_type=(
                     "preprocessing.functional_timeseries"
                     if output.metric == "timeseries"
+                    else "preprocessing.brain_mask"
+                    if output.metric == "brain_mask"
                     else f"metric.{output.metric}.{output.scaling}"
                 ),
                 relative_pattern=output.relative_path,
                 required=True,
             )
             for output in outputs
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.t1_prepared",
+                relative_pattern=f"output/t1/{subject}/*.nii",
+                required=True,
+            )
+            for subject in subject_ids
+            if needs_t1
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.t1_inspection_image",
+                relative_pattern=f"output/t1/{subject}/inspection.png",
+                required=False,
+            )
+            for subject in subject_ids
+            if needs_t1
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.t1_preparation_evidence",
+                relative_pattern="output/t1-preparation-evidence.json",
+                required=True,
+            )
+            for _ in (0,)
+            if needs_t1
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.tissue_probability",
+                relative_pattern=f"output/structural/{subject}/c{tissue}*.nii",
+                required=True,
+            )
+            for subject in subject_ids
+            for tissue in (1, 2, 3)
+            if parameters is not None
+            and (
+                (parameters.t1 is not None and parameters.t1.segmentation.value != "disabled")
+                or parameters.normalization.mode
+                in {NormalizationMode.T1_SEGMENT, NormalizationMode.DARTEL}
+            )
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.dartel_flow_field",
+                relative_pattern=f"output/structural/{subject}/u_*.nii",
+                required=True,
+            )
+            for subject in subject_ids
+            if parameters is not None
+            and (
+                (parameters.t1 is not None and parameters.t1.dartel)
+                or parameters.normalization.mode is NormalizationMode.DARTEL
+            )
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.dartel_tissue_input",
+                relative_pattern=f"output/structural/{subject}/rc{tissue}*.nii",
+                required=True,
+            )
+            for subject in subject_ids
+            for tissue in (1, 2)
+            if parameters is not None
+            and (
+                (parameters.t1 is not None and parameters.t1.dartel)
+                or parameters.normalization.mode is NormalizationMode.DARTEL
+            )
+        ),
+        *(
+            ExpectedArtifact(
+                artifact_type="preprocessing.dartel_template",
+                relative_pattern=f"output/structural/templates/Template_{iteration}.nii",
+                required=True,
+            )
+            for iteration in range(1, 7)
+            if parameters is not None
+            and (
+                (parameters.t1 is not None and parameters.t1.dartel)
+                or parameters.normalization.mode is NormalizationMode.DARTEL
+            )
         ),
         ExpectedArtifact(
             artifact_type="preprocessing.metadata_evidence",
@@ -243,6 +371,11 @@ def compile_preprocessing(
             subject_ids=subject_ids,
             base_cfg_allowed_fields=("Realign",) if projection.cfg.get("IsRealign") else (),
             outputs=outputs,
+            t1_preparation=(
+                parameters.t1.preparation.value if parameters and parameters.t1 else "reorient_crop"
+            )
+            if needs_t1
+            else None,
         ),
     )
     producer_step_hashes = tuple(
@@ -251,13 +384,233 @@ def compile_preprocessing(
         if step.step_id
         in {"verify_preprocessed_metadata", "calculate_alff_falff", "calculate_reho"}
     )
+    execution_unit = _dparsfa_execution_unit(plan, spec)
     return PreprocessingCompilation(
-        spec, staging_plan, parameters, alff, reho, subjects, producer_step_hashes
+        spec,
+        staging_plan,
+        parameters,
+        alff,
+        reho,
+        subjects,
+        producer_step_hashes,
+        execution_unit,
     )
 
 
+DPARSFA_COMPUTE_CAPABILITIES = frozenset(
+    {
+        "fmri.dpabi.preprocess",
+        "fmri.dpabi.alff_falff",
+        "fmri.dpabi.prepare_reho",
+        "fmri.dpabi.reho",
+    }
+)
+
+DPARSFA_EXECUTION_UNIT_CAPABILITIES = frozenset(
+    {
+        *DPARSFA_COMPUTE_CAPABILITIES,
+        "fmri.artifact.verify_metadata",
+    }
+)
+
+PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES = frozenset(
+    {
+        "fmri.dataset.inspect",
+        "fmri.manifest.verify",
+        "fmri.dpabi.plan_bids_conversion",
+        "fmri.dpabi.stage_input",
+        "fmri.qc.metrics",
+        "fmri.qc.pre_statistics",
+    }
+)
+
+OTHER_EXECUTION_CAPABILITIES = frozenset(
+    {
+        "fmri.dpabi.statistics.ttest",
+        "fmri.dpabi.statistics.fdr",
+        "fmri.dpabi.statistics.grf",
+    }
+)
+
+
+def validate_preprocessing_capability_coverage(plan: SkillPlan) -> None:
+    """Require every frozen logical capability to have an explicit boundary.
+
+    The supported computation and metadata-verification steps map to one
+    ``DPARSFA_run`` unit. Read-only checks, staging and QC gates are explicitly
+    outside that call. Other registered executor capabilities and unknown
+    capabilities fail closed until a reviewed execution mapping is added.
+    Empty-step legacy/compiler plans retain their compatibility path.
+    """
+
+    if not plan.steps:
+        return
+
+    capabilities = {step.tool.capability for step in plan.steps}
+    classified = (
+        DPARSFA_EXECUTION_UNIT_CAPABILITIES
+        | PREPROCESSING_OUTSIDE_UNIT_CAPABILITIES
+        | OTHER_EXECUTION_CAPABILITIES
+    )
+    unknown = capabilities - classified
+    if unknown:
+        raise ValueError(
+            f"preprocessing plan contains unregistered or unmapped capabilities: {sorted(unknown)}"
+        )
+
+    other_executor = capabilities & OTHER_EXECUTION_CAPABILITIES
+    if other_executor:
+        raise ValueError(
+            "preprocessing plan contains capabilities requiring a different execution unit: "
+            f"{sorted(other_executor)}"
+        )
+
+    if not capabilities & DPARSFA_EXECUTION_UNIT_CAPABILITIES:
+        raise ValueError("preprocessing plan has no capability mapped to a DPARSFA execution unit")
+
+
+def _dparsfa_execution_unit(plan: SkillPlan, spec: MatlabJobSpec) -> ExecutionUnit | None:
+    """Describe the single physical DPARSFA invocation emitted for a SkillPlan.
+
+    Empty-step plans are used by low-level legacy/compiler fixtures, so they
+    deliberately remain unclassified. Runtime-generated reviewed plans carry
+    the logical step identities needed to construct the unit.
+    """
+    logical_step_ids = tuple(
+        step.step_id
+        for step in plan.steps
+        if step.tool.capability in DPARSFA_EXECUTION_UNIT_CAPABILITIES
+    )
+    if not logical_step_ids:
+        return None
+
+    if not isinstance(spec.payload, PreprocessingJobPayload):
+        raise ValueError("DPARSFA execution unit requires a preprocessing JobSpec")
+    parameter_values = dict(plan.resolved_parameters)
+    base_cfg_id = spec.payload.base_cfg_artifact_id
+    input_artifact_id = plan.input_artifact_id
+    bindings = {binding.artifact_id: binding for binding in spec.artifact_bindings}
+    inputs: list[ArtifactPort] = []
+    if "preprocessing" in parameter_values:
+        inputs.append(
+            ArtifactPort(
+                artifact_ref=input_artifact_id,
+                artifact_type="functional.source",
+                verification_stage=VerificationStage.BEFORE_CALL,
+            )
+        )
+    for artifact_id, _binding in bindings.items():
+        if artifact_id == base_cfg_id:
+            artifact_type = "configuration.dparsfa_base"
+            reusable_checkpoint = False
+        elif artifact_id == input_artifact_id:
+            artifact_type = "preprocessing.functional_timeseries"
+            reusable_checkpoint = True
+        else:
+            artifact_type = "mask.brain"
+            reusable_checkpoint = False
+        inputs.append(
+            ArtifactPort(
+                artifact_ref=artifact_id,
+                artifact_type=artifact_type,
+                verification_stage=VerificationStage.BEFORE_CALL,
+                reusable_checkpoint=reusable_checkpoint,
+            )
+        )
+
+    outputs = tuple(
+        ArtifactPort(
+            artifact_ref=f"expected:{item.artifact_type}:{item.relative_pattern}",
+            artifact_type=item.artifact_type,
+            verification_stage=VerificationStage.AFTER_CALL,
+            reusable_checkpoint=(item.artifact_type == "preprocessing.functional_timeseries"),
+            required=item.required,
+        )
+        for item in spec.expected_artifacts
+        if item.artifact_type
+        not in {
+            "preprocessing.t1_prepared",
+            "preprocessing.t1_inspection_image",
+            "preprocessing.t1_preparation_evidence",
+        }
+    )
+    return ExecutionUnit(
+        unit_id=f"dparsfa-{plan.plan_hash[:16]}",
+        kind=ExecutionUnitKind.DPARSFA_SINGLE_CALL,
+        logical_step_ids=logical_step_ids,
+        inputs=tuple(inputs),
+        outputs=outputs,
+        gates=(
+            ExecutionGate(
+                gate_id="approved-inputs-bound",
+                position=GatePosition.BEFORE_CALL,
+                outcome=GateOutcome.BLOCK_DISPATCH,
+                evidence_required=(
+                    "plan_hash",
+                    "approval_record_id",
+                    "input_manifest_hash",
+                    "environment_hash",
+                    "read_only_artifact_bindings",
+                ),
+            ),
+            ExecutionGate(
+                gate_id="dpabi-outputs-verified",
+                position=GatePosition.AFTER_CALL,
+                outcome=GateOutcome.FAIL_UNIT,
+                evidence_required=(
+                    "successful_dpabi_return",
+                    "required_artifact_files",
+                    "artifact_sha256",
+                    "actual_metadata_evidence",
+                ),
+            ),
+        ),
+        verification_maturity=VerificationMaturity.CONTRACT_ONLY,
+    )
+
+
+def validate_preprocessing_execution_unit(
+    plan: SkillPlan,
+    spec: MatlabJobSpec,
+    execution_unit: ExecutionUnit | None,
+    *,
+    approval_record_id: str,
+    run_id: str,
+    job_id: str,
+) -> None:
+    """Fail closed when a supported DPARSFA unit drifts from its frozen inputs.
+
+    Empty-step legacy/compiler plans intentionally have no execution unit and
+    retain their existing path. Runtime plans with registered DPARSFA logical
+    steps must carry the exact unit deterministically derived from their frozen
+    plan and compiled JobSpec before the executor creates an attempt or stages
+    files.
+    """
+
+    expected = _dparsfa_execution_unit(plan, spec)
+    if expected is None:
+        if execution_unit is not None:
+            raise ValueError("DPARSFA execution unit has no supported frozen logical steps")
+        return
+
+    if execution_unit is None:
+        raise ValueError("supported DPARSFA plan is missing its execution unit")
+    if spec.kind is not MatlabJobKind.DPARSFA_PREPROCESSING:
+        raise ValueError("DPARSFA execution unit requires a preprocessing JobSpec")
+    if (
+        spec.plan_hash != plan.plan_hash
+        or spec.input_manifest_hash != plan.input_manifest_hash
+        or spec.approval_record_id != approval_record_id
+        or spec.run_id != run_id
+        or spec.job_id != job_id
+    ):
+        raise ValueError("DPARSFA JobSpec authority does not match the frozen plan and run")
+    if execution_unit != expected:
+        raise ValueError("DPARSFA execution unit does not match the frozen plan and JobSpec")
+
+
 def _validate_frozen_inputs(
-    plan: SkillPlan, manifest: ManifestRevisionView, content: dict[str, Any]
+    plan: SkillPlan, manifest: FrozenManifest, content: dict[str, Any]
 ) -> None:
     body = plan.model_dump(mode="json", exclude={"plan_id", "plan_hash", "warnings"})
     if stable_hash(body) != plan.plan_hash:
@@ -274,6 +627,17 @@ def _validate_frozen_inputs(
         raise ValueError("manifest subject roles do not match frozen content")
     if content.get("profile") != manifest.profile.model_dump(mode="json"):
         raise ValueError("manifest profile does not match frozen content")
+    if manifest.profile.kind is DatasetKind.DPABI_READY:
+        selected = manifest.selected_input_stage or content.get("selected_input_stage")
+        if not isinstance(selected, str) or stage_rule(selected) is None:
+            raise ValueError(
+                "DPABI-ready preprocessing requires an explicitly confirmed input stage"
+            )
+        if manifest.selected_input_stage != selected:
+            raise ValueError("DPABI manifest stage confirmation is not frozen consistently")
+        content_stage = content.get("selected_input_stage")
+        if content_stage != selected:
+            raise ValueError("DPABI manifest stage confirmation differs from its content")
     invalid_nifti = content.get("invalid_nifti_files")
     if isinstance(invalid_nifti, list) and invalid_nifti:
         raise ValueError("frozen manifest contains NIfTI files with unreadable headers")
@@ -281,16 +645,8 @@ def _validate_frozen_inputs(
         raise ValueError("real preprocessing requires a frozen NIfTI input manifest")
 
 
-def _validate_subjects(subjects: tuple[SubjectManifestEntry, ...]) -> None:
-    ids = [subject.subject_id for subject in subjects]
-    if not ids or len(ids) != len(set(ids)):
-        raise ValueError("preprocessing requires unique subjects in a single session")
-    if len({subject.session_id for subject in subjects}) != 1:
-        raise ValueError("multiple sessions are not supported by this preprocessing compiler")
-    if len({subject.subject_id.casefold() for subject in subjects}) != len(ids):
-        raise ValueError("subject IDs collide on a case-insensitive filesystem")
-    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", item) for item in ids):
-        raise ValueError("subject IDs contain unsafe path characters")
+def _validate_subjects(subjects: tuple[ManifestSubject, ...]) -> None:
+    validate_preprocessing_subject_scope(subjects)
 
 
 def _nifti_name(relative: str) -> str:
@@ -304,20 +660,23 @@ def _nifti_name(relative: str) -> str:
 
 def _staging_plan(
     plan: SkillPlan,
-    manifest: ManifestRevisionView,
+    manifest: FrozenManifest,
     content: dict[str, Any],
     parameters: PreprocessingParameters,
 ) -> StagingCopyPlan:
     hashes, sizes = content.get("file_hashes"), content.get("file_sizes")
     if not isinstance(hashes, dict) or not isinstance(sizes, dict):
         raise ValueError("frozen manifest requires file hashes and sizes")
-    needs_t1 = parameters.normalization.mode in {
+    needs_t1 = parameters.t1 is not None or parameters.normalization.mode in {
         NormalizationMode.T1_SEGMENT,
         NormalizationMode.DARTEL,
     }
-    if needs_t1 and parameters.normalization.structural_artifact_id != (
-        f"manifest:{manifest.manifest_id}:anatomical-source"
-    ):
+    structural_id = (
+        parameters.t1.structural_artifact_id
+        if parameters.t1
+        else parameters.normalization.structural_artifact_id
+    )
+    if needs_t1 and structural_id != (f"manifest:{manifest.manifest_id}:anatomical-source"):
         raise ValueError("structural input does not match the frozen manifest")
     operations: list[StagingCopyOperation] = []
     sources: set[str] = set()
@@ -332,6 +691,8 @@ def _staging_plan(
         for directory, paths in role_files:
             for relative in paths:
                 name = _nifti_name(relative)
+                if directory == "T1Img" and not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                    raise ValueError("DPABI T1 converter requires a safe ASCII anatomical basename")
                 if relative.casefold() in sources:
                     raise ValueError("a scientific input file cannot be assigned to two roles")
                 sources.add(relative.casefold())
@@ -362,39 +723,22 @@ def _staging_plan(
 
 
 def _outputs(
-    subjects: tuple[str, ...], alff: AlffFalffParameters | None, reho: RehoParameters | None
+    subjects: tuple[str, ...],
+    alff: AlffFalffParameters | None,
+    reho: RehoParameters | None,
+    *,
+    auto_mask: bool = False,
 ) -> tuple[PreprocessingOutput, ...]:
-    result: list[PreprocessingOutput] = []
-    for subject in subjects:
-        result.append(
-            PreprocessingOutput(
-                subject_id=subject,
-                metric="timeseries",
-                scaling=None,
-                relative_path=f"output/{subject}/timeseries.nii",
-            )
+    expectations = enumerate_dpabi_preprocessing_outputs(subjects, alff, reho, auto_mask=auto_mask)
+    return tuple(
+        PreprocessingOutput(
+            subject_id=item.subject_id,
+            metric=item.metric,
+            scaling=item.scaling.value if item.scaling is not None else None,
+            relative_path=item.relative_path,
         )
-        for parameters in (alff, reho):
-            if parameters is None:
-                continue
-            metrics = (
-                tuple(metric.value for metric in parameters.requested_metrics)
-                if isinstance(parameters, AlffFalffParameters)
-                else ("reho",)
-            )
-            if len(set(parameters.requested_scalings)) != len(parameters.requested_scalings):
-                raise ValueError("requested metric scalings must be unique")
-            for metric in metrics:
-                for scaling in parameters.requested_scalings:
-                    result.append(
-                        PreprocessingOutput(
-                            subject_id=subject,
-                            metric=metric,
-                            scaling=scaling.value,
-                            relative_path=f"output/{subject}/{scaling.value}_{metric}.nii",
-                        )
-                    )
-    return tuple(result)
+        for item in expectations
+    )
 
 
 def _disabled_preprocessing_cfg() -> dict[str, Any]:

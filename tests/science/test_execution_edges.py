@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -224,7 +225,7 @@ def test_statistics_payload_rejects_map_type_and_df_mismatch() -> None:
     wrong_type = fdr_correction().model_copy(
         update={"parameters": {**fdr_correction().parameters, "statistic_type": "Z"}}
     )
-    with pytest.raises(ValidationError, match="produce T maps"):
+    with pytest.raises(ValidationError, match="statistic type does not match"):
         StatisticsJobPayload(
             statistics=statistics_job().payload.statistics,  # type: ignore[union-attr]
             correction=wrong_type,
@@ -232,7 +233,7 @@ def test_statistics_payload_rejects_map_type_and_df_mismatch() -> None:
     wrong_df = fdr_correction().model_copy(
         update={"parameters": {**fdr_correction().parameters, "df1": 2.0}}
     )
-    with pytest.raises(ValidationError, match="residual DF"):
+    with pytest.raises(ValidationError, match="correction df1 does not match"):
         StatisticsJobPayload(
             statistics=statistics_job().payload.statistics,  # type: ignore[union-attr]
             correction=wrong_df,
@@ -412,6 +413,79 @@ def test_controlled_executor_maps_success_missing_output_and_failure(
     assert failed.exit_code == 7
 
 
+def test_controlled_executor_uses_attempt_local_matlab_preferences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = prepared_work(tmp_path)
+    executor = ControlledMatlabExecutor(
+        MatlabTemplateRenderer(Path("matlab/templates")),
+        executable_environment(tmp_path),
+        work,
+        allow_real_execution=True,
+    )
+    monkeypatch.setenv("MATLAB_PREFDIR", "ambient-user-preferences")
+    monkeypatch.setenv("RSFMRI_INHERITED_ENV_TEST", "inherited")
+    launch: dict[str, Any] = {}
+
+    def fake_popen(*args: Any, **kwargs: Any) -> FakeProcess:
+        launch["args"] = args
+        launch.update(kwargs)
+        return FakeProcess(*args, **kwargs, create_output=True)
+
+    monkeypatch.setattr(matlab_module.subprocess, "Popen", fake_popen)
+
+    result = executor.execute(job(), is_cancelled=lambda: False)
+
+    run_root = work / "run-001"
+    attempt_root = run_root / "logs" / "job-001" / "attempt-001"
+    preference_directory = attempt_root / "matlab-preferences"
+    child_environment = launch["env"]
+    assert result.status.value == "succeeded"
+    assert preference_directory.is_dir()
+    assert child_environment["MATLAB_PREFDIR"] == str(preference_directory.resolve())
+    assert Path(child_environment["MATLAB_PREFDIR"]).is_relative_to(run_root.resolve())
+    assert child_environment["RSFMRI_INHERITED_ENV_TEST"] == "inherited"
+    assert child_environment["MATLAB_PREFDIR"] != "ambient-user-preferences"
+    assert os.environ["MATLAB_PREFDIR"] == "ambient-user-preferences"
+
+
+def test_controlled_executor_rejects_attempt_path_escape_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = prepared_work(tmp_path)
+    outside_attempt = tmp_path / "outside-attempt"
+    outside_attempt.mkdir()
+
+    executor = ControlledMatlabExecutor(
+        MatlabTemplateRenderer(Path("matlab/templates")),
+        executable_environment(tmp_path),
+        work,
+        allow_real_execution=True,
+    )
+    launched = False
+
+    def forbidden_popen(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        nonlocal launched
+        launched = True
+        raise AssertionError("Popen must not run when the preferences path escapes")
+
+    monkeypatch.setattr(
+        matlab_module,
+        "_allocate_execution_logs",
+        lambda *_args: (
+            outside_attempt / "matlab.stdout.log",
+            outside_attempt / "matlab.stderr.log",
+        ),
+    )
+    monkeypatch.setattr(matlab_module.subprocess, "Popen", forbidden_popen)
+
+    with pytest.raises(MatlabExecutionError, match="escapes allowed root"):
+        executor.execute(job(), is_cancelled=lambda: False)
+
+    assert not launched
+    assert tuple(outside_attempt.iterdir()) == ()
+
+
 @pytest.mark.parametrize("stale_kind", ["nonempty", "empty", "directory"])
 def test_controlled_executor_rejects_stale_empty_and_directory_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_kind: str
@@ -518,11 +592,13 @@ def test_controlled_executor_streams_large_output_to_bounded_local_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     work = prepared_work(tmp_path)
+    progress_chunks: list[str] = []
     executor = ControlledMatlabExecutor(
         MatlabTemplateRenderer(Path("matlab/templates")),
         executable_environment(tmp_path),
         work,
         allow_real_execution=True,
+        on_output=progress_chunks.append,
     )
 
     def file_stream_process(*args: Any, **kwargs: Any) -> FakeProcess:
@@ -538,6 +614,9 @@ def test_controlled_executor_streams_large_output_to_bounded_local_logs(
     result = executor.execute(job(), is_cancelled=lambda: False)
 
     assert result.status.value == "succeeded"
+    assert "".join(progress_chunks).endswith("stdout")
+    assert sum(len(chunk) for chunk in progress_chunks) == 1024 * 1024 + 4096 + len("stdout")
+    assert all(len(chunk) <= 64 * 1024 for chunk in progress_chunks)
     assert result.stdout.startswith("[output truncated")
     assert result.stdout.endswith("stdout")
     assert result.stderr == "synthetic warning"

@@ -1,0 +1,425 @@
+import { useCallback, useEffect, useState } from "react";
+
+import { agentApi } from "../../api/agent";
+import { environmentApi } from "../../api/environment";
+import { describeError } from "../../api/transport";
+import type { EnvironmentConfig, EnvironmentProbe, ModelProfile } from "../../api/types";
+import { EmptyState, Feedback, PageHeader } from "../../components/Ui";
+import { StatusPill } from "../../components/StatusPill";
+
+const CAPABILITIES = ["json_object", "streaming", "reasoning", "web_search"] as const;
+type Capability = ModelProfile["profile"]["capabilities"][number];
+const ALL_CAPABILITIES = [...CAPABILITIES, "tool_use"] as const satisfies readonly Capability[];
+
+const CAPABILITY_LABELS: Record<Capability, string> = {
+  json_object: "JSON 结构化输出",
+  streaming: "流式输出",
+  reasoning: "推理",
+  web_search: "联网搜索（OpenAI-compatible）",
+  tool_use: "工具调用（Work 工作区文件工具）",
+};
+
+const PROVIDER_PRESETS = [
+  { label: "DeepSeek 深度求索", baseUrl: "https://api.deepseek.com", keyEnv: "DEEPSEEK_API_KEY" },
+  { label: "智谱 ZAI（国内 Coding）", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4", keyEnv: "ZHIPU_API_KEY" },
+  { label: "智谱 ZAI（海外 Coding）", baseUrl: "https://api.z.ai/api/coding/paas/v4", keyEnv: "ZAI_API_KEY" },
+  { label: "月之暗面 Kimi（国内）", baseUrl: "https://api.moonshot.cn/v1", keyEnv: "MOONSHOT_API_KEY" },
+  { label: "月之暗面 Kimi（海外）", baseUrl: "https://api.moonshot.ai/v1", keyEnv: "MOONSHOT_API_KEY" },
+  { label: "百炼 Token Plan（国内，编码工具）", baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
+  { label: "百炼 Token Plan（新加坡，编码工具）", baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", keyEnv: "QWEN_API_KEY" },
+  { label: "阿里云百炼 Model Studio", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", keyEnv: "DASHSCOPE_API_KEY", model: "qwen3.8-flash" },
+  { label: "小米 MiMo", baseUrl: "https://api.xiaomimimo.com/v1", keyEnv: "XIAOMI_API_KEY" },
+  { label: "蚂蚁灵语 Ant Ling", baseUrl: "https://api.ant-ling.com/v1", keyEnv: "ANT_LING_API_KEY" },
+  { label: "OpenAI", baseUrl: "https://api.openai.com/v1", keyEnv: "OPENAI_API_KEY" },
+  { label: "xAI Grok", baseUrl: "https://api.x.ai/v1", keyEnv: "XAI_API_KEY" },
+  { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", keyEnv: "GROQ_API_KEY" },
+  { label: "Together AI", baseUrl: "https://api.together.ai/v1", keyEnv: "TOGETHER_API_KEY" },
+  { label: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1", keyEnv: "FIREWORKS_API_KEY" },
+  { label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", keyEnv: "CEREBRAS_API_KEY" },
+  { label: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", keyEnv: "NVIDIA_API_KEY" },
+  { label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", keyEnv: "HF_API_KEY" },
+  { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", keyEnv: "OPENROUTER_API_KEY" },
+  { label: "GitHub Copilot", baseUrl: "https://api.individual.githubcopilot.com", keyEnv: "GITHUB_COPILOT_API_KEY" },
+  { label: "自定义 OpenAI 兼容", baseUrl: "", keyEnv: "" },
+] as const;
+
+export function SettingsPage() {
+  const [environment, setEnvironment] = useState<EnvironmentProbe | null>(null);
+  const [environmentConfig, setEnvironmentConfig] = useState<EnvironmentConfig | null>(null);
+  const [matlabExecutable, setMatlabExecutable] = useState("");
+  const [spmDir, setSpmDir] = useState("");
+  const [dpabiDir, setDpabiDir] = useState("");
+  const [matlabVersion, setMatlabVersion] = useState("unspecified");
+  const [spmVersion, setSpmVersion] = useState("unspecified");
+  const [dpabiVersion, setDpabiVersion] = useState("unspecified");
+  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
+  const [profileCapabilities, setProfileCapabilities] = useState<Record<string, Capability[]>>({});
+  const [presetLabel, setPresetLabel] = useState("");
+  const [provider, setProvider] = useState("openai-compatible");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [keyEnv, setKeyEnv] = useState("");
+  const [priority, setPriority] = useState(100);
+  const [capabilities, setCapabilities] = useState<Capability[]>(["json_object"]);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(45);
+  const [contextWindowTokens, setContextWindowTokens] = useState(16384);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(2048);
+  const [thinkingMode, setThinkingMode] = useState<"provider_default" | "disabled">("provider_default");
+  const [profileLimits, setProfileLimits] = useState<Record<string, { timeout_seconds: number; context_window_tokens: number; max_output_tokens: number; thinking_mode: "provider_default" | "disabled" }>>({});
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const [probe, localConfig, configured] = await Promise.all([
+      environmentApi.environment(signal),
+      environmentApi.environmentConfig(signal),
+      agentApi.profiles(signal),
+    ]);
+    setEnvironment(probe);
+    setEnvironmentConfig(localConfig);
+    setMatlabExecutable(localConfig.matlab_executable ?? "");
+    setSpmDir(localConfig.spm_dir ?? "");
+    setDpabiDir(localConfig.dpabi_dir ?? "");
+    setMatlabVersion(localConfig.matlab_version);
+    setSpmVersion(localConfig.spm_version);
+    setDpabiVersion(localConfig.dpabi_version);
+    setProfiles(configured);
+    setProfileCapabilities(Object.fromEntries(configured.map((item) => [
+      item.profile.id,
+      [...item.profile.capabilities],
+    ])));
+    setProfileLimits(Object.fromEntries(configured.map((item) => [item.profile.id, {
+      timeout_seconds: item.profile.timeout_seconds,
+      context_window_tokens: item.profile.context_window_tokens,
+      max_output_tokens: item.profile.max_output_tokens,
+      thinking_mode: item.profile.thinking_mode ?? "provider_default",
+    }])));
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    refresh(controller.signal).catch((caught) => {
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) setError(describeError(caught));
+    });
+    return () => controller.abort();
+  }, [refresh]);
+
+  async function saveEnvironmentConfig(): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await environmentApi.updateEnvironmentConfig({
+        matlab_executable: matlabExecutable.trim() || null,
+        spm_dir: spmDir.trim() || null,
+        dpabi_dir: dpabiDir.trim() || null,
+        matlab_version: matlabVersion.trim() || "unspecified",
+        spm_version: spmVersion.trim() || "unspecified",
+        dpabi_version: dpabiVersion.trim() || "unspecified",
+      });
+      setEnvironmentConfig(saved);
+      await refresh();
+      setMessage("本机 MATLAB/SPM/DPABI 路径已保存，并已重新探测。版本文本仅作为本机证据标签，不作硬编码兼容承诺。");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function applyPreset(label: string): void {
+    setPresetLabel(label);
+    const preset = PROVIDER_PRESETS.find((item) => item.label === label);
+    if (preset) {
+      setProvider("openai-compatible");
+      setBaseUrl(preset.baseUrl);
+      setKeyEnv(preset.keyEnv);
+      setModelName("model" in preset ? preset.model : "");
+      setThinkingMode(preset.baseUrl === "https://api.deepseek.com" ? "disabled" : "provider_default");
+    }
+  }
+
+  function toggleCapability(capability: Capability): void {
+    setCapabilities((previous) =>
+      previous.includes(capability)
+        ? previous.filter((item) => item !== capability)
+        : [...previous, capability],
+    );
+  }
+
+  function toggleProfileCapability(profileId: string, capability: Capability): void {
+    setProfileCapabilities((previous) => {
+      const current = previous[profileId] ?? [];
+      return {
+        ...previous,
+        [profileId]: current.includes(capability)
+          ? current.filter((item) => item !== capability)
+          : [...current, capability],
+      };
+    });
+  }
+
+  async function saveProfileCapabilities(item: ModelProfile): Promise<void> {
+    const nextCapabilities = profileCapabilities[item.profile.id] ?? [...item.profile.capabilities];
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await agentApi.createProfile({
+        profile: { ...item.profile, capabilities: nextCapabilities, ...profileLimits[item.profile.id] },
+        api_key: null,
+      });
+      await refresh();
+      setMessage(`已保存 ${item.profile.id} 的模型设置。文件授权需按新配置重新验证。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function resetForm(): void {
+    setPresetLabel("");
+    setBaseUrl("");
+    setModelName("");
+    setApiKey("");
+    setKeyEnv("");
+  }
+
+  async function bindProvider(): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const selectedModel = modelName.trim();
+      const models = selectedModel
+        ? null
+        : await agentApi.listProviderModels({
+          base_url: baseUrl.trim(),
+          api_key: apiKey.trim() || null,
+          api_key_env: apiKey.trim() ? null : keyEnv.trim() || null,
+        });
+      if (models && models.models.length === 0) throw new Error("该服务商没有返回可选择的模型。");
+      const existing = profiles.find((item) =>
+        item.profile.base_url === baseUrl.trim().replace(/\/$/, "") &&
+        item.profile.api_key_env === keyEnv.trim(),
+      );
+      const derivedId = keyEnv.trim().toLowerCase().replace(/_api_key$/, "").replace(/_/g, "-");
+      const baseId = derivedId.length >= 2 ? derivedId : "provider";
+      let connectionId = existing?.profile.id ?? baseId.slice(0, 63);
+      let suffix = 2;
+      while (!existing && profiles.some((item) => item.profile.id === connectionId)) {
+        connectionId = `${baseId.slice(0, 60)}-${suffix}`;
+        suffix += 1;
+      }
+      await agentApi.createProfile({
+        profile: {
+          id: connectionId,
+          provider: provider.trim(),
+          base_url: baseUrl.trim(),
+          model: selectedModel || models!.models[0],
+          api_key_env: keyEnv.trim(),
+          priority,
+          capabilities,
+          timeout_seconds: timeoutSeconds,
+          context_window_tokens: contextWindowTokens,
+          max_output_tokens: maxOutputTokens,
+          thinking_mode: thinkingMode,
+        },
+        api_key: apiKey.trim() || null,
+      });
+      resetForm();
+      await refresh();
+      setMessage(models
+        ? `服务商 API 已绑定；Agent 对话框可直接选择其返回的 ${models.models.length} 个模型。API Key 仅写入本地 .env。`
+        : `服务商 API 已绑定；采用手动指定模型 ${selectedModel}，本次未读取模型列表。API Key 仅写入本地 .env。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshProfileModels(item: ModelProfile): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await agentApi.listProviderModels({
+        base_url: item.profile.base_url,
+        api_key: null,
+        api_key_env: item.profile.api_key_env,
+      });
+      setMessage(`服务商连接正常，当前返回 ${result.models.length} 个可选模型。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testProfile(item: ModelProfile): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await agentApi.testProvider({
+        profile_id: item.profile.id,
+        expected_profile_version: item.version,
+      });
+      if (!result.available) throw new Error("服务商结构化测试未通过。");
+      setMessage(`服务商结构化测试成功，已通过 ${result.routing.selected_profile_id} 完成合成请求。`);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeProfile(item: ModelProfile): Promise<void> {
+    if (!window.confirm(`确定解除服务商「${item.profile.base_url}」的 API 绑定吗？`)) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await agentApi.deleteProfile(item.profile.id);
+      await refresh();
+      setMessage("已解除服务商 API 绑定。");
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="本机环境"
+        title="设置"
+        description="绑定模型服务商的 API Key 后，Agent 对话框会直接加载并显示该服务商提供的模型，无需逐个创建模型配置。"
+        action={<button className="button button-secondary" type="button" disabled={busy} onClick={() => refresh().catch((caught) => setError(describeError(caught)))}>重新探测</button>}
+      />
+      <Feedback message={error || message} error={Boolean(error)} />
+      <section className="panel environment-setup-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">首次配置</span>
+            <h2>选择本机 MATLAB / SPM / DPABI</h2>
+            <p>路径由用户在前端填写，后端只验证当前机器上的文件、目录和受控入口函数。不会要求所有用户都使用同一版本。</p>
+          </div>
+          <StatusPill tone={environmentConfig?.configured ? "good" : "warn"}>
+            {environmentConfig?.configured ? "已配置" : "待配置"}
+          </StatusPill>
+        </div>
+        <div className="form-grid">
+          <label>MATLAB 可执行文件<input aria-label="MATLAB 可执行文件" value={matlabExecutable} onChange={(event) => setMatlabExecutable(event.target.value)} placeholder="如 D:\\Matlab\\bin\\matlab.exe" /></label>
+          <label>SPM 目录<input aria-label="SPM 目录" value={spmDir} onChange={(event) => setSpmDir(event.target.value)} placeholder="如 D:\\Matlab\\toolbox\\spm" /></label>
+          <label>DPABI 目录<input aria-label="DPABI 目录" value={dpabiDir} onChange={(event) => setDpabiDir(event.target.value)} placeholder="如 D:\\Matlab\\toolbox\\DPABI" /></label>
+          <label>MATLAB 版本标签<input aria-label="MATLAB 版本标签" value={matlabVersion} onChange={(event) => setMatlabVersion(event.target.value)} placeholder="如 R2024b" /></label>
+          <label>SPM 版本标签<input aria-label="SPM 版本标签" value={spmVersion} onChange={(event) => setSpmVersion(event.target.value)} placeholder="如 SPM12 / SPM25" /></label>
+          <label>DPABI 版本标签<input aria-label="DPABI 版本标签" value={dpabiVersion} onChange={(event) => setDpabiVersion(event.target.value)} placeholder="如 V9.0_250415" /></label>
+        </div>
+        <p className="muted">路径必须由运行 API/Worker 的本机可访问；保存后会写入工作目录中的本地配置文件，不进入 Git、数据库事件或科学结果。</p>
+        <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !matlabExecutable.trim() || !spmDir.trim() || !dpabiDir.trim()} onClick={saveEnvironmentConfig}>保存并重新探测</button></div>
+      </section>
+      <section className="panel environment-list">
+        {environment?.components.map((component) => (
+          <div key={component.name}>
+            <span className="environment-icon" aria-hidden="true">{component.name.slice(0, 1).toUpperCase()}</span>
+            <div><strong>{component.name}</strong><p>{component.evidence ?? "未发现安全的版本证据"}</p></div>
+            <StatusPill tone={component.available ? "good" : "warn"}>{component.available ? "可用" : "待配置"}</StatusPill>
+          </div>
+        ))}
+        {!environment && <EmptyState title="等待环境探测" detail="后端连接后会显示 MATLAB、SPM、DPABI 与工作目录的安全摘要。" />}
+      </section>
+      <div className="two-column">
+        <section className="panel">
+          <span className="eyebrow">绑定服务商 API</span><h2>OpenAI-compatible</h2>
+          <div className="parameter-list">
+            <label>服务商预设
+              <select value={presetLabel} onChange={(event) => applyPreset(event.target.value)}>
+                <option value="">选择服务商（自动填基址与密钥变量名）</option>
+                {PROVIDER_PRESETS.map((preset) => <option key={preset.label} value={preset.label}>{preset.label}</option>)}
+              </select>
+            </label>
+            <label>API Key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="填写后可直接拉取模型；保存时写入本地 .env（不进入数据库）" autoComplete="off" /></label>
+            <label>Provider<select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="openai-compatible">openai-compatible</option></select></label>
+            <label>API 基址<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" /></label>
+            <label>指定模型 ID（可留空）<input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="如 qwen3.8-flash；留空使用首个模型" /></label>
+            <label>密钥环境变量名<input value={keyEnv} onChange={(event) => setKeyEnv(event.target.value)} placeholder="以 _API_KEY 结尾，如 DEEPSEEK_API_KEY" /></label>
+            <div className="form-grid">
+              <label>优先级<input type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label>
+              <label>超时秒<input type="number" min={1} max={300} value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))} /></label>
+              <label>上下文窗口<input type="number" min={4096} max={2000000} value={contextWindowTokens} onChange={(event) => setContextWindowTokens(Number(event.target.value))} /></label>
+              <label>回答 token 上限<input type="number" min={256} max={65536} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} /></label>
+              {baseUrl.replace(/\/$/, "") === "https://api.deepseek.com" && <label>思考模式<select value={thinkingMode} onChange={(event) => setThinkingMode(event.target.value as typeof thinkingMode)}><option value="provider_default">使用服务商默认</option><option value="disabled">关闭思考，直接返回方案</option></select></label>}
+            </div>
+            <fieldset className="capability-field">
+              <legend>能力</legend>
+              {ALL_CAPABILITIES.map((capability) => (
+                <label key={capability} className="check-field">
+                  <input type="checkbox" checked={capabilities.includes(capability)} onChange={() => toggleCapability(capability)} />
+                  {CAPABILITY_LABELS[capability]}
+                </label>
+              ))}
+            </fieldset>
+          </div>
+          <p className="muted">留空模型 ID 时，绑定会读取服务商模型列表并选择首个模型。填写模型 ID 时会跳过模型列表请求并直接保存该 ID；此方式不验证该模型是否可用，适合未提供 <code>/models</code> 接口的服务商。API Key 只在此本机设置页输入并写入未跟踪的本地 <code>.env</code>，不要通过聊天发送密钥；不填 Key 时使用 <code>.env</code> 中已配置的同名变量。</p>
+          {baseUrl.trim().startsWith("https://token-plan.") && <p className="muted">百炼官方将 Token Plan 定位为交互式编码工具套餐，不面向本项目这类后端服务。请改用“阿里云百炼 Model Studio”预设和对应的 Model Studio API Key。</p>}
+          <p className="muted">“工具调用”是服务商配置声明。只有确认该服务商支持 OpenAI 兼容的 <code>tools/tool_calls</code> 才应开启；Work 还会在文件授权前验证所选具体模型。</p>
+          <div className="button-row"><button className="button button-primary" type="button" disabled={busy || !baseUrl.trim() || !keyEnv.trim()} onClick={bindProvider}>{busy ? "正在绑定…" : modelName.trim() ? "绑定 API（使用指定模型）" : "绑定 API 并读取模型"}</button></div>
+        </section>
+        <section className="panel">
+          <span className="eyebrow">已绑定服务商</span><h2>{profiles.length} 项</h2>
+          {profiles.length === 0 ? <EmptyState title="尚未绑定服务商 API" detail="绑定后，服务商提供的模型会直接出现在 Agent 对话框中。" /> : (
+            <div className="profile-list">
+              {profiles.map((item) => (
+                <div key={item.profile.id} className="profile-card">
+                  <div className="profile-card-head">
+                    <strong>{new URL(item.profile.base_url).hostname}</strong>
+                    <StatusPill tone="info">API 已绑定</StatusPill>
+                  </div>
+                  <p className="muted">{item.profile.provider} · {item.profile.base_url}</p>
+                  <p className="muted">密钥 {item.profile.api_key_env} · 优先级 {item.profile.priority} · 上下文 {item.profile.context_window_tokens} · 回答 {item.profile.max_output_tokens} token</p>
+                  <p className="muted">能力 {item.profile.capabilities.length > 0 ? item.profile.capabilities.join("、") : "普通对话"}</p>
+                  <fieldset disabled={busy}>
+                    <legend>编辑模型设置</legend>
+                    {(["timeout_seconds", "context_window_tokens", "max_output_tokens"] as const).map((field) => <label key={field}>
+                      {{ timeout_seconds: "请求超时秒", context_window_tokens: "上下文窗口", max_output_tokens: "输出 token 上限" }[field]}
+                      <input type="number" aria-label={`${item.profile.id} ${field}`} min={field === "timeout_seconds" ? 1 : field === "context_window_tokens" ? 4096 : 256} max={field === "timeout_seconds" ? 300 : field === "context_window_tokens" ? 2000000 : 65536} value={profileLimits[item.profile.id]?.[field] ?? item.profile[field]} onChange={(event) => setProfileLimits((previous) => ({ ...previous, [item.profile.id]: { ...previous[item.profile.id], [field]: Number(event.target.value) } }))} />
+                    </label>)}
+                    {new URL(item.profile.base_url).hostname === "api.deepseek.com" && <label>思考模式<select aria-label={`${item.profile.id} 思考模式`} value={profileLimits[item.profile.id]?.thinking_mode ?? "provider_default"} onChange={(event) => setProfileLimits((previous) => ({ ...previous, [item.profile.id]: { ...previous[item.profile.id], thinking_mode: event.target.value as "provider_default" | "disabled" } }))}><option value="provider_default">使用服务商默认</option><option value="disabled">关闭思考，直接返回方案</option></select></label>}
+                  </fieldset>
+                  <fieldset className="capability-field profile-capability-field">
+                    <legend>编辑能力</legend>
+                    {ALL_CAPABILITIES.map((capability) => (
+                      <label key={capability} className="check-field">
+                        <input
+                          type="checkbox"
+                          checked={(profileCapabilities[item.profile.id] ?? item.profile.capabilities).includes(capability)}
+                          onChange={() => toggleProfileCapability(item.profile.id, capability)}
+                        />
+                        {CAPABILITY_LABELS[capability]}
+                      </label>
+                    ))}
+                  </fieldset>
+                  {(profileCapabilities[item.profile.id] ?? item.profile.capabilities).includes("tool_use") && <p className="muted">开启后，该 Profile 的模型都会进入工具调用候选；Work 文件授权仍会单独测试你选择的模型。</p>}
+                  <div className="button-row">
+                    <button className="button button-secondary" type="button" disabled={busy || JSON.stringify([...(profileCapabilities[item.profile.id] ?? item.profile.capabilities)].sort()) === JSON.stringify([...item.profile.capabilities].sort())} onClick={() => void saveProfileCapabilities(item)}>保存能力</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => void saveProfileCapabilities(item)}>保存模型设置</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => testProfile(item)}>测试模型连接</button>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => refreshProfileModels(item)}>刷新模型列表</button>
+                    <button className="button button-danger" type="button" disabled={busy} onClick={() => removeProfile(item)}>解除绑定</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </>
+  );
+}

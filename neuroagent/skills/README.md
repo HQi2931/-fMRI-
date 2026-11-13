@@ -1,5 +1,11 @@
 # Skills 层
 
+- 状态：Implementing
+- 文档类型：Architecture
+- 维护者：skill_workflow_engineer
+- 更新日期：2026-09-23
+- 关联：[项目结构](../../docs/architecture/project-structure.md)
+
 `neuroagent.skills` 是科研能力的声明、解析、校验和编译层。它将 `SkillRequest` 编译为可预览、可审批、不可变的 `SkillPlan`，但不执行 Tool 或 MATLAB。
 
 处理链如下：

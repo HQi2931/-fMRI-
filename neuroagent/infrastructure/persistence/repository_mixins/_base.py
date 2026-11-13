@@ -6,7 +6,6 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
@@ -14,17 +13,23 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalView,
-    ArtifactView,
+    PlanRevisionView,
+)
+from neuroagent.application.contracts.projects import (
     DatasetSplitView,
     DatasetView,
     DemographicsRevisionView,
     ManifestRevisionView,
-    PlanRevisionView,
     ProjectView,
+)
+from neuroagent.application.contracts.runs import (
+    ArtifactView,
     QcReviewView,
     RunView,
+)
+from neuroagent.application.contracts.statistics import (
     StatisticalResultDetailView,
     StatisticalResultView,
 )
@@ -44,6 +49,7 @@ from neuroagent.infrastructure.persistence.models import (
     StatisticalResultRow,
     WorkflowRunRow,
 )
+from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
 
 
 def _id() -> str:
@@ -97,19 +103,26 @@ def _validate_artifact_relative_path(value: object) -> str:
 class RepositoryBaseMixin(ABC):
     """Declares shared persistence state and helpers every domain mixin reads via ``self``.
 
-    Concrete bodies live on :class:`SqliteRepository` (transaction helpers and
-    response conversions) or on the domain mixin owning the helper
-    (``_register_artifacts_in_session`` on ``ArtifactEventMixin``).  The
+    Concrete bodies live on :class:`SqliteUnitOfWork` (transaction helpers),
+    :class:`RepositoryMapperMixin` (response conversions), or on the domain mixin owning the helper
+    (``_register_artifacts_in_session`` on ``ArtifactCatalogMixin``). The
     abstract contracts below exist so mypy strict can type-check every
     ``self.xxx`` access from within a single mixin's MRO.
     """
 
     database: Database
-    _transaction_session: ContextVar[Session | None]
+    unit_of_work: SqliteUnitOfWork
 
     @contextmanager
-    @abstractmethod
-    def _immediate_write_transaction(self) -> Iterator[Session]: ...
+    def _read_session(self) -> Iterator[Session]:
+        """Read pending writes when a use case is already inside an atomic transaction."""
+        active = self.unit_of_work.current_session()
+        if active is not None:
+            active.flush()
+            yield active
+        else:
+            with self.database.session_factory() as session:
+                yield session
 
     @contextmanager
     @abstractmethod
@@ -170,13 +183,3 @@ class RepositoryBaseMixin(ABC):
     @staticmethod
     @abstractmethod
     def _statistical_result_detail(row: StatisticalResultRow) -> StatisticalResultDetailView: ...
-
-    @abstractmethod
-    def _register_artifacts_in_session(
-        self,
-        session: Session,
-        *,
-        project_id: str,
-        run: WorkflowRunRow,
-        artifacts: tuple[dict[str, Any], ...],
-    ) -> list[ArtifactRow]: ...

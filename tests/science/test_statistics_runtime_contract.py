@@ -22,7 +22,7 @@ def test_statistics_runtime_records_observed_versions_and_signed_clusters() -> N
     assert "fileread(which('dpabi'))" in template
     assert "nargin(request.function)" in template
     assert "cluster_inference = 'descriptive_unthresholded';" in template
-    assert "for direction = [1, -1]" in template
+    assert "directions = [1, -1]" in template
     assert "bwconncomp(finite_values & (direction .* values > 0), 26)" in template
 
 
@@ -91,7 +91,7 @@ function [effect_scale, effect_definition] = effect_from_template(request)
     )
     quoted_path = script.as_posix().replace("'", "''")
     result = subprocess.run(
-        [executable, "-nodisplay", "-nosplash", "-nodesktop", "-batch", f"run('{quoted_path}');"],
+        [executable, "-batch", f"run('{quoted_path}');"],
         capture_output=True,
         text=True,
         timeout=120,

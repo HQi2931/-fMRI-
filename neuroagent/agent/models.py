@@ -15,6 +15,46 @@ class ModelCapability(StrEnum):
     STREAMING = "streaming"
     REASONING = "reasoning"
     WEB_SEARCH = "web_search"
+    TOOL_USE = "tool_use"
+
+
+class AgentLoopStopReason(StrEnum):
+    """Why a bounded tool-calling loop stopped."""
+
+    COMPLETED = "completed"
+    BUDGET_STEPS = "budget_steps"
+    BUDGET_TIME = "budget_time"
+    BUDGET_TOKENS = "budget_tokens"
+    REPEATED_TOOL_FAILURE = "repeated_tool_failure"
+    NO_TOOL_SUPPORT = "no_tool_support"
+    PROVIDER_ERROR = "provider_error"
+    CANCELLED = "cancelled"
+    BUDGET_CONTEXT = "budget_context"
+    TOOL_TIMEOUT = "tool_timeout"
+    PROVIDER_TIMEOUT = "provider_timeout"
+
+
+#: Bounded size for model-supplied tool arguments, which are untrusted input.
+MAX_TOOL_ARGUMENT_BYTES = 32_768
+#: Upper bound on tool calls honoured from a single provider response.
+MAX_TOOL_CALLS_PER_RESPONSE = 32
+
+
+class ToolCall(BaseModel):
+    """One tool invocation requested by a provider.
+
+    ``arguments`` arrive as a JSON *string* from OpenAI-compatible providers.
+    A malformed or oversized payload is not a transport failure: it is reported
+    as ``arguments_valid=False`` with empty arguments so the loop can hand the
+    problem back to the model for one self-correction attempt.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    call_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_valid: bool = True
 
 
 class TaskType(StrEnum):
@@ -81,6 +121,7 @@ class ModelProfile(BaseModel):
     timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     context_window_tokens: int = Field(default=16_384, ge=4_096, le=2_000_000)
     max_output_tokens: int = Field(default=2_048, ge=256, le=65_536)
+    thinking_mode: Literal["provider_default", "disabled"] = "provider_default"
 
     @field_validator("base_url")
     @classmethod
@@ -179,6 +220,8 @@ class ProviderResponse(BaseModel):
     model: str
     usage: dict[str, int] = Field(default_factory=dict)
     citations: tuple[ProviderCitation, ...] = ()
+    tool_calls: tuple[ToolCall, ...] = ()
+    finish_reason: str | None = None
 
 
 class ProviderCitation(BaseModel):

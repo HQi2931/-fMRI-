@@ -9,7 +9,7 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.environment import (
     EnvironmentComponent,
     EnvironmentConfigUpdate,
     EnvironmentConfigView,
@@ -23,8 +23,12 @@ from neuroagent.application.hashing import content_hash
 from neuroagent.application.settings import Settings
 from neuroagent.skills.models import EnvironmentSnapshot
 
+# Sentinel label: the configured DPABI version label replaces it when the probe
+# view is built, so this placeholder never reaches the environment snapshot.
+_DPABI_VERSION_SENTINEL = "__selected_dpabi_version__"
+
 _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    ("DPABI V8.2_240510", (("dpabi.m", "dpabi.m"),)),
+    (_DPABI_VERSION_SENTINEL, (("dpabi.m", "dpabi.m"),)),
     ("DPARSFA_run", (("DPARSFA_run.m", "DPARSF/DPARSFA_run.m"),)),
     (
         "DPABI ALFF/ReHo entry points",
@@ -39,7 +43,9 @@ _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("y_TTest1_Image.m", "StatisticalAnalysis/y_TTest1_Image.m"),
             ("y_TTest2_Image.m", "StatisticalAnalysis/y_TTest2_Image.m"),
             ("y_TTestPaired_Image.m", "StatisticalAnalysis/y_TTestPaired_Image.m"),
+            ("y_Correlation_Image.m", "StatisticalAnalysis/y_Correlation_Image.m"),
             ("y_GroupAnalysis_Image.m", "StatisticalAnalysis/y_GroupAnalysis_Image.m"),
+            ("y_ANCOVA1_Image.m", "StatisticalAnalysis/y_ANCOVA1_Image.m"),
         ),
     ),
     (
@@ -47,6 +53,9 @@ _DPABI_COMPONENTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("y_FDR_Image.m", "StatisticalAnalysis/y_FDR_Image.m"),
             ("y_GRF_Threshold.m", "StatisticalAnalysis/y_GRF_Threshold.m"),
+            ("y_TFRtoZ.m", "StatisticalAnalysis/y_TFRtoZ.m"),
+            ("y_Smoothest.m", "StatisticalAnalysis/y_Smoothest.m"),
+            ("w_ReadFWHM.m", "Subfunctions/w_ReadFWHM.m"),
         ),
     ),
     (
@@ -133,6 +142,9 @@ class LocalEnvironmentConfigStore:
     def view(self, configuration: EnvironmentConfiguration | None = None) -> EnvironmentConfigView:
         value = configuration or self.configuration()
         return EnvironmentConfigView(
+            allowed_work_root=str(
+                self._settings.allowed_work_root.expanduser().resolve(strict=False)
+            ),
             matlab_executable=str(value.matlab_executable) if value.matlab_executable else None,
             spm_dir=str(value.spm_dir) if value.spm_dir else None,
             dpabi_dir=str(value.dpabi_dir) if value.dpabi_dir else None,
@@ -262,7 +274,7 @@ def probe_environment(
     ]
     components = [
         _component(
-            f"DPABI {selected.dpabi_version}" if name == "DPABI V8.2_240510" else name,
+            f"DPABI {selected.dpabi_version}" if name == _DPABI_VERSION_SENTINEL else name,
             files,
         )
         for name, files in checks

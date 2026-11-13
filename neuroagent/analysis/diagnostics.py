@@ -9,6 +9,15 @@ from neuroagent.analysis.models import FailureCode, FailureDiagnosis
 
 _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
+        FailureCode.INPUT_FORMAT,
+        r"T1 converter failed|rsfmri:t1:ConverterFailed",
+        ("T1 重定向与裁剪未完成",),
+        (
+            "检查本次转换工具日志与输入文件",
+            "若 T1 已完成手动标定与裁剪, 在新方案中明确使用已准备 T1; 不要自动更改本次批准方案",
+        ),
+    ),
+    (
         FailureCode.INPUT_MISSING,
         r"(file|directory|folder).*(not found|does not exist)|no such file|无法找到|不存在",
         ("输入文件或目录不存在",),
@@ -26,6 +35,15 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
     (
         FailureCode.DPABI_CONFIGURATION,
+        r"no auto mask binding exists for",
+        ("DPABI 未找到该受试者的 AutoMask 绑定",),
+        (
+            "检查本次 attempt 是否生成了 AutoMask 输出及对应的受试者绑定记录",
+            "核对冻结清单中的受试者 ID 与 DPABI 输入映射; 修复后重新确认方案",
+        ),
+    ),
+    (
+        FailureCode.DPABI_CONFIGURATION,
         r"(cfg|configuration|parameter|field).*(invalid|unknown|missing)|字段.*错误|参数.*错误",
         ("DPABI Cfg 参数未通过校验",),
         ("重新生成结构化 Cfg 并查看字段映射", "不要直接编辑 MATLAB 文本"),
@@ -37,7 +55,7 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
             r".*(not found|undefined|cannot find)|undefined function|函数.*未找到"
         ),
         ("MATLAB, SPM12 或 DPABI 入口不可见",),
-        ("重新运行环境探测", "核对 MATLAB, SPM12 和 DPABI V8.2 路径"),
+        ("重新运行环境探测", "核对 MATLAB、SPM 和 DPABI 路径"),
     ),
     (
         FailureCode.RESOURCE,
@@ -48,7 +66,19 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
     (
         FailureCode.PATH_POLICY,
-        r"(permission denied|access is denied|path traversal|权限拒绝|目录越界)",
+        r"createfile failed.{0,160}(?:拒绝访问|access is denied).{0,80}(?:system:5)?",
+        ("MATLAB 启动时创建文件被 Windows 拒绝访问",),
+        (
+            "确认启动 MATLAB 的进程能在其 TEMP 目录创建 mathworks-<uuid> 文件",
+            "若临时文件已能创建, 再确认本机 LocalAppData 下 "
+            "MathWorks/mwEndpointRegistry 可创建; 只改 LOCALAPPDATA 不会移动该文件",
+            "独立 MATLAB_PREFDIR 只隔离偏好目录, 不能代替上述创建",
+            "重试前先检查本次 attempt 的 stderr 日志",
+        ),
+    ),
+    (
+        FailureCode.PATH_POLICY,
+        r"(permission denied|access is denied|path traversal|权限拒绝|拒绝访问|目录越界)",
         ("路径或权限策略阻断了运行",),
         ("将输入放入允许的只读根目录", "将输出改到项目 staging 工作区"),
     ),
@@ -60,10 +90,25 @@ _RULES: tuple[tuple[FailureCode, str, tuple[str, ...], tuple[str, ...]], ...] = 
     ),
 )
 
+_UNRECOGNIZED_ERROR_LINE = re.compile(
+    r"^(?:\?\?\?\s*)?(?:fatal(?:\s+startup)?\s+error|"
+    r"error(?:\s+(?:using|in)\b|\s*:)|uncaught\s+(?:exception|error)\b|"
+    r"(?:std::)?exception\b|assertion failed\b|matlab\s*:\s*error)",
+    re.IGNORECASE,
+)
+_ABSOLUTE_PATH_START = re.compile(
+    r"(?i)(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|"
+    r"(?<![\w:/])/(?!/)(?=\S))"
+)
+
 
 def _safe_line(line: str) -> str:
     value = line.strip()
-    value = re.sub(r"(?i)([A-Z]:\\|/)(?:[^\s\\/]+[\\/])*[^\s]+", "<path>", value)
+    # Windows and UNC paths can contain spaces, so redact from an absolute-path
+    # prefix through the end of the line instead of stopping at the first space.
+    path_start = _ABSOLUTE_PATH_START.search(value)
+    if path_start is not None:
+        value = f"{value[: path_start.start()]}<path>"
     value = re.sub(r"(?i)(subject|sub|participant)[-_ ]?[A-Za-z0-9]+", r"\1<id>", value)
     value = re.sub(r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "<email>", value)
     return value[:500]
@@ -89,6 +134,20 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
                 confidence=0.6,
                 requires_new_plan=code not in {FailureCode.INPUT_MISSING, FailureCode.PATH_POLICY},
             )
+    error_lines = tuple(line for line in lines if _UNRECOGNIZED_ERROR_LINE.search(line))
+    if error_lines:
+        return FailureDiagnosis(
+            code=FailureCode.UNKNOWN,
+            severity="error",
+            summary="发现尚未匹配已知规则的 MATLAB/DPABI 错误",
+            evidence=error_lines[-max_evidence:],
+            suggestions=(
+                "检查脱敏日志线索及本次 attempt 的完整日志",
+                "保留本次 attempt 的日志和产物",
+            ),
+            confidence=0.25,
+            requires_new_plan=True,
+        )
     if "cancel" in lower or "取消" in text:
         return FailureDiagnosis(
             code=FailureCode.CANCELLED,
@@ -101,10 +160,10 @@ def diagnose_dpabi_log(log: str | Path, *, max_evidence: int = 8) -> FailureDiag
         )
     return FailureDiagnosis(
         code=FailureCode.UNKNOWN,
-        severity="error",
-        summary="未识别的 MATLAB/DPABI 错误, 需要人工查看日志",
-        evidence=tuple(lines[-max_evidence:]),
-        suggestions=("保留本次 attempt 的日志和产物", "确认无敏感信息后提交诊断上下文"),
+        severity="info",
+        summary="当前日志中尚未发现明确错误线索",
+        evidence=(),
+        suggestions=(),
         confidence=0.1,
-        requires_new_plan=True,
+        requires_new_plan=False,
     )

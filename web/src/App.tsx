@@ -1,8 +1,8 @@
 import { Layout } from "./components/Layout";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { AgentPage } from "./pages/AgentPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { businessCapabilityForPath, usePathname, WorkRoutingProvider } from "./routing";
+import { SettingsPage } from "./features/settings/SettingsPage";
+import { usePathname } from "./routing";
 
 export default function App() {
   const connection = useApiHealth();
@@ -11,11 +11,7 @@ export default function App() {
     <Layout connection={connection}>
       {pathname === "/settings"
         ? <SettingsPage />
-        : (
-          <WorkRoutingProvider>
-            <AgentPage initialCapability={businessCapabilityForPath(pathname)} />
-          </WorkRoutingProvider>
-        )}
+        : <AgentPage />}
     </Layout>
   );
 }

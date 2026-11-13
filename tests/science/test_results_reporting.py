@@ -154,6 +154,37 @@ def test_real_report_is_complete_deterministic_and_method_neutral() -> None:
     assert "connectivity=METHOD-X" in first.markdown
 
 
+def test_empty_corrected_result_reports_zero_significant_voxels_without_space_warning() -> None:
+    values = _real_manifest().model_dump(mode="python")
+    values["clusters"] = ()
+    values["inference_status"] = None
+    values["significant_voxel_count"] = None
+    manifest = StatisticalResultManifest.model_validate(values)
+    report = build_statistical_reproducibility_report(
+        manifest=manifest,
+        design=_design(),
+        correction=_correction(),
+        qc_review_hash="a" * 64,
+        environment_hash="d" * 64,
+        plan_hash="e" * 64,
+    )
+
+    payload = json.loads(report.json_text)
+    assert manifest.inference_status.value == "no_significant_voxels"
+    assert manifest.significant_voxel_count == 0
+    assert payload["inference_summary"] == {
+        "status": "no_significant_voxels",
+        "significant_voxel_count": 0,
+        "cluster_count": 0,
+        "correction_method": "fdr",
+        "localization_applicable": False,
+    }
+    assert "No voxels survived the declared multiple-comparison correction" in report.markdown
+    assert "there are no brain regions to localize" in report.markdown
+    assert "Spatial location is not applicable to an empty corrected result" in report.markdown
+    assert "unknown" not in report.markdown.casefold()
+
+
 @pytest.mark.parametrize(
     "missing_role",
     [
@@ -205,9 +236,13 @@ def test_uncorrected_manifest_requires_no_corrected_map() -> None:
     values["correction"] = None
     values["artifacts"] = _artifacts(corrected=False)
     values["clusters"] = ()
+    values["inference_status"] = None
+    values["significant_voxel_count"] = None
 
     manifest = StatisticalResultManifest.model_validate(values)
     assert manifest.correction is None
+    assert manifest.inference_status.value == "uncorrected_descriptive"
+    assert manifest.significant_voxel_count is None
     assert not manifest.artifacts_for_role(StatisticalArtifactRole.CORRECTED_STATISTICAL_MAP)
 
     values["artifacts"] = _artifacts(corrected=True)
@@ -241,6 +276,8 @@ def test_synthetic_manifest_allows_placeholders_but_forces_visible_warning() -> 
     payload = json.loads(report.json_text)
     assert payload["result"]["non_scientific"] is True
     assert "must not be used for scientific or clinical inference" in payload["result"]["warning"]
+    assert payload["inference_summary"]["status"] == "not_assessed_synthetic"
+    assert payload["inference_summary"]["significant_voxel_count"] is None
     assert "SYNTHETIC / NON-SCIENTIFIC RESULT" in report.markdown
     assert "NOT AVAILABLE" in report.markdown
 

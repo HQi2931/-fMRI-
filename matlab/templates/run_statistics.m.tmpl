@@ -5,6 +5,8 @@ request = jsondecode(fileread('{{CONFIG_JSON_PATH}}'));
 output_name = fullfile(run_directory, 'output', 'statistic.nii');
 groups = decode_path_groups(request.dependent_groups);
 other_covariates = decode_covariate_groups(request.covariate_groups);
+regression_betas = [];
+stat_header = [];
 
 diary(fullfile(run_directory, 'logs', 'matlab.log'));
 cleanup = onCleanup(@() diary('off'));
@@ -16,10 +18,19 @@ switch request.function
         y_TTest2_Image(groups, output_name, request.mask_path, [], other_covariates, []);
     case 'y_TTestPaired_Image'
         y_TTestPaired_Image(groups, output_name, request.mask_path, [], other_covariates, []);
+    case 'y_Correlation_Image'
+        predictor_rows = other_covariates{1};
+        y_Correlation_Image({groups{1}}, predictor_rows(:, 1), output_name, ...
+            request.mask_path, [], {predictor_rows(:, 2:end)}, []);
     case 'y_GroupAnalysis_Image'
         [dependent_volume, ~, ~, header] = y_ReadAll(groups{1});
-        y_GroupAnalysis_Image(dependent_volume, request.design_matrix, output_name, ...
-            request.mask_path, [], request.contrast, 'T', 0, header);
+        regression_contrast = reshape(double(request.contrast), 1, []);
+        [regression_betas, ~, ~, ~, stat_header] = y_GroupAnalysis_Image( ...
+            dependent_volume, request.design_matrix, output_name, request.mask_path, ...
+            [], regression_contrast, 'T', 0, header);
+    case 'y_ANCOVA1_Image'
+        [~, stat_header] = y_ANCOVA1_Image(groups, output_name, ...
+            request.mask_path, [], other_covariates, []);
     otherwise
         error('rsfmri:statistics:UnsupportedFunction', 'Unsupported registered function.');
 end
@@ -31,9 +42,17 @@ if ~isempty(request.correction)
         case 'y_FDR_Image'
             assert(strcmp(request.tail, 'two_sided'), ...
                 'rsfmri:statistics:FDRRequiresTwoSided');
-            y_FDR_Image(output_name, parameters.q_threshold, corrected_name, ...
+            [~, ~, actual_p_threshold] = y_FDR_Image( ...
+                output_name, parameters.q_threshold, corrected_name, ...
                 parameters.mask_path, parameters.statistic_type, parameters.df1, ...
                 parameters.df2, [], []);
+            write_json(fullfile(run_directory, 'output', 'correction.json'), ...
+                struct('method', 'fdr', 'q_threshold', parameters.q_threshold, ...
+                'actual_p_threshold', actual_p_threshold, ...
+                'mask_path', parameters.mask_path, ...
+                'statistic_type', parameters.statistic_type, ...
+                'df1', parameters.df1, 'df2', parameters.df2, ...
+                'correction_hash', request.correction.correction_hash));
         case 'y_GRF_Threshold'
             correction_input = output_name;
             restore_sign = false;
@@ -50,7 +69,7 @@ if ~isempty(request.correction)
             else
                 smoothness_dlh = [];
             end
-            [corrected_z, ~, corrected_header] = y_GRF_Threshold( ...
+            [corrected_z, minimum_cluster_size, corrected_header] = y_GRF_Threshold( ...
                 correction_input, parameters.voxel_p_threshold, ...
                 parameters.two_tailed, parameters.cluster_p_threshold, ...
                 fullfile(run_directory, 'output', 'dpabi_grf_intermediate.nii'), ...
@@ -64,6 +83,29 @@ if ~isempty(request.correction)
             y_Write(corrected_statistic, raw_header, corrected_name);
             y_Write(corrected_z, corrected_header, ...
                 fullfile(run_directory, 'output', 'statistic_corrected_z.nii'));
+            % Re-read the same header or unthresholded Z map used by DPABI.
+            % This records its effective smoothness without changing correction.
+            smoothness = grf_smoothness_evidence(correction_input, ...
+                fullfile(run_directory, 'output', ...
+                'Z_BeforeThreshold_dpabi_grf_intermediate.nii'), parameters);
+            write_json(fullfile(run_directory, 'output', 'correction.json'), ...
+                struct('method', 'grf', ...
+                'voxel_p_threshold', parameters.voxel_p_threshold, ...
+                'cluster_p_threshold', parameters.cluster_p_threshold, ...
+                'two_tailed', parameters.two_tailed, ...
+                'mask_path', parameters.mask_path, ...
+                'statistic_type', parameters.statistic_type, ...
+                'df1', parameters.df1, 'df2', parameters.df2, ...
+                'smoothness_mode', parameters.smoothness_mode, ...
+                'smoothness_dlh', parameters.smoothness_dlh, ...
+                'smoothness_source', smoothness.source, ...
+                'effective_smoothness_dlh', smoothness.dlh, ...
+                'effective_fwhm', smoothness.fwhm_mm, ...
+                'effective_mask_voxel_count', smoothness.mask_voxel_count, ...
+                'minimum_cluster_size', minimum_cluster_size, ...
+                'tail', request.tail, ...
+                'cluster_connectivity', 26, ...
+                'correction_hash', request.correction.correction_hash));
         otherwise
             error('rsfmri:statistics:UnsupportedCorrection', ...
                 'Unsupported registered correction function.');
@@ -92,20 +134,38 @@ switch request.test
         % the adjusted group difference. Covariates alter its variance.
         effect_scale = correction_factor * 2 * contrast_standard_error;
         effect_definition = 'adjusted group difference / residual standard deviation (Hedges g)';
+    case 'correlation'
+        effect_scale = 1;
+        effect_definition = 'Pearson or partial correlation coefficient (r)';
+    case 'regression'
+        effect_scale = 1;
+        effect_definition = 'contrast-weighted regression coefficient';
+    case 'one_way_anova_ancova'
+        effect_scale = double(request.df1) / double(request.residual_df);
+        effect_definition = 'Cohen f-squared derived from omnibus F';
     otherwise
         error('rsfmri:statistics:UnsupportedEffectDefinition', ...
-            'Only the three registered t-test effect definitions are supported.');
+            'Unsupported registered statistical effect definition.');
 end
 write_json(fullfile(run_directory, 'output', 'design_matrix.json'), ...
     struct('test', request.test, 'matrix', request.design_matrix, ...
+    'ordered_subject_ids', {request.ordered_subject_ids}, ...
     'residual_df', request.residual_df, 'design_hash', request.design_hash, ...
     'one_sample_baseline', request.one_sample_baseline, ...
-    'effect_definition', effect_definition, 'effect_scale_from_t', effect_scale));
+    'statistic_type', request.statistic_type, 'df1', request.df1, 'df2', request.df2, ...
+    'effect_definition', effect_definition, 'effect_scale', effect_scale));
 write_json(fullfile(run_directory, 'output', 'contrast.json'), ...
     struct('contrast', request.contrast, 'tail', request.tail));
+effect_map = raw_statistic .* effect_scale;
+if strcmp(request.test, 'regression')
+    effect_map = zeros(size(raw_statistic));
+    for column = 1:numel(contrast)
+        effect_map = effect_map + regression_betas(:, :, :, column) .* contrast(column);
+    end
+end
 effect_header = raw_header;
 effect_header.descrip = effect_definition;
-y_Write(raw_statistic .* effect_scale, effect_header, ...
+y_Write(effect_map, effect_header, ...
     fullfile(run_directory, 'output', 'effect.nii'));
 source_for_clusters = output_name;
 cluster_inference = 'descriptive_unthresholded';
@@ -115,9 +175,41 @@ if ~isempty(request.correction) && isfile(fullfile(run_directory, 'output', ...
     cluster_inference = request.correction.function;
 end
 write_clusters(source_for_clusters, fullfile(run_directory, 'output', 'clusters.tsv'), ...
-    cluster_inference, request.tail);
+    cluster_inference, request.tail, request.correction, request.test);
+if isempty(request.correction)
+    write_json(fullfile(run_directory, 'output', 'correction.json'), ...
+        struct('method', 'none', 'cluster_connectivity', 26));
+end
 write_json(fullfile(run_directory, 'output', 'software-version.json'), ...
     runtime_software_evidence(request));
+
+function evidence = grf_smoothness_evidence(statistic_path, z_path, parameters)
+[mask_data, ~, ~] = y_ReadRPI(parameters.mask_path);
+evidence.mask_voxel_count = nnz(mask_data);
+evidence.fwhm_mm = [];
+if strcmp(parameters.smoothness_mode, 'provided_dlh')
+    evidence.source = 'provided';
+    evidence.dlh = parameters.smoothness_dlh;
+else
+    [~, ~, statistic_header] = y_ReadRPI(statistic_path);
+    header_smoothness = w_ReadFWHM(statistic_header);
+    if header_smoothness.dLh ~= 0
+        evidence.source = 'header';
+        evidence.dlh = header_smoothness.dLh;
+        evidence.fwhm_mm = [header_smoothness.FWHMx, ...
+            header_smoothness.FWHMy, header_smoothness.FWHMz];
+    else
+        assert(isfile(z_path), 'rsfmri:statistics:MissingSmoothnessSource');
+        evidence.source = 'estimated';
+        [evidence.dlh, ~, evidence.fwhm_mm, evidence.mask_voxel_count] = ...
+            y_Smoothest(z_path, parameters.mask_path);
+    end
+end
+assert(isfinite(evidence.dlh) && evidence.dlh > 0, ...
+    'rsfmri:statistics:InvalidEffectiveSmoothness');
+assert(all(isfinite(evidence.fwhm_mm)) && all(evidence.fwhm_mm > 0), ...
+    'rsfmri:statistics:InvalidEffectiveFWHM');
+end
 
 function evidence = runtime_software_evidence(request)
 [spm_version, spm_revision] = spm('Ver');
@@ -130,8 +222,12 @@ else
     dpabi_version = release{1};
 end
 entry_points = struct('function', request.function, 'nargin', nargin(request.function));
+if any(strcmp(request.function, {'y_Correlation_Image', 'y_ANCOVA1_Image'}))
+    entry_points(2) = struct('function', 'y_GroupAnalysis_Image', ...
+        'nargin', nargin('y_GroupAnalysis_Image'));
+end
 if ~isempty(request.correction)
-    entry_points(2) = struct('function', request.correction.function, ...
+    entry_points(end + 1) = struct('function', request.correction.function, ...
         'nargin', nargin(request.correction.function));
 end
 evidence = struct('matlab', ['R', version('-release')], ...
@@ -229,7 +325,7 @@ cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, '%s\n', jsonencode(value));
 end
 
-function write_clusters(source_path, output_path, inference, tail)
+function write_clusters(source_path, output_path, inference, tail, correction, test)
 [values, ~, header] = y_ReadRPI(source_path);
 finite_values = isfinite(values);
 fid = fopen(output_path, 'w');
@@ -239,7 +335,12 @@ cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, ['cluster_id\textent_voxels\tpeak_statistic\tx_mm\ty_mm\tz_mm', ...
     '\tinference\tdirection\n']);
 cluster_number = 0;
-for direction = [1, -1]
+if strcmp(test, 'one_way_anova_ancova')
+    directions = 1;
+else
+    directions = [1, -1];
+end
+for direction = directions
     if (strcmp(tail, 'one_sided_positive') && direction < 0) || ...
             (strcmp(tail, 'one_sided_negative') && direction > 0)
         continue;
@@ -257,9 +358,19 @@ for direction = [1, -1]
         else
             coordinate = [x; y; z; 1];
         end
-        fprintf(fid, 'cluster-%04d\t%d\t%.17g\t%.17g\t%.17g\t%.17g\t%s\t%d\n', ...
+        if strcmp(test, 'one_way_anova_ancova')
+            direction_text = '';
+        else
+            direction_text = num2str(direction);
+        end
+        if ~isempty(correction) && strcmp(correction.function, 'y_FDR_Image')
+            cluster_inference = 'fdr_spatial_summary';
+        else
+            cluster_inference = inference;
+        end
+        fprintf(fid, 'cluster-%04d\t%d\t%.17g\t%.17g\t%.17g\t%.17g\t%s\t%s\n', ...
             cluster_number, numel(indices), values(peak_index), ...
-            coordinate(1), coordinate(2), coordinate(3), inference, direction);
+            coordinate(1), coordinate(2), coordinate(3), cluster_inference, direction_text);
     end
 end
 end

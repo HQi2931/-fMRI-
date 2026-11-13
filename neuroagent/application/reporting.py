@@ -12,6 +12,7 @@ from neuroagent.application.hashing import content_hash
 from neuroagent.domain.fmri.results import (
     ClusterRecord,
     RegisteredArtifactMetadata,
+    StatisticalAtlasSelection,
     StatisticalResultManifest,
     StatisticalResultMode,
 )
@@ -46,17 +47,23 @@ def build_statistical_reproducibility_report(
     manifest: StatisticalResultManifest,
     design: StatisticalDesignRevision,
     correction: CorrectionSpec | None,
-    qc_review_hash: str,
+    qc_review_hash: str | None,
     environment_hash: str,
     plan_hash: str,
+    localization_plan: StatisticalAtlasSelection | None = None,
 ) -> StatisticalReproducibilityReport:
     """Build a stable Markdown and JSON report from frozen, registered evidence."""
 
-    _require_sha256("QC review", qc_review_hash)
+    if design.qc_source.value == "approved_review":
+        if qc_review_hash is None:
+            raise ValueError("approved QC statistics require a QC review hash")
+        _require_sha256("QC review", qc_review_hash)
+        if design.qc_review_hash != qc_review_hash:
+            raise ValueError("report QC hash does not match the frozen statistical design")
+    elif qc_review_hash is not None:
+        raise ValueError("statistics without internal QC review must not carry a QC review hash")
     _require_sha256("environment", environment_hash)
     _require_sha256("plan", plan_hash)
-    if design.qc_review_hash != qc_review_hash:
-        raise ValueError("report QC hash does not match the frozen statistical design")
     if manifest.design_revision_id != design.revision_id:
         raise ValueError("result manifest does not reference the frozen design revision")
     if not _same_correction(manifest.correction, correction):
@@ -87,8 +94,16 @@ def build_statistical_reproducibility_report(
         "frozen_bindings": {
             "design_revision_id": design.revision_id,
             "design_hash": content_hash(design_payload),
+            "qc_source": design.qc_source.value,
             "qc_review_revision_id": design.qc_review_revision_id,
             "qc_review_hash": qc_review_hash,
+            "qc_skip_id": design.qc_skip_id,
+            "qc_skip_hash": design.qc_skip_hash,
+            "qc_source_run_id": design.qc_source_run_id,
+            "external_import_id": design.external_import_id,
+            "external_import_hash": design.external_import_hash,
+            "external_demographics_revision_id": design.external_demographics_revision_id,
+            "external_demographics_hash": design.external_demographics_hash,
             "environment_hash": environment_hash,
             "plan_hash": plan_hash,
         },
@@ -96,6 +111,21 @@ def build_statistical_reproducibility_report(
         "design_matrix": design_matrix(design),
         "contrast": design.contrast,
         "correction": correction_payload,
+        "inference_summary": {
+            "status": (
+                manifest.inference_status.value
+                if manifest.inference_status is not None
+                else "not_assessed_synthetic"
+            ),
+            "significant_voxel_count": manifest.significant_voxel_count,
+            "cluster_count": len(ordered_clusters),
+            "correction_method": correction.method if correction is not None else None,
+            "localization_applicable": (
+                not synthetic
+                and bool(ordered_clusters)
+                and {cluster.coordinate_space for cluster in ordered_clusters} == {"MNI"}
+            ),
+        },
         "cluster_connectivity_definition": manifest.cluster_connectivity_definition,
         "artifacts": artifact_payload,
         "artifact_manifest_hash": content_hash(artifact_payload),
@@ -108,6 +138,13 @@ def build_statistical_reproducibility_report(
             "connectivity default is inferred.",
         ],
     }
+    if localization_plan is not None:
+        payload["localization_plan"] = localization_plan.model_dump(mode="json")
+    if design.external_import_id is not None:
+        payload["limitations"].append(
+            "External metrics use an independent inclusion decision; preprocessing history "
+            "and unknown source metadata are preserved in the referenced import record."
+        )
     json_text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     markdown = _render_markdown(payload, manifest, ordered_artifacts, ordered_clusters)
     bundle_hash = hashlib.sha256(f"{json_text}\n{markdown}".encode()).hexdigest()
@@ -162,7 +199,24 @@ def _render_markdown(
             f"| Design revision | {_md_cell(str(bindings['design_revision_id']))} |",
             f"| Design hash | `{bindings['design_hash']}` |",
             f"| QC review hash | `{bindings['qc_review_hash']}` |",
+            *(
+                [
+                    f"| External import | {_md_cell(str(bindings['external_import_id']))} |",
+                    f"| External inclusion hash | `{bindings['external_import_hash']}` |",
+                ]
+                if bindings["external_import_id"] is not None
+                else []
+            ),
             f"| Environment hash | `{bindings['environment_hash']}` |",
+            *(
+                [
+                    "| External demographics revision | "
+                    f"`{bindings['external_demographics_revision_id']}` |",
+                    f"| External demographics hash | `{bindings['external_demographics_hash']}` |",
+                ]
+                if bindings["external_demographics_revision_id"] is not None
+                else []
+            ),
             f"| Plan hash | `{bindings['plan_hash']}` |",
             "",
             "## Statistical design",
@@ -209,6 +263,49 @@ def _render_markdown(
             f"{_md_cell(artifact.artifact_type)} | {_md_cell(artifact.relative_path)} | "
             f"{_md_cell(checksum)} | {_md_cell(size)} | "
             f"{'yes — synthetic only' if artifact.placeholder else 'no'} |"
+        )
+    localization = payload.get("localization_plan")
+    if localization is not None:
+        lines.extend(
+            [
+                "",
+                "## Frozen atlas selection",
+                "",
+                f"- Atlas: {localization['atlas_name']} (`{localization['atlas_id']}`)",
+                f"- Atlas SHA-256: `{localization['atlas_content_hash']}`",
+                f"- Coordinate space: `{localization['coordinate_space']}`",
+                f"- Localization method: `{localization['localization_method']}`",
+                f"- Cluster connectivity: {localization['cluster_connectivity']}",
+            ]
+        )
+    summary = payload["inference_summary"]
+    lines.extend(["", "## Statistical inference summary", ""])
+    if summary["status"] == "no_significant_voxels":
+        lines.extend(
+            [
+                "No voxels survived the declared multiple-comparison correction. "
+                "No corrected significant differences or clusters were detected for this "
+                "frozen contrast, so there are no brain regions to localize. Spatial location "
+                "is not applicable to an empty corrected result.",
+                "",
+                "- Significant voxels after correction: **0**",
+                f"- Corrected clusters: **{len(clusters)}**",
+            ]
+        )
+    elif summary["status"] == "significant_voxels":
+        lines.append(
+            f"The declared correction retained **{summary['significant_voxel_count']}** "
+            f"voxels across **{len(clusters)}** clusters for this frozen contrast."
+        )
+    elif summary["status"] == "uncorrected_descriptive":
+        lines.append(
+            "No multiple-comparison correction was declared. Cluster records are "
+            "descriptive and do not establish statistical significance."
+        )
+    else:
+        lines.append(
+            "This is a synthetic non-scientific fixture; statistical significance and "
+            "brain-region localization were not assessed."
         )
     lines.extend(
         [

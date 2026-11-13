@@ -7,16 +7,16 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from neuroagent.application.contracts import (
+from neuroagent.application.contracts.plans import (
     ApprovalCreate,
     ApprovalDecision,
     ApprovalView,
     PlanRevisionView,
-    PlanState,
     ValidationIssue,
 )
 from neuroagent.application.errors import ConflictError, NotFoundError
 from neuroagent.application.hashing import canonical_json
+from neuroagent.domain.lifecycle import PlanState
 from neuroagent.infrastructure.persistence.models import ApprovalRow, PlanRevisionRow, ProjectRow
 from neuroagent.infrastructure.persistence.repository_mixins._base import (
     RepositoryBaseMixin,
@@ -83,7 +83,7 @@ class PlanApprovalMixin(RepositoryBaseMixin):
             return self._plan(row)
 
     def get_plan(self, plan_revision_id: str) -> PlanRevisionView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.get(PlanRevisionRow, plan_revision_id)
             if row is None:
                 raise NotFoundError("plan_revision", plan_revision_id)
@@ -161,7 +161,7 @@ class PlanApprovalMixin(RepositoryBaseMixin):
             return self._approval(approval), self._plan(plan)
 
     def has_valid_approval(self, plan_revision_id: str, plan_hash: str) -> bool:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             return (
                 session.scalar(
                     select(func.count(ApprovalRow.approval_id)).where(
@@ -174,7 +174,7 @@ class PlanApprovalMixin(RepositoryBaseMixin):
             ) > 0
 
     def get_approved_plan_approval(self, plan_revision_id: str) -> ApprovalView:
-        with self.database.session_factory() as session:
+        with self._read_session() as session:
             row = session.scalar(
                 select(ApprovalRow)
                 .where(

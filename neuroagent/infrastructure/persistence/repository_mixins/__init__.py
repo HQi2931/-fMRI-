@@ -1,8 +1,12 @@
 """Domain mixins assembled by :class:`SqliteRepository`."""
 
 from neuroagent.infrastructure.persistence.repository_mixins._base import RepositoryBaseMixin
-from neuroagent.infrastructure.persistence.repository_mixins.artifacts import ArtifactEventMixin
+from neuroagent.infrastructure.persistence.repository_mixins.artifacts import ArtifactCatalogMixin
 from neuroagent.infrastructure.persistence.repository_mixins.conversations import ConversationMixin
+from neuroagent.infrastructure.persistence.repository_mixins.events import RuntimeEventMixin
+from neuroagent.infrastructure.persistence.repository_mixins.external_imports import (
+    ExternalAnalysisImportMixin,
+)
 from neuroagent.infrastructure.persistence.repository_mixins.idempotency import IdempotencyMixin
 from neuroagent.infrastructure.persistence.repository_mixins.jobs import JobExecutionMixin
 from neuroagent.infrastructure.persistence.repository_mixins.literature import LiteratureMixin
@@ -11,10 +15,14 @@ from neuroagent.infrastructure.persistence.repository_mixins.plans import PlanAp
 from neuroagent.infrastructure.persistence.repository_mixins.projects import ProjectDatasetMixin
 from neuroagent.infrastructure.persistence.repository_mixins.qc import QcReviewMixin
 from neuroagent.infrastructure.persistence.repository_mixins.runs import RunMixin
+from neuroagent.infrastructure.persistence.repository_mixins.workspace_assistant import (
+    WorkspaceAssistantMixin,
+)
 
 __all__ = [
-    "ArtifactEventMixin",
+    "ArtifactCatalogMixin",
     "ConversationMixin",
+    "ExternalAnalysisImportMixin",
     "IdempotencyMixin",
     "JobExecutionMixin",
     "LiteratureMixin",
@@ -24,4 +32,6 @@ __all__ = [
     "QcReviewMixin",
     "RepositoryBaseMixin",
     "RunMixin",
+    "RuntimeEventMixin",
+    "WorkspaceAssistantMixin",
 ]

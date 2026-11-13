@@ -63,12 +63,39 @@ class Settings(BaseSettings):
     rag_collection: str = "fmri_literature_v1"
     rag_api_key_env: str = "DASHSCOPE_API_KEY"
     rag_rerank: bool = True
+    work_router_small_profile_id: str = Field(
+        default="dashscope", pattern=r"^[a-z0-9][a-z0-9-]{1,62}$"
+    )
+    work_router_fallback_profile_id: str = Field(
+        default="deepseek", pattern=r"^[a-z0-9][a-z0-9-]{1,62}$"
+    )
+    work_router_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    work_router_minimum_confidence: float = Field(default=0.65, gt=0, le=1)
+    work_router_max_request_tokens: int = Field(default=4_096, ge=256, le=32_768)
     memory_embedding_profile: ModelProfile | None = None
     memory_recall_limit: int = Field(default=12, ge=1, le=100)
     memory_half_life_days: float = Field(default=180, gt=0)
     memory_minimum_similarity: float = Field(default=0.45, ge=-1, le=1)
     worker_lease_seconds: int = Field(default=30, ge=1)
+    automation_claim_lease_seconds: int = Field(default=15, ge=1, le=300)
     idempotency_lease_seconds: int = Field(default=300, ge=30)
+    # Bounded Agent tool loop.  The loop is opt-in per model profile (the profile
+    # must declare ``tool_use``); these values bound what one turn may spend once
+    # it runs.  Each is a hard stop, not a hint.
+    agent_tool_loop_enabled: bool = True
+    agent_max_tool_steps: int = Field(default=8, ge=1, le=32)
+    agent_max_tool_seconds: float = Field(default=90.0, gt=0, le=600)
+    agent_max_tool_tokens: int = Field(default=120_000, ge=1_000, le=2_000_000)
+    agent_max_repeat_tool_failures: int = Field(default=2, ge=1, le=10)
+    work_max_handoffs: int = Field(default=6, ge=1, le=24)
+    agent_tool_result_max_bytes: int = Field(default=65_536, ge=1_024, le=1_048_576)
+    workspace_file_assistant_enabled: bool = True
+    workspace_max_text_bytes: int = Field(default=10 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    workspace_max_document_bytes: int = Field(
+        default=50 * 1024 * 1024, ge=1_024, le=200 * 1024 * 1024
+    )
+    workspace_patch_max_files: int = Field(default=20, ge=1, le=100)
+    workspace_patch_max_bytes: int = Field(default=1_048_576, ge=1_024, le=10 * 1024 * 1024)
     redaction_salt: str | None = None
     secrets_file: Path = _PROJECT_ROOT / ".env"
     environment: str = "development"

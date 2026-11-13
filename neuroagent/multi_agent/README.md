@@ -1,25 +1,35 @@
-# multi_agent
+# Work 双 Agent 注册与交接
+
+- 状态：Implemented
+- 文档类型：Architecture
+- 维护者：system_architect
+- 更新日期：2026-10-10
+- 关联：[项目结构](../../docs/architecture/project-structure.md)、[ADR 0024](../../docs/adr/0024-work-dual-agents.md)
 
 ## 模块职责
 
-`multi_agent` 负责 Agent 注册、Supervisor 协调、Sequential Handoff 和结构化交接信息，支持多 Agent 在权限隔离下协作。
+`multi_agent` 保存 Work 角色目录与动作权限合同。当前注册两个业务角色：预处理 Agent 与数据分析 Agent。确定性路由和上下文筛选位于 application 层；本模块不运行第三个协调模型。
 
 ## 模块边界
 
-本模块不把完整聊天记录直接传给子 Agent，不共享未授权记忆，不绕过父级策略，也不替代工作流状态机。
+两个角色拥有不同提示词、模型动作白名单和草稿键。提示词属于应用策略，由 `application/work_prompts.py` 按角色显式提供给模型网关；网关不再从上下文推断业务角色。接收方只获得必要的结构化交接摘要，不接收源角色的完整消息历史。模型不能调用执行入口；运行、统计审批和真实 MATLAB 作业继续由现有应用服务、PlanRevision、Worker 与确认挑战控制。
 
 ## 依赖关系
 
-`multi_agent` 依赖 `core` 的 Agent 抽象、`context` 的上下文隔离能力、`workflow` 的状态约束和 `observability` 的 Trace/Audit。
+`registry.py` 定义 `WorkAgentRole`、显示名称、草稿键、工具目录和模型动作；`application/work_agents.py` 执行意图路由、历史隔离与交接记录摘要；统计和预处理草稿分别由各自应用模块验证。
 
-## 当前阶段
+## 当前边界
 
-仅建立 registry、coordinator 和 handoff 的目录边界，未实现 Supervisor 或 Handoff。
+- `preprocessing` 是旧 Work 会话的默认归属；历史预处理草稿可继续读取。
+- 中英文明确任务按角色分派；预处理日志/计算失败与统计检验/校正失败分别路由。已有任务的短续接保持当前任务；无可承接任务的模糊请求返回澄清，不调用模型或创建科研方案。
+- `analysis` 保存独立 `StatisticsDraft`；服务端将完整草稿绑定已登记运行、QC 决定、人口学 revision 与输入清单，再生成可审查的统计设计预览。Work 提供创建、校验、审批和显式启动模拟/MATLAB 运行入口。
+- 缺少预处理指标时，分析 Agent 生成带来源引用和哈希的待交接记录；“继续”等续接可自动交给预处理 Agent。
+- 固定 MATLAB 模板已覆盖六类检验且通过本机真实 smoke；FDR 保存实际 p 截断值，GRF 保存参数并登记 Z 图。
+- 结果面板展示报告、簇表、轴向切片和 ROI 描述及下载产物，支持 DPABI 图谱峰值定位和簇覆盖比例。外部目录检查、纳入、Work 来源选择、配对与人口学修订已接线并有真实统计证据；网页统计运行已持久绑定会话和角色，历史提案只读，完整交接及结果验收已按[计划 0013](../../docs/plans/0013-work-dual-agent-analysis.md)完成。
 
-## 后续核心接口
+## 约束
 
-- `AgentRegistry`
-- `Supervisor`
-- `AgentHandoff`
-- `HandoffPolicy`
-- `AgentCapability`
+- 角色过滤在请求上下文与服务端 action 校验两处执行。
+- 两角色共享 Work 请求预算策略，工具循环与结构回退累计计数；每会话/项目最多六项唯一上游需求，可由环境配置调整。Agent 不创建自己的运行状态机。
+- 交接不批准参数、不启动计算、不跳过 QC，也不能把模型文本当作服务端证据。
+- 正反向交接冻结服务端数据证据，接收前重新验证；模型仅得到受限摘要。交接不跨项目或继承另一角色的私有草稿。授权合成数据的内部真实闭环已通过计划 0013 验收。

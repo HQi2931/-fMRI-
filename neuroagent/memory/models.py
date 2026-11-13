@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from neuroagent.application.contracts import MemoryKind, MemoryScope, MemoryStatus
+from neuroagent.application.contracts.conversations import (
+    MemoryKind,
+    MemoryScope,
+    MemoryStatus,
+)
 
 
 class MemoryCandidateDraft(BaseModel):

@@ -26,6 +26,10 @@ class ArtifactPathBinding(FrozenExecutionModel):
     artifact_id: str = Field(min_length=1)
     relative_path: str = Field(min_length=1)
     read_only: bool
+    external_import_id: str | None = Field(default=None, min_length=1)
+    external_relative_path: str | None = Field(default=None, min_length=1)
+    external_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    external_size_bytes: int | None = Field(default=None, gt=0)
 
     @field_validator("relative_path")
     @classmethod
@@ -34,6 +38,20 @@ class ArtifactPathBinding(FrozenExecutionModel):
         if normalized.is_absolute() or ".." in normalized.parts:
             raise ValueError("artifact bindings must remain inside the run directory")
         return normalized.as_posix()
+
+    @model_validator(mode="after")
+    def external_source_is_complete(self) -> ArtifactPathBinding:
+        fields = (
+            self.external_import_id,
+            self.external_relative_path,
+            self.external_sha256,
+            self.external_size_bytes,
+        )
+        if any(item is not None for item in fields) and any(item is None for item in fields):
+            raise ValueError("external bindings require import, relative path, hash, and size")
+        if self.external_relative_path is not None:
+            self.safe_relative_path(self.external_relative_path)
+        return self
 
 
 class ExpectedArtifact(FrozenExecutionModel):
@@ -67,7 +85,7 @@ class VerifiedArtifact(FrozenExecutionModel):
 
 class PreprocessingOutput(FrozenExecutionModel):
     subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-    metric: str = Field(pattern=r"^(timeseries|alff|falff|reho)$")
+    metric: str = Field(pattern=r"^(timeseries|brain_mask|alff|falff|reho)$")
     scaling: str | None = None
     relative_path: str
 
@@ -84,6 +102,7 @@ class PreprocessingJobPayload(FrozenExecutionModel):
     subject_ids: tuple[str, ...]
     base_cfg_allowed_fields: tuple[str, ...]
     outputs: tuple[PreprocessingOutput, ...] = ()
+    t1_preparation: str | None = None
 
     @field_validator("staging_relative_path")
     @classmethod
@@ -121,18 +140,39 @@ class StatisticsJobPayload(FrozenExecutionModel):
         correction_mask = self.correction.parameters.get("mask_artifact_id")
         if correction_mask != self.statistics.mask_artifact_id:
             raise ValueError("test and correction must use the same frozen mask")
-        if self.correction.parameters.get("statistic_type") != "T":
-            raise ValueError("registered statistical calls currently produce T maps only")
+        function = self.statistics.function.value
+        statistic_type = {
+            "y_Correlation_Image": "R",
+            "y_ANCOVA1_Image": "F",
+        }.get(function, "T")
+        if self.correction.parameters.get("statistic_type") != statistic_type:
+            raise ValueError("correction statistic type does not match the DPABI result map")
         correction_df = self.correction.parameters.get("df1")
+        expected_df1 = (
+            len(self.statistics.dependent_artifact_groups) - 1
+            if statistic_type == "F"
+            else self.statistics.residual_df
+        )
         if not isinstance(correction_df, (int, float)) or not math.isclose(
-            float(correction_df), float(self.statistics.residual_df), rel_tol=0.0, abs_tol=1e-9
+            float(correction_df), float(expected_df1), rel_tol=0.0, abs_tol=1e-9
         ):
-            raise ValueError("correction df1 must equal the statistical design residual DF")
-        if self.correction.parameters.get("df2") is not None:
-            raise ValueError("T-map correction must not declare df2")
-        two_sided = self.statistics.tail is Tail.TWO_SIDED
-        if self.correction.function.value == "y_FDR_Image" and not two_sided:
-            raise ValueError("DPABI V8.2 y_FDR_Image uses two-sided T/Z/R p values")
+            raise ValueError("correction df1 does not match the frozen statistical map")
+        correction_df2 = self.correction.parameters.get("df2")
+        if statistic_type == "F":
+            if not isinstance(correction_df2, (int, float)) or not math.isclose(
+                float(correction_df2),
+                float(self.statistics.residual_df),
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("F-map correction df2 must equal the design residual DF")
+        elif correction_df2 is not None:
+            raise ValueError("T/R-map correction must not declare df2")
+        two_sided = False if statistic_type == "F" else self.statistics.tail is Tail.TWO_SIDED
+        if self.correction.function.value == "y_FDR_Image" and (
+            not two_sided or statistic_type not in {"T", "R"}
+        ):
+            raise ValueError("first-version DPABI FDR supports only two-sided T/R maps")
         if (
             self.correction.function.value == "y_GRF_Threshold"
             and bool(self.correction.parameters["two_tailed"]) != two_sided

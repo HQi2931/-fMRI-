@@ -1,21 +1,22 @@
 # ADR 0009：按能力演进模块化单体
 
 - 状态：Proposed
-- 日期：2026-09-07
-- 目标里程碑：MVP1.0 / `v1.0.0`
+- 文档类型：ADR
+- 决策日期：2026-09-07
+- 目标里程碑：能力化模块单体演进
 
 ## 背景
 
-MVP0.1 已形成 FastAPI、SQLite、独立 Worker、React、Skill/审批、受控 MATLAB、QC、统计和 Agent 的本地闭环。随着持久化对话、工作区检查、真实执行和扩展分析进入同一应用，现有横向分层中的总服务、总 contracts、总 repository port、总 router 和页面级状态开始成为变更热点。
+当前实现已形成 FastAPI、SQLite、独立 Worker、React、Skill/审批、受控 MATLAB、QC、统计和 Agent 的本地闭环。随着持久化对话、工作区检查、真实执行和扩展分析进入同一应用，现有横向分层中的总服务、总 contracts、总 repository port、总 router 和页面级状态开始成为变更热点。
 
 当前工作树已经出现多重继承 mixin 的同名方法类型冲突。该问题不是通过拆微服务解决的理由：产品仍是单用户本地应用，数据和事务主要位于同一个 SQLite 数据库，真实执行也依赖同一台 Windows 主机上的 MATLAB/SPM/DPABI。
 
 ## 决定
 
-MVP1.0 采用按业务能力组织的模块化单体，并进行以下渐进式调整：
+目标架构采用按业务能力组织的模块化单体，并进行以下渐进式调整：
 
 1. 保留单一 FastAPI 进程、独立 Worker、SQLite 和本地文件系统，不引入网络型基础设施。
-2. 将 `NeuroAgentService` 多重继承门面替换为显式应用服务集合；跨能力调用使用窄 Query/Command 端口。
+2. 将 `ApplicationServices` 多重继承门面替换为显式应用服务集合；跨能力调用使用窄 Query/Command 端口。
 3. 将 `RepositoryPort` 拆为能力 repository、`JobQueue`、`EventStore`、`ArtifactCatalog`、`IdempotencyStore` 和 `UnitOfWork`；SQLite adapter 可以同时实现这些端口。
 4. 将 API contracts、routers、SQLite mapper 和前端代码按 `projects`、`protocols`、`execution`、`qc`、`statistics`、`agent`、`environment` 切分。
 5. 将状态机、强类型 ID、Artifact 引用和执行结果移出 HTTP DTO，消除 Workflow/Execution 对 Application contracts 的反向依赖。
@@ -23,7 +24,7 @@ MVP1.0 采用按业务能力组织的模块化单体，并进行以下渐进式�
 7. SQLite 保持服务端事实来源。浏览器只持久化选择器、事件游标和未决幂等 key，不持久化可替代服务端的业务快照。
 8. 保持 `/api/v1` URL、响应语义、数据库内容和既有计划哈希兼容；通过重导出和读旧写新适配器分阶段迁移。
 
-详细边界和迁移顺序见 [MVP1.0 目标架构](../architecture/mvp-1.0-target-architecture.md)。
+详细边界和迁移顺序见 [目标架构](../architecture/target-architecture.md)。
 
 ## 后果
 
@@ -53,6 +54,6 @@ MVP1.0 采用按业务能力组织的模块化单体，并进行以下渐进式�
 
 本 ADR 在以下内容经维护者确认后改为 `Accepted`：
 
-- MVP1.0 范围和非目标获得确认。
+- 当前阶段范围和非目标获得确认。
 - 第一个架构切片能在不改变 `/api/v1` 和科学合同的前提下通过全部门禁。
 - 数据库迁移、旧 Job payload 和浏览器工作区状态均有兼容与回滚方案。

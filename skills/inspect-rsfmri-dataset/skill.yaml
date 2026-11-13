@@ -37,9 +37,9 @@ qc_requirements:
   - "source_read_only"
   - "subject_manifest_explicit"
 compatibility:
-  matlab: "R2023b"
-  spm: "SPM12"
-  dpabi: "V8.2_240510"
+  matlab: "R2024b"
+  spm: "SPM25"
+  dpabi: "V9.0_250415"
   adapter: "1.0.0"
 evidence_refs:
   - "AGENTS.md#6-数据与科研安全"

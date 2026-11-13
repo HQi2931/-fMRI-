@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from neuroagent.application.contracts import (
-    DatasetKind,
+from neuroagent.application.contracts.projects import (
     DatasetProfile,
     ManifestRevisionView,
     SubjectManifestEntry,
@@ -19,10 +19,20 @@ from neuroagent.domain.fmri import (
     PreprocessingParameters,
     RehoParameters,
 )
+from neuroagent.domain.fmri.dataset import (
+    DatasetKind,
+)
+from neuroagent.domain.fmri.preprocessing_outputs import (
+    enumerate_dpabi_preprocessing_outputs,
+)
+from neuroagent.domain.fmri.preprocessing_scope import (
+    PreprocessingSubjectScopeError,
+    PreprocessingSubjectScopeIssue,
+)
 from neuroagent.execution.models import ArtifactPathBinding, PreprocessingJobPayload
 from neuroagent.execution.preprocessing import PreprocessingCompilation, compile_preprocessing
 from neuroagent.skills.models import SkillPlan, stable_hash
-from neuroagent.tools.input_staging import StagingCopyTool
+from neuroagent.tools.input_staging import InputFormat, StagingCopyTool
 from tests.science.conftest import preprocessing_parameters
 from tests.science.test_skill_compiler import environment, request
 
@@ -31,6 +41,7 @@ def manifest_for(
     subjects: list[SubjectManifestEntry] | None = None,
     *,
     kind: DatasetKind = DatasetKind.NIFTI,
+    additional_inventory_files: list[str] | None = None,
 ) -> tuple[ManifestRevisionView, dict[str, Any]]:
     if subjects is None:
         subjects = [
@@ -40,15 +51,16 @@ def manifest_for(
                 anatomical_files=["sub-01/anat/t1.nii"],
             )
         ]
-    files = [
+    role_files = [
         path
         for subject in subjects
         for path in (*subject.functional_files, *subject.anatomical_files)
     ]
+    files = [*role_files, *(additional_inventory_files or [])]
     profile = DatasetProfile(
         kind=kind,
         file_count=len(files),
-        nifti_count=len(files),
+        nifti_count=len(role_files),
         dicom_count=0,
         subject_count=len(subjects),
     )
@@ -191,7 +203,7 @@ def test_frozen_common_plan_stages_roles_with_precise_subject_outputs() -> None:
 
 
 @pytest.mark.parametrize("mode", [2, 3])
-def test_headless_compiler_rejects_interactive_t1_normalization(mode: int) -> None:
+def test_headless_compiler_integrates_t1_preparation(mode: int) -> None:
     manifest, content = manifest_for()
     values = preprocessing_parameters().model_dump(mode="json")
     values["scrubbing"]["method"] = "nearest"
@@ -202,8 +214,10 @@ def test_headless_compiler_rejects_interactive_t1_normalization(mode: int) -> No
     )
     parameters = PreprocessingParameters.model_validate(values)
 
-    with pytest.raises(ValueError, match="not supported by the headless executor"):
-        compile_fixture(frozen_plan(manifest, parameters=parameters), manifest, content)
+    result = compile_fixture(frozen_plan(manifest, parameters=parameters), manifest, content)
+    assert result.spec.payload.t1_preparation == "reorient_crop"
+    assert result.spec.payload.metric_projection.cfg["IsNeedReorientCropT1Img"] == 0
+    assert any("/T1Img/" in op.destination_relative_path for op in result.staging_plan.operations)
 
 
 def test_epi_template_normalization_requires_realignment() -> None:
@@ -270,6 +284,105 @@ def test_combined_metrics_preserve_each_requested_scaling(base_lineage: Artifact
         "output/sub-01/z_score_falff.nii",
         "output/sub-01/z_score_reho.nii",
     }
+
+
+def test_runtime_outputs_match_canonical_contract_across_subjects_and_scalings(
+    base_lineage: ArtifactLineage,
+) -> None:
+    subjects = [
+        SubjectManifestEntry(
+            subject_id=subject_id,
+            functional_files=[f"{subject_id}/func/rest.nii"],
+        )
+        for subject_id in ("sub-01", "sub-02")
+    ]
+    manifest, content = manifest_for(subjects)
+    requested = request(base_lineage)
+    assert requested.alff_falff is not None
+    assert requested.reho is not None
+    alff = requested.alff_falff.model_copy(update={"requested_scalings": tuple(MetricScaling)})
+    reho = requested.reho.model_copy(update={"requested_scalings": tuple(MetricScaling)})
+    plan = frozen_plan(manifest, parameters=common_parameters(), alff=alff, reho=reho)
+
+    result = compile_fixture(plan, manifest, content)
+    payload = result.spec.payload
+    assert isinstance(payload, PreprocessingJobPayload)
+    contract = enumerate_dpabi_preprocessing_outputs(
+        tuple(subject.subject_id for subject in manifest.subjects), alff, reho
+    )
+
+    assert tuple(
+        (item.subject_id, item.metric, item.scaling, item.relative_path) for item in payload.outputs
+    ) == tuple(
+        (
+            item.subject_id,
+            item.metric,
+            item.scaling.value if item.scaling is not None else None,
+            item.relative_path,
+        )
+        for item in contract
+    )
+    assert tuple(item.artifact_type for item in contract) == (
+        "preprocessing.functional_timeseries",
+        "metric.alff.raw",
+        "metric.alff.global_mean",
+        "metric.alff.z_score",
+        "metric.falff.raw",
+        "metric.falff.global_mean",
+        "metric.falff.z_score",
+        "metric.reho.raw",
+        "metric.reho.global_mean",
+        "metric.reho.z_score",
+        "preprocessing.functional_timeseries",
+        "metric.alff.raw",
+        "metric.alff.global_mean",
+        "metric.alff.z_score",
+        "metric.falff.raw",
+        "metric.falff.global_mean",
+        "metric.falff.z_score",
+        "metric.reho.raw",
+        "metric.reho.global_mean",
+        "metric.reho.z_score",
+    )
+
+
+def test_canonical_contract_includes_dpabi_auto_mask_artifacts(
+    base_lineage: ArtifactLineage,
+) -> None:
+    requested = request(base_lineage)
+    assert requested.alff_falff is not None
+    alff = requested.alff_falff.model_copy(update={"requested_scalings": (MetricScaling.Z_SCORE,)})
+    outputs = enumerate_dpabi_preprocessing_outputs(("sub-01",), alff, None, auto_mask=True)
+
+    assert tuple(
+        (item.metric, item.scaling, item.relative_path, item.artifact_type) for item in outputs
+    ) == (
+        (
+            "timeseries",
+            None,
+            "output/sub-01/timeseries.nii",
+            "preprocessing.functional_timeseries",
+        ),
+        ("brain_mask", None, "output/sub-01/brain_mask.nii", "preprocessing.brain_mask"),
+        (
+            "alff",
+            MetricScaling.Z_SCORE,
+            "output/sub-01/z_score_alff.nii",
+            "metric.alff.z_score",
+        ),
+        (
+            "falff",
+            MetricScaling.Z_SCORE,
+            "output/sub-01/z_score_falff.nii",
+            "metric.falff.z_score",
+        ),
+    )
+
+    duplicate_scalings = alff.model_copy(
+        update={"requested_scalings": (MetricScaling.Z_SCORE, MetricScaling.Z_SCORE)}
+    )
+    with pytest.raises(ValueError, match="requested metric scalings must be unique"):
+        enumerate_dpabi_preprocessing_outputs(("sub-01",), duplicate_scalings, None)
 
 
 def test_metric_only_stages_registered_checkpoint_and_disables_earlier_steps(
@@ -345,6 +458,56 @@ def test_ambiguous_or_unsafe_subject_inputs_are_rejected(
     plan = frozen_plan(manifest, parameters=common_parameters())
     with pytest.raises(ValueError):
         compile_fixture(plan, manifest, content)
+
+
+def test_preprocessing_supports_multiple_subjects_in_one_session() -> None:
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=["sub-01/func/rest.nii"],
+                anatomical_files=["sub-01/anat/t1.nii"],
+            ),
+            SubjectManifestEntry(
+                subject_id="sub-02",
+                session_id="ses-01",
+                functional_files=["sub-02/func/rest.nii"],
+                anatomical_files=["sub-02/anat/t1.nii"],
+            ),
+        ]
+    )
+
+    result = compile_fixture(
+        frozen_plan(manifest, parameters=common_parameters()), manifest, content
+    )
+
+    assert tuple(subject.subject_id for subject in result.subjects) == ("sub-01", "sub-02")
+
+
+def test_execution_preprocessing_rejects_multiple_sessions_with_shared_scope_error() -> None:
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=["sub-01/ses-01/func/sub-01_ses-01_task-rest_bold.nii.gz"],
+                anatomical_files=["sub-01/anat/sub-01_T1w.nii.gz"],
+            ),
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-02",
+                functional_files=["sub-01/ses-02/func/sub-01_ses-02_task-rest_bold.nii.gz"],
+                anatomical_files=["sub-01/anat/sub-01_T1w.nii.gz"],
+            ),
+        ],
+        kind=DatasetKind.BIDS,
+    )
+
+    with pytest.raises(PreprocessingSubjectScopeError) as raised:
+        compile_fixture(frozen_plan(manifest, parameters=common_parameters()), manifest, content)
+
+    assert raised.value.issue is PreprocessingSubjectScopeIssue.MULTIPLE_SESSIONS
 
 
 @pytest.mark.parametrize("kind", [DatasetKind.DICOM, DatasetKind.MIXED, DatasetKind.UNKNOWN])
@@ -423,3 +586,107 @@ def test_compiled_staging_enforces_source_hashes_before_copy(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="source hash changed"):
         StagingCopyTool().execute(result.staging_plan, source_root=source, run_root=run)
     assert not list(run.rglob("*.nii"))
+
+
+def test_single_session_bids_compiles_and_stages_only_manifest_bound_nifti(tmp_path: Path) -> None:
+    bold = "sub-01/ses-01/func/sub-01_ses-01_task-rest_bold.nii.gz"
+    t1 = "sub-01/ses-01/anat/sub-01_ses-01_T1w.nii.gz"
+    sidecar = "sub-01/ses-01/func/sub-01_ses-01_task-rest_bold.json"
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=[bold],
+                anatomical_files=[t1],
+            )
+        ],
+        kind=DatasetKind.BIDS,
+        additional_inventory_files=[sidecar],
+    )
+    source = tmp_path / "source"
+    fixture_contents = {
+        bold: b"synthetic 4D BOLD NIfTI fixture",
+        t1: b"synthetic T1w NIfTI fixture",
+        sidecar: b'{"SliceTiming":[0.0,0.5,1.0,1.5]}',
+    }
+    source_state: dict[str, tuple[int, str]] = {}
+    for relative, data in fixture_contents.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        source_state[relative] = (path.stat().st_mtime_ns, hashlib.sha256(data).hexdigest())
+    content["file_hashes"] = {
+        relative: hashlib.sha256(data).hexdigest() for relative, data in fixture_contents.items()
+    }
+    content["file_sizes"] = {relative: len(data) for relative, data in fixture_contents.items()}
+    manifest = manifest.model_copy(update={"content_hash": stable_hash(content)})
+
+    parameters_data = common_parameters().model_dump(mode="json")
+    parameters_data["normalization"].update(
+        mode=2,
+        structural_artifact_id=f"manifest:{manifest.manifest_id}:anatomical-source",
+        affine_regularization="mni",
+    )
+    parameters = PreprocessingParameters.model_validate(parameters_data)
+    result = compile_fixture(frozen_plan(manifest, parameters=parameters), manifest, content)
+
+    assert result.staging_plan is not None
+    assert result.staging_plan.input_format is InputFormat.BIDS_NIFTI
+    assert result.staging_plan.input_manifest_hash == manifest.content_hash
+    assert result.staging_plan.source_read_only is True
+    assert [item.source_relative_path for item in result.staging_plan.operations] == [bold, t1]
+    assert [item.destination_relative_path for item in result.staging_plan.operations] == [
+        "staging/FunImg/sub-01/sub-01_ses-01_task-rest_bold.nii.gz",
+        "staging/T1Img/sub-01/sub-01_ses-01_T1w.nii.gz",
+    ]
+    payload = result.spec.payload
+    assert isinstance(payload, PreprocessingJobPayload)
+    cfg = payload.metric_projection.cfg
+    assert cfg["StartingDirName"] == "FunImg"
+    assert cfg["FunctionalSessionNumber"] == 1
+    assert cfg["IsBIDStoDPARSF"] == 0
+    assert cfg["SliceTiming"] == {
+        "SliceNumber": 4,
+        "TR": 2.0,
+        "TA": 1.5,
+        "SliceOrder": [1, 3, 2, 4],
+        "ReferenceSlice": 2,
+    }
+
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    staged = StagingCopyTool().execute(result.staging_plan, source_root=source, run_root=work_root)
+    assert staged.copied_relative_paths == tuple(
+        item.destination_relative_path for item in result.staging_plan.operations
+    )
+    assert (work_root / "staging/FunImg/sub-01" / Path(bold).name).read_bytes() == fixture_contents[
+        bold
+    ]
+    assert (work_root / "staging/T1Img/sub-01" / Path(t1).name).read_bytes() == fixture_contents[t1]
+    assert not (work_root / "staging/FunImg/sub-01" / Path(sidecar).name).exists()
+    assert all(
+        (source / relative).stat().st_mtime_ns == before_mtime
+        and hashlib.sha256((source / relative).read_bytes()).hexdigest() == before_hash
+        for relative, (before_mtime, before_hash) in source_state.items()
+    )
+
+
+def test_bids_preprocessing_rejects_multiple_bold_runs() -> None:
+    manifest, content = manifest_for(
+        [
+            SubjectManifestEntry(
+                subject_id="sub-01",
+                session_id="ses-01",
+                functional_files=[
+                    "sub-01/ses-01/func/sub-01_ses-01_task-rest_run-1_bold.nii.gz",
+                    "sub-01/ses-01/func/sub-01_ses-01_task-rest_run-2_bold.nii.gz",
+                ],
+                anatomical_files=["sub-01/ses-01/anat/sub-01_ses-01_T1w.nii.gz"],
+            )
+        ],
+        kind=DatasetKind.BIDS,
+    )
+
+    with pytest.raises(ValueError, match="exactly one explicit 4D functional NIfTI"):
+        compile_fixture(frozen_plan(manifest, parameters=common_parameters()), manifest, content)

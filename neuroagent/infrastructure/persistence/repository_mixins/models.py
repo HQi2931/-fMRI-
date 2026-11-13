@@ -5,7 +5,11 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from neuroagent.agent.models import GatewayResult
-from neuroagent.application.contracts import AgentTaskView, ModelProfileInput, ModelProfileView
+from neuroagent.application.contracts.agent import (
+    AgentTaskView,
+    ModelProfileInput,
+    ModelProfileView,
+)
 from neuroagent.application.errors import NotFoundError
 from neuroagent.application.hashing import canonical_json
 from neuroagent.infrastructure.persistence.models import (

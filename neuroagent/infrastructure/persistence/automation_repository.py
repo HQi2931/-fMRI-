@@ -1,0 +1,3892 @@
+"""SQLite persistence for long-lived user-goal automation records."""
+
+# ruff: noqa: RUF001
+
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from typing import Any, cast
+from uuid import uuid4
+
+from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
+
+from neuroagent.application.automation.analysis_outbox import (
+    AnalysisOutboxClaim,
+    AnalysisOutboxStatus,
+    AnalysisProposalOutbox,
+)
+from neuroagent.application.automation.composite_goal import (
+    CompositeGoalAnalysisAttempt,
+    CompositeGoalContinuationMessage,
+    CompositeGoalIdentity,
+    CompositeGoalIntentMessage,
+    CompositeGoalPlanEvidence,
+    CompositeGoalRunEvidence,
+    CompositeGoalSnapshot,
+)
+from neuroagent.application.automation.model_budget import (
+    CompositeGoalModelBudget,
+    CompositeGoalModelCallDecisionStatus,
+    CompositeGoalModelCallReservation,
+    CompositeGoalModelCallReserveResult,
+    CompositeGoalModelCallSettlement,
+    CompositeGoalModelCallState,
+)
+from neuroagent.application.automation.models import (
+    EventConsumptionDecision,
+    TaskBudget,
+    WorkEventIdentity,
+    WorkTask,
+    WorkTaskClaim,
+    advance_event_cursor,
+    decide_event_consumption,
+)
+from neuroagent.application.automation.result_interpretation import (
+    ResultInterpretationClaim,
+    ResultInterpretationStatus,
+    StatisticalResultInterpretationOutbox,
+)
+from neuroagent.application.automation.step_lifecycle import resolve_routed_workflow_run
+from neuroagent.application.automation.step_preparation import (
+    StepPreparationClaim,
+    StepPreparationTarget,
+    resolve_step_preparation_target,
+)
+from neuroagent.application.errors import ConflictError, NotFoundError
+from neuroagent.application.hashing import content_hash
+from neuroagent.domain.fmri.external_import import external_analysis_manifest_hash
+from neuroagent.infrastructure.persistence.database import Database
+from neuroagent.infrastructure.persistence.sqlite_adapter import SqliteAdapterMixin
+from neuroagent.infrastructure.persistence.unit_of_work import SqliteUnitOfWork
+
+
+class SqliteWorkTaskRepository(SqliteAdapterMixin):
+    """Versioned WorkTask store sharing the application's SQLite transaction."""
+
+    @staticmethod
+    def _composite_goal_plan_input_revision(
+        *,
+        task: WorkTask,
+        plan_revision_id: str,
+        manifest_hash: str,
+        plan_payload: Any,
+    ) -> str | None:
+        matching_steps = tuple(
+            step for step in task.steps if step.authority_refs.plan_revision_id == plan_revision_id
+        )
+        if len(matching_steps) != 1:
+            return None
+        if matching_steps[0].kind == "preprocessing_run":
+            return manifest_hash
+        if matching_steps[0].kind == "statistical_run":
+            context = plan_payload.get("work_context") if isinstance(plan_payload, dict) else None
+            candidate = context.get("draft_hash") if isinstance(context, dict) else None
+            return candidate if isinstance(candidate, str) else None
+        return None
+
+    def __init__(self, database: Database, *, unit_of_work: SqliteUnitOfWork) -> None:
+        super().__init__(database, unit_of_work=unit_of_work)
+
+    @contextmanager
+    def _read_session(self) -> Iterator[Session]:
+        active = self.unit_of_work.current_session()
+        if active is not None:
+            active.flush()
+            yield active
+        else:
+            with self.database.session_factory() as session:
+                yield session
+
+    @contextmanager
+    def _snapshot_session(self) -> Iterator[Session]:
+        """Hold a SQLite read transaction across all rows in a goal snapshot."""
+
+        active = self.unit_of_work.current_session()
+        if active is not None:
+            active.flush()
+            yield active
+            return
+        with self.database.session_factory() as session:
+            # SQLAlchemy's SQLite transaction can otherwise remain logical
+            # until a write. BEGIN makes the first SELECT establish the read
+            # snapshot used by every subsequent child lookup.
+            session.connection().exec_driver_sql("BEGIN")
+            try:
+                yield session
+            finally:
+                session.rollback()
+
+    def create_task(self, task: WorkTask) -> WorkTask:
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            existing = session.execute(
+                text("SELECT 1 FROM work_tasks WHERE task_id = :task_id"),
+                {"task_id": task.task_id},
+            ).first()
+            if existing is not None:
+                raise ConflictError(
+                    "work_task_exists", "该自动化任务已存在。", task_id=task.task_id
+                )
+            session.execute(
+                text(
+                    """INSERT INTO work_tasks
+                    (task_id, status, version, goal_json, waiting_condition_json,
+                     authority_refs_json, recovery_steps_json, budget_json)
+                    VALUES (:task_id, :status, :version, :goal, :waiting,
+                            :authority_refs, :recovery_steps, :budget)"""
+                ),
+                self._task_values(task),
+            )
+            self._replace_children(session, task)
+            self._sync_preprocessing_composite_goal(session, task)
+        return task
+
+    def get_task(self, task_id: str) -> WorkTask:
+        with self._read_session() as session:
+            return self._task_from_session(session, task_id)
+
+    def list_step_plan_review_candidate_task_ids(
+        self, conversation_id: str, *, limit: int
+    ) -> tuple[str, ...]:
+        """Return bounded IDs whose persisted refs look like a current step-plan review.
+
+        JSON is untrusted persisted input. Every extraction is guarded with
+        CASE, and malformed task or step rows are excluded. The application
+        review verifier remains authoritative for returned candidates.
+        """
+
+        if not conversation_id or not 1 <= limit <= 101:
+            raise ValueError("step-plan review candidate scope must be bounded")
+        query = text(
+            """WITH task_candidates AS (
+                   SELECT task.task_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.conversation_id'
+                                      )
+                                  END
+                          END AS conversation_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.plan_revision_id'
+                                      )
+                                  END
+                          END AS plan_revision_id,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.input_revision'
+                                      )
+                                  END
+                          END AS input_revision,
+                          CASE
+                              WHEN json_valid(task.authority_refs_json) = 1 THEN
+                                  CASE WHEN json_type(task.authority_refs_json) = 'object'
+                                      THEN json_extract(
+                                          task.authority_refs_json, '$.workflow_run_id'
+                                      )
+                                  END
+                          END AS workflow_run_id,
+                          CASE
+                              WHEN json_valid(task.waiting_condition_json) = 1 THEN
+                                  CASE WHEN json_type(task.waiting_condition_json) = 'object'
+                                      THEN json_extract(task.waiting_condition_json, '$.kind')
+                                  END
+                          END AS waiting_kind,
+                          CASE
+                              WHEN json_valid(task.waiting_condition_json) = 1 THEN
+                                  CASE WHEN json_type(task.waiting_condition_json) = 'object'
+                                      THEN json_extract(task.waiting_condition_json, '$.reference')
+                                  END
+                          END AS waiting_reference
+                   FROM work_tasks AS task
+                   WHERE task.status = 'waiting_user'
+                     AND json_valid(task.goal_json) = 1
+                     AND json_valid(task.waiting_condition_json) = 1
+                     AND json_valid(task.authority_refs_json) = 1
+                     AND json_valid(task.recovery_steps_json) = 1
+                     AND json_valid(task.budget_json) = 1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM work_task_steps AS malformed_step
+                         WHERE malformed_step.task_id = task.task_id
+                           AND (
+                               json_valid(malformed_step.step_json) != 1
+                               OR CASE
+                                   WHEN json_valid(malformed_step.step_json) = 1
+                                   THEN json_type(malformed_step.step_json)
+                                   ELSE NULL
+                               END != 'object'
+                           )
+                     )
+               )
+               SELECT candidate.task_id
+               FROM task_candidates AS candidate
+               WHERE candidate.conversation_id = :conversation_id
+                 AND candidate.plan_revision_id IS NOT NULL
+                 AND candidate.input_revision IS NOT NULL
+                 AND candidate.workflow_run_id IS NULL
+                 AND candidate.waiting_kind = 'user_decision'
+                 AND (SELECT count(*) FROM work_task_steps AS ready_count
+                      WHERE ready_count.task_id = candidate.task_id
+                        AND ready_count.status = 'ready') = 1
+                 AND (SELECT count(*) FROM work_task_steps AS active_count
+                      WHERE active_count.task_id = candidate.task_id
+                        AND active_count.status IN ('ready', 'running', 'waiting')) = 1
+                 AND EXISTS (
+                     SELECT 1
+                     FROM work_task_steps AS step
+                     WHERE step.task_id = candidate.task_id
+                       AND step.status = 'ready'
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.status')
+                           ELSE NULL
+                       END = 'ready'
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.step_id')
+                           ELSE NULL
+                       END = step.step_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.conversation_id')
+                           ELSE NULL
+                       END = :conversation_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.plan_revision_id')
+                           ELSE NULL
+                       END = candidate.plan_revision_id
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.input_revision')
+                           ELSE NULL
+                       END = candidate.input_revision
+                       AND CASE
+                           WHEN json_valid(step.step_json) = 1
+                           THEN json_extract(step.step_json, '$.authority_refs.workflow_run_id')
+                           ELSE NULL
+                       END IS NULL
+                       AND candidate.waiting_reference =
+                           'step-plan:' || candidate.task_id || ':' || step.step_id || ':' ||
+                           candidate.plan_revision_id
+                       AND (SELECT count(*) FROM work_task_steps AS count_step
+                            WHERE count_step.task_id = candidate.task_id) >= 2
+                 )
+               ORDER BY candidate.task_id
+               LIMIT :limit"""
+        )
+        with self._read_session() as session:
+            rows = session.execute(
+                query, {"conversation_id": conversation_id, "limit": limit}
+            ).scalars()
+            return tuple(str(task_id) for task_id in rows)
+
+    @staticmethod
+    def _task_from_session(session: Session, task_id: str) -> WorkTask:
+        row = (
+            session.execute(
+                text("SELECT * FROM work_tasks WHERE task_id = :task_id"),
+                {"task_id": task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFoundError("自动化任务", task_id)
+        step_rows = session.execute(
+            text(
+                "SELECT step_json FROM work_task_steps WHERE task_id = :task_id ORDER BY sequence"
+            ),
+            {"task_id": task_id},
+        ).mappings()
+        cursor_rows = session.execute(
+            text(
+                "SELECT stream_key, event_id FROM work_task_event_cursors "
+                "WHERE task_id = :task_id ORDER BY stream_key"
+            ),
+            {"task_id": task_id},
+        ).mappings()
+        return WorkTask.model_validate(
+            {
+                "task_id": row["task_id"],
+                "status": row["status"],
+                "version": row["version"],
+                "goal": json.loads(row["goal_json"]),
+                "waiting_condition": (
+                    json.loads(row["waiting_condition_json"])
+                    if row["waiting_condition_json"]
+                    else None
+                ),
+                "authority_refs": json.loads(row["authority_refs_json"]),
+                "recovery_steps": json.loads(row["recovery_steps_json"]),
+                "budget": json.loads(row["budget_json"]),
+                "steps": [json.loads(item["step_json"]) for item in step_rows],
+                "event_cursors": [dict(item) for item in cursor_rows],
+            }
+        )
+
+    def ensure_preprocessing_composite_goal(self, task: WorkTask) -> CompositeGoalIdentity:
+        """Create or verify the identity root for one explicit preprocessing task."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            current = self._task_from_session(session, task.task_id)
+            if current != task:
+                raise ConflictError(
+                    "composite_goal_preprocessing_task_changed",
+                    "预处理任务在建立复合目标关联前已发生变化。",
+                )
+            return self._ensure_preprocessing_composite_goal(session, current)
+
+    def ensure_preprocessing_composite_goal_intent(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity:
+        """Persist an explicit preprocessing intent before Plan or Task creation."""
+
+        if goal.goal_kind != "preprocess_then_analyze" or goal.preprocessing_task_id is not None:
+            raise ValueError("an unbound preprocessing composite goal root is required")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            conversation = (
+                session.execute(
+                    text("SELECT mode, project_id FROM conversations WHERE conversation_id=:id"),
+                    {"id": goal.conversation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                conversation is None
+                or conversation["mode"] != "work"
+                or conversation["project_id"] not in {None, goal.project_id}
+            ):
+                raise ConflictError(
+                    "composite_goal_conversation_mismatch",
+                    "复合预处理目标必须绑定到同项目的 Work 会话。",
+                )
+            current_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if current_row is None:
+                session.execute(
+                    text(
+                        """INSERT INTO composite_goal_links
+                        (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                         goal_kind, preprocessing_task_id, source_external_import_id,
+                         source_import_version, source_tree_hash, source_inclusion_hash,
+                         source_manifest_hash, source_revision_hash,
+                         analysis_proposal_outbox_intent_task_id, analysis_work_task_id,
+                         result_interpretation_outbox_task_id)
+                        VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                                'preprocess_then_analyze', NULL, NULL, NULL, NULL, NULL,
+                                NULL, NULL, NULL, NULL, NULL)"""
+                    ),
+                    {
+                        "intent_id": goal.intent_task_id,
+                        "conversation_id": goal.conversation_id,
+                        "project_id": goal.project_id,
+                        "request_hash": goal.analysis_request_hash,
+                    },
+                )
+                current_row = (
+                    session.execute(
+                        text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+            identity = self._composite_goal_from_row(current_row)
+            if identity.model_copy(update={"preprocessing_task_id": None}) != goal:
+                raise ConflictError(
+                    "composite_goal_identity_conflict",
+                    "稳定复合目标 ID 已绑定到不同的会话、项目或请求摘要。",
+                )
+            self._ensure_composite_goal_model_budget(session, goal.intent_task_id, budget)
+            return identity
+
+    def ensure_analysis_only_external_goal(
+        self, goal: CompositeGoalIdentity, budget: TaskBudget
+    ) -> CompositeGoalIdentity:
+        """Persist one exact external-import target and its initial model budget."""
+
+        if goal.goal_kind != "analysis_only_external_import":
+            raise ValueError("analysis-only root required")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            conversation = (
+                session.execute(
+                    text("SELECT mode, project_id FROM conversations WHERE conversation_id=:id"),
+                    {"id": goal.conversation_id},
+                )
+                .mappings()
+                .first()
+            )
+            imported = (
+                session.execute(
+                    text(
+                        "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                        "FROM external_analysis_imports WHERE import_id=:import_id"
+                    ),
+                    {"import_id": goal.source_external_import_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                conversation is None
+                or conversation["mode"] != "work"
+                or conversation["project_id"] not in {None, goal.project_id}
+                or imported is None
+                or imported["project_id"] != goal.project_id
+                or imported["status"] != "included"
+                or imported["version"] != goal.source_import_version
+                or imported["source_tree_hash"] != goal.source_tree_hash
+                or imported["inclusion_hash"] != goal.source_inclusion_hash
+            ):
+                raise ConflictError(
+                    "analysis_goal_external_source_changed",
+                    "显式外部分析来源未纳入、已变化或不属于当前 Work 项目。",
+                )
+            current_manifest_hash = external_analysis_manifest_hash(
+                str(goal.source_external_import_id),
+                str(imported["source_tree_hash"]),
+                str(imported["inclusion_hash"]),
+            )
+            current_revision_hash = content_hash(
+                {
+                    "external_import_id": goal.source_external_import_id,
+                    "import_version": imported["version"],
+                    "source_tree_hash": imported["source_tree_hash"],
+                    "inclusion_hash": imported["inclusion_hash"],
+                    "input_manifest_hash": current_manifest_hash,
+                }
+            )
+            if (
+                current_manifest_hash != goal.source_manifest_hash
+                or current_revision_hash != goal.source_revision_hash
+            ):
+                raise ConflictError(
+                    "analysis_goal_external_source_changed",
+                    "外部分析来源 revision 在建立目标前已变化，请重新选择来源。",
+                )
+            current_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if current_row is None:
+                session.execute(
+                    text(
+                        """INSERT INTO composite_goal_links
+                        (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                         goal_kind, preprocessing_task_id, source_external_import_id,
+                         source_import_version, source_tree_hash, source_inclusion_hash,
+                         source_manifest_hash, source_revision_hash,
+                         analysis_proposal_outbox_intent_task_id, analysis_work_task_id,
+                         result_interpretation_outbox_task_id)
+                        VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                                'analysis_only_external_import', NULL, :import_id,
+                                :import_version, :tree_hash, :inclusion_hash,
+                                :manifest_hash, :revision_hash, NULL, NULL, NULL)"""
+                    ),
+                    {
+                        "intent_id": goal.intent_task_id,
+                        "conversation_id": goal.conversation_id,
+                        "project_id": goal.project_id,
+                        "request_hash": goal.analysis_request_hash,
+                        "import_id": goal.source_external_import_id,
+                        "import_version": goal.source_import_version,
+                        "tree_hash": goal.source_tree_hash,
+                        "inclusion_hash": goal.source_inclusion_hash,
+                        "manifest_hash": goal.source_manifest_hash,
+                        "revision_hash": goal.source_revision_hash,
+                    },
+                )
+                current_row = (
+                    session.execute(
+                        text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+            identity = SqliteWorkTaskRepository._composite_goal_from_row(current_row)
+            if identity != goal:
+                raise ConflictError(
+                    "analysis_goal_identity_conflict",
+                    "稳定分析目标 ID 已绑定到不同的会话、请求或外部来源 revision。",
+                )
+            self._ensure_composite_goal_model_budget(session, goal.intent_task_id, budget)
+            return identity
+
+    @staticmethod
+    def _ensure_preprocessing_composite_goal(
+        session: Session, task: WorkTask
+    ) -> CompositeGoalIdentity:
+        refs = task.authority_refs
+        intent_id = refs.analysis_intent_task_id
+        request_hash = refs.analysis_request_hash
+        if intent_id is None and request_hash is None:
+            raise ConflictError(
+                "composite_goal_intent_missing", "预处理任务未绑定显式复合分析 intent。"
+            )
+        if intent_id is None or request_hash is None:
+            raise ConflictError(
+                "composite_goal_intent_incomplete", "复合分析 intent ID 与请求摘要必须同时存在。"
+            )
+        if len(request_hash) != 64 or any(char not in "0123456789abcdef" for char in request_hash):
+            raise ConflictError("composite_goal_hash_invalid", "复合目标请求摘要不是 SHA-256。")
+        prep_steps = tuple(step for step in task.steps if step.kind == "preprocessing_run")
+        if len(prep_steps) != 1 or refs.plan_revision_id is None or refs.input_revision is None:
+            raise ConflictError(
+                "composite_goal_preprocessing_binding_invalid",
+                "复合目标必须引用唯一预处理步骤、冻结 Plan 和 manifest。",
+            )
+        step_refs = prep_steps[0].authority_refs
+        if (
+            step_refs.conversation_id != refs.conversation_id
+            or step_refs.analysis_intent_task_id != intent_id
+            or step_refs.analysis_request_hash != request_hash
+            or step_refs.plan_revision_id != refs.plan_revision_id
+            or step_refs.input_revision != refs.input_revision
+        ):
+            raise ConflictError(
+                "composite_goal_preprocessing_step_mismatch",
+                "预处理步骤与 WorkTask 的会话、intent 或输入引用不一致。",
+            )
+        plan = (
+            session.execute(
+                text(
+                    "SELECT project_id, manifest_hash FROM plan_revisions "
+                    "WHERE plan_revision_id=:plan_id"
+                ),
+                {"plan_id": refs.plan_revision_id},
+            )
+            .mappings()
+            .first()
+        )
+        conversation = (
+            session.execute(
+                text(
+                    "SELECT mode, project_id FROM conversations "
+                    "WHERE conversation_id=:conversation_id"
+                ),
+                {"conversation_id": refs.conversation_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            plan is None
+            or conversation is None
+            or conversation["mode"] != "work"
+            or plan["manifest_hash"] != refs.input_revision
+        ):
+            raise ConflictError(
+                "composite_goal_preprocessing_authority_mismatch",
+                "预处理 Plan、manifest 或会话不存在或互不匹配。",
+            )
+        project_id = str(plan["project_id"])
+        if conversation["project_id"] not in {None, project_id}:
+            raise ConflictError(
+                "composite_goal_project_mismatch", "预处理会话与冻结 Plan 不属于同一项目。"
+            )
+        if refs.workflow_run_id is not None:
+            run = (
+                session.execute(
+                    text(
+                        "SELECT project_id, plan_revision_id FROM workflow_runs "
+                        "WHERE run_id=:run_id"
+                    ),
+                    {"run_id": refs.workflow_run_id},
+                )
+                .mappings()
+                .first()
+            )
+            if run is None or (
+                run["project_id"] != project_id or run["plan_revision_id"] != refs.plan_revision_id
+            ):
+                raise ConflictError(
+                    "composite_goal_preprocessing_run_mismatch",
+                    "预处理任务绑定了其他项目或 Plan 的 Workflow Run。",
+                )
+        current_row = (
+            session.execute(
+                text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                {"intent_id": intent_id},
+            )
+            .mappings()
+            .first()
+        )
+        if current_row is None:
+            session.execute(
+                text(
+                    """INSERT INTO composite_goal_links
+                    (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                     preprocessing_task_id, analysis_proposal_outbox_intent_task_id,
+                     analysis_work_task_id, result_interpretation_outbox_task_id)
+                    VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                            :preprocessing_task_id, NULL, NULL, NULL)"""
+                ),
+                {
+                    "intent_id": intent_id,
+                    "conversation_id": refs.conversation_id,
+                    "project_id": project_id,
+                    "request_hash": request_hash,
+                    "preprocessing_task_id": task.task_id,
+                },
+            )
+            current_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_id},
+                )
+                .mappings()
+                .one()
+            )
+        identity = SqliteWorkTaskRepository._composite_goal_from_row(current_row)
+        expected = (refs.conversation_id, project_id, request_hash)
+        actual = (identity.conversation_id, identity.project_id, identity.analysis_request_hash)
+        if (
+            actual != expected
+            or identity.goal_kind != "preprocess_then_analyze"
+            or identity.preprocessing_task_id not in {None, task.task_id}
+        ):
+            raise ConflictError(
+                "composite_goal_identity_conflict",
+                "稳定复合目标 ID 已绑定到不同的会话、项目、请求或预处理任务。",
+            )
+        if identity.preprocessing_task_id is None:
+            session.execute(
+                text(
+                    "UPDATE composite_goal_links SET preprocessing_task_id=:task_id "
+                    "WHERE intent_task_id=:intent_id AND preprocessing_task_id IS NULL"
+                ),
+                {"task_id": task.task_id, "intent_id": intent_id},
+            )
+            identity = SqliteWorkTaskRepository._composite_goal_from_row(
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_id},
+                )
+                .mappings()
+                .one()
+            )
+            if identity.preprocessing_task_id != task.task_id:
+                raise ConflictError(
+                    "composite_goal_preprocessing_task_conflict",
+                    "复合目标已被绑定到另一条预处理任务。",
+                )
+        SqliteWorkTaskRepository._ensure_composite_goal_model_budget(
+            session, intent_id, task.budget
+        )
+        return identity
+
+    @staticmethod
+    def _ensure_composite_goal_model_budget(
+        session: Session, intent_task_id: str, source_budget: TaskBudget
+    ) -> None:
+        row = (
+            session.execute(
+                text(
+                    "SELECT max_steps, max_model_calls, max_tokens, max_elapsed_seconds "
+                    "FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
+                ),
+                {"intent_id": intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if row is not None:
+            actual = (
+                row["max_steps"],
+                row["max_model_calls"],
+                row["max_tokens"],
+                row["max_elapsed_seconds"],
+            )
+            expected = (
+                source_budget.max_steps,
+                source_budget.max_model_calls,
+                source_budget.max_tokens,
+                source_budget.max_elapsed_seconds,
+            )
+            if actual != expected:
+                raise ConflictError(
+                    "composite_goal_budget_mismatch",
+                    "复合目标累计模型预算与预处理 TaskBudget 不一致。",
+                )
+            return
+        session.execute(
+            text(
+                "INSERT INTO composite_goal_model_budgets "
+                "(intent_task_id, max_steps, max_model_calls, max_tokens, "
+                "max_elapsed_seconds, used_steps, used_model_calls, used_tokens, elapsed_seconds) "
+                "VALUES (:intent_id, :max_steps, :max_model_calls, :max_tokens, "
+                ":max_elapsed_seconds, 0, 0, 0, 0)"
+            ),
+            {
+                "intent_id": intent_task_id,
+                "max_steps": source_budget.max_steps,
+                "max_model_calls": source_budget.max_model_calls,
+                "max_tokens": source_budget.max_tokens,
+                "max_elapsed_seconds": source_budget.max_elapsed_seconds,
+            },
+        )
+
+    def get_composite_goal_model_budget(self, intent_task_id: str) -> CompositeGoalModelBudget:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("复合目标模型预算", intent_task_id)
+            return self._model_budget_from_row(row)
+
+    def reserve_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        call_id: str,
+        estimated_tokens: int,
+        estimated_elapsed_seconds: int = 1,
+    ) -> CompositeGoalModelCallReserveResult:
+        """Reserve one exact provider request, including its elapsed-time allowance."""
+
+        if not reservation_id or len(reservation_id) > 100:
+            raise ValueError("reservation_id must contain 1 to 100 characters")
+        if not call_id or len(call_id) > 100:
+            raise ValueError("call_id must contain 1 to 100 characters")
+        if (
+            isinstance(estimated_tokens, bool)
+            or not isinstance(estimated_tokens, int)
+            or not 0 <= estimated_tokens <= 10_000_000
+        ):
+            raise ValueError("estimated_tokens must be between 0 and 10000000")
+        if (
+            isinstance(estimated_elapsed_seconds, bool)
+            or not isinstance(estimated_elapsed_seconds, int)
+            or not 1 <= estimated_elapsed_seconds <= 31_536_000
+        ):
+            raise ValueError("estimated_elapsed_seconds must be between 1 and 31536000")
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            budget_row = self._model_budget_row(session, intent_task_id)
+            budget = self._model_budget_from_row(budget_row)
+            existing_call = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND call_id=:call_id"
+                    ),
+                    {"intent_id": intent_task_id, "call_id": call_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing_call is not None:
+                reservation = self._model_call_reservation_from_row(existing_call)
+                return CompositeGoalModelCallReserveResult(
+                    status=CompositeGoalModelCallDecisionStatus.DUPLICATE,
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            existing_id = (
+                session.execute(
+                    text(
+                        "SELECT call_id "
+                        "FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing_id is not None:
+                raise ConflictError(
+                    "composite_goal_model_reservation_id_conflict",
+                    "模型调用预算 reservation ID 已绑定到其他调用。",
+                )
+
+            exhausted = (
+                budget.used_steps + 1 > budget.max_steps
+                or budget.used_model_calls + 1 > budget.max_model_calls
+                or budget.used_tokens + estimated_tokens > budget.max_tokens
+                or budget.elapsed_seconds >= budget.max_elapsed_seconds
+            )
+            if exhausted:
+                row = {
+                    "intent_id": intent_task_id,
+                    "reservation_id": reservation_id,
+                    "call_id": call_id,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_tokens": 0,
+                    "state": CompositeGoalModelCallState.EXHAUSTED.value,
+                }
+                session.execute(
+                    text(
+                        "INSERT INTO composite_goal_model_call_reservations "
+                        "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
+                        "reserved_tokens, actual_tokens, elapsed_seconds, "
+                        "reserved_elapsed_seconds) "
+                        "VALUES (:reservation_id, :intent_id, :call_id, :state, "
+                        ":estimated_tokens, :reserved_tokens, NULL, 0, 0)"
+                    ),
+                    row,
+                )
+                reservation = CompositeGoalModelCallReservation(
+                    intent_task_id=intent_task_id,
+                    reservation_id=reservation_id,
+                    call_id=call_id,
+                    state=CompositeGoalModelCallState.EXHAUSTED,
+                    estimated_tokens=estimated_tokens,
+                    reserved_tokens=0,
+                )
+                return CompositeGoalModelCallReserveResult(
+                    status=CompositeGoalModelCallDecisionStatus.EXHAUSTED,
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            reserved_elapsed_seconds = min(
+                estimated_elapsed_seconds, budget.remaining_elapsed_seconds
+            )
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_budgets "
+                    "SET used_steps=used_steps+1, used_model_calls=used_model_calls+1, "
+                    "used_tokens=used_tokens+:estimated_tokens, "
+                    "elapsed_seconds=elapsed_seconds+:reserved_elapsed_seconds "
+                    "WHERE intent_task_id=:intent_id"
+                ),
+                {
+                    "intent_id": intent_task_id,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_elapsed_seconds": reserved_elapsed_seconds,
+                },
+            )
+            session.execute(
+                text(
+                    "INSERT INTO composite_goal_model_call_reservations "
+                    "(reservation_id, intent_task_id, call_id, state, estimated_tokens, "
+                    "reserved_tokens, actual_tokens, elapsed_seconds, "
+                    "reserved_elapsed_seconds) "
+                    "VALUES (:reservation_id, :intent_id, :call_id, :state, "
+                    ":estimated_tokens, :reserved_tokens, NULL, 0, :reserved_elapsed_seconds)"
+                ),
+                {
+                    "reservation_id": reservation_id,
+                    "intent_id": intent_task_id,
+                    "call_id": call_id,
+                    "state": CompositeGoalModelCallState.RESERVED.value,
+                    "estimated_tokens": estimated_tokens,
+                    "reserved_tokens": estimated_tokens,
+                    "reserved_elapsed_seconds": reserved_elapsed_seconds,
+                },
+            )
+            updated_budget = self._model_budget_row(session, intent_task_id)
+            reservation = CompositeGoalModelCallReservation(
+                intent_task_id=intent_task_id,
+                reservation_id=reservation_id,
+                call_id=call_id,
+                state=CompositeGoalModelCallState.RESERVED,
+                estimated_tokens=estimated_tokens,
+                reserved_tokens=estimated_tokens,
+                reserved_elapsed_seconds=reserved_elapsed_seconds,
+            )
+            return CompositeGoalModelCallReserveResult(
+                status=CompositeGoalModelCallDecisionStatus.RESERVED,
+                reservation=reservation,
+                budget=self._model_budget_from_row(updated_budget),
+            )
+
+    def settle_composite_goal_model_call(
+        self,
+        intent_task_id: str,
+        *,
+        reservation_id: str,
+        actual_tokens: int | None,
+        elapsed_seconds: int,
+    ) -> CompositeGoalModelCallSettlement:
+        """Settle actual usage once; crash-surviving time precharge is adjusted."""
+
+        if actual_tokens is not None and (
+            isinstance(actual_tokens, bool)
+            or not isinstance(actual_tokens, int)
+            or not 0 <= actual_tokens <= 10_000_000
+        ):
+            raise ValueError("actual_tokens must be None or between 0 and 10000000")
+        if (
+            isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, int)
+            or not 0 <= elapsed_seconds <= 31_536_000
+        ):
+            raise ValueError("elapsed_seconds must be between 0 and 31536000")
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("复合目标模型调用 reservation", reservation_id)
+            reservation = self._model_call_reservation_from_row(row)
+            budget_row = self._model_budget_row(session, intent_task_id)
+            budget = self._model_budget_from_row(budget_row)
+            if reservation.state is CompositeGoalModelCallState.EXHAUSTED:
+                raise ConflictError(
+                    "composite_goal_model_reservation_exhausted",
+                    "预算耗尽的模型调用没有被预留，不能结算或发送给 Provider。",
+                )
+            if reservation.state is CompositeGoalModelCallState.SETTLED:
+                if (
+                    reservation.actual_tokens != actual_tokens
+                    or reservation.elapsed_seconds != elapsed_seconds
+                ):
+                    raise ConflictError(
+                        "composite_goal_model_reservation_already_settled",
+                        "模型调用预算已按不同 usage 结算，拒绝重复记账。",
+                    )
+                return CompositeGoalModelCallSettlement(
+                    reservation=reservation,
+                    budget=budget,
+                )
+
+            charged_tokens = reservation.reserved_tokens if actual_tokens is None else actual_tokens
+            settled_budget_row = {
+                "intent_id": intent_task_id,
+                "used_tokens": budget.used_tokens - reservation.reserved_tokens + charged_tokens,
+                "elapsed_seconds": (
+                    budget.elapsed_seconds - reservation.reserved_elapsed_seconds + elapsed_seconds
+                ),
+            }
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_budgets "
+                    "SET used_tokens=:used_tokens, elapsed_seconds=:elapsed_seconds "
+                    "WHERE intent_task_id=:intent_id"
+                ),
+                settled_budget_row,
+            )
+            session.execute(
+                text(
+                    "UPDATE composite_goal_model_call_reservations "
+                    "SET state=:state, actual_tokens=:actual_tokens, elapsed_seconds=:elapsed "
+                    "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id "
+                    "AND state=:reserved_state"
+                ),
+                {
+                    "intent_id": intent_task_id,
+                    "reservation_id": reservation_id,
+                    "state": CompositeGoalModelCallState.SETTLED.value,
+                    "actual_tokens": actual_tokens,
+                    "elapsed": elapsed_seconds,
+                    "reserved_state": CompositeGoalModelCallState.RESERVED.value,
+                },
+            )
+            settled_row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM composite_goal_model_call_reservations "
+                        "WHERE intent_task_id=:intent_id AND reservation_id=:reservation_id"
+                    ),
+                    {"intent_id": intent_task_id, "reservation_id": reservation_id},
+                )
+                .mappings()
+                .one()
+            )
+            latest_budget_row = self._model_budget_row(session, intent_task_id)
+            return CompositeGoalModelCallSettlement(
+                reservation=self._model_call_reservation_from_row(settled_row),
+                budget=self._model_budget_from_row(latest_budget_row),
+            )
+
+    @staticmethod
+    def _model_budget_row(session: Session, intent_task_id: str) -> Any:
+        row = (
+            session.execute(
+                text("SELECT * FROM composite_goal_model_budgets WHERE intent_task_id=:intent_id"),
+                {"intent_id": intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFoundError("复合目标模型预算", intent_task_id)
+        return row
+
+    @staticmethod
+    def _model_budget_from_row(row: Any) -> CompositeGoalModelBudget:
+        return CompositeGoalModelBudget(
+            intent_task_id=row["intent_task_id"],
+            max_steps=row["max_steps"],
+            max_model_calls=row["max_model_calls"],
+            max_tokens=row["max_tokens"],
+            max_elapsed_seconds=row["max_elapsed_seconds"],
+            used_steps=row["used_steps"],
+            used_model_calls=row["used_model_calls"],
+            used_tokens=row["used_tokens"],
+            elapsed_seconds=row["elapsed_seconds"],
+        )
+
+    @staticmethod
+    def _model_call_reservation_from_row(row: Any) -> CompositeGoalModelCallReservation:
+        return CompositeGoalModelCallReservation(
+            intent_task_id=row["intent_task_id"],
+            reservation_id=row["reservation_id"],
+            call_id=row["call_id"],
+            state=row["state"],
+            estimated_tokens=row["estimated_tokens"],
+            reserved_tokens=row["reserved_tokens"],
+            actual_tokens=row["actual_tokens"],
+            elapsed_seconds=row["elapsed_seconds"],
+            reserved_elapsed_seconds=row["reserved_elapsed_seconds"],
+        )
+
+    @staticmethod
+    def _sync_preprocessing_composite_goal(session: Session, task: WorkTask) -> None:
+        if not any(step.kind == "preprocessing_run" for step in task.steps):
+            return
+        refs = task.authority_refs
+        if (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "预处理任务中的复合分析 intent ID 与请求摘要必须同时存在。",
+            )
+        # These task refs preserve the first composite intent for the legacy
+        # preprocessing path. The outbox being linked below has its own root
+        # identity and may be another explicit intent over this shared source.
+        if refs.analysis_intent_task_id is not None:
+            SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+        linked_rows = (
+            session.execute(
+                text(
+                    "SELECT * FROM composite_goal_links WHERE preprocessing_task_id=:task_id "
+                    "ORDER BY intent_task_id"
+                ),
+                {"task_id": task.task_id},
+            )
+            .mappings()
+            .all()
+        )
+        if not linked_rows:
+            return
+        plan_id = refs.plan_revision_id
+        plan = (
+            session.execute(
+                text("SELECT project_id FROM plan_revisions WHERE plan_revision_id=:plan_id"),
+                {"plan_id": plan_id},
+            )
+            .mappings()
+            .first()
+            if plan_id is not None
+            else None
+        )
+        if plan is None:
+            raise ConflictError(
+                "composite_goal_preprocessing_authority_mismatch",
+                "共享预处理目标的冻结 Plan 不存在。",
+            )
+        project_id = str(plan["project_id"])
+        for row in linked_rows:
+            goal = SqliteWorkTaskRepository._composite_goal_from_row(row)
+            if (
+                goal.preprocessing_task_id != task.task_id
+                or goal.conversation_id != refs.conversation_id
+                or goal.project_id != project_id
+            ):
+                raise ConflictError(
+                    "composite_goal_preprocessing_binding_mismatch",
+                    "复合目标根与共享预处理任务的会话、项目或任务引用不一致。",
+                )
+            is_preprocessing_root = (
+                goal.intent_task_id == refs.analysis_intent_task_id
+                and goal.analysis_request_hash == refs.analysis_request_hash
+            )
+            if is_preprocessing_root and goal.analysis_proposal_outbox_intent_task_id is None:
+                continue
+            outbox_row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                outbox_row is None
+                or goal.analysis_proposal_outbox_intent_task_id != goal.intent_task_id
+                or not SqliteWorkTaskRepository._outbox_matches_goal(outbox_row, goal)
+            ):
+                raise ConflictError(
+                    "composite_goal_preprocessing_detached",
+                    "共享预处理目标不能解除或改变其精确分析 intent 来源。",
+                )
+            if not SqliteWorkTaskRepository._analysis_outbox_source_matches(session, outbox_row):
+                # A malformed child is excluded independently; it must not block
+                # completion/readiness for other exact roots sharing this task.
+                continue
+
+    @staticmethod
+    def _composite_goal_from_row(row: Any) -> CompositeGoalIdentity:
+        return CompositeGoalIdentity(
+            intent_task_id=row["intent_task_id"],
+            conversation_id=row["conversation_id"],
+            project_id=row["project_id"],
+            analysis_request_hash=row["analysis_request_hash"],
+            goal_kind=row["goal_kind"],
+            preprocessing_task_id=row["preprocessing_task_id"],
+            source_external_import_id=row["source_external_import_id"],
+            source_import_version=row["source_import_version"],
+            source_tree_hash=row["source_tree_hash"],
+            source_inclusion_hash=row["source_inclusion_hash"],
+            source_manifest_hash=row["source_manifest_hash"],
+            source_revision_hash=row["source_revision_hash"],
+            analysis_proposal_outbox_intent_task_id=(
+                row["analysis_proposal_outbox_intent_task_id"]
+            ),
+            analysis_work_task_id=row["analysis_work_task_id"],
+            result_interpretation_outbox_task_id=row["result_interpretation_outbox_task_id"],
+        )
+
+    def find_composite_goal_for_analysis_task(
+        self, analysis_work_task_id: str
+    ) -> CompositeGoalIdentity | None:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT goal.* FROM composite_goal_links AS goal
+                        LEFT JOIN composite_goal_analysis_attempts AS attempt
+                          ON goal.intent_task_id=attempt.intent_task_id
+                        WHERE goal.analysis_work_task_id=:task_id
+                           OR attempt.work_task_id=:task_id
+                        LIMIT 1"""
+                    ),
+                    {"task_id": analysis_work_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            return self._composite_goal_from_row(row) if row is not None else None
+
+    def list_composite_goal_intent_ids(self, conversation_id: str) -> tuple[str, ...]:
+        """List only stable goal IDs owned by the requested conversation."""
+
+        with self._read_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT intent_task_id FROM composite_goal_links "
+                    "WHERE conversation_id=:conversation_id ORDER BY intent_task_id"
+                ),
+                {"conversation_id": conversation_id},
+            ).scalars()
+            return tuple(str(intent_task_id) for intent_task_id in rows)
+
+    def find_composite_goal(self, intent_task_id: str) -> CompositeGoalIdentity | None:
+        """Look up a durable root independently from its budget ledger."""
+
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            return self._composite_goal_from_row(row) if row is not None else None
+
+    def get_composite_goal_snapshot(self, intent_task_id: str) -> CompositeGoalSnapshot:
+        """Read the root, attempt identities and authoritative children consistently."""
+
+        with self._snapshot_session() as session:
+
+            def read_plan(
+                plan_revision_id: str | None,
+                task: WorkTask | None,
+            ) -> CompositeGoalPlanEvidence | None:
+                if plan_revision_id is None or task is None:
+                    return None
+                plan_row = (
+                    session.execute(
+                        text(
+                            "SELECT plan_revision_id, project_id, state, manifest_hash, plan_hash, "
+                            "plan_json "
+                            "FROM plan_revisions WHERE plan_revision_id=:plan_id"
+                        ),
+                        {"plan_id": plan_revision_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if plan_row is None:
+                    return None
+                try:
+                    plan_payload = json.loads(plan_row["plan_json"])
+                except (TypeError, json.JSONDecodeError):
+                    plan_payload = None
+                plan_design = plan_payload.get("design") if isinstance(plan_payload, dict) else None
+                source_import_hash = (
+                    plan_design.get("external_import_hash")
+                    if isinstance(plan_design, dict)
+                    else None
+                )
+                if not (
+                    isinstance(source_import_hash, str)
+                    and len(source_import_hash) == 64
+                    and all(character in "0123456789abcdef" for character in source_import_hash)
+                ):
+                    source_import_hash = None
+                plan_input_revision = self._composite_goal_plan_input_revision(
+                    task=task,
+                    plan_revision_id=plan_revision_id,
+                    manifest_hash=plan_row["manifest_hash"],
+                    plan_payload=plan_payload,
+                )
+                return CompositeGoalPlanEvidence(
+                    plan_revision_id=plan_row["plan_revision_id"],
+                    project_id=plan_row["project_id"],
+                    state=plan_row["state"],
+                    manifest_hash=plan_row["manifest_hash"],
+                    plan_hash=plan_row["plan_hash"],
+                    input_revision=plan_input_revision,
+                    source_external_import_id=(
+                        plan_design.get("external_import_id")
+                        if isinstance(plan_design, dict)
+                        and isinstance(plan_design.get("external_import_id"), str)
+                        else None
+                    ),
+                    source_external_import_hash=source_import_hash,
+                )
+
+            def read_run(task: WorkTask | None) -> CompositeGoalRunEvidence | None:
+                run_id = task.authority_refs.workflow_run_id if task is not None else None
+                if run_id is None:
+                    return None
+                run_row = (
+                    session.execute(
+                        text(
+                            "SELECT run_id, project_id, plan_revision_id, state, version, "
+                            "qc_status "
+                            "FROM workflow_runs WHERE run_id=:run_id"
+                        ),
+                        {"run_id": run_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if run_row is None:
+                    return None
+                latest_qc_review_state = session.execute(
+                    text(
+                        "SELECT state FROM qc_review_revisions WHERE run_id=:run_id "
+                        "ORDER BY revision DESC LIMIT 1"
+                    ),
+                    {"run_id": run_id},
+                ).scalar_one_or_none()
+                return CompositeGoalRunEvidence(
+                    run_id=run_row["run_id"],
+                    project_id=run_row["project_id"],
+                    plan_revision_id=run_row["plan_revision_id"],
+                    state=run_row["state"],
+                    version=run_row["version"],
+                    qc_status=run_row["qc_status"],
+                    latest_qc_review_state=latest_qc_review_state,
+                )
+
+            row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("复合自动化目标", intent_task_id)
+            goal = self._composite_goal_from_row(row)
+            conversation_row = (
+                session.execute(
+                    text(
+                        "SELECT mode, project_id FROM conversations "
+                        "WHERE conversation_id=:conversation_id"
+                    ),
+                    {"conversation_id": goal.conversation_id},
+                )
+                .mappings()
+                .first()
+            )
+            intent_messages: list[CompositeGoalIntentMessage] = []
+            message_rows = session.execute(
+                text(
+                    "SELECT conversation_id, role, payload_json FROM conversation_messages "
+                    "WHERE conversation_id=:conversation_id AND role='assistant' "
+                    "ORDER BY sequence"
+                ),
+                {"conversation_id": goal.conversation_id},
+            ).mappings()
+            for intent_message_row in message_rows:
+                try:
+                    payload = json.loads(intent_message_row["payload_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                dependency = (
+                    payload.get("analysis_dependency") if isinstance(payload, dict) else None
+                )
+                if (
+                    isinstance(dependency, dict)
+                    and dependency.get("task_id") == goal.intent_task_id
+                ):
+                    intent_messages.append(
+                        CompositeGoalIntentMessage(
+                            conversation_id=intent_message_row["conversation_id"],
+                            role=intent_message_row["role"],
+                            payload=payload,
+                        )
+                    )
+                    if len(intent_messages) == 2:
+                        break
+            preprocessing_task = (
+                self._task_from_session(session, goal.preprocessing_task_id)
+                if goal.preprocessing_task_id is not None
+                else None
+            )
+            preprocessing_plan_project_id = None
+            preprocessing_plan_manifest_hash = None
+            plan_revision_id = (
+                preprocessing_task.authority_refs.plan_revision_id
+                if preprocessing_task is not None
+                else None
+            )
+            preprocessing_plan = read_plan(plan_revision_id, preprocessing_task)
+            if preprocessing_plan is not None:
+                preprocessing_plan_project_id = preprocessing_plan.project_id
+                preprocessing_plan_manifest_hash = preprocessing_plan.manifest_hash
+            preprocessing_run = read_run(preprocessing_task)
+            outbox = None
+            proposal_analysis_task = None
+            if goal.analysis_proposal_outbox_intent_task_id is not None:
+                outbox_row = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"
+                        ),
+                        {"intent_id": goal.analysis_proposal_outbox_intent_task_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if outbox_row is not None:
+                    candidate_outbox = self._outbox_from_row(outbox_row)
+                    if self._analysis_outbox_source_matches(session, candidate_outbox):
+                        outbox = candidate_outbox
+                        if outbox.analysis_work_task_id is not None:
+                            proposal_analysis_task = self._task_from_session(
+                                session, outbox.analysis_work_task_id
+                            )
+            attempt_rows = session.execute(
+                text(
+                    "SELECT attempt_number, work_task_id, proposal_hash "
+                    "FROM composite_goal_analysis_attempts WHERE intent_task_id=:intent_id "
+                    "ORDER BY attempt_number"
+                ),
+                {"intent_id": intent_task_id},
+            ).mappings()
+            attempts = tuple(
+                CompositeGoalAnalysisAttempt(
+                    attempt_number=item["attempt_number"],
+                    work_task_id=item["work_task_id"],
+                    proposal_hash=item["proposal_hash"],
+                )
+                for item in attempt_rows
+            )
+            analysis_task = (
+                self._task_from_session(session, goal.analysis_work_task_id)
+                if goal.analysis_work_task_id is not None
+                else None
+            )
+            analysis_plan = read_plan(
+                analysis_task.authority_refs.plan_revision_id
+                if analysis_task is not None
+                else None,
+                analysis_task,
+            )
+            analysis_run = read_run(analysis_task)
+            interpretation = None
+            continuation_message = None
+            if goal.result_interpretation_outbox_task_id is not None:
+                result_row = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM statistical_result_interpretation_outbox "
+                            "WHERE task_id=:task_id"
+                        ),
+                        {"task_id": goal.result_interpretation_outbox_task_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if result_row is not None:
+                    interpretation = self._result_interpretation_from_row(result_row)
+                    if interpretation.continuation_message_id is not None:
+                        message_row = (
+                            session.execute(
+                                text(
+                                    "SELECT message_id, conversation_id, role, payload_json "
+                                    "FROM conversation_messages WHERE message_id=:message_id"
+                                ),
+                                {"message_id": interpretation.continuation_message_id},
+                            )
+                            .mappings()
+                            .first()
+                        )
+                        if message_row is not None:
+                            try:
+                                message_payload = json.loads(message_row["payload_json"])
+                            except (TypeError, json.JSONDecodeError):
+                                message_payload = {}
+                            continuation_message = CompositeGoalContinuationMessage(
+                                message_id=message_row["message_id"],
+                                conversation_id=message_row["conversation_id"],
+                                role=message_row["role"],
+                                payload=(
+                                    message_payload if isinstance(message_payload, dict) else {}
+                                ),
+                            )
+            source_valid = (
+                goal.goal_kind == "analysis_only_external_import"
+                and self._analysis_only_source_matches(session, goal)
+            )
+            result_binding_valid = False
+            if interpretation is not None and goal.goal_kind == "analysis_only_external_import":
+                with suppress(ConflictError):
+                    result_binding_valid = (
+                        self._validate_composite_result_binding(session, interpretation) == goal
+                    )
+            return CompositeGoalSnapshot(
+                analysis_source_valid=source_valid,
+                analysis_result_binding_valid=result_binding_valid,
+                goal=goal,
+                analysis_intent_messages=tuple(intent_messages),
+                conversation_mode=(conversation_row["mode"] if conversation_row else None),
+                conversation_project_id=(
+                    conversation_row["project_id"] if conversation_row else None
+                ),
+                preprocessing_plan_revision_id=plan_revision_id,
+                preprocessing_plan_project_id=preprocessing_plan_project_id,
+                preprocessing_plan_manifest_hash=preprocessing_plan_manifest_hash,
+                preprocessing_plan=preprocessing_plan,
+                preprocessing_run=preprocessing_run,
+                analysis_plan=analysis_plan,
+                analysis_run=analysis_run,
+                preprocessing_task=preprocessing_task,
+                analysis_proposal_outbox=outbox,
+                analysis_attempts=attempts,
+                proposal_analysis_task=proposal_analysis_task,
+                analysis_task=analysis_task,
+                result_interpretation_outbox=interpretation,
+                result_continuation_message=continuation_message,
+            )
+
+    def bind_composite_goal_analysis_task(
+        self,
+        goal: CompositeGoalIdentity,
+        analysis_work_task_id: str,
+        proposal_hash: str,
+    ) -> CompositeGoalIdentity:
+        """Make one exact statistical proposal the active composite-goal attempt."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            root_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if root_row is None:
+                raise ConflictError("composite_goal_missing", "复合目标根记录不存在。")
+            current_goal = self._composite_goal_from_row(root_row)
+            if (
+                current_goal.conversation_id != goal.conversation_id
+                or current_goal.project_id != goal.project_id
+                or current_goal.analysis_request_hash != goal.analysis_request_hash
+                or current_goal.goal_kind != goal.goal_kind
+                or current_goal.preprocessing_task_id != goal.preprocessing_task_id
+                or current_goal.source_external_import_id != goal.source_external_import_id
+                or current_goal.source_import_version != goal.source_import_version
+                or current_goal.source_tree_hash != goal.source_tree_hash
+                or current_goal.source_inclusion_hash != goal.source_inclusion_hash
+                or current_goal.source_manifest_hash != goal.source_manifest_hash
+                or current_goal.source_revision_hash != goal.source_revision_hash
+                or current_goal.analysis_proposal_outbox_intent_task_id
+                != goal.analysis_proposal_outbox_intent_task_id
+                or current_goal.analysis_work_task_id != goal.analysis_work_task_id
+            ):
+                raise ConflictError(
+                    "composite_goal_changed", "复合目标在统计提案提交前已变化，请刷新后重试。"
+                )
+            outbox_row = None
+            if current_goal.goal_kind == "preprocess_then_analyze":
+                outbox_row = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"
+                        ),
+                        {"intent_id": goal.intent_task_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if outbox_row is None or not self._outbox_matches_goal(outbox_row, current_goal):
+                    raise ConflictError(
+                        "composite_goal_outbox_mismatch", "分析提案 outbox 与复合目标身份不匹配。"
+                    )
+                if outbox_row["status"] not in {"ready", "proposal_ready", "waiting_user"}:
+                    raise ConflictError(
+                        "composite_goal_outbox_not_open",
+                        "分析提案 outbox 已阻断，不能绑定新尝试。",
+                    )
+            else:
+                imported = (
+                    session.execute(
+                        text(
+                            "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                            "FROM external_analysis_imports WHERE import_id=:import_id"
+                        ),
+                        {"import_id": current_goal.source_external_import_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if (
+                    imported is None
+                    or imported["project_id"] != current_goal.project_id
+                    or imported["status"] != "included"
+                    or imported["version"] != current_goal.source_import_version
+                    or imported["source_tree_hash"] != current_goal.source_tree_hash
+                    or imported["inclusion_hash"] != current_goal.source_inclusion_hash
+                    or external_analysis_manifest_hash(
+                        str(current_goal.source_external_import_id),
+                        str(imported["source_tree_hash"]),
+                        str(imported["inclusion_hash"]),
+                    )
+                    != current_goal.source_manifest_hash
+                    or content_hash(
+                        {
+                            "external_import_id": current_goal.source_external_import_id,
+                            "import_version": imported["version"],
+                            "source_tree_hash": imported["source_tree_hash"],
+                            "inclusion_hash": imported["inclusion_hash"],
+                            "input_manifest_hash": current_goal.source_manifest_hash,
+                        }
+                    )
+                    != current_goal.source_revision_hash
+                ):
+                    raise ConflictError(
+                        "analysis_goal_external_source_changed",
+                        "外部分析来源在统计任务绑定前已变化，提案不能进入审查链。",
+                    )
+            task = self._task_from_session(session, analysis_work_task_id)
+            step_rows = tuple(step for step in task.steps if step.kind == "statistical_run")
+            if (
+                len(step_rows) != 1
+                or step_rows[0].input_version != proposal_hash
+                or task.authority_refs.conversation_id != current_goal.conversation_id
+                or task.authority_refs.analysis_intent_task_id != current_goal.intent_task_id
+                or task.authority_refs.analysis_request_hash != current_goal.analysis_request_hash
+            ):
+                raise ConflictError(
+                    "composite_goal_analysis_task_mismatch",
+                    "统计 WorkTask 的会话、intent、原始请求或提案哈希与目标不一致。",
+                )
+            existing_attempt = (
+                session.execute(
+                    text(
+                        "SELECT attempt_number, proposal_hash "
+                        "FROM composite_goal_analysis_attempts "
+                        "WHERE work_task_id=:task_id"
+                    ),
+                    {"task_id": analysis_work_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing_attempt is not None:
+                if (
+                    existing_attempt["proposal_hash"] != proposal_hash
+                    or current_goal.analysis_work_task_id != analysis_work_task_id
+                ):
+                    raise ConflictError(
+                        "composite_goal_attempt_superseded",
+                        "该统计提案已被后续尝试取代，不能重新激活。",
+                    )
+                return current_goal
+            if (
+                task.status.value != "waiting_user"
+                or task.authority_refs.plan_revision_id is not None
+                or task.authority_refs.workflow_run_id is not None
+            ):
+                raise ConflictError(
+                    "composite_goal_analysis_attempt_started",
+                    "只有尚未绑定统计方案或运行的待审查提案可以成为目标尝试。",
+                )
+            attempts_count = int(
+                session.execute(
+                    text(
+                        "SELECT COUNT(*) FROM composite_goal_analysis_attempts "
+                        "WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": goal.intent_task_id},
+                ).scalar_one()
+            )
+            if current_goal.analysis_work_task_id is None:
+                if attempts_count != 0:
+                    raise ConflictError(
+                        "composite_goal_active_attempt_missing",
+                        "复合目标有历史尝试但没有当前尝试引用。",
+                    )
+                if (
+                    outbox_row is not None
+                    and outbox_row["status"] == "proposal_ready"
+                    and (outbox_row["analysis_work_task_id"] != analysis_work_task_id)
+                ):
+                    raise ConflictError(
+                        "composite_goal_initial_attempt_mismatch",
+                        "首个统计尝试必须对应 proposal outbox 生成的精确任务。",
+                    )
+                if (
+                    outbox_row is not None
+                    and outbox_row["status"] == "ready"
+                    and outbox_row["analysis_work_task_id"] is not None
+                ):
+                    raise ConflictError(
+                        "composite_goal_initial_attempt_mismatch",
+                        "待消费的 proposal outbox 已绑定到其他统计任务。",
+                    )
+            else:
+                active_task = self._task_from_session(session, current_goal.analysis_work_task_id)
+                if (
+                    active_task.status.value != "waiting_user"
+                    or active_task.authority_refs.plan_revision_id is not None
+                    or active_task.authority_refs.workflow_run_id is not None
+                    or current_goal.result_interpretation_outbox_task_id is not None
+                ):
+                    raise ConflictError(
+                        "composite_goal_attempt_not_replaceable",
+                        "已有统计尝试已进入方案、运行或结果阶段，不能被草稿修订取代。",
+                    )
+            next_number = attempts_count + 1
+            session.execute(
+                text(
+                    """INSERT INTO composite_goal_analysis_attempts
+                    (intent_task_id, attempt_number, work_task_id, proposal_hash)
+                    VALUES (:intent_id, :attempt_number, :task_id, :proposal_hash)"""
+                ),
+                {
+                    "intent_id": goal.intent_task_id,
+                    "attempt_number": next_number,
+                    "task_id": analysis_work_task_id,
+                    "proposal_hash": proposal_hash,
+                },
+            )
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        "UPDATE composite_goal_links SET analysis_work_task_id=:task_id "
+                        "WHERE intent_task_id=:intent_id "
+                        "AND analysis_work_task_id IS :expected_task_id"
+                    ),
+                    {
+                        "task_id": analysis_work_task_id,
+                        "intent_id": goal.intent_task_id,
+                        "expected_task_id": goal.analysis_work_task_id,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError(
+                    "composite_goal_changed", "复合目标的当前尝试已被其他提案更新。"
+                )
+            updated = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": goal.intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._composite_goal_from_row(updated)
+
+    @staticmethod
+    def _outbox_matches_goal(row: Any, goal: CompositeGoalIdentity) -> bool:
+        return bool(
+            row["intent_task_id"] == goal.intent_task_id
+            and row["conversation_id"] == goal.conversation_id
+            and row["project_id"] == goal.project_id
+            and row["preprocessing_task_id"] == goal.preprocessing_task_id
+            and row["analysis_request_hash"] == goal.analysis_request_hash
+        )
+
+    @staticmethod
+    def _analysis_outbox_source_matches(
+        session: Session,
+        outbox: AnalysisProposalOutbox | Mapping[Any, Any],
+    ) -> bool:
+        values: Mapping[Any, Any] = (
+            outbox.model_dump(mode="python")
+            if isinstance(outbox, AnalysisProposalOutbox)
+            else outbox
+        )
+        conversation_id = values.get("conversation_id")
+        intent_task_id = values.get("intent_task_id")
+        project_id = values.get("project_id")
+        request_hash = values.get("analysis_request_hash")
+        if not all(
+            isinstance(value, str) and value
+            for value in (conversation_id, intent_task_id, project_id)
+        ):
+            return False
+        if (
+            not isinstance(request_hash, str)
+            or len(request_hash) != 64
+            or any(char not in "0123456789abcdef" for char in request_hash)
+        ):
+            return False
+        rows = (
+            session.execute(
+                text(
+                    "SELECT role, content, payload_json FROM conversation_messages "
+                    "WHERE conversation_id=:conversation_id ORDER BY sequence"
+                ),
+                {"conversation_id": conversation_id},
+            )
+            .mappings()
+            .all()
+        )
+        admissions: list[tuple[Any, dict[str, Any]]] = []
+        matching_intents: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if not isinstance(payload, dict):
+                continue
+            admission = payload.get("composite_goal_admission")
+            if isinstance(admission, dict) and admission.get("intent_task_id") == intent_task_id:
+                admissions.append((row, admission))
+            candidate = payload.get("analysis_dependency")
+            if isinstance(candidate, dict) and candidate.get("task_id") == intent_task_id:
+                matching_intents.append(candidate)
+        if admissions:
+            if len(admissions) != 1:
+                return False
+            message, admission = admissions[0]
+            goal = (
+                session.execute(
+                    text(
+                        "SELECT goal_kind, conversation_id, project_id, analysis_request_hash, "
+                        "preprocessing_task_id FROM composite_goal_links "
+                        "WHERE intent_task_id=:intent_id"
+                    ),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            content = message["content"]
+            return bool(
+                message["role"] == "user"
+                and isinstance(content, str)
+                and content.strip()
+                and admission.get("conversation_id") == conversation_id
+                and admission.get("project_id") == project_id
+                and admission.get("analysis_request_hash") == request_hash
+                and content_hash(content.strip()) == request_hash
+                and goal is not None
+                and goal["goal_kind"] == "preprocess_then_analyze"
+                and goal["conversation_id"] == conversation_id
+                and goal["project_id"] == project_id
+                and goal["analysis_request_hash"] == request_hash
+                and goal["preprocessing_task_id"] == values.get("preprocessing_task_id")
+            )
+        if not matching_intents:
+            return False
+        for intent in matching_intents:
+            request = intent.get("analysis_request")
+            if not (
+                intent.get("task_kind") == "preprocess_then_analyze"
+                and intent.get("conversation_id") == conversation_id
+                and intent.get("project_id") == project_id
+                and isinstance(request, str)
+                and content_hash(request.strip()) == request_hash
+            ):
+                return False
+        return True
+
+    def ensure_analysis_outbox(self, record: AnalysisProposalOutbox) -> AnalysisProposalOutbox:
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            existing = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": record.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                current = self._outbox_from_row(existing)
+                if (
+                    current.conversation_id != record.conversation_id
+                    or current.project_id != record.project_id
+                    or current.preprocessing_task_id != record.preprocessing_task_id
+                    or current.plan_revision_id != record.plan_revision_id
+                    or current.manifest_hash != record.manifest_hash
+                    or current.run_id != record.run_id
+                    or current.analysis_request_hash != record.analysis_request_hash
+                ):
+                    raise ConflictError(
+                        "analysis_outbox_binding_conflict",
+                        "复合分析续接已绑定到不同的会话、项目或预处理证据。",
+                    )
+                self._link_analysis_outbox_to_goal(session, record)
+                return current
+            session.execute(
+                text(
+                    """INSERT INTO analysis_proposal_outbox
+                    (intent_task_id, conversation_id, project_id, preprocessing_task_id,
+                     plan_revision_id, manifest_hash, run_id, analysis_request_hash,
+                     artifact_ids_json, status, lease_owner, lease_expires_at, fencing_token)
+                    VALUES (:intent_id, :conversation_id, :project_id, :task_id, :plan_id,
+                            :manifest_hash, :run_id, :request_hash, '[]', 'pending',
+                            NULL, NULL, 0)"""
+                ),
+                {
+                    "intent_id": record.intent_task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "task_id": record.preprocessing_task_id,
+                    "plan_id": record.plan_revision_id,
+                    "manifest_hash": record.manifest_hash,
+                    "run_id": record.run_id,
+                    "request_hash": record.analysis_request_hash,
+                },
+            )
+            self._link_analysis_outbox_to_goal(session, record)
+        return record
+
+    @staticmethod
+    def _link_analysis_outbox_to_goal(session: Session, record: AnalysisProposalOutbox) -> None:
+        try:
+            task = SqliteWorkTaskRepository._task_from_session(
+                session, record.preprocessing_task_id
+            )
+        except NotFoundError:
+            # A legacy standalone proposal outbox has no durable preprocessing
+            # task and therefore is not a composite-goal child.
+            return
+        refs = task.authority_refs
+        if (refs.analysis_intent_task_id is None) != (refs.analysis_request_hash is None):
+            raise ConflictError(
+                "composite_goal_intent_incomplete",
+                "预处理任务中的复合分析 intent ID 与请求摘要必须同时存在。",
+            )
+        prep_steps = tuple(step for step in task.steps if step.kind == "preprocessing_run")
+        if len(prep_steps) != 1 or refs.plan_revision_id is None:
+            raise ConflictError(
+                "composite_goal_preprocessing_binding_invalid",
+                "分析 outbox 必须绑定唯一的持久预处理步骤和冻结 Plan。",
+            )
+        prep_step_refs = prep_steps[0].authority_refs
+        if (
+            refs.conversation_id != record.conversation_id
+            or refs.plan_revision_id != record.plan_revision_id
+            or refs.input_revision != record.manifest_hash
+            or refs.workflow_run_id != record.run_id
+            or prep_step_refs.conversation_id != refs.conversation_id
+            or prep_step_refs.plan_revision_id != refs.plan_revision_id
+            or prep_step_refs.input_revision != record.manifest_hash
+            or prep_step_refs.workflow_run_id != record.run_id
+            or (prep_step_refs.analysis_intent_task_id is None)
+            != (prep_step_refs.analysis_request_hash is None)
+            or prep_step_refs.analysis_intent_task_id != refs.analysis_intent_task_id
+            or prep_step_refs.analysis_request_hash != refs.analysis_request_hash
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_binding_mismatch",
+                "分析 outbox 与共享预处理任务的会话、Plan、manifest 或 Run 不匹配。",
+            )
+        if refs.analysis_intent_task_id is not None:
+            SqliteWorkTaskRepository._ensure_preprocessing_composite_goal(session, task)
+        if not SqliteWorkTaskRepository._analysis_outbox_source_matches(session, record):
+            raise ConflictError(
+                "composite_goal_outbox_intent_mismatch",
+                "分析 outbox 未绑定会话中与请求摘要完全匹配的 intent 根。",
+            )
+        plan = (
+            session.execute(
+                text("SELECT project_id FROM plan_revisions WHERE plan_revision_id=:plan_id"),
+                {"plan_id": record.plan_revision_id},
+            )
+            .mappings()
+            .first()
+        )
+        conversation = (
+            session.execute(
+                text("SELECT project_id FROM conversations WHERE conversation_id=:conversation_id"),
+                {"conversation_id": record.conversation_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            plan is None
+            or plan["project_id"] != record.project_id
+            or conversation is None
+            or conversation["project_id"] not in {None, record.project_id}
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_project_mismatch",
+                "分析 outbox 会话与冻结 Plan 不属于同一项目。",
+            )
+        run = (
+            session.execute(
+                text("SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"),
+                {"run_id": record.run_id},
+            )
+            .mappings()
+            .first()
+        )
+        if run is None or (
+            run["project_id"] != record.project_id
+            or run["plan_revision_id"] != record.plan_revision_id
+            or refs.workflow_run_id != record.run_id
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_run_mismatch",
+                "分析提案 outbox 未绑定预处理任务的精确项目、Plan 和 Run。",
+            )
+        root_row = (
+            session.execute(
+                text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                {"intent_id": record.intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if root_row is None:
+            session.execute(
+                text(
+                    """INSERT INTO composite_goal_links
+                    (intent_task_id, conversation_id, project_id, analysis_request_hash,
+                     preprocessing_task_id, analysis_proposal_outbox_intent_task_id,
+                     analysis_work_task_id, result_interpretation_outbox_task_id)
+                    VALUES (:intent_id, :conversation_id, :project_id, :request_hash,
+                            :preprocessing_task_id, NULL, NULL, NULL)"""
+                ),
+                {
+                    "intent_id": record.intent_task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "request_hash": record.analysis_request_hash,
+                    "preprocessing_task_id": record.preprocessing_task_id,
+                },
+            )
+            root_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": record.intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+        identity = SqliteWorkTaskRepository._composite_goal_from_row(root_row)
+        if (
+            identity.intent_task_id != record.intent_task_id
+            or identity.conversation_id != record.conversation_id
+            or identity.project_id != record.project_id
+            or identity.analysis_request_hash != record.analysis_request_hash
+            or identity.preprocessing_task_id != record.preprocessing_task_id
+        ):
+            raise ConflictError(
+                "composite_goal_outbox_binding_mismatch",
+                "分析 outbox 根身份与共享预处理来源不一致。",
+            )
+        SqliteWorkTaskRepository._ensure_composite_goal_model_budget(
+            session, identity.intent_task_id, task.budget
+        )
+        existing = identity.analysis_proposal_outbox_intent_task_id
+        if existing not in {None, record.intent_task_id}:
+            raise ConflictError(
+                "composite_goal_outbox_already_bound",
+                "复合目标已经关联了另一条分析提案 outbox。",
+            )
+        session.execute(
+            text(
+                "UPDATE composite_goal_links "
+                "SET analysis_proposal_outbox_intent_task_id=:intent_id "
+                "WHERE intent_task_id=:intent_id "
+                "AND analysis_proposal_outbox_intent_task_id IS NULL"
+            ),
+            {"intent_id": record.intent_task_id},
+        )
+
+    def get_analysis_outbox(self, intent_task_id: str) -> AnalysisProposalOutbox:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("分析续接 outbox", intent_task_id)
+            return self._outbox_from_row(row)
+
+    def list_analysis_outboxes_for_preprocessing_task(
+        self, preprocessing_task_id: str
+    ) -> tuple[AnalysisProposalOutbox, ...]:
+        """List fanout children in stable identity order for one prep WorkTask."""
+
+        with self._read_session() as session:
+            rows = (
+                session.execute(
+                    text(
+                        "SELECT * FROM analysis_proposal_outbox "
+                        "WHERE preprocessing_task_id=:task_id ORDER BY intent_task_id"
+                    ),
+                    {"task_id": preprocessing_task_id},
+                )
+                .mappings()
+                .all()
+            )
+            return tuple(self._outbox_from_row(row) for row in rows)
+
+    def mark_analysis_outbox_ready(
+        self,
+        intent_task_id: str,
+        *,
+        preprocessing_task_id: str,
+        plan_revision_id: str,
+        manifest_hash: str,
+        run_id: str,
+        artifact_ids: tuple[str, ...],
+    ) -> AnalysisProposalOutbox:
+        if not artifact_ids or len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("verified Artifact IDs must be nonempty and unique")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("分析续接 outbox", intent_task_id)
+            current = self._outbox_from_row(row)
+            if (
+                current.preprocessing_task_id != preprocessing_task_id
+                or current.plan_revision_id != plan_revision_id
+                or current.manifest_hash != manifest_hash
+                or current.run_id != run_id
+            ):
+                raise ConflictError(
+                    "analysis_outbox_authority_mismatch",
+                    "续接记录绑定了不同的预处理任务、Plan、manifest 或 Run。",
+                )
+            self._link_analysis_outbox_to_goal(session, current)
+            if current.status is AnalysisOutboxStatus.READY:
+                if current.artifact_ids != artifact_ids:
+                    raise ConflictError(
+                        "analysis_outbox_artifacts_conflict", "续接记录已绑定不同的核验产物。"
+                    )
+                return current
+            if current.status is not AnalysisOutboxStatus.PENDING:
+                raise ConflictError(
+                    "analysis_outbox_already_consumed", "已消费的续接记录不能重新置为 READY。"
+                )
+            session.execute(
+                text(
+                    """UPDATE analysis_proposal_outbox SET status='ready',
+                       artifact_ids_json=:artifact_ids
+                       WHERE intent_task_id=:intent_id AND status='pending'"""
+                ),
+                {"artifact_ids": json.dumps(artifact_ids), "intent_id": intent_task_id},
+            )
+            updated = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(updated)
+
+    def claim_analysis_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200 or lease_seconds < 1:
+            raise ValueError("worker_id and positive lease_seconds are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT intent_task_id FROM analysis_proposal_outbox
+                       WHERE status='ready' AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                         AND (next_attempt_at IS NULL OR next_attempt_at<=:now)
+                       ORDER BY intent_task_id LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            intent_id = str(row["intent_task_id"])
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                       SET lease_owner=:owner, lease_expires_at=:expires,
+                           fencing_token=fencing_token+1, next_attempt_at=NULL
+                       WHERE intent_task_id=:intent_id AND status='ready'
+                         AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                         AND (next_attempt_at IS NULL OR next_attempt_at<=:now)"""
+                    ),
+                    {
+                        "owner": owner,
+                        "expires": now + lease_seconds,
+                        "intent_id": intent_id,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            token = int(
+                session.execute(
+                    text(
+                        "SELECT fencing_token FROM analysis_proposal_outbox "
+                        "WHERE intent_task_id=:id"
+                    ),
+                    {"id": intent_id},
+                ).scalar_one()
+            )
+        return AnalysisOutboxClaim(
+            intent_task_id=intent_id,
+            worker_id=owner,
+            lease_expires_at=now + lease_seconds,
+            fencing_token=token,
+        )
+
+    def validate_analysis_outbox_claim(self, claim: AnalysisOutboxClaim) -> bool:
+        with self._read_session() as session:
+            row = session.execute(
+                text(
+                    """SELECT 1 FROM analysis_proposal_outbox
+                       WHERE intent_task_id=:intent_id AND status='ready'
+                         AND lease_owner=:owner AND fencing_token=:fence
+                         AND lease_expires_at>:now"""
+                ),
+                {
+                    "intent_id": claim.intent_task_id,
+                    "owner": claim.worker_id,
+                    "fence": claim.fencing_token,
+                    "now": time.time(),
+                },
+            ).first()
+            return row is not None
+
+    def renew_analysis_outbox_claim(
+        self, claim: AnalysisOutboxClaim, *, lease_seconds: int
+    ) -> AnalysisOutboxClaim | None:
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        now = time.time()
+        expires = now + lease_seconds
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET lease_expires_at=:expires
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "expires": expires,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+        return claim.model_copy(update={"lease_expires_at": expires})
+
+    def defer_analysis_outbox_claim(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        if retry_after_seconds < 1:
+            raise ValueError("retry_after_seconds must be positive")
+        if not error_code or len(error_code) > 64:
+            raise ValueError("error_code must be a bounded code")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET attempt_count=attempt_count+1, last_error_code=:error_code,
+                               next_attempt_at=:retry_at, lease_owner=NULL,
+                               lease_expires_at=NULL
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "retry_at": now + retry_after_seconds,
+                        "error_code": error_code,
+                    },
+                ),
+            ).rowcount
+            return changed == 1
+
+    def complete_analysis_outbox(
+        self,
+        claim: AnalysisOutboxClaim,
+        *,
+        status: AnalysisOutboxStatus,
+        continuation_message_id: str,
+        analysis_work_task_id: str | None,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> AnalysisProposalOutbox:
+        if status not in {
+            AnalysisOutboxStatus.PROPOSAL_READY,
+            AnalysisOutboxStatus.WAITING_USER,
+            AnalysisOutboxStatus.BLOCKED,
+        }:
+            raise ValueError("outbox completion requires a terminal status")
+        if not continuation_message_id:
+            raise ValueError("terminal outbox completion requires an assistant message")
+        if status is AnalysisOutboxStatus.PROPOSAL_READY and not analysis_work_task_id:
+            raise ValueError("proposal-ready outbox completion requires a WorkTask")
+        if status is not AnalysisOutboxStatus.PROPOSAL_READY and analysis_work_task_id is not None:
+            raise ValueError("only a proposal-ready continuation may bind an analysis WorkTask")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            root_row = (
+                session.execute(
+                    text("SELECT * FROM composite_goal_links WHERE intent_task_id=:intent_id"),
+                    {"intent_id": claim.intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if root_row is not None:
+                goal = self._composite_goal_from_row(root_row)
+                outbox = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"
+                        ),
+                        {"intent_id": claim.intent_task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+                if not self._outbox_matches_goal(outbox, goal):
+                    raise ConflictError(
+                        "composite_goal_outbox_mismatch",
+                        "分析续接完成时 outbox 与复合目标身份不匹配。",
+                    )
+                if status is AnalysisOutboxStatus.PROPOSAL_READY:
+                    task = self._task_from_session(session, analysis_work_task_id or "")
+                    attempt = (
+                        session.execute(
+                            text(
+                                "SELECT proposal_hash FROM composite_goal_analysis_attempts "
+                                "WHERE intent_task_id=:intent_id AND work_task_id=:task_id"
+                            ),
+                            {
+                                "intent_id": goal.intent_task_id,
+                                "task_id": analysis_work_task_id,
+                            },
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    message = (
+                        session.execute(
+                            text(
+                                "SELECT conversation_id, role, payload_json "
+                                "FROM conversation_messages "
+                                "WHERE message_id=:message_id"
+                            ),
+                            {"message_id": continuation_message_id},
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    try:
+                        payload = json.loads(message["payload_json"]) if message is not None else {}
+                    except (TypeError, json.JSONDecodeError):
+                        payload = {}
+                    continuation = (
+                        payload.get("analysis_outbox_continuation")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    proposal = (
+                        payload.get("statistical_design_proposal")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if (
+                        goal.analysis_work_task_id != analysis_work_task_id
+                        or attempt is None
+                        or task.authority_refs.analysis_intent_task_id != goal.intent_task_id
+                        or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
+                        or message is None
+                        or message["conversation_id"] != goal.conversation_id
+                        or message["role"] != "assistant"
+                        or not isinstance(continuation, dict)
+                        or continuation.get("intent_task_id") != goal.intent_task_id
+                        or not isinstance(proposal, dict)
+                        or proposal.get("proposal_hash") != attempt["proposal_hash"]
+                    ):
+                        raise ConflictError(
+                            "composite_goal_initial_continuation_mismatch",
+                            "首个分析提案 continuation 与当前复合目标尝试不匹配。",
+                        )
+                elif analysis_work_task_id is not None:
+                    raise ConflictError(
+                        "composite_goal_terminal_task_unexpected",
+                        "没有形成提案的 continuation 不能绑定统计 WorkTask。",
+                    )
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE analysis_proposal_outbox
+                           SET status=:status, continuation_message_id=:message_id,
+                               analysis_work_task_id=:work_task_id,
+                               attempt_count=attempt_count + :record_attempt,
+                               last_error_code=:error_code,
+                               next_attempt_at=NULL, lease_owner=NULL, lease_expires_at=NULL
+                           WHERE intent_task_id=:intent_id AND status='ready'
+                             AND lease_owner=:owner AND fencing_token=:fence
+                             AND lease_expires_at>:now
+                             AND continuation_message_id IS NULL"""
+                    ),
+                    {
+                        "intent_id": claim.intent_task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                        "status": status.value,
+                        "message_id": continuation_message_id,
+                        "work_task_id": analysis_work_task_id,
+                        "error_code": error_code,
+                        "record_attempt": int(record_attempt),
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError(
+                    "analysis_outbox_claim_lost",
+                    "分析续接 claim 已过期或被其他 Worker 取代。本次结果没有提交。",
+                )
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": claim.intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(row)
+
+    def requeue_analysis_outbox(
+        self, intent_task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> AnalysisProposalOutbox | None:
+        if not recoverable_error_codes:
+            raise ValueError("manual requeue requires at least one recoverable error code")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            current = self._outbox_from_row(row)
+            if current.status is AnalysisOutboxStatus.READY and current.retry_generation > 0:
+                return current
+            if (
+                current.status is not AnalysisOutboxStatus.WAITING_USER
+                or current.last_error_code not in recoverable_error_codes
+            ):
+                return None
+            error_parameters = {
+                f"error_{index}": code for index, code in enumerate(recoverable_error_codes)
+            }
+            error_placeholders = ", ".join(
+                f":error_{index}" for index in range(len(recoverable_error_codes))
+            )
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        f"""UPDATE analysis_proposal_outbox
+                           SET status='ready', attempt_count=0,
+                               retry_generation=retry_generation+1,
+                               fencing_token=fencing_token+1, next_attempt_at=NULL,
+                               lease_owner=NULL, lease_expires_at=NULL,
+                               continuation_message_id=NULL, analysis_work_task_id=NULL,
+                               last_error_code=NULL
+                           WHERE intent_task_id=:intent_id AND status='waiting_user'
+                             AND last_error_code IN ({error_placeholders})"""
+                    ),
+                    {
+                        "intent_id": intent_task_id,
+                        **error_parameters,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            updated = (
+                session.execute(
+                    text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                    {"intent_id": intent_task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._outbox_from_row(updated)
+
+    @staticmethod
+    def _outbox_from_row(row: Any) -> AnalysisProposalOutbox:
+        return AnalysisProposalOutbox(
+            intent_task_id=row["intent_task_id"],
+            conversation_id=row["conversation_id"],
+            project_id=row["project_id"],
+            preprocessing_task_id=row["preprocessing_task_id"],
+            plan_revision_id=row["plan_revision_id"],
+            manifest_hash=row["manifest_hash"],
+            run_id=row["run_id"],
+            analysis_request_hash=row["analysis_request_hash"],
+            artifact_ids=tuple(json.loads(row["artifact_ids_json"])),
+            status=row["status"],
+            lease_owner=row["lease_owner"],
+            lease_expires_at=row["lease_expires_at"],
+            fencing_token=row["fencing_token"],
+            attempt_count=row["attempt_count"],
+            retry_generation=row["retry_generation"],
+            next_attempt_at=row["next_attempt_at"],
+            last_error_code=row["last_error_code"],
+            continuation_message_id=row["continuation_message_id"],
+            analysis_work_task_id=row["analysis_work_task_id"],
+        )
+
+    def ensure_result_interpretation_outbox(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> StatisticalResultInterpretationOutbox:
+        """Create one READY result continuation without duplicating task/result rows."""
+        if not record.artifact_ids or len(set(record.artifact_ids)) != len(record.artifact_ids):
+            raise ValueError("verified result Artifact IDs must be nonempty and unique")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            composite_goal = self._validate_composite_result_binding(session, record)
+            existing = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id OR result_id=:result_id"
+                    ),
+                    {"task_id": record.task_id, "result_id": record.result_id},
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                current = self._result_interpretation_from_row(existing)
+                if current != record:
+                    immutable = (
+                        "task_id",
+                        "conversation_id",
+                        "project_id",
+                        "run_id",
+                        "plan_revision_id",
+                        "result_id",
+                        "result_bundle_hash",
+                        "result_version",
+                        "artifact_ids",
+                    )
+                    if any(getattr(current, key) != getattr(record, key) for key in immutable):
+                        raise ConflictError(
+                            "result_interpretation_binding_conflict",
+                            "统计结果续接已绑定到不同的 WorkTask 或结果证据。",
+                        )
+                    if composite_goal is not None:
+                        self._link_result_outbox_to_goal(session, composite_goal, record.task_id)
+                    return current
+                if composite_goal is not None:
+                    self._link_result_outbox_to_goal(session, composite_goal, record.task_id)
+                return current
+            session.execute(
+                text(
+                    """INSERT INTO statistical_result_interpretation_outbox
+                    (task_id, conversation_id, project_id, run_id, plan_revision_id,
+                     result_id, result_bundle_hash, result_version, artifact_ids_json,
+                     status, lease_owner, lease_expires_at, fencing_token, attempt_count,
+                     retry_generation, next_attempt_at, last_error_code, continuation_message_id)
+                    VALUES (:task_id, :conversation_id, :project_id, :run_id, :plan_revision_id,
+                     :result_id, :bundle_hash, :result_version, :artifact_ids, 'ready',
+                     NULL, NULL, 0, 0, 0, NULL, NULL, NULL)"""
+                ),
+                {
+                    "task_id": record.task_id,
+                    "conversation_id": record.conversation_id,
+                    "project_id": record.project_id,
+                    "run_id": record.run_id,
+                    "plan_revision_id": record.plan_revision_id,
+                    "result_id": record.result_id,
+                    "bundle_hash": record.result_bundle_hash,
+                    "result_version": record.result_version,
+                    "artifact_ids": json.dumps(record.artifact_ids),
+                },
+            )
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": record.task_id},
+                )
+                .mappings()
+                .one()
+            )
+            if composite_goal is not None:
+                self._link_result_outbox_to_goal(session, composite_goal, record.task_id)
+            return self._result_interpretation_from_row(row)
+
+    @staticmethod
+    def _analysis_only_source_matches(session: Session, goal: CompositeGoalIdentity) -> bool:
+        imported = (
+            session.execute(
+                text(
+                    "SELECT project_id, status, version, source_tree_hash, inclusion_hash "
+                    "FROM external_analysis_imports WHERE import_id=:import_id"
+                ),
+                {"import_id": goal.source_external_import_id},
+            )
+            .mappings()
+            .first()
+        )
+        return bool(
+            imported is not None
+            and imported["project_id"] == goal.project_id
+            and imported["status"] == "included"
+            and imported["version"] == goal.source_import_version
+            and imported["source_tree_hash"] == goal.source_tree_hash
+            and imported["inclusion_hash"] == goal.source_inclusion_hash
+            and external_analysis_manifest_hash(
+                str(goal.source_external_import_id),
+                str(imported["source_tree_hash"]),
+                str(imported["inclusion_hash"]),
+            )
+            == goal.source_manifest_hash
+            and content_hash(
+                {
+                    "external_import_id": goal.source_external_import_id,
+                    "import_version": imported["version"],
+                    "source_tree_hash": imported["source_tree_hash"],
+                    "inclusion_hash": imported["inclusion_hash"],
+                    "input_manifest_hash": goal.source_manifest_hash,
+                }
+            )
+            == goal.source_revision_hash
+        )
+
+    def verify_result_interpretation_goal_binding(
+        self, record: StatisticalResultInterpretationOutbox
+    ) -> None:
+        """Recheck current goal/attempt/source identity before dispatch or commit."""
+        with self._read_session() as session:
+            self._validate_composite_result_binding(session, record)
+
+    def _validate_composite_result_binding(
+        self, session: Session, record: StatisticalResultInterpretationOutbox
+    ) -> CompositeGoalIdentity | None:
+        try:
+            task = self._task_from_session(session, record.task_id)
+        except NotFoundError:
+            # Legacy repository-level outbox records may be used without a
+            # WorkTask in isolated stores; they cannot be a composite child.
+            return None
+        refs = task.authority_refs
+        attempt = (
+            session.execute(
+                text(
+                    """SELECT goal.*, attempt.attempt_number AS active_attempt_number,
+                        attempt.proposal_hash AS active_proposal_hash
+                    FROM composite_goal_analysis_attempts AS attempt
+                    JOIN composite_goal_links AS goal
+                      ON goal.intent_task_id=attempt.intent_task_id
+                    WHERE attempt.work_task_id=:task_id"""
+                ),
+                {"task_id": record.task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if attempt is None:
+            if refs.analysis_intent_task_id is not None or refs.analysis_request_hash is not None:
+                raise ConflictError(
+                    "composite_goal_result_attempt_missing",
+                    "声明复合 intent 的统计任务没有对应的持久分析尝试关联。",
+                )
+            return None
+        goal = self._composite_goal_from_row(attempt)
+        conversation = (
+            session.execute(
+                text("SELECT project_id FROM conversations WHERE conversation_id=:conversation_id"),
+                {"conversation_id": record.conversation_id},
+            )
+            .mappings()
+            .first()
+        )
+        plan = (
+            session.execute(
+                text("SELECT project_id FROM plan_revisions WHERE plan_revision_id=:plan_id"),
+                {"plan_id": record.plan_revision_id},
+            )
+            .mappings()
+            .first()
+        )
+        run = (
+            session.execute(
+                text("SELECT project_id, plan_revision_id FROM workflow_runs WHERE run_id=:run_id"),
+                {"run_id": record.run_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            goal.analysis_work_task_id != record.task_id
+            or goal.conversation_id != record.conversation_id
+            or goal.project_id != record.project_id
+            or goal.analysis_request_hash != refs.analysis_request_hash
+            or refs.analysis_intent_task_id != goal.intent_task_id
+            or refs.conversation_id != goal.conversation_id
+            or refs.plan_revision_id != record.plan_revision_id
+            or refs.workflow_run_id != record.run_id
+            or task.status.value != "completed"
+            or conversation is None
+            or conversation["project_id"] != goal.project_id
+            or plan is None
+            or plan["project_id"] != goal.project_id
+            or run is None
+            or run["project_id"] != goal.project_id
+            or run["plan_revision_id"] != record.plan_revision_id
+            or goal.result_interpretation_outbox_task_id not in {None, record.task_id}
+        ):
+            raise ConflictError(
+                "composite_goal_result_binding_mismatch",
+                "统计结果解释 outbox 未绑定当前目标的会话、项目、活动尝试、Plan 或 Run。",
+            )
+        if goal.goal_kind == "analysis_only_external_import":
+            plan_row = (
+                session.execute(
+                    text(
+                        "SELECT project_id, state, manifest_hash, plan_json, plan_hash, "
+                        "environment_hash "
+                        "FROM plan_revisions WHERE plan_revision_id=:plan_id"
+                    ),
+                    {"plan_id": record.plan_revision_id},
+                )
+                .mappings()
+                .first()
+            )
+            statistical_steps = tuple(step for step in task.steps if step.kind == "statistical_run")
+            try:
+                plan_content = json.loads(plan_row["plan_json"]) if plan_row is not None else None
+            except (TypeError, json.JSONDecodeError):
+                plan_content = None
+            design = plan_content.get("design") if isinstance(plan_content, dict) else None
+            work_context = (
+                plan_content.get("work_context") if isinstance(plan_content, dict) else None
+            )
+            source_valid = self._analysis_only_source_matches(session, goal)
+            plan_valid = bool(
+                plan_row is not None
+                and plan_row["project_id"] == goal.project_id
+                and plan_row["state"] == "approved"
+                and plan_row["manifest_hash"] == goal.source_manifest_hash
+                and content_hash(
+                    {
+                        "plan": plan_content,
+                        "manifest_hash": plan_row["manifest_hash"],
+                        "environment_hash": plan_row["environment_hash"],
+                    }
+                )
+                == plan_row["plan_hash"]
+                and isinstance(design, dict)
+                and design.get("external_import_id") == goal.source_external_import_id
+                and design.get("external_import_hash") == goal.source_inclusion_hash
+                and isinstance(work_context, dict)
+                and work_context.get("conversation_id") == goal.conversation_id
+                and work_context.get("proposal_hash") == attempt["active_proposal_hash"]
+                and work_context.get("draft_hash") == refs.input_revision
+            )
+            result_rows = (
+                session.execute(
+                    text(
+                        "SELECT result_id, project_id, design_revision_id, mode, non_scientific, "
+                        "bundle_hash, version FROM statistical_results WHERE run_id=:run_id"
+                    ),
+                    {"run_id": record.run_id},
+                )
+                .mappings()
+                .all()
+            )
+            result_valid = bool(
+                len(result_rows) == 1
+                and result_rows[0]["result_id"] == record.result_id
+                and result_rows[0]["project_id"] == goal.project_id
+                and isinstance(design, dict)
+                and result_rows[0]["design_revision_id"] == design.get("revision_id")
+                and result_rows[0]["mode"] == "real"
+                and not result_rows[0]["non_scientific"]
+                and result_rows[0]["bundle_hash"] == record.result_bundle_hash
+                and result_rows[0]["version"] == record.result_version
+            )
+            if (
+                not source_valid
+                or not plan_valid
+                or not result_valid
+                or len(statistical_steps) != 1
+                or statistical_steps[0].input_version != attempt["active_proposal_hash"]
+                or attempt["active_attempt_number"] < 1
+            ):
+                raise ConflictError(
+                    "analysis_goal_result_source_mismatch",
+                    "统计结果解释没有绑定当前活动提案及其冻结外部导入来源。",
+                )
+            return goal
+
+        proposal_outbox = (
+            session.execute(
+                text("SELECT * FROM analysis_proposal_outbox WHERE intent_task_id=:intent_id"),
+                {"intent_id": goal.intent_task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if proposal_outbox is None or not self._outbox_matches_goal(proposal_outbox, goal):
+            raise ConflictError(
+                "composite_goal_result_binding_mismatch",
+                "统计结果解释 outbox 未绑定复合目标的精确提案来源。",
+            )
+        return goal
+
+    @staticmethod
+    def _link_result_outbox_to_goal(
+        session: Session, goal: CompositeGoalIdentity, task_id: str
+    ) -> None:
+        changed = cast(
+            CursorResult[Any],
+            session.execute(
+                text(
+                    "UPDATE composite_goal_links "
+                    "SET result_interpretation_outbox_task_id=:task_id "
+                    "WHERE intent_task_id=:intent_id "
+                    "AND result_interpretation_outbox_task_id IS NULL"
+                ),
+                {"task_id": task_id, "intent_id": goal.intent_task_id},
+            ),
+        ).rowcount
+        if changed == 0:
+            current = session.execute(
+                text(
+                    "SELECT result_interpretation_outbox_task_id FROM composite_goal_links "
+                    "WHERE intent_task_id=:intent_id"
+                ),
+                {"intent_id": goal.intent_task_id},
+            ).scalar_one_or_none()
+            if current != task_id:
+                raise ConflictError(
+                    "composite_goal_result_outbox_conflict",
+                    "复合目标已绑定另一条统计结果解释 outbox。",
+                )
+
+    def get_result_interpretation_outbox(
+        self, task_id: str
+    ) -> StatisticalResultInterpretationOutbox:
+        with self._read_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFoundError("统计结果解释续接", task_id)
+            return self._result_interpretation_from_row(row)
+
+    def claim_result_interpretation_outbox(
+        self, worker_id: str, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200 or lease_seconds < 1:
+            raise ValueError("worker_id and positive lease_seconds are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT task_id FROM statistical_result_interpretation_outbox
+                    WHERE status='ready'
+                      AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                      AND (next_attempt_at IS NULL OR next_attempt_at<=:now)
+                    ORDER BY task_id LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            task_id = str(row["task_id"])
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET lease_owner=:owner, lease_expires_at=:expires,
+                            fencing_token=fencing_token+1, next_attempt_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND (lease_expires_at IS NULL OR lease_expires_at<=:now)
+                          AND (next_attempt_at IS NULL OR next_attempt_at<=:now)"""
+                    ),
+                    {
+                        "owner": owner,
+                        "expires": now + lease_seconds,
+                        "task_id": task_id,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            fence = int(
+                session.execute(
+                    text(
+                        "SELECT fencing_token FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                ).scalar_one()
+            )
+        return ResultInterpretationClaim(
+            task_id=task_id,
+            worker_id=owner,
+            lease_expires_at=now + lease_seconds,
+            fencing_token=fence,
+        )
+
+    def renew_result_interpretation_claim(
+        self, claim: ResultInterpretationClaim, *, lease_seconds: int
+    ) -> ResultInterpretationClaim | None:
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        now = time.time()
+        expires = now + lease_seconds
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET lease_expires_at=:expires
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "expires": expires,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+        return claim.model_copy(update={"lease_expires_at": expires})
+
+    def defer_result_interpretation_claim(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        retry_after_seconds: int,
+        error_code: str,
+    ) -> bool:
+        if retry_after_seconds < 1 or not error_code or len(error_code) > 64:
+            raise ValueError("positive retry delay and bounded error code are required")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET attempt_count=attempt_count+1, last_error_code=:error_code,
+                            next_attempt_at=:retry_at, lease_owner=NULL, lease_expires_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now"""
+                    ),
+                    {
+                        "error_code": error_code,
+                        "retry_at": now + retry_after_seconds,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            return changed == 1
+
+    def complete_result_interpretation_outbox(
+        self,
+        claim: ResultInterpretationClaim,
+        *,
+        status: ResultInterpretationStatus,
+        continuation_message_id: str,
+        error_code: str | None = None,
+        record_attempt: bool = False,
+    ) -> StatisticalResultInterpretationOutbox:
+        if status is ResultInterpretationStatus.READY or not continuation_message_id:
+            raise ValueError("outbox completion requires a terminal status and assistant message")
+        now = time.time()
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            composite_row = (
+                session.execute(
+                    text(
+                        """SELECT goal.* FROM composite_goal_analysis_attempts AS attempt
+                        JOIN composite_goal_links AS goal
+                          ON goal.intent_task_id=attempt.intent_task_id
+                        WHERE attempt.work_task_id=:task_id"""
+                    ),
+                    {"task_id": claim.task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if composite_row is not None and status is ResultInterpretationStatus.COMPLETED:
+                goal = self._composite_goal_from_row(composite_row)
+                result_row = (
+                    session.execute(
+                        text(
+                            "SELECT * FROM statistical_result_interpretation_outbox "
+                            "WHERE task_id=:task_id"
+                        ),
+                        {"task_id": claim.task_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+                self._validate_composite_result_binding(
+                    session, self._result_interpretation_from_row(result_row)
+                )
+                task = self._task_from_session(session, claim.task_id)
+                attempt = (
+                    session.execute(
+                        text(
+                            "SELECT proposal_hash FROM composite_goal_analysis_attempts "
+                            "WHERE intent_task_id=:intent_id AND work_task_id=:task_id"
+                        ),
+                        {"intent_id": goal.intent_task_id, "task_id": claim.task_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                message = (
+                    session.execute(
+                        text(
+                            "SELECT conversation_id, role, payload_json FROM conversation_messages "
+                            "WHERE message_id=:message_id"
+                        ),
+                        {"message_id": continuation_message_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                try:
+                    payload = json.loads(message["payload_json"]) if message is not None else {}
+                except (TypeError, json.JSONDecodeError):
+                    payload = {}
+                completion = (
+                    payload.get("statistical_result_interpretation")
+                    if isinstance(payload, dict)
+                    else None
+                )
+                envelope = (
+                    payload.get("analysis_intent_envelope") if isinstance(payload, dict) else None
+                )
+                step_hashes = tuple(
+                    step.input_version for step in task.steps if step.kind == "statistical_run"
+                )
+                if (
+                    goal.analysis_work_task_id != claim.task_id
+                    or goal.result_interpretation_outbox_task_id != claim.task_id
+                    or result_row["conversation_id"] != goal.conversation_id
+                    or result_row["project_id"] != goal.project_id
+                    or result_row["run_id"] != task.authority_refs.workflow_run_id
+                    or result_row["plan_revision_id"] != task.authority_refs.plan_revision_id
+                    or task.authority_refs.conversation_id != goal.conversation_id
+                    or task.authority_refs.analysis_intent_task_id != goal.intent_task_id
+                    or task.authority_refs.analysis_request_hash != goal.analysis_request_hash
+                    or attempt is None
+                    or step_hashes != (attempt["proposal_hash"],)
+                    or message is None
+                    or message["conversation_id"] != goal.conversation_id
+                    or message["role"] != "assistant"
+                    or not isinstance(completion, dict)
+                    or completion.get("task_id") != claim.task_id
+                    or completion.get("status") != ResultInterpretationStatus.COMPLETED.value
+                    or completion.get("result_id") != result_row["result_id"]
+                    or completion.get("result_version") != result_row["result_version"]
+                    or not isinstance(envelope, dict)
+                    or envelope.get("status") != "completed"
+                    or envelope.get("task_id") != goal.intent_task_id
+                    or envelope.get("conversation_id") != goal.conversation_id
+                    or envelope.get("project_id") != goal.project_id
+                    or envelope.get("analysis_request_hash") != goal.analysis_request_hash
+                ):
+                    raise ConflictError(
+                        "composite_goal_result_continuation_mismatch",
+                        "统计结果完成 continuation 未精确绑定 active task、结果和复合目标。",
+                    )
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE statistical_result_interpretation_outbox
+                        SET status=:status, continuation_message_id=:message_id,
+                            attempt_count=attempt_count+:record_attempt,
+                            last_error_code=:error_code, next_attempt_at=NULL,
+                            lease_owner=NULL, lease_expires_at=NULL
+                        WHERE task_id=:task_id AND status='ready'
+                          AND lease_owner=:owner AND fencing_token=:fence
+                          AND lease_expires_at>:now AND continuation_message_id IS NULL"""
+                    ),
+                    {
+                        "status": status.value,
+                        "message_id": continuation_message_id,
+                        "record_attempt": int(record_attempt),
+                        "error_code": error_code,
+                        "task_id": claim.task_id,
+                        "owner": claim.worker_id,
+                        "fence": claim.fencing_token,
+                        "now": now,
+                    },
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ConflictError(
+                    "result_interpretation_claim_lost",
+                    "统计结果解释续接 claim 已过期或已被替换。本轮草稿未提交。",
+                )
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": claim.task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._result_interpretation_from_row(row)
+
+    def requeue_result_interpretation_outbox(
+        self, task_id: str, *, recoverable_error_codes: tuple[str, ...]
+    ) -> StatisticalResultInterpretationOutbox | None:
+        if not recoverable_error_codes:
+            raise ValueError("manual requeue requires recoverable error codes")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            current = self._result_interpretation_from_row(row)
+            if current.status is ResultInterpretationStatus.READY and current.retry_generation > 0:
+                return current
+            if (
+                current.status is not ResultInterpretationStatus.WAITING_USER
+                or current.last_error_code not in recoverable_error_codes
+            ):
+                return None
+            binds = {f"error_{index}": value for index, value in enumerate(recoverable_error_codes)}
+            placeholders = ", ".join(f":error_{index}" for index in range(len(binds)))
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        f"""UPDATE statistical_result_interpretation_outbox
+                        SET status='ready', attempt_count=0, retry_generation=retry_generation+1,
+                            fencing_token=fencing_token+1, next_attempt_at=NULL,
+                            lease_owner=NULL, lease_expires_at=NULL,
+                            continuation_message_id=NULL, last_error_code=NULL
+                        WHERE task_id=:task_id AND status='waiting_user'
+                          AND last_error_code IN ({placeholders})"""
+                    ),
+                    {"task_id": task_id, **binds},
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            updated = (
+                session.execute(
+                    text(
+                        "SELECT * FROM statistical_result_interpretation_outbox "
+                        "WHERE task_id=:task_id"
+                    ),
+                    {"task_id": task_id},
+                )
+                .mappings()
+                .one()
+            )
+            return self._result_interpretation_from_row(updated)
+
+    @staticmethod
+    def _result_interpretation_from_row(row: Any) -> StatisticalResultInterpretationOutbox:
+        return StatisticalResultInterpretationOutbox(
+            task_id=row["task_id"],
+            conversation_id=row["conversation_id"],
+            project_id=row["project_id"],
+            run_id=row["run_id"],
+            plan_revision_id=row["plan_revision_id"],
+            result_id=row["result_id"],
+            result_bundle_hash=row["result_bundle_hash"],
+            result_version=row["result_version"],
+            artifact_ids=tuple(json.loads(row["artifact_ids_json"])),
+            status=row["status"],
+            lease_owner=row["lease_owner"],
+            lease_expires_at=row["lease_expires_at"],
+            fencing_token=row["fencing_token"],
+            attempt_count=row["attempt_count"],
+            retry_generation=row["retry_generation"],
+            next_attempt_at=row["next_attempt_at"],
+            last_error_code=row["last_error_code"],
+            continuation_message_id=row["continuation_message_id"],
+        )
+
+    def save_task(
+        self,
+        task: WorkTask,
+        *,
+        expected_version: int,
+        claim_token: str | None = None,
+        step_preparation_claim: StepPreparationClaim | None = None,
+    ) -> WorkTask:
+        if task.version != expected_version + 1:
+            raise ValueError("saved WorkTask version must equal expected_version + 1")
+        if claim_token is not None and step_preparation_claim is not None:
+            raise ValueError("a task save cannot use both reconciliation and preparation claims")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            if claim_token is not None:
+                self._require_reconciliation_claim(session, task.task_id, claim_token)
+            if step_preparation_claim is not None:
+                self._require_step_preparation_claim(
+                    session,
+                    task.task_id,
+                    expected_version,
+                    step_preparation_claim,
+                )
+            changed = self._update_task_row(session, task, expected_version)
+            if changed != 1:
+                self._raise_version_conflict(session, task.task_id, expected_version)
+            self._replace_children(session, task)
+            self._sync_preprocessing_composite_goal(session, task)
+        return task
+
+    def claim_next_step_preparation(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> StepPreparationClaim | None:
+        """Claim one persisted READY successor with a step/input-scoped fence."""
+
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200:
+            raise ValueError("worker_id must contain 1 to 200 characters")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be at least 1")
+        if cooldown_seconds < 0:
+            raise ValueError("cooldown_seconds must be nonnegative")
+        now = time.time()
+        claim_token = uuid4().hex
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            row = (
+                session.execute(
+                    text(
+                        """SELECT target.task_id, target.task_version, target.step_id,
+                                  target.step_kind, target.step_version,
+                                  target.input_fingerprint
+                           FROM work_task_step_preparation_targets AS target
+                           JOIN work_tasks AS task ON task.task_id = target.task_id
+                           JOIN work_task_steps AS step
+                             ON step.task_id = target.task_id AND step.step_id = target.step_id
+                           LEFT JOIN work_task_step_preparation_claims AS claim
+                             ON claim.task_id = target.task_id
+                           WHERE task.status = 'running'
+                             AND task.version = target.task_version
+                             AND step.status = 'ready'
+                             AND step.version = target.step_version
+                             AND (claim.task_id IS NULL OR (
+                                  claim.available_at <= :now
+                                  AND (claim.lease_expires_at IS NULL
+                                       OR claim.lease_expires_at <= :now)
+                             ))
+                           ORDER BY COALESCE(claim.available_at, 0), target.task_id
+                           LIMIT 1"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            target = StepPreparationTarget(
+                task_id=row["task_id"],
+                task_version=row["task_version"],
+                step_id=row["step_id"],
+                step_kind=row["step_kind"],
+                step_version=row["step_version"],
+                input_fingerprint=row["input_fingerprint"],
+            )
+            current = self._task_from_session(session, target.task_id)
+            try:
+                current_target = resolve_step_preparation_target(current)
+            except ValueError:
+                current_target = None
+            if current_target != target:
+                # The target is a derived index; rebuild it if persisted data no
+                # longer agrees before issuing any work to a background handler.
+                self._replace_step_preparation_target(session, current)
+                return None
+            lease_expires_at = now + lease_seconds
+            inserted = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """INSERT INTO work_task_step_preparation_claims
+                           (task_id, lease_owner, claim_token, lease_expires_at, available_at)
+                           VALUES (:task_id, :owner, :token, :expires, :available)
+                           ON CONFLICT(task_id) DO UPDATE SET
+                             lease_owner = excluded.lease_owner,
+                             claim_token = excluded.claim_token,
+                             lease_expires_at = excluded.lease_expires_at,
+                             available_at = excluded.available_at
+                           WHERE work_task_step_preparation_claims.available_at <= :now
+                             AND (work_task_step_preparation_claims.lease_expires_at IS NULL
+                                  OR work_task_step_preparation_claims.lease_expires_at <= :now)"""
+                    ),
+                    {
+                        "task_id": target.task_id,
+                        "owner": owner,
+                        "token": claim_token,
+                        "expires": lease_expires_at,
+                        "available": now + cooldown_seconds,
+                        "now": now,
+                    },
+                ),
+            )
+            if inserted.rowcount != 1:
+                return None
+        return StepPreparationClaim(
+            **target.model_dump(),
+            worker_id=owner,
+            claim_token=claim_token,
+            lease_expires_at=lease_expires_at,
+        )
+
+    def release_step_preparation_claim(self, claim: StepPreparationClaim) -> bool:
+        """Release only the current exact worker/token, preserving its cooldown."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            changed = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE work_task_step_preparation_claims
+                           SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL
+                           WHERE task_id = :task_id AND lease_owner = :worker_id
+                             AND claim_token = :claim_token"""
+                    ),
+                    {
+                        "task_id": claim.task_id,
+                        "worker_id": claim.worker_id,
+                        "claim_token": claim.claim_token,
+                    },
+                ),
+            )
+        return changed.rowcount == 1
+
+    def claim_next_reconciliation_task(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+        cooldown_seconds: float,
+    ) -> WorkTaskClaim | None:
+        """Atomically claim one indexed task whose authoritative state needs a recheck."""
+
+        owner = worker_id.strip()
+        if not owner or len(owner) > 200:
+            raise ValueError("worker_id must contain 1 to 200 characters")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be at least 1")
+        if cooldown_seconds < 0:
+            raise ValueError("cooldown_seconds must be nonnegative")
+        now = time.time()
+        claim_token = uuid4().hex
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            task_id = session.execute(
+                text(
+                    """SELECT task.task_id
+                    FROM work_task_reconciliation_targets AS target
+                    JOIN work_tasks AS task ON task.task_id = target.task_id
+                    LEFT JOIN work_task_reconciliation_claims AS claim
+                      ON claim.task_id = task.task_id
+                    WHERE (
+                        (task.status = 'waiting_run' AND target.target_kind = 'workflow_run')
+                        OR (task.status = 'waiting_dependency'
+                            AND target.target_kind = 'workflow_run')
+                        OR (task.status = 'waiting_user' AND target.target_kind = 'qc_decision')
+                        OR (task.status = 'waiting_dependency'
+                            AND target.target_kind = 'statistical_result')
+                    )
+                    AND (claim.task_id IS NULL OR (
+                        claim.available_at <= :now
+                        AND (claim.lease_expires_at IS NULL OR claim.lease_expires_at <= :now)
+                    ))
+                    ORDER BY COALESCE(claim.available_at, 0), task.task_id
+                    LIMIT 1"""
+                ),
+                {"now": now},
+            ).scalar_one_or_none()
+            if task_id is None:
+                return None
+            inserted = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """INSERT INTO work_task_reconciliation_claims
+                        (task_id, lease_owner, claim_token, lease_expires_at, available_at)
+                        VALUES (:task_id, :owner, :token, :expires, :available)
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            lease_owner = excluded.lease_owner,
+                            claim_token = excluded.claim_token,
+                            lease_expires_at = excluded.lease_expires_at,
+                            available_at = excluded.available_at
+                        WHERE work_task_reconciliation_claims.available_at <= :now
+                          AND (work_task_reconciliation_claims.lease_expires_at IS NULL
+                               OR work_task_reconciliation_claims.lease_expires_at <= :now)"""
+                    ),
+                    {
+                        "task_id": task_id,
+                        "owner": owner,
+                        "token": claim_token,
+                        "expires": now + lease_seconds,
+                        "available": now + cooldown_seconds,
+                        "now": now,
+                    },
+                ),
+            )
+            if inserted.rowcount != 1:
+                return None
+        return WorkTaskClaim(task_id=str(task_id), worker_id=owner, claim_token=claim_token)
+
+    def release_reconciliation_claim(self, task_id: str, worker_id: str, claim_token: str) -> bool:
+        """Release only the matching owner/token; keep the due-time backoff."""
+
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    text(
+                        """UPDATE work_task_reconciliation_claims
+                        SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL
+                        WHERE task_id = :task_id AND lease_owner = :owner
+                          AND claim_token = :token"""
+                    ),
+                    {"task_id": task_id, "owner": worker_id, "token": claim_token},
+                ),
+            )
+            return result.rowcount == 1
+
+    def consume_event(
+        self,
+        task_id: str,
+        event: WorkEventIdentity,
+        *,
+        expected_version: int,
+        updated_task: WorkTask,
+        claim_token: str | None = None,
+    ) -> tuple[EventConsumptionDecision, WorkTask | None]:
+        """Atomically dedupe, version-check, persist task progress and advance cursor."""
+
+        if updated_task.task_id != task_id or updated_task.version != expected_version + 1:
+            raise ValueError("updated_task identity/version does not match event transaction")
+        with self.unit_of_work.atomic(), self._write_session() as session:
+            if claim_token is not None:
+                self._require_reconciliation_claim(session, task_id, claim_token)
+            duplicate = session.execute(
+                text(
+                    "SELECT 1 FROM work_task_event_receipts "
+                    "WHERE task_id = :task_id AND dedupe_key = :dedupe_key"
+                ),
+                {"task_id": task_id, "dedupe_key": event.dedupe_key},
+            ).first()
+            cursor = (
+                session.execute(
+                    text(
+                        "SELECT event_id FROM work_task_event_cursors "
+                        "WHERE task_id = :task_id AND stream_key = :stream_key"
+                    ),
+                    {"task_id": task_id, "stream_key": event.stream_key},
+                ).scalar_one_or_none()
+                or 0
+            )
+            decision = decide_event_consumption(
+                event,
+                cursor=cursor,
+                dedupe_key_seen=duplicate is not None,
+            )
+            if decision is not EventConsumptionDecision.CONSUME:
+                return decision, None
+            changed = self._update_task_row(session, updated_task, expected_version)
+            if changed != 1:
+                self._raise_version_conflict(session, task_id, expected_version)
+            advanced = advance_event_cursor(updated_task, event.stream_key, event.event_id)
+            committed_task = WorkTask.model_validate(
+                {**advanced.model_dump(), "version": updated_task.version}
+            )
+            self._replace_children(session, committed_task)
+            session.execute(
+                text(
+                    """INSERT INTO work_task_event_receipts
+                    (task_id, dedupe_key, stream_key, event_id)
+                    VALUES (:task_id, :dedupe_key, :stream_key, :event_id)"""
+                ),
+                {
+                    "task_id": task_id,
+                    "dedupe_key": event.dedupe_key,
+                    "stream_key": event.stream_key,
+                    "event_id": event.event_id,
+                },
+            )
+        return EventConsumptionDecision.CONSUME, committed_task
+
+    @staticmethod
+    def _task_values(task: WorkTask) -> dict[str, object]:
+        return {
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "version": task.version,
+            "goal": task.goal.model_dump_json(),
+            "waiting": task.waiting_condition.model_dump_json() if task.waiting_condition else None,
+            "authority_refs": task.authority_refs.model_dump_json(),
+            "recovery_steps": json.dumps(task.recovery_steps),
+            "budget": task.budget.model_dump_json(),
+        }
+
+    def _update_task_row(self, session: Session, task: WorkTask, expected_version: int) -> int:
+        values = self._task_values(task)
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                text(
+                    """UPDATE work_tasks SET status=:status, version=:version,
+                    goal_json=:goal, waiting_condition_json=:waiting,
+                    authority_refs_json=:authority_refs, recovery_steps_json=:recovery_steps,
+                    budget_json=:budget WHERE task_id=:task_id AND version=:expected_version"""
+                ),
+                {**values, "expected_version": expected_version},
+            ),
+        )
+        return result.rowcount or 0
+
+    def _replace_children(self, session: Session, task: WorkTask) -> None:
+        session.execute(
+            text("DELETE FROM work_task_steps WHERE task_id = :task_id"),
+            {"task_id": task.task_id},
+        )
+        for step in task.steps:
+            session.execute(
+                text(
+                    """INSERT INTO work_task_steps
+                    (task_id, step_id, sequence, status, version, step_json)
+                    VALUES (:task_id, :step_id, :sequence, :status, :version, :step_json)"""
+                ),
+                {
+                    "task_id": task.task_id,
+                    "step_id": step.step_id,
+                    "sequence": step.sequence,
+                    "status": step.status.value,
+                    "version": step.version,
+                    "step_json": step.model_dump_json(),
+                },
+            )
+        session.execute(
+            text("DELETE FROM work_task_event_cursors WHERE task_id = :task_id"),
+            {"task_id": task.task_id},
+        )
+        for cursor in task.event_cursors:
+            session.execute(
+                text(
+                    """INSERT INTO work_task_event_cursors
+                    (task_id, stream_key, event_id) VALUES (:task_id, :stream_key, :event_id)"""
+                ),
+                {
+                    "task_id": task.task_id,
+                    "stream_key": cursor.stream_key,
+                    "event_id": cursor.event_id,
+                },
+            )
+        self._replace_reconciliation_target(session, task)
+        self._replace_step_preparation_target(session, task)
+
+    @staticmethod
+    def _replace_step_preparation_target(session: Session, task: WorkTask) -> None:
+        """Atomically rebuild the indexed prepare target from the saved TaskSteps."""
+
+        existing = (
+            session.execute(
+                text(
+                    """SELECT task_version, step_id, step_kind, step_version,
+                              input_fingerprint
+                       FROM work_task_step_preparation_targets WHERE task_id = :task_id"""
+                ),
+                {"task_id": task.task_id},
+            )
+            .mappings()
+            .first()
+        )
+        try:
+            target = resolve_step_preparation_target(task)
+        except ValueError:
+            target = None
+        existing_target = (
+            StepPreparationTarget(task_id=task.task_id, **dict(existing))
+            if existing is not None
+            else None
+        )
+        if existing_target == target:
+            return
+
+        # Changing or removing a target revokes any in-flight token before a
+        # later version can be claimed, even if its lease has not expired.
+        session.execute(
+            text(
+                """UPDATE work_task_step_preparation_claims
+                   SET lease_owner = NULL, claim_token = NULL, lease_expires_at = NULL,
+                       available_at = 0
+                   WHERE task_id = :task_id"""
+            ),
+            {"task_id": task.task_id},
+        )
+        if target is None:
+            session.execute(
+                text("DELETE FROM work_task_step_preparation_targets WHERE task_id = :task_id"),
+                {"task_id": task.task_id},
+            )
+            return
+        session.execute(
+            text(
+                """INSERT INTO work_task_step_preparation_targets
+                   (task_id, task_version, step_id, step_kind, step_version, input_fingerprint)
+                   VALUES (:task_id, :task_version, :step_id, :step_kind, :step_version,
+                           :input_fingerprint)
+                   ON CONFLICT(task_id) DO UPDATE SET
+                     task_version = excluded.task_version,
+                     step_id = excluded.step_id,
+                     step_kind = excluded.step_kind,
+                     step_version = excluded.step_version,
+                     input_fingerprint = excluded.input_fingerprint"""
+            ),
+            target.model_dump(),
+        )
+
+    @staticmethod
+    def _replace_reconciliation_target(session: Session, task: WorkTask) -> None:
+        session.execute(
+            text("DELETE FROM work_task_reconciliation_targets WHERE task_id = :task_id"),
+            {"task_id": task.task_id},
+        )
+        run_id: str | None = None
+        active_step = None
+        if len(task.steps) > 1:
+            try:
+                run_id, active_step = resolve_routed_workflow_run(task)
+            except ValueError:
+                # Invalid or ambiguous multi-step state is persisted as task
+                # data, but it must never become an automatic target.
+                return
+        else:
+            # Preserve existing root-level indexing for legacy and explicit
+            # single-step tasks, including non-Run orchestration steps.
+            run_id = task.authority_refs.workflow_run_id
+        if run_id is None:
+            return
+        waiting = task.waiting_condition
+        if waiting is None:
+            return
+        target_kind: str | None = None
+        if (
+            task.status.value == "waiting_run"
+            and waiting.kind.value == "workflow_run"
+            and waiting.reference == run_id
+        ):
+            target_kind = "workflow_run"
+        elif (
+            task.status.value == "waiting_user"
+            and waiting.kind.value == "user_decision"
+            and waiting.reference == f"qc:{run_id}"
+        ):
+            target_kind = "qc_decision"
+        elif (
+            task.status.value == "waiting_dependency"
+            and waiting.kind.value == "dependency"
+            and waiting.reference == f"statistical-result:{run_id}"
+        ):
+            target_kind = "statistical_result"
+        elif (
+            task.status.value == "waiting_dependency"
+            and waiting.kind.value == "dependency"
+            and waiting.reference == f"downstream:{run_id}"
+            and any(
+                step.kind == "preprocessing_run"
+                and step.authority_refs.workflow_run_id == run_id
+                and (
+                    (
+                        active_step is not None
+                        and step.step_id == active_step.step_id
+                        and step.authority_refs.plan_revision_id is not None
+                        and task.authority_refs.plan_revision_id
+                        in {None, step.authority_refs.plan_revision_id}
+                    )
+                    or (
+                        active_step is None
+                        and step.authority_refs.plan_revision_id
+                        == task.authority_refs.plan_revision_id
+                    )
+                )
+                for step in task.steps
+            )
+            and (
+                active_step is not None
+                or sum(step.kind == "preprocessing_run" for step in task.steps) == 1
+            )
+        ):
+            # The shared workflow_run target kind is already indexed by 0023;
+            # its precise eligibility is guarded by this preprocessing-only branch.
+            target_kind = "workflow_run"
+        if target_kind is not None:
+            session.execute(
+                text(
+                    """INSERT INTO work_task_reconciliation_targets
+                    (task_id, run_id, target_kind) VALUES (:task_id, :run_id, :target_kind)"""
+                ),
+                {"task_id": task.task_id, "run_id": run_id, "target_kind": target_kind},
+            )
+
+    @staticmethod
+    def _require_reconciliation_claim(session: Session, task_id: str, claim_token: str) -> None:
+        row = (
+            session.execute(
+                text(
+                    """SELECT claim_token, lease_expires_at
+                FROM work_task_reconciliation_claims
+                WHERE task_id = :task_id"""
+                ),
+                {"task_id": task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            row is None
+            or row["claim_token"] != claim_token
+            or row["lease_expires_at"] is None
+            or float(row["lease_expires_at"]) <= time.time()
+        ):
+            raise ConflictError(
+                "work_task_claim_lost",
+                "自动化任务领取已过期或已转交。本次恢复结果未写入。",
+                task_id=task_id,
+            )
+
+    @staticmethod
+    def _require_step_preparation_claim(
+        session: Session,
+        task_id: str,
+        expected_version: int,
+        claim: StepPreparationClaim,
+    ) -> None:
+        row = (
+            session.execute(
+                text(
+                    """SELECT target.task_version, target.step_id, target.step_kind,
+                              target.step_version, target.input_fingerprint,
+                              claim.lease_owner, claim.claim_token, claim.lease_expires_at
+                       FROM work_task_step_preparation_targets AS target
+                       JOIN work_task_step_preparation_claims AS claim
+                         ON claim.task_id = target.task_id
+                       WHERE target.task_id = :task_id"""
+                ),
+                {"task_id": task_id},
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            task_id != claim.task_id
+            or row is None
+            or row["task_version"] != claim.task_version
+            or row["step_id"] != claim.step_id
+            or row["step_kind"] != claim.step_kind
+            or row["step_version"] != claim.step_version
+            or row["input_fingerprint"] != claim.input_fingerprint
+            or row["lease_owner"] != claim.worker_id
+            or row["claim_token"] != claim.claim_token
+            or row["lease_expires_at"] is None
+            or float(row["lease_expires_at"]) <= time.time()
+            or claim.task_version != expected_version
+        ):
+            raise ConflictError(
+                "step_preparation_claim_lost",
+                "步骤准备领取已过期、输入已变化或已转交；本次结果未写入。",
+                task_id=task_id,
+                step_id=claim.step_id,
+            )
+        current = SqliteWorkTaskRepository._task_from_session(session, task_id)
+        try:
+            current_target = resolve_step_preparation_target(current)
+        except ValueError:
+            current_target = None
+        if current_target is None or current_target.model_dump() != claim.model_dump(
+            exclude={"worker_id", "claim_token", "lease_expires_at"}
+        ):
+            raise ConflictError(
+                "step_preparation_claim_lost",
+                "步骤或其前驱证据已变化；本次准备结果未写入。",
+                task_id=task_id,
+                step_id=claim.step_id,
+            )
+
+    @staticmethod
+    def _raise_version_conflict(session: Session, task_id: str, expected_version: int) -> None:
+        actual = session.execute(
+            text("SELECT version FROM work_tasks WHERE task_id=:task_id"),
+            {"task_id": task_id},
+        ).scalar_one_or_none()
+        if actual is None:
+            raise NotFoundError("自动化任务", task_id)
+        raise ConflictError(
+            "revision_conflict",
+            "自动化任务已被其他操作更新。请重新读取后再继续。",
+            resource="work_task",
+            resource_id=task_id,
+            expected=expected_version,
+            actual=actual,
+        )
