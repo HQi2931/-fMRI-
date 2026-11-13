@@ -64,7 +64,9 @@ async def test_ordinary_work_uses_turn_budget_and_does_not_open_a_goal_ledger(
         ConversationCreate(mode="work", project_id=project.project_id),
         "ordinary-budget-conversation",
     )
-    router_generate = AsyncMock(side_effect=AssertionError("a clear rule must not call a router model"))
+    router_generate = AsyncMock(
+        side_effect=AssertionError("a clear rule must not call a router model")
+    )
     service.conversations.work_agent_router = ModelWorkAgentRouter(
         generate=router_generate,
         small_profile_id="small",
@@ -151,7 +153,9 @@ async def test_same_turn_key_replays_goal_reservation_without_a_second_provider_
     )
     service.conversations.select_work_agent(
         conversation.conversation_id,
-        WorkAgentSelection(agent_role=WorkAgentRole.ANALYSIS, expected_version=conversation.version),
+        WorkAgentSelection(
+            agent_role=WorkAgentRole.ANALYSIS, expected_version=conversation.version
+        ),
         "budget-replay-select",
     )
     service.conversations.work_agent_router = ModelWorkAgentRouter(
@@ -163,7 +167,9 @@ async def test_same_turn_key_replays_goal_reservation_without_a_second_provider_
         "neuroagent.application.work_dialogue._consumed_analysis_intent",
         lambda *_args, **_kwargs: None,
     )
-    model = configure(service, monkeypatch, [generated("conversation", answer="已保留当前分析目标。")])
+    model = configure(
+        service, monkeypatch, [generated("conversation", answer="已保留当前分析目标。")]
+    )
 
     request = ConversationTurnCreate(content="继续")
     first = await service.conversations.send_conversation_turn(
@@ -199,7 +205,9 @@ async def test_exhausted_goal_budget_does_not_dispatch_foreground_generation(
     )
     service.conversations.select_work_agent(
         conversation.conversation_id,
-        WorkAgentSelection(agent_role=WorkAgentRole.ANALYSIS, expected_version=conversation.version),
+        WorkAgentSelection(
+            agent_role=WorkAgentRole.ANALYSIS, expected_version=conversation.version
+        ),
         "budget-exhausted-select",
     )
     filled = service.automation.reserve_composite_goal_model_call(
